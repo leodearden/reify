@@ -103,41 +103,43 @@ pub(crate) fn check_trait_conformance(
 }
 
 /// Verify that a compiled arg value's type conforms to the declared param type
-/// in the target structure when the declared type is `Type::TraitObject(trait_name)`.
+/// in the target structure when the declared type is `Type::TraitObject(trait_name)`
+/// or a wrapper thereof (`Type::Option(...)`, `Type::List(...)`, `Type::Set(...)`,
+/// `Type::Map(...)`).
 ///
-/// `arg_call_name` carries the callee name when the arg expression was any
-/// `FunctionCall` (e.g. `Steel()` or `Steel(density: 1.0)` → `Some("Steel")`).
-/// The expression compiler can default to `Type::Real` for unknown calls; if
-/// `arg_call_name` is a known structure in the template registry we promote the
-/// arg type to `StructureRef(name)` for the conformance check.
+/// The compiled arg carries the full `CompiledExpr` so the recursive walker can
+/// descend into `OptionSome` / `ListLiteral` / `SetLiteral` / `MapLiteral` nodes
+/// and derive `arg_call_name` from any nested `FunctionCall` for the existing
+/// `Real|Int → StructureRef` promotion.
 ///
-/// Conformance strategy (step-6 verified):
-/// - `Type::StructureRef` args: uses `satisfies_trait_bound` to walk the structure's declared
-///   trait bounds, following refinement chains transitively (e.g. `Rigid : Physical : Material`
-///   satisfies a `Material` param).
-/// - `Type::TraitObject` args: uses `trait_satisfies` to check equality-or-refinement between
-///   the arg trait and the required trait.
+/// Conformance strategy:
+/// - `(Type::Option(p), OptionSome(a))` → recurse on inner
+/// - `(Type::Option(_), OptionNone)` → OK (none is always valid for Option<T>)
+/// - `(Type::List(p), ListLiteral(es))` → recurse on each element
+/// - `(Type::Set(p), SetLiteral(es))` → recurse on each element
+/// - `(Type::Map(kp, vp), MapLiteral(entries))` → recurse on each (k, v)
+/// - `(Type::TraitObject(req), _)` → leaf check (existing logic)
+/// - Wrapped param + unmatched arg kind → fall through (no check)
 ///
 /// Skips silently when:
 /// - The target template is not found (external/unknown structure).
 /// - The arg name is not found in the target's value cells (positional arg or error).
-/// - The declared param type is not `Type::TraitObject` (no call-site type-check is performed in the compiler today for non-trait params).
-/// - The arg_type is `Type::Error` (anti-cascade: treat as pass-through).
+/// - The declared param type is not a trait object or wrapper thereof.
+/// - The compiled_arg has `result_type == Type::Error` (anti-cascade).
 ///
-/// Emits at most one diagnostic per call.
+/// Emits at most one diagnostic per leaf conformance failure.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_arg_conformance(
     target_name: &str,
     arg_name: &str,
-    arg_type: &Type,
-    arg_call_name: Option<&str>,
+    compiled_arg: &CompiledExpr,
     span: SourceSpan,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Anti-cascade: if the arg itself had a compilation error, skip.
-    if matches!(arg_type, Type::Error) {
+    if matches!(compiled_arg.result_type, Type::Error) {
         return;
     }
 
@@ -155,35 +157,154 @@ pub(crate) fn check_trait_arg_conformance(
         return; // Arg name not found — skip (positional arg or existing error).
     };
 
-    // Only act when the param's declared type is a trait object.
-    // TODO(follow-up): handle Option<TraitObject> and collection-typed trait params —
-    // wrapping a trait type in Option or a collection currently bypasses call-site
-    // conformance silently (known gap, not forgotten).
-    let Type::TraitObject(required_trait) = &cell.cell_type else {
-        return; // Non-trait param — no call-site type-check is performed in the compiler today.
-    };
+    // Recursively walk the param type against the compiled arg.
+    // The walker dispatches on (param_type, compiled_arg.kind) pairs for wrappers,
+    // and falls through to the leaf helper for Type::TraitObject.
+    walk_param_against_arg(
+        &cell.cell_type,
+        compiled_arg,
+        arg_name,
+        span,
+        template_registry,
+        trait_registry,
+        diagnostics,
+    );
+}
 
-    // When the compiled arg_type defaulted to a numeric fallback (Real or Int)
-    // from a FunctionCall expression and the callee is a known structure
-    // template, promote to StructureRef so the conformance check can walk the
-    // structure's trait bounds. Int appears when the callee's first arg is a
-    // whole-number literal (e.g. `Steel(density: 1000.0)` — the literal 1000.0
-    // is canonicalized to Int by the expression compiler).
-    let promoted: Option<Type> = if matches!(arg_type, Type::Real | Type::Int) {
-        arg_call_name
-            .filter(|call_name| template_registry.contains_key(*call_name))
-            .map(|call_name| Type::StructureRef(call_name.to_string()))
-    } else {
-        None
-    };
-    let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
+/// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
+/// recursing into Option/List/Set/Map wrapper pairs and delegating `TraitObject`
+/// to the leaf helper.
+fn walk_param_against_arg(
+    param_type: &Type,
+    compiled_arg: &CompiledExpr,
+    arg_name: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match (param_type, &compiled_arg.kind) {
+        // Option wrapper: recurse into the inner value.
+        (Type::Option(inner_p), CompiledExprKind::OptionSome(inner_a)) => {
+            walk_param_against_arg(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        // none is always valid for any Option<T> param.
+        (Type::Option(_), CompiledExprKind::OptionNone) => {}
+        // List wrapper: recurse on each element.
+        (Type::List(inner_p), CompiledExprKind::ListLiteral(elements)) => {
+            for elem in elements {
+                walk_param_against_arg(
+                    inner_p,
+                    elem,
+                    arg_name,
+                    span,
+                    template_registry,
+                    trait_registry,
+                    diagnostics,
+                );
+            }
+        }
+        // Set wrapper: recurse on each element.
+        (Type::Set(inner_p), CompiledExprKind::SetLiteral(elements)) => {
+            for elem in elements {
+                walk_param_against_arg(
+                    inner_p,
+                    elem,
+                    arg_name,
+                    span,
+                    template_registry,
+                    trait_registry,
+                    diagnostics,
+                );
+            }
+        }
+        // Map wrapper: recurse on both key and value positions independently.
+        (Type::Map(key_p, val_p), CompiledExprKind::MapLiteral(entries)) => {
+            for (key_expr, val_expr) in entries {
+                walk_param_against_arg(
+                    key_p,
+                    key_expr,
+                    arg_name,
+                    span,
+                    template_registry,
+                    trait_registry,
+                    diagnostics,
+                );
+                walk_param_against_arg(
+                    val_p,
+                    val_expr,
+                    arg_name,
+                    span,
+                    template_registry,
+                    trait_registry,
+                    diagnostics,
+                );
+            }
+        }
+        // Leaf: param type is a trait object — call the existing conformance logic.
+        (Type::TraitObject(required_trait), _) => {
+            check_leaf_trait_conformance(
+                required_trait,
+                compiled_arg,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        // Fallback: for non-literal wrapped args (e.g. ValueRef), attempt a type-level
+        // wrapper walk comparing param_type against compiled_arg.result_type. This handles
+        // cases like passing `param p : Option<Physical>` to a slot of `Option<Material>`
+        // where `Physical : Material`. Non-wrapper and non-trait params fall through
+        // silently inside walk_param_against_arg_type.
+        _ => {
+            walk_param_against_arg_type(
+                param_type,
+                &compiled_arg.result_type,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+    }
+}
 
-    // Check conformance based on effective_arg_type.
-    match effective_arg_type {
+/// Shared leaf helper: emit a "does not conform to trait" diagnostic if `arg_type`
+/// does not satisfy `required_trait`.
+///
+/// Handles `Type::StructureRef` (walks trait bounds transitively via
+/// `satisfies_trait_bound`) and `Type::TraitObject` (equality-or-refinement via
+/// `trait_satisfies`). Other types are skipped silently — callers add their own
+/// fallback arm for non-struct/non-trait types.
+///
+/// This is the single source of the StructureRef/TraitObject diagnostic wording and
+/// `DiagnosticCode::TypeNotConformingToTrait` code shared by both the literal walker
+/// (`check_leaf_trait_conformance`) and the type-level fallback walker
+/// (`walk_param_against_arg_type`).
+fn emit_leaf_conformance_for_arg_type(
+    arg_type: &Type,
+    required_trait: &str,
+    arg_name: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match arg_type {
         Type::StructureRef(struct_name) => {
-            // Look up the arg's structure template and walk its trait bounds.
             let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
-                return; // Arg structure not compiled yet — skip.
+                return;
             };
             if !satisfies_trait_bound(&arg_template.trait_bounds, required_trait, trait_registry) {
                 diagnostics.push(
@@ -203,7 +324,6 @@ pub(crate) fn check_trait_arg_conformance(
             }
         }
         Type::TraitObject(arg_trait_name) => {
-            // Trait-object arg: check that arg_trait refines (or equals) required_trait.
             let mut visited = HashSet::new();
             if !trait_satisfies(arg_trait_name, required_trait, trait_registry, &mut visited) {
                 diagnostics.push(
@@ -221,6 +341,165 @@ pub(crate) fn check_trait_arg_conformance(
                     )),
                 );
             }
+        }
+        // Non-struct, non-trait arg type — callers handle this with their own fallback arm.
+        _ => {}
+    }
+}
+
+/// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
+///
+/// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
+/// expressions are not available for inspection. Walks the wrapper structure of
+/// `arg_type` in lockstep with `param_type`, deferring to a type-only leaf check at
+/// `Type::TraitObject` via `emit_leaf_conformance_for_arg_type`.
+///
+/// Mismatched wrapper shapes (e.g. `Option<T>` param vs `List<T>` arg) fall through
+/// silently — the compiler does not general-purpose type-check arg shapes today.
+fn walk_param_against_arg_type(
+    param_type: &Type,
+    arg_type: &Type,
+    arg_name: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match (param_type, arg_type) {
+        // Wrapper pairs: recurse into inner types lockstep.
+        (Type::Option(inner_p), Type::Option(inner_a)) => {
+            walk_param_against_arg_type(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        (Type::List(inner_p), Type::List(inner_a)) => {
+            walk_param_against_arg_type(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        (Type::Set(inner_p), Type::Set(inner_a)) => {
+            walk_param_against_arg_type(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        (Type::Map(key_p, val_p), Type::Map(key_a, val_a)) => {
+            walk_param_against_arg_type(
+                key_p,
+                key_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+            walk_param_against_arg_type(
+                val_p,
+                val_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        // Leaf: param type is a trait object — delegate to shared helper.
+        // No FunctionCall promotion needed here — we work with the resolved result_type.
+        (Type::TraitObject(required_trait), arg_ty) => {
+            emit_leaf_conformance_for_arg_type(
+                arg_ty,
+                required_trait,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        // Mismatched wrapper shapes or non-wrapper/non-trait param type — skip silently.
+        // The compiler does not general-purpose type-check arg shapes (e.g. passing
+        // StructureRef for Option<TraitObject> is a shape mismatch outside our scope).
+        _ => {}
+    }
+}
+
+/// Leaf conformance check: verify that `compiled_arg` conforms to `required_trait`.
+///
+/// Derives `arg_call_name` from `compiled_arg.kind` so that any nested
+/// `FunctionCall` discovered by the walk re-uses the existing `Real|Int →
+/// StructureRef` promotion.
+///
+/// Conformance strategy:
+/// - `Type::StructureRef` args: uses `satisfies_trait_bound` to walk the structure's declared
+///   trait bounds, following refinement chains transitively (e.g. `Rigid : Physical : Material`
+///   satisfies a `Material` param).
+/// - `Type::TraitObject` args: uses `trait_satisfies` to check equality-or-refinement between
+///   the arg trait and the required trait.
+///
+/// Emits at most one diagnostic per call.
+fn check_leaf_trait_conformance(
+    required_trait: &str,
+    compiled_arg: &CompiledExpr,
+    arg_name: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let arg_type = &compiled_arg.result_type;
+
+    // Derive arg_call_name from the compiled expression kind.
+    let arg_call_name: Option<&str> = match &compiled_arg.kind {
+        CompiledExprKind::FunctionCall { function, .. } => Some(function.name.as_str()),
+        _ => None,
+    };
+
+    // When the compiled arg_type defaulted to a numeric fallback (Real or Int)
+    // from a FunctionCall expression and the callee is a known structure
+    // template, promote to StructureRef so the conformance check can walk the
+    // structure's trait bounds. Int appears when the callee's first arg is a
+    // whole-number literal (e.g. `Steel(density: 1000.0)` — the literal 1000.0
+    // is canonicalized to Int by the expression compiler).
+    let promoted: Option<Type> = if matches!(arg_type, Type::Real | Type::Int) {
+        arg_call_name
+            .filter(|call_name| template_registry.contains_key(*call_name))
+            .map(|call_name| Type::StructureRef(call_name.to_string()))
+    } else {
+        None
+    };
+    let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
+
+    // Check conformance based on effective_arg_type.
+    // StructureRef and TraitObject are handled by the shared helper; non-struct/non-trait
+    // types fall to the anti-cascade arm below.
+    match effective_arg_type {
+        Type::StructureRef(_) | Type::TraitObject(_) => {
+            emit_leaf_conformance_for_arg_type(
+                effective_arg_type,
+                required_trait,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
         }
         _ => {
             // Anti-cascade: when arg_type is a numeric fallback (Real or Int)

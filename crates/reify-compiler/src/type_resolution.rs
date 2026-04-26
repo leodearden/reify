@@ -583,10 +583,18 @@ pub(crate) fn resolve_type_alias_expr(
             })
         }
         reify_syntax::TypeExprKind::Named { name, type_args } => {
-            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>).
+            // Pass empty structure/trait name sets: this DFS runs before traits and
+            // structures are compiled, so trait-name fallback must NOT fire here.
             if !type_args.is_empty()
-                && let Some(ty) =
-                    resolve_parameterized_builtin_type(name, type_args, alias_registry, diagnostics)
+                && let Some(ty) = resolve_parameterized_builtin_type(
+                    name,
+                    type_args,
+                    alias_registry,
+                    diagnostics,
+                    &HashSet::new(),
+                    &HashSet::new(),
+                )
             {
                 return Some(ty);
             }
@@ -697,8 +705,14 @@ pub(crate) fn resolve_type_expr_with_aliases(
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
-        && let Some(ty) =
-            resolve_parameterized_builtin_type(name, type_args, alias_registry, diagnostics)
+        && let Some(ty) = resolve_parameterized_builtin_type(
+            name,
+            type_args,
+            alias_registry,
+            diagnostics,
+            structure_names,
+            trait_names,
+        )
     {
         return Some(ty);
     }
@@ -880,7 +894,9 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             if let Some(ty) = subst.get(name.as_str()) {
                 return Some(ty.clone());
             }
-            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>).
+            // Alias DFS runs before traits/structures are compiled, so we use the
+            // subst-aware resolver (which is trait-blind by design).
             if !type_args.is_empty()
                 && let Some(ty) = resolve_parameterized_builtin_type_with_subst(
                     name,
@@ -952,29 +968,73 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option)
 /// within a type alias RHS expression.
 ///
-/// Each type argument is resolved recursively via `resolve_type_alias_expr`.
+/// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
+/// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
+///
+/// `structure_names` and `trait_names` are threaded through so that inner args
+/// can be resolved to `Type::StructureRef` / `Type::TraitObject` respectively.
+/// Pass empty sets when resolving during the alias DFS pre-pass (before traits
+/// and structures are compiled).
 pub(crate) fn resolve_parameterized_builtin_type(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
 ) -> Option<Type> {
+    let empty_type_params = HashSet::new();
     match name {
         "List" if type_args.len() == 1 => {
-            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
             Some(Type::List(Box::new(inner)))
         }
         "Set" if type_args.len() == 1 => {
-            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
             Some(Type::Set(Box::new(inner)))
         }
         "Map" if type_args.len() == 2 => {
-            let key = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
-            let val = resolve_type_alias_expr(&type_args[1], alias_registry, diagnostics)?;
+            let key = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            let val = resolve_type_expr_with_aliases(
+                &type_args[1],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
         "Option" if type_args.len() == 1 => {
-            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
             Some(Type::Option(Box::new(inner)))
         }
         _ => None,
@@ -983,6 +1043,11 @@ pub(crate) fn resolve_parameterized_builtin_type(
 
 /// Like `resolve_parameterized_builtin_type`, but applies parameter substitutions
 /// when resolving type arguments.
+///
+/// Called during alias DFS (before structures and traits are compiled), so inner type
+/// args are resolved via `resolve_type_alias_expr_with_subst` — which is trait-blind by
+/// design. There is no `structure_names`/`trait_names` parameter here; the plain
+/// alias-DFS resolver is correct for this context.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],

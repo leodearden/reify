@@ -515,3 +515,633 @@ fn sub_component_arg_structure_instantiation_with_args_accepted() {
         errors
     );
 }
+
+// ─── Option<TraitObject> conformance tests (task 2227) ───────────────────────
+//
+// Tests for call-site conformance checking when a param is declared as
+// Option<SomeTrait>. The conformance check must recurse into the Option
+// wrapper and verify the inner value conforms to the trait.
+
+/// Negative test: passing `some(NotAMaterial())` to an `Option<MaterialSpec>` param
+/// must produce a "does not conform to trait" error.
+///
+/// This MUST fail on the post-step-2 base because the conformance dispatcher
+/// still returns silently when the param type is `Type::Option(...)` rather than
+/// exactly `Type::TraitObject(...)`.
+#[test]
+fn option_trait_typed_param_rejects_some_with_non_conforming_struct() {
+    let source = r#"
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: some(NotAMaterial()))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for some(NotAMaterial()) passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: passing `some(Steel())` (a MaterialSpec-conforming struct) to
+/// an `Option<MaterialSpec>` param must compile without errors.
+#[test]
+fn option_trait_typed_param_accepts_some_with_conforming_struct() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: some(Steel()))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for some(Steel()) passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: passing `none` to an `Option<MaterialSpec>` param must compile
+/// without errors — `none` is always valid for any Option<T> param.
+#[test]
+fn option_trait_typed_param_accepts_none() {
+    let source = r#"
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: none)
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for none passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── List<TraitObject> conformance tests (task 2227) ─────────────────────────
+
+/// Negative test: a list containing a non-conforming element passed to
+/// `List<MaterialSpec>` must produce a "does not conform to trait" error.
+#[test]
+fn list_trait_typed_param_rejects_non_conforming_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: [Steel(), NotAMaterial()])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for [Steel(), NotAMaterial()] passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: all elements in the list conform to the trait.
+#[test]
+fn list_trait_typed_param_accepts_all_conforming_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: [Steel(), Steel(density: 1000.0)])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for [Steel(), Steel(density: 1000.0)] passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: an empty list is always valid for any List<T> param.
+#[test]
+fn list_trait_typed_param_accepts_empty_list() {
+    let source = r#"
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: [])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    // Empty list may emit a Warning about "cannot infer element type" but
+    // should emit no Error-severity diagnostics.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for [] passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Set<TraitObject> conformance tests (task 2227) ──────────────────────────
+
+/// Negative test: a set containing a non-conforming element passed to
+/// `Set<MaterialSpec>` must produce a "does not conform to trait" error.
+#[test]
+fn set_trait_typed_param_rejects_non_conforming_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : Set<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: set{Steel(), NotAMaterial()})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for set with NotAMaterial passed to Set<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: all elements in the set conform to the trait.
+#[test]
+fn set_trait_typed_param_accepts_all_conforming_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : Set<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: set{Steel(), Steel(density: 1000.0)})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for set{{Steel(), Steel(density: 1000.0)}} passed to Set<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Map<K, TraitObject> conformance tests (task 2227) ───────────────────────
+
+/// Negative test: a map entry with a non-conforming value passed to
+/// `Map<String, MaterialSpec>` must produce a "does not conform to trait" error.
+#[test]
+fn map_trait_typed_param_rejects_non_conforming_value() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : Map<String, MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: map{"good" => Steel(), "bad" => NotAMaterial()})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for map with NotAMaterial value passed to Map<String, MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: all map values conform to the trait.
+#[test]
+fn map_trait_typed_param_accepts_all_conforming_values() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : Map<String, MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: map{"a" => Steel(), "b" => Steel(density: 1000.0)})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for map with all-conforming values passed to Map<String, MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Wrapped-trait param resolution (task 2227) ──────────────────────────────
+//
+// Each test declares a trait and a structure whose param is wrapped in one of
+// the four collection/option builtins, then asserts that the param's cell_type
+// is the expected compound Type (e.g. Type::Option(Box::new(Type::TraitObject(...)))).
+//
+// All four tests MUST fail on the base branch with an "unresolved type" error
+// because resolve_parameterized_builtin_type does not thread trait_names through
+// to its inner-arg resolution, so `Option<MyTrait>` is treated as a wrapped
+// unknown name rather than a wrapped trait object.
+
+/// Verifies that `param m : Option<MyTrait>` resolves to
+/// `Type::Option(Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn option_traitobject_param_resolves_to_option_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : Option<MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for Option<MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Option(Box::new(Type::TraitObject("MyTrait".to_string()))),
+        "param m : Option<MyTrait> should resolve to Type::Option(Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+/// Verifies that `param m : List<MyTrait>` resolves to
+/// `Type::List(Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn list_traitobject_param_resolves_to_list_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : List<MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for List<MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::List(Box::new(Type::TraitObject("MyTrait".to_string()))),
+        "param m : List<MyTrait> should resolve to Type::List(Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+/// Verifies that `param m : Set<MyTrait>` resolves to
+/// `Type::Set(Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn set_traitobject_param_resolves_to_set_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : Set<MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for Set<MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Set(Box::new(Type::TraitObject("MyTrait".to_string()))),
+        "param m : Set<MyTrait> should resolve to Type::Set(Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+/// Verifies that `param m : Map<String, MyTrait>` resolves to
+/// `Type::Map(Box::new(Type::String), Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn map_string_to_traitobject_param_resolves_to_map_string_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : Map<String, MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for Map<String, MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Map(
+            Box::new(Type::String),
+            Box::new(Type::TraitObject("MyTrait".to_string()))
+        ),
+        "param m : Map<String, MyTrait> should resolve to Type::Map(Type::String, Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+// ─── Type-level fallback walker tests (task 2227) ────────────────────────────
+//
+// These tests exercise the walk_param_against_arg_type fallback that fires when
+// the arg is not a literal (e.g. a param ValueRef) and its result_type carries
+// the wrapper structure.  The dispatcher falls through from walk_param_against_arg
+// (which only matches literal kinds) to walk_param_against_arg_type for ValueRef args
+// whose result_type is a wrapped trait object.
+
+/// Positive test: a param `p : Option<Physical>` where `Physical : Material` passed
+/// to a slot `m : Option<Material>` should compile without errors.
+///
+/// `p` is a ValueRef with `result_type = Option<TraitObject("Physical")>`.
+/// `walk_param_against_arg` sees `(Option<Material>, non-literal)` → falls through to
+/// `walk_param_against_arg_type(Option<Material>, Option<Physical>)` → recurses to
+/// `(Material, Physical)` → `emit_leaf_conformance_for_arg_type` checks
+/// `trait_satisfies("Physical", "Material")` → true → passes.
+#[test]
+fn option_trait_typed_param_accepts_valueref_of_conforming_subtrait() {
+    // Self-contained: no stdlib needed — traits are declared inline.
+    let source = r#"
+        trait Material {}
+        trait Physical : Material {}
+        structure def Host { param m : Option<Material> }
+        structure def Top {
+            param p : Option<Physical>
+            sub h = Host(m: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: passing Option<Physical> (Physical : Material) for Option<Material> param, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test: a param `p : Option<Other>` where `Other` does NOT refine `Material`
+/// passed to a slot `m : Option<Material>` must produce a "does not conform to trait" error.
+///
+/// `p` is a ValueRef with `result_type = Option<TraitObject("Other")>`.
+/// `walk_param_against_arg_type` walks to the leaf `(Material, Other)` →
+/// `emit_leaf_conformance_for_arg_type` checks `trait_satisfies("Other", "Material")`
+/// → false → emits diagnostic.
+#[test]
+fn option_trait_typed_param_rejects_valueref_of_non_conforming_trait() {
+    // Self-contained: no stdlib needed — traits are declared inline.
+    let source = r#"
+        trait Material {}
+        trait Other {}
+        structure def Host { param m : Option<Material> }
+        structure def Top {
+            param p : Option<Other>
+            sub h = Host(m: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("Material")),
+        "expected a 'does not conform to trait Material' error for Option<Other> ValueRef passed to Option<Material> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Nested wrapper conformance tests (task 2227) ────────────────────────────
+//
+// These tests exercise recursive descent past depth 1.  For example,
+// `List<Option<MaterialSpec>>` requires the walker to first unwrap List → iterate
+// elements, then unwrap Option → OptionSome/OptionNone, and finally reach the
+// TraitObject leaf check for MaterialSpec.
+
+/// Negative test: a list-of-options where one element is `some(NotAMaterial())` passed
+/// to `List<Option<MaterialSpec>>` must produce a "does not conform to trait" error.
+///
+/// Walk sequence:
+/// 1. `(List<Option<MaterialSpec>>, ListLiteral([...]))` → iterate each element
+/// 2. `(Option<MaterialSpec>, OptionSome(Steel()))` → `(MaterialSpec, Steel())` → pass
+/// 3. `(Option<MaterialSpec>, OptionNone)` → pass immediately
+/// 4. `(Option<MaterialSpec>, OptionSome(NotAMaterial()))` → `(MaterialSpec, NotAMaterial())`
+///    → leaf check fails → emit diagnostic
+#[test]
+fn nested_wrapper_list_option_rejects_non_conforming_inner_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : List<Option<MaterialSpec>> }
+        structure def Top {
+            sub x = Host(ms: [some(Steel()), none, some(NotAMaterial())])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for some(NotAMaterial()) inside List<Option<MaterialSpec>>, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: a list-of-options where every non-none element conforms to the trait
+/// passed to `List<Option<MaterialSpec>>` must compile without errors.
+#[test]
+fn nested_wrapper_list_option_accepts_all_conforming_inner_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : List<Option<MaterialSpec>> }
+        structure def Top {
+            sub x = Host(ms: [some(Steel()), none, some(Steel(density: 1000.0))])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for [some(Steel()), none, some(Steel(...))] passed to List<Option<MaterialSpec>> param, got: {:?}",
+        errors
+    );
+}
