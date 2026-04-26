@@ -15,6 +15,7 @@ mod geometry_transform;
 mod guards;
 mod ice;
 pub mod module_dag;
+mod module_pragmas;
 pub mod prelude_context;
 mod scc;
 mod scope;
@@ -264,7 +265,9 @@ pub fn compile_with_prelude_context(
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 
-    compile_ctx.into_compiled_module(parsed, compiled_purposes, content_hash)
+    let mut module = compile_ctx.into_compiled_module(parsed, compiled_purposes, content_hash);
+    module_pragmas::apply_module_pragmas(parsed, &mut module);
+    module
 }
 
 /// Compile a parsed module with prelude definitions provided as references.
