@@ -73,24 +73,41 @@ fn materials_mechanical_traits_present() {
     }
 }
 
-/// geometry_traits.ri traits are present in the stdlib (Bounded, Closed,
-/// Manifold, Orientable, Convex, Connected, Watertight).
+/// `std.geometry.traits` contains exactly the EXPECTED_GEOMETRY_TRAITS list
+/// — same names, same count. Single source of truth for the geometry trait
+/// set; per-module `geometry_traits_tests.rs` delegates to this rather than
+/// re-asserting names locally. Scoped to the geometry module specifically so
+/// the count assertion is meaningful (a flat cross-module count would not be).
 #[test]
 fn geometry_traits_present() {
     let modules = stdlib_loader::load_stdlib();
 
-    // Collect all trait names across all stdlib modules
-    let all_traits: Vec<&str> = modules
+    let geometry_module = modules
         .iter()
-        .flat_map(|m| m.trait_defs.iter().map(|t| t.name.as_str()))
+        .find(|m| format!("{}", m.path) == "std/geometry/traits")
+        .expect("std.geometry.traits module should be present in the stdlib");
+
+    let trait_names: Vec<&str> = geometry_module
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
         .collect();
+
+    assert_eq!(
+        trait_names.len(),
+        EXPECTED_GEOMETRY_TRAITS.len(),
+        "std.geometry.traits should contain exactly {} traits, got {}: {:?}",
+        EXPECTED_GEOMETRY_TRAITS.len(),
+        trait_names.len(),
+        trait_names
+    );
 
     for name in EXPECTED_GEOMETRY_TRAITS {
         assert!(
-            all_traits.contains(name),
-            "expected trait '{}' in stdlib, found: {:?}",
+            trait_names.contains(name),
+            "expected trait '{}' in std.geometry.traits, found: {:?}",
             name,
-            all_traits
+            trait_names
         );
     }
 }
