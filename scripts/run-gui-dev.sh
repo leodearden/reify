@@ -41,6 +41,8 @@ case "$FILE" in
         ;;
 esac
 
+[ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+
 # Resolve repo root from this script's path so the script works from any cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -84,6 +86,12 @@ for _ in $(seq 1 60); do
     if curl -fsS http://127.0.0.1:1420/ >/dev/null 2>&1; then
         VITE_READY=1
         break
+    fi
+    if ! kill -0 "$VITE_PID" 2>/dev/null; then
+        vite_rc=0
+        wait "$VITE_PID" 2>/dev/null || vite_rc=$?
+        echo "Error: vite process exited (rc=$vite_rc) before becoming ready; check vite output above" >&2
+        exit 1
     fi
     sleep 0.5
 done
