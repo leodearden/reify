@@ -26,11 +26,18 @@
 
 // ── Trait Resolution Policy ──────────────────────────────────────────────────
 //
-// Each of the eight §6.2 mechanical-material traits (Elastic, Strong, Hard,
-// Ductile, FatigueRated, FractureTough, ImpactResistant, Damping) is declared
-// exactly once in this file and refines MaterialSpec, so that the `density`
-// and `name` requirements from MaterialSpec are inherited transitively rather
-// than restated on every trait.
+// Four of the §6.2 mechanical-material traits — FatigueRated, FractureTough,
+// ImpactResistant, and Damping — are declared exactly once in this file and
+// each refines MaterialSpec, so that the `density` and `name` requirements
+// from MaterialSpec are inherited transitively rather than restated on every
+// trait.
+//
+// The remaining four §6.2 traits — Elastic, Strong, Hard, and Ductile — are
+// deliberately left free-standing in this PR.  Their scope was limited per the
+// originating task's per-trait recommendation; anchoring them is tracked
+// separately under audit gap (d) of docs/notes/stdlib-trait-audit.md §6.2.
+// Future readers should NOT infer from this block that all eight §6.2 traits
+// have a MaterialSpec parent today.
 //
 // Consumer structures that need material properties do NOT compose each
 // capability trait with its own copy of MaterialSpec.  Instead they carry a
