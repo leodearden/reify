@@ -160,6 +160,39 @@ fn post_solver_re_eval_guard_cells(
     }
 }
 
+/// Emit a `cache.record_evaluation` + journal `Completed` event pair for a
+/// single Param-cell write path.  Centralises the five-line closing idiom
+/// shared by `eval_guarded_group_param_cell` (four arms) and the top-level
+/// Param S4 branch — extracted to eliminate future-drift risk (task-2195
+/// amendment, reviewer suggestion).
+///
+/// `node_id` is consumed: cloned once into the cache call and moved into the
+/// journal event.  `start` is the `Instant` captured before the matching
+/// `EventKind::Started` record so that `Duration` spans the full resolution.
+#[inline]
+fn record_eval_completed(
+    journal: &mut crate::journal::EventJournal,
+    cache: &mut crate::cache::CacheStore,
+    node_id: NodeId,
+    cached_result: CachedResult,
+    version_id: u64,
+    start: Instant,
+) {
+    let outcome = cache.record_evaluation(
+        node_id.clone(),
+        cached_result,
+        VersionId(version_id),
+        DependencyTrace::default(),
+    );
+    journal.record(EvalEvent {
+        timestamp: Instant::now(),
+        node_id,
+        kind: EventKind::Completed { outcome },
+        version: VersionId(version_id),
+        payload: Some(EventPayload::Duration(start.elapsed())),
+    });
+}
+
 /// Resolve and write the effective value for a guarded-group Param cell,
 /// consulting `param_overrides`, validating any stored override, falling back
 /// to `cell.default_expr`, and handling the no-override / rejected-override
@@ -219,19 +252,14 @@ fn eval_guarded_group_param_cell(
                     cell.id.clone(),
                     (Value::Undef, DeterminacyState::Undetermined),
                 );
-                let outcome = cache.record_evaluation(
-                    node_id.clone(),
-                    CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-                    VersionId(version_id),
-                    DependencyTrace::default(),
-                );
-                journal.record(EvalEvent {
-                    timestamp: Instant::now(),
+                record_eval_completed(
+                    journal,
+                    cache,
                     node_id,
-                    kind: EventKind::Completed { outcome },
-                    version: VersionId(version_id),
-                    payload: Some(EventPayload::Duration(start.elapsed())),
-                });
+                    CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                    version_id,
+                    start,
+                );
                 return;
             }
             None
@@ -273,38 +301,28 @@ fn eval_guarded_group_param_cell(
             cell.id.clone(),
             (Value::Undef, DeterminacyState::Undetermined),
         );
-        let outcome = cache.record_evaluation(
-            node_id.clone(),
-            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-            VersionId(version_id),
-            DependencyTrace::default(),
-        );
-        journal.record(EvalEvent {
-            timestamp: Instant::now(),
+        record_eval_completed(
+            journal,
+            cache,
             node_id,
-            kind: EventKind::Completed { outcome },
-            version: VersionId(version_id),
-            payload: Some(EventPayload::Duration(start.elapsed())),
-        });
+            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+            version_id,
+            start,
+        );
         return;
     };
 
     // Override-accepted or default-eval path: write determined value.
     values.insert(cell.id.clone(), val.clone());
     snapshot.values.insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
-    let outcome = cache.record_evaluation(
-        node_id.clone(),
-        CachedResult::Value(val, DeterminacyState::Determined),
-        VersionId(version_id),
-        DependencyTrace::default(),
-    );
-    journal.record(EvalEvent {
-        timestamp: Instant::now(),
+    record_eval_completed(
+        journal,
+        cache,
         node_id,
-        kind: EventKind::Completed { outcome },
-        version: VersionId(version_id),
-        payload: Some(EventPayload::Duration(start.elapsed())),
-    });
+        CachedResult::Value(val, DeterminacyState::Determined),
+        version_id,
+        start,
+    );
 }
 
 impl Engine {
@@ -389,6 +407,13 @@ impl Engine {
         // `functions: self.functions.clone()`) — which lies outside this task's locked
         // modules. The same pattern repeats in edit_param() below. Deferred to
         // task #1997 (perf: Arc<Vec<CompiledFunction>> in Engine::eval/edit_param).
+        //
+        // PERFORMANCE NOTE (task-2195): eval_guarded_group_param_cell's determined-
+        // value path clones `val` twice (once into `values`, once into
+        // `snapshot.values`) and moves the third copy into `CachedResult::Value`.
+        // The same triple-clone applies to the top-level Param success arm here.
+        // Arc-ifying `ValueMap` values (the same Arc<Value> direction as the
+        // self.functions fix above) would reduce all three to O(1) pointer copies.
         let functions: Vec<CompiledFunction> = self.functions.clone();
 
         let mut values = ValueMap::new();
@@ -645,19 +670,14 @@ impl Engine {
                         // (Undef, Undetermined) result here makes the S4 path
                         // symmetric with every other Param branch that produces
                         // a journal Started/Completed pair backed by a cache entry.
-                        let outcome = self.cache.record_evaluation(
-                            node_id.clone(),
-                            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-                            VersionId(version_id),
-                            DependencyTrace::default(),
-                        );
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
+                        record_eval_completed(
+                            &mut self.journal,
+                            &mut self.cache,
                             node_id,
-                            kind: EventKind::Completed { outcome },
-                            version: VersionId(version_id),
-                            payload: Some(EventPayload::Duration(start.elapsed())),
-                        });
+                            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                            version_id,
+                            start,
+                        );
                         continue;
                     };
                     values.insert(cell.id.clone(), val.clone());
@@ -667,23 +687,14 @@ impl Engine {
                         .values
                         .insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
 
-                    // Record in cache
-                    let trace = DependencyTrace::default();
-                    let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                    let outcome = self.cache.record_evaluation(
-                        node_id.clone(),
-                        cached_result,
-                        VersionId(version_id),
-                        trace,
-                    );
-
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
+                    record_eval_completed(
+                        &mut self.journal,
+                        &mut self.cache,
                         node_id,
-                        kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
+                        CachedResult::Value(val, DeterminacyState::Determined),
+                        version_id,
+                        start,
+                    );
                 }
             }
 

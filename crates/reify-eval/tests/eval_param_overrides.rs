@@ -1051,15 +1051,20 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
     let x_id = ValueCellId::new("S", "x");
     let node_id = NodeId::Value(x_id.clone());
 
-    // (a) Journal: Started + Completed events — FAILS before step-4 impl.
+    // (a) Journal: exactly one Started+Completed pair, in order — FAILS before step-4 impl.
     let events = engine.journal().events_for_node(&node_id);
-    assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
-        "guarded-group active-branch Param must emit a Started journal event (task-2195)"
+    assert_eq!(
+        events.len(),
+        2,
+        "guarded-group active-branch Param must emit exactly one Started+Completed pair (task-2195)"
     );
     assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
-        "guarded-group active-branch Param must emit a Completed journal event (task-2195)"
+        matches!(events[0].kind, EventKind::Started),
+        "first journal event for x must be Started (task-2195)"
+    );
+    assert!(
+        matches!(events[1].kind, EventKind::Completed { .. }),
+        "second journal event for x must be Completed (task-2195)"
     );
 
     // (b) Cache entry: CachedResult::Value(5mm as SI, Determined) — FAILS before step-4 impl.
@@ -1112,15 +1117,20 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param
     let y_id = ValueCellId::new("S", "y");
     let node_id = NodeId::Value(y_id.clone());
 
-    // (a) Journal: Started + Completed for y (else_members call site).
+    // (a) Journal: exactly one Started+Completed pair, in order (else_members call site).
     let events = engine.journal().events_for_node(&node_id);
-    assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
-        "else-branch Param y must emit a Started journal event (else_members call site)"
+    assert_eq!(
+        events.len(),
+        2,
+        "else-branch Param y must emit exactly one Started+Completed pair (else_members call site)"
     );
     assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
-        "else-branch Param y must emit a Completed journal event (else_members call site)"
+        matches!(events[0].kind, EventKind::Started),
+        "first journal event for y must be Started (else_members call site)"
+    );
+    assert!(
+        matches!(events[1].kind, EventKind::Completed { .. }),
+        "second journal event for y must be Completed (else_members call site)"
     );
 
     // (b) Cache: CachedResult::Value(10mm SI, Determined) for y.
@@ -1187,17 +1197,26 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
     let module_b = compile_source(
         "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Int } }",
     );
+    // Snapshot journal length before phase B so we can check the delta for phase B alone
+    // (phase A already contributed a Started+Completed pair for y).
+    let journal_len_before_b = engine.journal().events_for_node(&node_id).len();
     let result_b = engine.eval(&module_b);
 
-    // (a) Journal: Started + Completed for y.
+    // (a) Journal: exactly one Started+Completed pair added by phase B, in order.
     let events = engine.journal().events_for_node(&node_id);
-    assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
-        "helper rejected-no-default arm must emit Started journal event"
+    let phase_b_events = &events[journal_len_before_b..];
+    assert_eq!(
+        phase_b_events.len(),
+        2,
+        "helper rejected-no-default arm must emit exactly one Started+Completed pair"
     );
     assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
-        "helper rejected-no-default arm must emit Completed journal event"
+        matches!(phase_b_events[0].kind, EventKind::Started),
+        "first phase-B journal event for y must be Started"
+    );
+    assert!(
+        matches!(phase_b_events[1].kind, EventKind::Completed { .. }),
+        "second phase-B journal event for y must be Completed"
     );
 
     // (b) Cache: CachedResult::Value(Undef, Undetermined).
@@ -1245,6 +1264,31 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
         Some(&length_scalar(0.12)),
         "override must survive a transient type-kind mismatch in the helper's rejected-no-default arm"
     );
+    // (d2) Cache must now reflect the resurfaced Determined override value, not the stale Undef.
+    // This locks in the correctness of the deferred-cache deferral resolution from task-2195:
+    // a cached Undef must not mask a recovered override via the incremental fast-path.
+    let entry_after = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("cache entry must exist for y after module A re-eval");
+    match &entry_after.result {
+        CachedResult::Value(val, det) => {
+            assert_eq!(
+                *val,
+                length_scalar(0.12),
+                "cache must hold the resurfaced override value (0.12m) after module A re-eval"
+            );
+            assert_eq!(
+                *det,
+                DeterminacyState::Determined,
+                "cache determinacy must be Determined for resurfaced override"
+            );
+        }
+        other => panic!(
+            "expected CachedResult::Value(0.12m, Determined) after module A re-eval, got {:?}",
+            other
+        ),
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1282,15 +1326,20 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
     let x_id = ValueCellId::new("S", "x");
     let node_id = NodeId::Value(x_id.clone());
 
-    // (a) Journal: Started + Completed for x (no-override-no-default path).
+    // (a) Journal: exactly one Started+Completed pair, in order (no-override-no-default path).
     let events = engine.journal().events_for_node(&node_id);
-    assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
-        "helper no-override-no-default arm must emit Started journal event"
+    assert_eq!(
+        events.len(),
+        2,
+        "helper no-override-no-default arm must emit exactly one Started+Completed pair"
     );
     assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
-        "helper no-override-no-default arm must emit Completed journal event"
+        matches!(events[0].kind, EventKind::Started),
+        "first journal event for x must be Started (no-override-no-default)"
+    );
+    assert!(
+        matches!(events[1].kind, EventKind::Completed { .. }),
+        "second journal event for x must be Completed (no-override-no-default)"
     );
 
     // (b) Cache: CachedResult::Value(Undef, Undetermined).
