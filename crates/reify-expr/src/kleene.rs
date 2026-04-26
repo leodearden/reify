@@ -1,21 +1,21 @@
 //! Kleene three-valued logic helpers — single source of truth for §9.2.3 of
-//! `docs/reify-language-spec.md` (lines 1662-1680).
+//! `docs/reify-language-spec.md`.
 //!
 //! The three truth values are [`KBool::True`], [`KBool::False`], and
-//! [`KBool::Undef`] (unknown/indeterminate).  The four operators implement the
+//! [`KBool::Undef`] (unknown/indeterminate).  The three operators implement the
 //! truth tables specified in §9.2.3 exactly:
 //!
-//! | a     | b     | AND   | OR    | a→b   |
-//! |-------|-------|-------|-------|-------|
-//! | T     | T     | T     | T     | T     |
-//! | T     | F     | F     | T     | F     |
-//! | T     | U     | U     | T     | U     |
-//! | F     | T     | F     | T     | T     |
-//! | F     | F     | F     | F     | T     |
-//! | F     | U     | F     | U     | T     |
-//! | U     | T     | U     | T     | T     |
-//! | U     | F     | F     | U     | U     |
-//! | U     | U     | U     | U     | U     |
+//! | a     | b     | AND   | OR    |
+//! |-------|-------|-------|-------|
+//! | T     | T     | T     | T     |
+//! | T     | F     | F     | T     |
+//! | T     | U     | U     | T     |
+//! | F     | T     | F     | T     |
+//! | F     | F     | F     | F     |
+//! | F     | U     | F     | U     |
+//! | U     | T     | U     | T     |
+//! | U     | F     | F     | U     |
+//! | U     | U     | U     | U     |
 //!
 //! | a     | NOT a |
 //! |-------|-------|
@@ -33,7 +33,7 @@ use reify_types::Value;
 /// A three-valued Kleene truth value.
 ///
 /// Corresponds directly to the three logical states defined in
-/// `docs/reify-language-spec.md` §9.2.3 (lines 1662-1680).
+/// `docs/reify-language-spec.md` §9.2.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KBool {
     /// Definitely true.
@@ -49,7 +49,7 @@ pub enum KBool {
 /// `False` is the absorbing element: `False ∧ x = False` for all `x`.
 /// When neither operand is `False`, `Undef` propagates.
 ///
-/// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
+/// See `docs/reify-language-spec.md` §9.2.3.
 pub fn kleene_and(a: KBool, b: KBool) -> KBool {
     match (a, b) {
         (KBool::False, _) | (_, KBool::False) => KBool::False,
@@ -63,7 +63,7 @@ pub fn kleene_and(a: KBool, b: KBool) -> KBool {
 /// `True` is the absorbing element: `True ∨ x = True` for all `x`.
 /// When neither operand is `True`, `Undef` propagates.
 ///
-/// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
+/// See `docs/reify-language-spec.md` §9.2.3.
 pub fn kleene_or(a: KBool, b: KBool) -> KBool {
     match (a, b) {
         (KBool::True, _) | (_, KBool::True) => KBool::True,
@@ -76,26 +76,13 @@ pub fn kleene_or(a: KBool, b: KBool) -> KBool {
 ///
 /// `¬True = False`, `¬False = True`, `¬Undef = Undef`.
 ///
-/// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
+/// See `docs/reify-language-spec.md` §9.2.3.
 pub fn kleene_not(a: KBool) -> KBool {
     match a {
         KBool::True => KBool::False,
         KBool::False => KBool::True,
         KBool::Undef => KBool::Undef,
     }
-}
-
-/// Kleene three-valued material implication (`a → b`).
-///
-/// Encoded as `¬a ∨ b`, verified row-by-row against the §9.2.3 truth table.
-///
-/// Note: no `BinOp::Implies` operator currently exists in the grammar; this
-/// helper is provided so the module is a complete §9.2.3 source-of-truth for
-/// future tasks that introduce the operator.
-///
-/// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
-pub fn kleene_implies(a: KBool, b: KBool) -> KBool {
-    kleene_or(kleene_not(a), b)
 }
 
 impl TryFrom<&Value> for KBool {
@@ -200,33 +187,6 @@ mod tests {
         assert_eq!(kleene_not(True), False);
         assert_eq!(kleene_not(False), True);
         assert_eq!(kleene_not(Undef), Undef);
-    }
-
-    // -----------------------------------------------------------------------
-    // kleene_implies: all 9 rows of the §9.2.3 truth table
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn kleene_implies_truth_table() {
-        use KBool::*;
-        // T → T = T
-        assert_eq!(kleene_implies(True, True), True);
-        // T → F = F
-        assert_eq!(kleene_implies(True, False), False);
-        // T → U = U
-        assert_eq!(kleene_implies(True, Undef), Undef);
-        // F → T = T
-        assert_eq!(kleene_implies(False, True), True);
-        // F → F = T
-        assert_eq!(kleene_implies(False, False), True);
-        // F → U = T  (vacuously true)
-        assert_eq!(kleene_implies(False, Undef), True);
-        // U → T = T
-        assert_eq!(kleene_implies(Undef, True), True);
-        // U → F = U
-        assert_eq!(kleene_implies(Undef, False), Undef);
-        // U → U = U
-        assert_eq!(kleene_implies(Undef, Undef), Undef);
     }
 
     // -----------------------------------------------------------------------

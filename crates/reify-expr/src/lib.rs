@@ -2101,6 +2101,10 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
     }
     match op {
         UnOp::Neg => negate_value(v),
+        // Note: `v` cannot be `Value::Undef` here — the guard above returns
+        // early for Undef, so `KBool::try_from` will never produce
+        // `Ok(KBool::Undef)`.  `kleene_not` is the truth-table authority for
+        // the Bool(true)/Bool(false) cases; non-bool inputs fall to `Err`.
         UnOp::Not => match kleene::KBool::try_from(&v) {
             Ok(k) => kleene::kleene_not(k).into(),
             Err(_) => Value::Undef,
