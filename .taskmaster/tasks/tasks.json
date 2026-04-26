@@ -48262,7 +48262,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:36:16.362Z"
+        "updatedAt": "2026-04-26T07:36:16.362Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "review briefing.yaml known_gaps automation reconciliation",
+              "Task 2225 known_gap removal briefing.yaml reconciliation cycle",
+              "Stage 2 task knowledge sync briefing.yaml refresh pattern"
+            ]
+          }
+        }
       },
       {
         "id": "2247",
