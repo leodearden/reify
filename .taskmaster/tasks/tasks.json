@@ -47898,11 +47898,11 @@
         "description": "The reverse-direction test added in task 2208 (`annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped` at `crates/reify-compiler/tests/trait_merge_tests.rs:1146`) only asserts `x_cells.len() == 1`. Its forward-direction sibling (`cross_kind_pre_registration_preserves_first_type_annotated_let`, ~lines 1102-1120) additionally asserts `kind == Param` and `cell_type == Type::Scalar { LENGTH }`. Without those follow-up assertions, a regression that emits 1 cell of the wrong kind (e.g. Let suppressed but Param cell still injected) would silently pass.",
         "details": "Scope:\n1. In `crates/reify-compiler/tests/trait_merge_tests.rs` test `annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped` (line 1146), after the `assert_eq!(x_cells.len(), 1, ...)` add:\n   - `assert_eq!(x_cells[0].kind, ValueCellKind::Let, \"the single 'x' cell must be Let (from TraitB)\");`\n   - `assert_eq!(x_cells[0].cell_type, Type::Scalar { dimension: DimensionVector::LENGTH }, \"the 'x' Let cell must carry type Length\");`\n2. Also assert TraitA's constraint `x - 1mm > 0mm` survives Param suppression: check `template.constraints` is non-empty (verifies that suppressing the Param does not accidentally suppress sibling constraints from the same trait). Mirror whatever pattern other tests in this file use to inspect template constraints.\n3. Verify:\n   - `cargo test -p reify-compiler --test trait_merge_tests annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped`\n   - `cargo clippy --workspace -- -D warnings`\n   - `cargo fmt --check`\n\nOrigin: reviewer_comprehensive suggestion #1 on task 2208 (esc-2208-18). Sibling test pattern at `crates/reify-compiler/tests/trait_merge_tests.rs:1102-1120`.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:32.731Z",
+        "updatedAt": "2026-04-26T11:09:39.645Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_merge_tests.rs"
@@ -48945,7 +48945,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:09:38.973Z",
+      "lastModified": "2026-04-26T11:09:39.645Z",
       "taskCount": 2259,
       "completedCount": 2022,
       "tags": [
