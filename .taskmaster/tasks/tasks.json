@@ -49039,7 +49039,21 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:44:38.734Z"
+        "updatedAt": "2026-04-26T11:44:38.734Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "SubComponentDecl",
+              "DiagnosticCode"
+            ],
+            "queries": [
+              "broken_guard_does_not_emit_no_termination_error termination check test assertion",
+              "diagnostic substring matching unresolved unknown fragile guard",
+              "DiagnosticCode guard termination stable assertion replace",
+              "broken guard compile error diagnostic kind assertion"
+            ]
+          }
+        }
       },
       {
         "id": "2273",
