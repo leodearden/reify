@@ -331,9 +331,10 @@ fn rigid_refines_physical_with_moment_of_inertia() {
 
 // ─── step-11: ElasticallyDeformable same-module refinement ───────────────────
 
-/// Step 11: ElasticallyDeformable refines Flexible (same-module refinement,
-/// per spec §4). Verify refinements list includes 'Flexible' and that the trait
-/// has max_elastic_strain as a required member.
+/// Step 11: ElasticallyDeformable refines Flexible (same-module refinement;
+/// elastic deformation is a specific form of reversible flexibility). Verify
+/// refinements list includes 'Flexible' and that the trait has
+/// max_elastic_strain as a required member.
 #[test]
 fn elastically_deformable_refines_flexible_same_module() {
     let module = load_stdlib_module();
@@ -364,8 +365,8 @@ fn elastically_deformable_refines_flexible_same_module() {
     );
 }
 
-/// Plastic refines Flexible (spec §4). Verify refinements list includes
-/// 'Flexible'.
+/// Plastic refines Flexible (plastic deformation extends the elastic flexibility
+/// contract). Verify refinements list includes 'Flexible'.
 #[test]
 fn plastic_refines_flexible() {
     let module = load_stdlib_module();
@@ -383,8 +384,8 @@ fn plastic_refines_flexible() {
     );
 }
 
-/// ThermallyConductive refines Physical (spec §4). Verify refinements list
-/// includes 'Physical'.
+/// ThermallyConductive refines Physical (a thermally conductive body is also a
+/// physical body). Verify refinements list includes 'Physical'.
 #[test]
 fn thermally_conductive_refines_physical() {
     let module = load_stdlib_module();
@@ -402,8 +403,8 @@ fn thermally_conductive_refines_physical() {
     );
 }
 
-/// ElectricallyConductive refines Physical (spec §4). Verify refinements list
-/// includes 'Physical'.
+/// ElectricallyConductive refines Physical (an electrically conductive body is
+/// also a physical body). Verify refinements list includes 'Physical'.
 #[test]
 fn electrically_conductive_refines_physical() {
     let module = load_stdlib_module();
