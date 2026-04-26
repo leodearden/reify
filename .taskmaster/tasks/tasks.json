@@ -48525,6 +48525,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2257",
+        "title": "refresh_briefing_known_gaps.py: iterate all Taskmaster tags or assert master-only",
+        "description": "scripts/refresh_briefing_known_gaps.py builds its task index only from `tasks_data['master']` (line ~131). Reify currently uses only the `master` tag so this is not an active bug, but if any tracked task is moved under a feature-branch tag the script will silently treat it as an orphan and skip it — exactly the silent-default-on-error pattern the project's own conventions warn against.",
+        "details": "Pick one approach:\n(a) Iterate `for tag_name, tag in tasks_data.items()` (filter to dicts containing a 'tasks' list) so every Taskmaster tag contributes to `tasks_index`. If multiple tags index the same id, prefer the first or warn on collision.\n(b) Explicitly raise/loud-WARN when tasks_data has any non-master tag with non-empty tasks, so the master-only assumption is verified rather than silently incorrect.\n\nEither way add a test in tests/infra/test_refresh_briefing_known_gaps.sh that seeds tasks.json with a non-master tag containing a `done` task referenced from briefing.yaml `tracking:` and asserts the chosen behavior (detected and reported, or asserted/warned).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48537,7 +48548,7 @@
       ],
       "created": "2026-04-26T09:07:10.234Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T09:07:36.992Z"
+      "updated": "2026-04-26T09:08:48.207Z"
     }
   }
 }
