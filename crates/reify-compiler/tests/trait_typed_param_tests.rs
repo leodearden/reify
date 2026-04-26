@@ -1287,6 +1287,21 @@ fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
         "expected exactly one wrapper-shape diagnostic, got {:?}",
         matching
     );
+    // Pin that the anti-cascade guard in walk_param_against_arg_type prevents
+    // secondary TypeNotConformingToTrait diagnostics from piling on top of the
+    // wrapper-shape mismatch. If this count exceeds 1, the guard is not working.
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+            .count(),
+        1,
+        "expected exactly one TypeNotConformingToTrait diagnostic total (anti-cascade guard), got {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Negative test: passing `[Steel()]` (a list literal) to an `Option<MaterialSpec>`

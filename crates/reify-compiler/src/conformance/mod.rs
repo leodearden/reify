@@ -188,6 +188,20 @@ struct WalkCtx<'a> {
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
+/// Extract the callee function name from a compiled expression if it is a
+/// `FunctionCall`. Returns `None` for any other expression kind.
+///
+/// Shared by `promote_function_call_to_structure_ref` (promotion check) and
+/// `check_leaf_trait_conformance` (suppression guard) so both decisions use
+/// the same pattern — any future extension of `FunctionCall` matching applies
+/// consistently to both sites.
+fn extract_function_call_name(arg: &CompiledExpr) -> Option<&str> {
+    match &arg.kind {
+        CompiledExprKind::FunctionCall { function, .. } => Some(function.name.as_str()),
+        _ => None,
+    }
+}
+
 /// Promote a `Real`/`Int`-typed `FunctionCall` whose callee is a known structure
 /// template into a `Type::StructureRef(callee_name)`.
 ///
@@ -205,13 +219,11 @@ fn promote_function_call_to_structure_ref(
     if !matches!(arg.result_type, Type::Real | Type::Int) {
         return None;
     }
-    let CompiledExprKind::FunctionCall { function, .. } = &arg.kind else {
-        return None;
-    };
-    if !templates.contains_key(function.name.as_str()) {
+    let name = extract_function_call_name(arg)?;
+    if !templates.contains_key(name) {
         return None;
     }
-    Some(Type::StructureRef(function.name.clone()))
+    Some(Type::StructureRef(name.to_owned()))
 }
 
 /// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
@@ -432,11 +444,10 @@ fn check_leaf_trait_conformance(
 ) {
     let arg_type = &compiled_arg.result_type;
 
-    // Derive arg_call_name from the compiled expression kind.
-    let arg_call_name: Option<&str> = match &compiled_arg.kind {
-        CompiledExprKind::FunctionCall { function, .. } => Some(function.name.as_str()),
-        _ => None,
-    };
+    // Derive arg_call_name using the shared helper so both the promotion check
+    // (promote_function_call_to_structure_ref) and this suppression guard use the
+    // same source of truth for "is this arg a function call?".
+    let arg_call_name = extract_function_call_name(compiled_arg);
 
     // When the compiled arg_type defaulted to a numeric fallback (Real or Int)
     // from a FunctionCall expression and the callee is a known structure
