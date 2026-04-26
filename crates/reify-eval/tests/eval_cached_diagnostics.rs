@@ -715,16 +715,18 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
         .build();
 
     let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let matches = |d: &Diagnostic| {
+        d.message.contains("sub-component")
+            && d.message.contains("references unknown structure")
+            && d.message.contains("DoesNotExist")
+    };
 
     // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
-    assert!(
-        result1.eval_result.diagnostics.iter().any(|d| {
-            d.message.contains("sub-component")
-                && d.message.contains("references unknown structure")
-                && d.message.contains("DoesNotExist")
-        }),
-        "first eval_cached call must emit unknown-structure diagnostic; got: {:?}",
+    assert_eq!(
+        result1.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        1,
+        "first eval_cached call must emit exactly one unknown-structure diagnostic; got: {:?}",
         result1.eval_result.diagnostics,
     );
 
@@ -732,14 +734,11 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
     // This is the canonical scenario that an any_auto_miss-style gate would break:
     // on a same-version repeat every cell hits the fast-path, so any_auto_miss=false.
     let result2 = engine.eval_cached(&module, VersionId(1));
-    assert!(
-        result2.eval_result.diagnostics.iter().any(|d| {
-            d.message.contains("sub-component")
-                && d.message.contains("references unknown structure")
-                && d.message.contains("DoesNotExist")
-        }),
-        "second eval_cached call (same version, fast-path hit) must also emit \
-         unknown-structure diagnostic (must not drop on cache hit); got: {:?}",
+    assert_eq!(
+        result2.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        1,
+        "second eval_cached call (same version, fast-path hit) must emit exactly one \
+         unknown-structure diagnostic (must not drop or duplicate on cache hit); got: {:?}",
         result2.eval_result.diagnostics,
     );
 
@@ -747,14 +746,11 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
     // the version). The sub-component validation pass must run unconditionally and
     // must NOT be gated on cache state or any_auto_miss.
     let result3 = engine.eval_cached(&module, VersionId(2));
-    assert!(
-        result3.eval_result.diagnostics.iter().any(|d| {
-            d.message.contains("sub-component")
-                && d.message.contains("references unknown structure")
-                && d.message.contains("DoesNotExist")
-        }),
-        "third eval_cached call (bumped version) must also emit unknown-structure \
-         diagnostic (must not drop on cache hit); got: {:?}",
+    assert_eq!(
+        result3.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        1,
+        "third eval_cached call (bumped version) must emit exactly one unknown-structure \
+         diagnostic (must not drop or duplicate on cache hit); got: {:?}",
         result3.eval_result.diagnostics,
     );
 }
