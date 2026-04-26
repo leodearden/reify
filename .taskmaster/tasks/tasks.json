@@ -50867,7 +50867,19 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:12:17.077Z"
+        "updatedAt": "2026-04-26T20:12:17.077Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "NodeTraits"
+            ],
+            "queries": [
+              "NodeTraits IMMEDIATE WARM_STARTABLE PROGRESSIVE COMMITTABLE bitflags declaration task 2350",
+              "node-trait composition §7.3 NodePolicyOverrides CommitIfSlow AlwaysCancelWhenStale OnlyRunOnFinalInputs",
+              "override precedence instance over type over default project config programmatic"
+            ]
+          }
+        }
       },
       {
         "id": "2354",
