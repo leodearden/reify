@@ -954,12 +954,12 @@ impl Engine {
                 // below). This branch provides the symmetric root-frame gate: if
                 // the top-level template is non-recursive and the sub is guarded,
                 // Phase 2 must not materialise the sub's entity.
-                if !template.is_recursive && sub.guard_expr.is_some() {
+                if !template.is_recursive && sub.guard_state.compiled().is_some() {
                     continue;
                 }
 
                 // Recursive sub: evaluate guard before elaborating, then unfold recursively.
-                if template.is_recursive && sub.guard_expr.is_some() {
+                if template.is_recursive && sub.guard_state.compiled().is_some() {
                     let mut unfold_budget = self.max_unfold_nodes;
                     unfold_recursive_sub(
                         &mut values,

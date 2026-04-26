@@ -1,7 +1,7 @@
 //! Recursive sub-component unfolding tests (Task 205).
 //!
 //! Tests for eager structural unfolding of recursive structures in the evaluator.
-//! Recursive subs (template.is_recursive && sub.guard_expr.is_some()) are unfolded
+//! Recursive subs (template.is_recursive && sub.guard_state.compiled().is_some()) are unfolded
 //! depth-first until the guard evaluates to false or the depth limit is reached.
 
 use reify_eval::Engine;

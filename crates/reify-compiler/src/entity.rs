@@ -951,12 +951,13 @@ pub(crate) fn compile_entity(
                     });
                 }
 
-                // Compile the sub's where_clause into guard_expr (used by termination check).
+                // Compile the sub's where_clause into a GuardState (used by termination check).
                 // Uses Severity::Error-only filter (not any-diagnostic) so that a guard
                 // that compiles successfully but emits only warnings is still stored as
-                // Some(compiled) — matching the pattern at conformance/checker.rs:548-550.
-                let (sub_guard_expr, guard_compile_failed) =
-                    if let Some(wc) = sub.where_clause.as_ref() {
+                // Compiled(_) — matching the pattern at conformance/checker.rs:548-550.
+                let guard_state = match sub.where_clause.as_ref() {
+                    None => GuardState::None,
+                    Some(wc) => {
                         let diag_count_before = diagnostics.len();
                         let compiled =
                             compile_expr(&wc.condition, &scope, enum_defs, functions, diagnostics);
@@ -967,14 +968,12 @@ pub(crate) fn compile_entity(
                             // Guard compilation emitted an error — the guard is unusable for
                             // termination analysis. Record the failure so the termination check
                             // can distinguish "user wrote no guard" from "user's guard was broken".
-                            (None, true)
+                            GuardState::Broken
                         } else {
-                            (Some(compiled), false)
+                            GuardState::Compiled(compiled)
                         }
-                    } else {
-                        // No where clause at all.
-                        (None, false)
-                    };
+                    }
+                };
 
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
@@ -984,8 +983,7 @@ pub(crate) fn compile_entity(
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
                     count_cell: None,
-                    guard_expr: sub_guard_expr,
-                    guard_compile_failed,
+                    guard_state,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
