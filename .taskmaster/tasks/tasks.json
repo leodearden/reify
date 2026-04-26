@@ -50961,13 +50961,14 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6: PROGRESSIVE-tagged nodes emit intermediate results over time; scheduler expects multiple cache updates per evaluation. Cross-check with freshness-propagation: each intermediate emission updates the cache and triggers a freshness-only downstream walk (#2335). Integration test with a synthetic progressive node emitting 3 intermediates then Final, assert downstream sees Intermediate then Final transitions. Depends on Freshness PRD #2319, #2326, #2328, #2335.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
-          "2335"
+          "2335",
+          "2350"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:15:42.687Z"
+        "updatedAt": "2026-04-26T20:26:39.074Z"
       },
       {
         "id": "2361",
@@ -51438,14 +51439,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:25:51.499Z",
+      "lastModified": "2026-04-26T20:26:39.074Z",
       "taskCount": 2381,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:26:22.089Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
