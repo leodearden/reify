@@ -117,6 +117,7 @@ impl Engine {
             last_eval_set: Vec::new(),
             last_guard_phase_group_evals: 0,
             last_role_flip_probes: 0,
+            last_diff_value_cells: None,
             journal: EventJournal::new(),
             functions: Vec::new(),
             compiled_purposes: Vec::new(),
@@ -343,6 +344,31 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_role_flip_probes(&self) -> usize {
         self.last_role_flip_probes
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Returns a reference to the `(changed, added, removed)` triple captured
+    /// from the `diff_value_cells` call inside the most recent `edit_source`
+    /// invocation. `None` means no `edit_source` has been called yet on this
+    /// `Engine`.
+    ///
+    /// Canonical use case: T3 premise lock
+    /// (`edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip`)
+    /// asserts that the role-flipped cells (`S.x`, `S.y`) are absent from all
+    /// three sets, confirming that `ValueCellNode::content_hash` does not
+    /// incorporate the member/else_member role (task 2170). If that premise is
+    /// violated, T3's counter assertion would keep passing for the wrong reason
+    /// (silent test-drift).
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_diff_value_cells(
+        &self,
+    ) -> Option<&crate::engine_edit::ValueCellDiff> {
+        self.last_diff_value_cells.as_ref()
     }
 
     /// Access the event journal (for testing/inspection).

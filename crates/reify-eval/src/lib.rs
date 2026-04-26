@@ -245,6 +245,25 @@ pub struct Engine {
     /// The field itself is always present (module-private, no `pub`) so that
     /// the writer sites in `engine_edit.rs` need no cfg-gating.
     last_role_flip_probes: usize,
+    /// The `(changed, added, removed)` triple returned by `diff_value_cells`
+    /// during the most recent `edit_source` call. `None` means no `edit_source`
+    /// has been called on this `Engine` yet (distinct from an empty diff).
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_diff_value_cells()` in `engine_admin.rs`.
+    /// The field itself is always present (module-private, no `pub`) so that
+    /// the writer site in `engine_edit.rs` needs no cfg-gating.
+    ///
+    /// Canonical use case: T3 premise lock — asserts that `S.x` and `S.y` are
+    /// absent from all three sets after a role-flip-only edit, confirming that
+    /// `ValueCellNode::content_hash` does not incorporate the member/else_member
+    /// role (task 2170).
+    ///
+    /// Unlike the `usize` instrumentation fields (which are read via `+=` even
+    /// without cfg-gating), this field is written via plain assignment and read
+    /// only through the cfg-gated accessor, so dead_code must be silenced here.
+    #[allow(dead_code)]
+    last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.
