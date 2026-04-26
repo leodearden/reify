@@ -50299,7 +50299,7 @@
         "description": "Develop FFI bindings for closest_point, on(point, geometry), and angle_between_surfaces using the OCCT library.",
         "details": "Follow the FFI pattern established in Task #319 for closest_point_on_shape. Implement the following functions:\n\n1. **closest_point_on_shape**: Re-export from Task #319, ensuring it integrates with the OCCT library to find the closest point on a given shape.\n\n2. **point_on_shape**: Implement membership checking to determine if a point lies on a specified geometry. Use OCCT's geometric evaluation capabilities.\n\n3. **surface_angle**: Calculate the dihedral angle between two surfaces using the dot product of their face normals. Leverage OCCT's surface analysis tools.\n\nUpdate the stdlib bindings to register these functions and ensure they are correctly wired through the eval pipeline. Refer to `docs/prds/topology-selectors.md` task 2 for detailed requirements.\n<info added on 2026-04-26T20:21:31.861Z>\nThe task scope has been narrowed to focus solely on stdlib registration and eval-pipeline wiring, which will be addressed after the completion of the three subtasks (2324.1, 2324.2, 2324.3). Each subtask will independently implement one of the FFI primitives from scratch, as Task 319's deliverables are not present in the codebase. Ignore references to `docs/prds/topology-selectors.md` as it does not exist.\n</info added on 2026-04-26T20:21:31.861Z>",
         "testStrategy": "Conduct happy-path tests using box and sphere fixtures to verify each function:\n\n1. **closest_point_on_shape**: Test with various points and shapes to ensure the closest point is accurately calculated.\n\n2. **point_on_shape**: Verify membership results for points on and off the geometry.\n\n3. **surface_angle**: Test angle calculations between known surfaces to ensure accuracy.\n\nEnsure all tests pass using the `cargo test` framework, focusing on edge cases and typical use scenarios.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "319"
         ],
@@ -50336,7 +50336,7 @@
             "parentId": "undefined"
           }
         ],
-        "updatedAt": "2026-04-26T20:24:07.818Z",
+        "updatedAt": "2026-04-26T20:24:45.978Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -51196,13 +51196,14 @@
         "description": "Add the `unit USD : Money` to the standard library and ensure it is registered correctly in the unit registry.",
         "details": "Implement the `unit USD : Money` in the file `std/units/money.ri` or an equivalent path as specified in the project documentation. Ensure that the unit is correctly defined with its dimension and any necessary conversion factors. Update the unit registry to include this new unit, verifying that it is recognized during the compilation process. Follow the specifications outlined in the PRD document `docs/prds/money-dimension.md`, specifically task 2 and section §4.6. Ensure that the implementation aligns with existing unit declaration patterns and integrates seamlessly with the current system.",
         "testStrategy": "1. Verify that the `unit USD : Money` is correctly parsed and compiled without errors. \n2. Check that the unit appears in the unit registry by inspecting the registry output or logs. \n3. Conduct tests to ensure that the unit can be used in quantity literals and that any conversion factors are applied correctly. \n4. Run `cargo test -p reify-compiler -- units_money` to execute relevant test cases.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "208",
           "209"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:51.168Z"
       },
       {
         "id": "2379",
@@ -51210,14 +51211,15 @@
         "description": "Develop end-to-end tests for quantity-literal and currency-mass arithmetic in the Money dimension, including user-defined unit conversions.",
         "details": "Implement integration tests for the Money dimension in the `tests/` directory. Focus on scenarios involving quantity literals like `25USD` and `25USD/kg`, and arithmetic operations such as `25USD/kg * 2kg = 50USD`. Additionally, test user-defined unit conversions, e.g., `unit GBP : Money = 1.25USD`. Ensure the tests cover both direct arithmetic and conversion scenarios, verifying that the system correctly handles these operations as specified in the PRD (docs/prds/money-dimension.md, task 3).",
         "testStrategy": "Run comprehensive integration tests using `cargo test --workspace`. Verify that all arithmetic operations and conversions produce the expected results. Ensure that user-defined units are correctly registered and used in calculations. Validate that the system handles both successful operations and potential errors gracefully.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "57",
           "208",
           "209"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:51.381Z"
       },
       {
         "id": "2380",
@@ -51245,19 +51247,30 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2382",
+        "title": "Money dimension: source-form unit display in errors + LSP hovers",
+        "description": "Ensure currency units render in source form (e.g., `USD/kg`) in error messages and LSP hovers.",
+        "details": "Modify the error message and LSP hover rendering logic to display currency units in their source form rather than as exponent vectors. This involves updating the formatting functions within the language server and error handling modules to recognize and correctly format units like `USD/kg`. Reference the PRD in docs/prds/money-dimension.md, specifically task 6, for detailed specifications on how units should be displayed. Ensure that the changes are consistent across all relevant parts of the application.",
+        "testStrategy": "Create unit tests to verify that currency units are displayed in the correct format in both error messages and LSP hovers. Use a variety of test cases to cover different unit combinations and ensure that no exponent vectors are displayed. Additionally, perform integration tests to confirm that the changes do not affect other parts of the system.",
+        "status": "pending",
+        "dependencies": [
+          "208",
+          "209"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:24:27.082Z",
-      "taskCount": 2367,
+      "lastModified": "2026-04-26T20:24:51.381Z",
+      "taskCount": 2371,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:24:27.194Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:44.120Z"
+      ]
     }
   }
 }
