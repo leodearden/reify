@@ -50381,10 +50381,11 @@
         "description": "Integration test that pins the @solver_hint payload-resolution path end-to-end against the new std.stock collections. Add crates/reify-compiler/tests/solver_hint_payload_tests.rs (or fold into solver_hint_tests.rs) covering: (1) compile_with_stdlib of '@solver_hint(\"discrete_set\", standard_bolt_lengths) param length : Length = auto' succeeds with no warnings, the resulting ValueCellDecl.solver_hints carries the right collection name, and the looked-up collection resolves to the expected Vec<Length>. (2) Same for prefer_stock + standard_sheet_thicknesses. (3) Negative case: '@solver_hint(\"discrete_set\", standard_doesnotexist)' produces an unresolved-identifier error at the use site (validates that hint payload references go through normal name resolution, not a special-cased lookup). PRD: docs/prds/solver-hint-payloads.md item 2.</description>\n<parameter name=\"priority\">high</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:04:14.647Z"
       },
       {
         "id": "2335",
@@ -50414,7 +50415,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:04:13.159Z",
+      "lastModified": "2026-04-26T20:04:14.647Z",
       "taskCount": 2325,
       "completedCount": 2059,
       "tags": [
