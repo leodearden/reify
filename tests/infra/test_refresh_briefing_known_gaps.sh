@@ -454,5 +454,43 @@ assert "Check 14: stderr contains WARN" \
 assert "Check 14: stderr contains dotted subtask id '42.1'" \
     grep -q "42.1" "$_stderr14"
 
+# ==============================================================================
+# Check 15: non-master tag containing a done task referenced from briefing.yaml
+# — the script must detect the done task and report it (exit 1 + WARN on stderr)
+# ==============================================================================
+echo ""
+echo "--- Check 15: done task in non-master tag is detected ---"
+
+_brief15="$_tmpdir/briefing15.yaml"
+_tasks15="$_tmpdir/tasks15.json"
+
+cat > "$_brief15" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "feature gap"
+        tracking: "200"
+YAML
+
+cat > "$_tasks15" <<'JSON'
+{"master":{"tasks":[]},"feature-branch":{"tasks":[{"id":"200","title":"Feature task","status":"done"}]}}
+JSON
+
+_stderr15="$_tmpdir/stderr15.txt"
+_exit15=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief15" --tasks "$_tasks15" 2>"$_stderr15" || _exit15=$?
+
+assert "Check 15: exit code is 1 (mismatch found — done task in non-master tag)" \
+    test "$_exit15" -eq 1
+
+assert "Check 15: stderr contains WARN" \
+    grep -q "WARN" "$_stderr15"
+
+assert "Check 15: stderr contains task id 200" \
+    grep -q "200" "$_stderr15"
+
+assert "Check 15: stderr contains gap text 'feature gap'" \
+    grep -q "feature gap" "$_stderr15"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
