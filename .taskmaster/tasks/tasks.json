@@ -50322,7 +50322,8 @@
             "details": "Scope: ONE FFI primitive only. NO stdlib registration, NO eval-pipeline wiring — parent 2324 retains those after all three FFI subtasks land.\n\nApproach: distance-based test using BRepExtrema_DistShapeShape — point_on_shape(P, S) ≡ distance(P, S) ≤ tol. Or use BRepClass_FaceClassifier directly. Pick one and document.\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp}\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs\n- crates/reify-kernel-occt/src/stubs.rs\n- crates/reify-kernel-occt/tests/\n\nTolerance: parameter, default Precision::Confusion().\n\nCONTEXT: Task 319 is marked done but its FFI is not in the codebase (grep confirmed). docs/prds/topology-selectors.md does not exist. Implement from scratch.\n\nMay share C wrapper with 2324.1 if distance-based.",
             "status": "pending",
             "dependencies": [],
-            "parentTaskId": 2324
+            "parentTaskId": 2324,
+            "parentId": "undefined"
           }
         ],
         "updatedAt": "2026-04-26T20:17:21.929Z",
@@ -51029,9 +51030,24 @@
         "description": "Implement an LSP diagnostic for the forall statement-form that reports the element index on constraint violation.",
         "details": "To implement this feature, modify the LSP diagnostic logic to include the index of the element in the source iteration when a constraint violation occurs in a forall statement-form. This requires updating the diagnostic generation code to capture and report the index of the failing element. Refer to the PRD document at docs/prds/forall-statement-form.md, specifically task 6 and acceptance criterion 10, for detailed requirements. Ensure that the diagnostic message format clearly indicates the element index and the nature of the violation.",
         "testStrategy": "Create unit tests to verify that the diagnostic correctly reports the element index for various constraint violations in forall statements. Include tests with multiple elements to ensure the index is accurately reported for each failing element. Run the full test suite to confirm no regressions and that the new diagnostics integrate smoothly with existing LSP functionality.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "63"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:23:03.181Z"
+      },
+      {
+        "id": "2368",
+        "title": "specialization-scope: identify scope node and add member-traversal validator",
+        "description": "Implement a validator for specialization-scope AST nodes by identifying the node and traversing its members.",
+        "details": "The task involves creating a validator for specialization-scope AST nodes, which are bodies of `sub` instantiations. First, identify the specialization-scope node or context flag in the AST. Then, implement a single-pass validator that traverses the members of this node. The validator should ensure that all members adhere to the constraints defined in the specification (spec §8.7). Refer to the PRD document located at docs/prds/specialization-scope.md for additional context and requirements.",
+        "testStrategy": "To verify the implementation, create unit tests that cover various scenarios of specialization-scope nodes, including top-level, nested, and match-arm instantiations. Ensure the validator correctly identifies and traverses each member, enforcing the constraints specified. Use mock AST nodes to simulate different specialization-scope configurations and validate the traversal logic.",
+        "status": "pending",
+        "dependencies": [
+          "143",
+          "2132"
         ],
         "priority": "high",
         "subtasks": []
@@ -51039,15 +51055,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:22:43.739Z",
-      "taskCount": 2355,
+      "lastModified": "2026-04-26T20:23:03.184Z",
+      "taskCount": 2357,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:22:51.845Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:22:57.705Z"
+      ]
     }
   }
 }
