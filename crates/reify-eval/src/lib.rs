@@ -1139,4 +1139,80 @@ structure S {
         );
     }
 
+    /// Arc-sharing invariant: after `edit_param()`, the `ResolutionProblem.functions`
+    /// passed to the solver must share the *same* Arc allocation as
+    /// `Engine.functions`. This covers the inline construction site in
+    /// `engine_edit.rs` (task #2286).
+    ///
+    /// The test builds a module with an auto-param `thickness` constrained to be
+    /// greater than a regular param `limit`. Calling `edit_param(limit, new_val)`
+    /// dirties the constraint and triggers re-resolution, so the spy captures the
+    /// new `ResolutionProblem` from the `edit_param` code path.
+    #[test]
+    fn edit_param_resolution_problem_shares_functions_arc_with_engine() {
+        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
+        };
+        use reify_types::{ModulePath, Type, ValueCellId};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let thickness_id = ValueCellId::new("S", "thickness");
+        let limit_id = ValueCellId::new("S", "limit");
+
+        // Solver returns thickness = 5mm each time it's called.
+        let mut solved_values = HashMap::new();
+        solved_values.insert(thickness_id.clone(), mm(5.0));
+
+        let spy = SpyConstraintSolver::new_solved(solved_values);
+        let captured = spy.captured_problem();
+
+        // Template: auto thickness, regular param limit (default 2mm),
+        // constraint: thickness > limit.
+        let template = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "thickness", Type::length())
+            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
+            .constraint(
+                "S",
+                0,
+                None,
+                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(spy));
+
+        // Initial eval — solver fires once.
+        engine.eval(&module);
+
+        // Editing `limit` dirties the constraint and triggers re-resolution via
+        // the engine_edit.rs path.
+        engine.edit_param(limit_id, mm(3.0)).unwrap();
+
+        // The spy now holds the problem from the most recent solver call
+        // (the edit_param re-resolution).
+        let guard = captured.lock().unwrap();
+        let problem = guard
+            .as_ref()
+            .expect("solver should have been called during edit_param");
+
+        assert!(
+            Arc::ptr_eq(&engine.functions, &problem.functions),
+            "ResolutionProblem.functions must share the same Arc allocation as \
+            Engine.functions in the edit_param path — proves the construction is \
+            O(1) Arc::clone, not a deep clone (task #2286)"
+        );
+        assert!(
+            Arc::strong_count(&engine.functions) >= 2,
+            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
+            Arc::strong_count(&engine.functions)
+        );
+    }
+
 }
