@@ -642,6 +642,41 @@ mod tests {
     }
 
     #[test]
+    fn set_type_override_resolves_to_type_value_and_isolates_other_kinds() {
+        let mut overrides = NodePolicyOverrides::new();
+        let value_node = make_node("v");
+        let constraint_node = make_constraint_node("E", 0);
+
+        overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+        // Value node should pick up the type override
+        assert_eq!(
+            overrides.resolve(&value_node),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs
+        );
+        // Constraint node should still be the default (kind isolation)
+        assert_eq!(
+            overrides.resolve(&constraint_node),
+            NodeCommitmentOverride::CommitIfSlow
+        );
+
+        // Set a different override for Constraint kind
+        overrides.set_type(
+            NodeKind::Constraint,
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
+        assert_eq!(
+            overrides.resolve(&constraint_node),
+            NodeCommitmentOverride::AlwaysCancelWhenStale
+        );
+        // Value node should still have its own type override unchanged
+        assert_eq!(
+            overrides.resolve(&value_node),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs
+        );
+    }
+
+    #[test]
     fn set_instance_override_resolves_to_instance_value_and_isolates_other_nodes() {
         let mut overrides = NodePolicyOverrides::new();
         let node_a = make_node("a");
