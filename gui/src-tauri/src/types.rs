@@ -132,15 +132,26 @@ pub struct EvaluationStatus {
 /// - `"auto"` — a `ValueCellKind::Auto` cell
 /// - `"sub"` — a sub-component (`SubComponentDecl`)
 /// - `"port"` — a port (`CompiledPort`)
+/// - `"realization"` — a geometry-producing realization (`RealizationDecl`),
+///   keyed by its mesh key (e.g. `"Bracket#realization[0]"`) so visibility
+///   toggles match `engineStore.meshes`. Display name comes from
+///   `display_name` (the original `let`/`param` binding name).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityTreeNode {
     /// Dot-separated path identifying this entity (e.g. `"Bracket"`, `"Bracket.width"`, `"Bracket.bolt"`).
+    /// For `"realization"` nodes this is the mesh key (`Entity#realization[N]`).
     pub entity_path: String,
-    /// Entity kind string — one of `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`.
+    /// Entity kind string — one of `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`, `"realization"`.
     pub kind: String,
     /// Type name for value cells (`cell_type.to_string()`) and sub-components (`structure_name`).
     /// `None` for template root nodes.
     pub type_name: Option<String>,
+    /// Optional display label override. When `Some`, the UI uses this instead
+    /// of deriving a name from `entity_path`. Set for `"realization"` nodes
+    /// (carrying the binding name like `"body"`) so the outline shows the
+    /// user-friendly name while `entity_path` keeps the mesh-key form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// Whether this entity has at least one realization (tessellatable geometry).
     pub has_mesh: bool,
     /// Heuristic: member is named `"geometry"` AND the parent template has `"Physical"` in `trait_bounds`.

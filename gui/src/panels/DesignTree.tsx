@@ -32,6 +32,13 @@ function nodeName(entityPath: string): string {
   return parts[parts.length - 1];
 }
 
+/** Display label for a tree row: prefer `display_name` (set by backend for
+ *  realization nodes — carries the original binding name like `"body"`),
+ *  otherwise fall back to the last dot-segment of `entity_path`. */
+function displayLabel(node: EntityTreeNode): string {
+  return node.display_name ?? nodeName(node.entity_path);
+}
+
 /** DFS flatten: returns all visible entity paths respecting the expanded set. */
 function flattenVisible(nodes: EntityTreeNode[], expandedSet: Set<string>): string[] {
   const result: string[] = [];
@@ -184,7 +191,7 @@ const DesignTree: Component<Props> = (props) => {
               {expanded().has(node.entity_path) ? '▾' : '▸'}
             </button>
           </Show>
-          <span class={styles.name}>{nodeName(node.entity_path)}</span>
+          <span class={styles.name}>{displayLabel(node)}</span>
           <Show when={node.type_name}>
             <span class={styles.typeName}>{node.type_name}</span>
           </Show>

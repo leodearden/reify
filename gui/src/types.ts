@@ -194,17 +194,24 @@ export interface DefInfo {
  * Mirrors the Rust `EntityTreeNode` struct in `gui/src-tauri/src/types.rs`.
  */
 export interface EntityTreeNode {
-  /** Dot-separated path identifying this entity (e.g. `"Bracket"`, `"Bracket.width"`). */
+  /** Dot-separated path or mesh-key identifying this entity. For most kinds:
+   *  `"Bracket"`, `"Bracket.width"`. For `"realization"` kind: the mesh key
+   *  form `"Bracket#realization[N]"` so visibility maps to `engineStore.meshes`. */
   entity_path: string;
-  /** Entity kind: `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`. */
+  /** Entity kind: `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`, `"realization"`. */
   kind: string;
   /** Type name for value cells and sub-components; `null` for template root nodes. */
   type_name: string | null;
+  /** Optional display label override. When present, the UI renders this
+   *  instead of deriving a name from `entity_path`. Used for `"realization"`
+   *  nodes (carries the original binding name like `"body"`) so the outline
+   *  shows the user-friendly name while `entity_path` keeps the mesh key. */
+  display_name?: string | null;
   /** Whether this entity has at least one realization (tessellatable geometry). */
   has_mesh: boolean;
   /** Heuristic: member is named `"geometry"` AND parent template has `"Physical"` in `trait_bounds`. */
   trait_geometry: boolean;
-  /** Child nodes (value cells, sub-components, ports). */
+  /** Child nodes (value cells, sub-components, ports, realizations). */
   children: EntityTreeNode[];
 }
 

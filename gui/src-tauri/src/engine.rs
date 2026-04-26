@@ -928,8 +928,36 @@ pub(crate) fn build_template_node(
             entity_path: cell_path,
             kind: cell_kind.to_string(),
             type_name: Some(cell.cell_type.to_string()),
+            display_name: None,
             has_mesh: false,
             trait_geometry: is_geometry_member && parent_has_physical,
+            children: vec![],
+        });
+    }
+
+    // Realizations (geometry-producing bindings: Solid-typed lets/params).
+    //
+    // These are NOT in `value_cells` — the compiler routes Solid-typed
+    // bindings into `RealizationDecl` so they can be tessellated. Without
+    // this loop the outline omits exactly the entries the user wants to
+    // toggle visibility on (`let body`, `let hole`, `param geometry: Solid`,
+    // …) and shows only scalar params, which can't be hidden in 3D.
+    //
+    // `entity_path` is the mesh key form (`Entity#realization[N]`) so it
+    // matches `engineStore.meshes` and `viewStateStore` directly. The
+    // user-friendly binding name is carried in `display_name`. Realizations
+    // without a name (test-helper-only code path — see `RealizationDecl.name`
+    // doc) fall back to deriving one from the path.
+    for real in &template.realizations {
+        let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
+        let display_name = real.name.clone();
+        children.push(EntityTreeNode {
+            entity_path: real_path,
+            kind: "realization".to_string(),
+            type_name: None,
+            display_name,
+            has_mesh: true,
+            trait_geometry: false,
             children: vec![],
         });
     }
@@ -966,6 +994,7 @@ pub(crate) fn build_template_node(
             entity_path: sub_path,
             kind: "sub".to_string(),
             type_name: Some(type_name),
+            display_name: None,
             has_mesh: false,
             trait_geometry: false,
             children: sub_children,
@@ -979,6 +1008,7 @@ pub(crate) fn build_template_node(
             entity_path: port_path,
             kind: "port".to_string(),
             type_name: Some(port.type_name.clone()),
+            display_name: None,
             has_mesh: false,
             trait_geometry: false,
             children: vec![],
@@ -989,6 +1019,7 @@ pub(crate) fn build_template_node(
         entity_path: entity_path.to_string(),
         kind: kind.to_string(),
         type_name: None,
+        display_name: None,
         has_mesh: !template.realizations.is_empty(),
         trait_geometry: false,
         children,
