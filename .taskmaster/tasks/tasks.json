@@ -49846,10 +49846,11 @@
         "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/persistent-naming-v2.md. Replaces/augments v0.1 feature-tag scheme with attribute-based naming: features attach stable IDs to created faces/edges, surviving topology edits where v0.1 scheme breaks (arch §16 open question #10, spec §6.1). Tracker only; do not start in v0.1 phase.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:46:24.101Z"
       },
       {
         "id": "2303",
@@ -49878,7 +49879,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:46:23.438Z",
+      "lastModified": "2026-04-26T19:46:24.102Z",
       "taskCount": 2293,
       "completedCount": 2058,
       "tags": [
