@@ -50321,13 +50321,13 @@
         "description": "Develop foreign function interface (FFI) bindings for calculating center of mass and moment of inertia using OCCT, incorporating density.",
         "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.",
         "testStrategy": "Verify the implementation by comparing the results against analytical formulas for a box shape. Specifically, check that the moment of inertia calculations match the formula `I_xx = (1/12)*m*(W^2+H^2)` and similar for other axes. Conduct unit tests using a variety of solid shapes and densities to ensure accuracy and robustness. Use `cargo test -p reify-eval -- occt_ffi` to run the test suite.",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "329"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:00:26.011Z"
+        "updatedAt": "2026-04-26T20:18:31.765Z"
       },
       {
         "id": "2326",
@@ -50745,11 +50745,11 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6 lines 803-816 declare NodeTraits as a first-class type (bitflags or enum-set): IMMEDIATE, WARM_STARTABLE, PROGRESSIVE, COMMITTABLE. Assign defaults per node kind: ValueCell scalar = IMMEDIATE; SchemaNode = IMMEDIATE; SourceNode = IMMEDIATE; ResolutionNode = WARM_STARTABLE | COMMITTABLE; RealizationNode = WARM_STARTABLE | COMMITTABLE; ComputeNode = WARM_STARTABLE | COMMITTABLE; ConstraintNode = (typically nothing). Doc-comment cites arch §7.6 with line numbers. Land as no-op data — nothing yet consumes the traits.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:11:14.289Z",
+        "updatedAt": "2026-04-26T20:18:30.629Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src/lib.rs",
@@ -50917,14 +50917,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:18:27.593Z",
+      "lastModified": "2026-04-26T20:18:31.773Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:18:27.744Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
