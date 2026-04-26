@@ -45885,11 +45885,14 @@
         "updatedAt": "2026-04-26T07:06:57.640Z",
         "metadata": {
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "edit_param",
+              "edit_source"
+            ],
             "queries": [
-              "wave2 guard flip phase1_reelaborated dedup engine_edit.rs group_needs_phase3",
-              "edit_param edit_source cross-phase dedup phase 3 skip guard flip HashMap ValueCellId",
-              "task 2140 task 2142 edit_param edit_source cross-phase dedup completed"
+              "cross-phase dedup wave2 guard flip edit_source edit_param",
+              "guard flip dedup phase handling wave2",
+              "edit_param edit_source guard state deduplication"
             ]
           },
           "files": [
