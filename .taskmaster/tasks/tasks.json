@@ -49982,11 +49982,11 @@
         "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/auto-resolution-backtracking.md. Lifts v0.1 per-param BFS-no-backtracking restriction; adds bounded-depth cross-param feasibility search with backjumping (spec §3.9, arch §6.2). Tracker only; do not start in v0.1 phase.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:51:31.288Z"
+        "updatedAt": "2026-04-26T19:53:05.605Z"
       },
       {
         "id": "2310",
@@ -50028,15 +50028,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:52:53.156Z",
-      "taskCount": 2300,
+      "lastModified": "2026-04-26T19:53:05.606Z",
+      "taskCount": 2301,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:52:54.533Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:52:54.553Z"
+      ]
     }
   }
 }
