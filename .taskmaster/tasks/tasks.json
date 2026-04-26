@@ -49461,11 +49461,11 @@
         "description": "The `edit_param_does_not_leak_functions_arc` test in crates/reify-eval/src/lib.rs (lines 1076-1098) is a weak guard of its stated invariant. Its own doc-comment admits: \"if a future refactor reverts the local binding to a deep-clone (`(*self.functions).clone()`), this test still passes — strong_count is 1 either way.\" The post-edit `Arc::strong_count(&engine.functions) == 1` assertion holds regardless of whether the local `functions` binding inside `edit_param` was an `Arc::clone` or a deep `Vec` clone, because in both scenarios the local goes out of scope before the assertion. The only durable invariant it enforces is the type-level one (`engine.functions: Arc<…>`), which the compiler already enforces and `prepare_concurrent_edit_shares_functions_arc_with_engine` already exercises via `ptr_eq`.",
         "details": "Two acceptable resolutions, recommend option (a):\n\n(a) **Delete the test.** It duplicates the type-level guarantee already covered by the compiler + the `prepare_concurrent_edit_shares_functions_arc_with_engine` ptr_eq test. Aligns with the comment's own admission that the test value is marginal.\n\n(b) **Make it meaningful.** Snapshot `Arc::strong_count` *during* `edit_param`'s execution (e.g. via a debug hook or by asserting `>= 2` on a captured probe inside the function under test). This requires plumbing a test-only observation point into `edit_param` and is heavier than the current weak post-condition warrants.\n\nSource: post-merge review of #1997 by reviewer_comprehensive (esc-1997-11, suggestion 1).\n\nFiles: crates/reify-eval/src/lib.rs (lines 1070-1098, the `#[test] edit_param_does_not_leak_functions_arc` and its preceding doc comment).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T15:47:57.084Z",
+        "updatedAt": "2026-04-26T18:23:35.347Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -49604,7 +49604,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T18:23:35.048Z",
+      "lastModified": "2026-04-26T18:23:35.347Z",
       "taskCount": 2278,
       "completedCount": 2051,
       "tags": [
