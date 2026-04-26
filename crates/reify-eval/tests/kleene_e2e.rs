@@ -17,13 +17,7 @@
 //! the real stdlib type-inference registry — e.g., `Bool` being widened to a
 //! type that the Kleene evaluator doesn't recognise.
 //!
-//! # Relationship to `tests/integration_corner_cases.rs`
-//! That file tests the same Kleene AND/OR/implies scenarios (see
-//! `kleene_and_false_absorbs_undef`, `kleene_or_true_absorbs_undef`,
-//! `kleene_implies_vacuous_true`) but uses `reify_compiler::compile()` (no
-//! stdlib).  The deliberate overlap is intentional: this file pins the
-//! `compile_with_stdlib` integration vector; the other file pins the
-//! plain-compile vector.  Do NOT merge them — they test different code paths.
+//! Plain-compile coverage of the same scenarios lives in tests/integration_corner_cases.rs.
 
 use std::sync::OnceLock;
 
