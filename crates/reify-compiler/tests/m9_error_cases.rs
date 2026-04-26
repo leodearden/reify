@@ -53,6 +53,20 @@ structure def S : Shaped {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
+    let has_code = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::MissingRequiredMember)
+            && d.message.contains("missing required member")
+            && d.message.contains("width")
+    });
+    assert!(
+        has_code,
+        "expected DiagnosticCode::MissingRequiredMember mentioning 'width', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
     let first = errors[0];
     assert!(
         !first.labels.is_empty(),
