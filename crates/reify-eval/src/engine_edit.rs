@@ -740,6 +740,9 @@ impl Engine {
                     ) {
                         continue;
                     }
+                    // Skipped here ⇒ no entry in `set` (a.k.a. `phase1_reelaborated`),
+                    // so Phase 3 reaches case (c): the standard `old_guard_val != current`
+                    // check still catches any later wave2 flip that reverts the guard.
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
                         graph,
@@ -1793,6 +1796,9 @@ impl Engine {
                             continue;
                         }
                     }
+                    // Skipped here ⇒ no entry in `phase1_reelaborated`,
+                    // so Phase 3 reaches case (c): the standard `old_guard_val != current`
+                    // check still catches any later wave2 flip that reverts the guard.
                     self.last_guard_phase_group_evals += 1;
                     // Record guard_cell → guard_val so Phase 3 can detect a
                     // wave2 flip: if the current guard value differs from the
