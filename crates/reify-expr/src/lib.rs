@@ -1107,51 +1107,53 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
 }
 
 /// Kleene AND: false ∧ Undef = false
+///
+/// Delegates truth-table folding to [`kleene::kleene_and`] while preserving:
+/// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
+///   right not evaluated).
+/// - Short-circuit on absorbing element (`False` left → `Value::Bool(false)`,
+///   right not evaluated).
 fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
     let lv = eval_expr(left, ctx);
-    match lv {
-        Value::Bool(false) => Value::Bool(false),
-        Value::Bool(true) => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(b) => Value::Bool(b),
-                Value::Undef => Value::Undef,
-                _ => Value::Undef,
-            }
-        }
-        Value::Undef => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(false) => Value::Bool(false),
-                _ => Value::Undef,
-            }
-        }
-        _ => Value::Undef,
+    let lk = match kleene::KBool::try_from(&lv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    // Short-circuit on absorbing element: False ∧ anything = False.
+    if matches!(lk, kleene::KBool::False) {
+        return Value::Bool(false);
     }
+    let rv = eval_expr(right, ctx);
+    let rk = match kleene::KBool::try_from(&rv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    kleene::kleene_and(lk, rk).into()
 }
 
 /// Kleene OR: true ∨ Undef = true
+///
+/// Delegates truth-table folding to [`kleene::kleene_or`] while preserving:
+/// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
+///   right not evaluated).
+/// - Short-circuit on absorbing element (`True` left → `Value::Bool(true)`,
+///   right not evaluated).
 fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
     let lv = eval_expr(left, ctx);
-    match lv {
-        Value::Bool(true) => Value::Bool(true),
-        Value::Bool(false) => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(b) => Value::Bool(b),
-                Value::Undef => Value::Undef,
-                _ => Value::Undef,
-            }
-        }
-        Value::Undef => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(true) => Value::Bool(true),
-                _ => Value::Undef,
-            }
-        }
-        _ => Value::Undef,
+    let lk = match kleene::KBool::try_from(&lv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    // Short-circuit on absorbing element: True ∨ anything = True.
+    if matches!(lk, kleene::KBool::True) {
+        return Value::Bool(true);
     }
+    let rv = eval_expr(right, ctx);
+    let rk = match kleene::KBool::try_from(&rv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    kleene::kleene_or(lk, rk).into()
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
@@ -2099,9 +2101,9 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
     }
     match op {
         UnOp::Neg => negate_value(v),
-        UnOp::Not => match v {
-            Value::Bool(b) => Value::Bool(!b),
-            _ => Value::Undef,
+        UnOp::Not => match kleene::KBool::try_from(&v) {
+            Ok(k) => kleene::kleene_not(k).into(),
+            Err(_) => Value::Undef,
         },
     }
 }
