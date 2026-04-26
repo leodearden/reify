@@ -48580,7 +48580,21 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance/checker.rs",
+            "crates/reify-compiler/src/conformance/mod.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs",
+            "crates/reify-compiler/tests/collection_sub_tests.rs",
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
+            "crates/reify-compiler/tests/m9_error_cases.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "2259",
@@ -48591,7 +48605,20 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-lsp/src/diagnostics.rs",
+            "crates/reify-eval/tests/incremental_integration.rs",
+            "crates/reify-eval/tests/eval_cached_diagnostics.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests",
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "2260",
