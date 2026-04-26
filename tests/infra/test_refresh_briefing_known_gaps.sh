@@ -578,5 +578,53 @@ assert "Check 17: stderr contains task id 300" \
 assert "Check 17: stderr contains feature-branch task title 'Branch version'" \
     grep -q "Branch version" "$_stderr17"
 
+# ==============================================================================
+# Check 18: divergent subtask done-wins (parent stable in-progress)
+# Parent 100 is in-progress in BOTH tags.  Subtask 100.1 is in-progress in tag
+# A (listed first) and done in tag B (listed second).  briefing.yaml tracks
+# "100.1".  The done-wins merge must apply per-subtask independently of the
+# parent's status transition: the done occurrence of 100.1 from tag B must win,
+# causing a WARN (exit 1).
+# On unpatched code the parent never enters the done-wins upgrade branch (both
+# parent occurrences are in-progress), so the subtask is never re-indexed and
+# exits 0 — making this a true RED test.
+# ==============================================================================
+echo ""
+echo "--- Check 18: divergent subtask done-wins (parent stable in-progress) ---"
+
+_brief18="$_tmpdir/briefing18.yaml"
+_tasks18="$_tmpdir/tasks18.json"
+
+cat > "$_brief18" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "subtask divergence gap"
+        tracking: "100.1"
+YAML
+
+# tag_a listed FIRST: parent 100 in-progress, subtask 1 in-progress.
+# tag_b listed SECOND: parent 100 in-progress, subtask 1 done.
+# Per-subtask done-wins must upgrade tasks_index["100.1"] to the done version.
+cat > "$_tasks18" <<'JSON'
+{"tag_a":{"tasks":[{"id":"100","title":"Parent task","status":"in-progress","subtasks":[{"id":"1","title":"Subtask one ip in A","status":"in-progress"}]}]},"tag_b":{"tasks":[{"id":"100","title":"Parent task","status":"in-progress","subtasks":[{"id":"1","title":"Subtask one done in B","status":"done"}]}]}}
+JSON
+
+_stderr18="$_tmpdir/stderr18.txt"
+_exit18=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief18" --tasks "$_tasks18" 2>"$_stderr18" || _exit18=$?
+
+assert "Check 18: exit code is 1 (subtask done in tag_b must trigger mismatch)" \
+    test "$_exit18" -eq 1
+
+assert "Check 18: stderr contains WARN" \
+    grep -q "WARN" "$_stderr18"
+
+assert "Check 18: stderr contains dotted subtask id '100.1'" \
+    grep -q "100.1" "$_stderr18"
+
+assert "Check 18: stderr contains done subtask title 'Subtask one done in B'" \
+    grep -q "Subtask one done in B" "$_stderr18"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
