@@ -88,14 +88,14 @@ trait Hard {
 // ── Fatigue ───────────────────────────────────────────────────────────────────
 
 // Stress amplitude below which the material can sustain unlimited cycles (Pa, using Real).
-trait FatigueRated {
+trait FatigueRated : MaterialSpec {
     param endurance_limit : Real
 }
 
 // ── Fracture toughness ────────────────────────────────────────────────────────
 
 // Critical stress intensity factor K_Ic (Pa·√m, using Real).
-trait FractureTough {
+trait FractureTough : MaterialSpec {
     param fracture_toughness : Real
 }
 
@@ -111,7 +111,7 @@ trait Ductile {
 // ── Impact resistance ─────────────────────────────────────────────────────────
 
 // Energy absorbed in a Charpy or Izod impact test (J, using Real).
-trait ImpactResistant {
+trait ImpactResistant : MaterialSpec {
     param impact_energy : Real
 }
 
@@ -119,7 +119,7 @@ trait ImpactResistant {
 
 // damping_ratio: fraction of critical damping (dimensionless).
 // loss_factor: ratio of dissipated to stored energy per cycle (dimensionless).
-trait Damping {
+trait Damping : MaterialSpec {
     param damping_ratio : Real
     param loss_factor : Real
 }
