@@ -353,6 +353,18 @@ esac
 NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
+# Stub curl: always exits 1 (simulates no HTTP server at :1420).  Without this,
+# a live vite dev server already bound to :1420 on the host would make curl
+# succeed on the very first polling iteration, skipping the kill-0 check and
+# causing the script to proceed to `cargo build`, which fails with a different
+# error message than the one we're testing for.
+cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+# Stub: always fail so the polling loop relies on kill-0, not curl success.
+exit 1
+CURL_STUB
+chmod +x "$_t25_tmpdir/bin/curl"
+
 # Run the script with the stubbed PATH; capture combined output + rc in one shot.
 _t25_out=$(PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
