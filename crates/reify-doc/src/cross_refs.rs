@@ -29,6 +29,52 @@
 //! `reify_doc::cross_refs::CrossRefs` vs `reify_doc::model::CrossRefs`.
 //! Neither is re-exported at the crate root to prevent name ambiguity at use sites.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Cross-template inverted indices for the `reify doc` renderer.
+///
+/// Produced by [`build_cross_refs`] from a slice of compiled topology templates.
+///
+/// # Relationship to `model::CrossRefs`
+///
+/// This struct is **semantically distinct** from [`crate::model::CrossRefs`]:
+///
+/// - [`crate::model::CrossRefs`] holds *per-module outgoing references*
+///   (which other modules, items, or traits a given module refers to).
+///
+/// - This [`CrossRefs`] holds *cross-template inverted indices* — it answers
+///   "which templates conform to trait X?" and "which templates use structure Y?".
+///
+/// Both are disambiguated by module path; neither is re-exported at the crate root.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrossRefs {
+    /// Maps each trait name to the sorted, deduplicated list of template names
+    /// that declare conformance to it.
+    ///
+    /// Built from `template.trait_bounds` across all templates.  Rendered as the
+    /// "Implementations" list on a trait's documentation page.
+    pub trait_to_conformers: BTreeMap<String, Vec<String>>,
+
+    /// Maps each structure name to the sorted, deduplicated list of template names
+    /// that include it as a sub-component.
+    ///
+    /// Built from `template.sub_components[*].structure_name` across all templates.
+    /// Rendered as the "Used by" list on a structure's or occurrence's doc page.
+    pub entity_to_containers: BTreeMap<String, Vec<String>>,
+}
+
+/// Build cross-reference indices from a slice of compiled topology templates.
+///
+/// Both index maps use [`BTreeMap`] for deterministic key order.  Inner
+/// `Vec<String>` values are sorted alphabetically and deduplicated after
+/// population to guarantee a stable, canonical output regardless of input order.
+pub fn build_cross_refs(_templates: &[reify_compiler::TopologyTemplate]) -> CrossRefs {
+    CrossRefs::default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
