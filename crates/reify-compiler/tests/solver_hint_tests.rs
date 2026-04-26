@@ -264,6 +264,29 @@ fn solver_hint_multiple_on_same_param() {
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
 
+// ── Step-3 (task 2339): unknown-kind warning message lists preferred_strategy ──
+
+#[test]
+fn solver_hint_invalid_kind_message_lists_preferred_strategy() {
+    let source =
+        r#"structure S { @solver_hint("invalid_kind", collection) param length : Length = auto }"#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = warnings_only(&module);
+    assert!(
+        warns
+            .iter()
+            .any(|d| d.message.contains("preferred_strategy")),
+        "expected warning message to mention 'preferred_strategy', got: {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ── Step-1 (task 2339): @solver_hint("preferred_strategy", argmin_default) compiles ──
 
 #[test]
