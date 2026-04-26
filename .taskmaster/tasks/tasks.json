@@ -49355,11 +49355,11 @@
         "description": "The fallback `_` arms in `walk_param_against_arg` (mod.rs:269) and `walk_param_against_arg_type` (mod.rs:436-440) silently swallow wrapper-shape mismatches such as `(Option<T>, TraitObject)` (e.g. passing a bare `Steel()` to an `Option<MaterialSpec>` slot) and `(List<T>, Option<T>)`.",
         "details": "In tandem with the equally silent `_` arm in `walk_param_against_arg`, the practical effect is that the user-facing diagnostic for *any* shape mismatch around a wrapped trait-object param is suppressed when the arg is a non-literal.\n\nThis is intentionally out of scope for task 2227 (which only widens trait-bound checking through wrappers), but should be tracked so it doesn't become invisible technical debt.\n\nPlan:\n- Audit existing arg/param shape-checking in the compiler. If a general pass already exists, ensure wrapped-trait params are covered there.\n- If no general shape-check pass exists today, at minimum emit `TypeNotConformingToTrait` (or a new shape-mismatch diagnostic code) when `param_type` is `Type::Option/List/Set/Map` and `arg_type` is a leaf type that cannot satisfy the wrapper shape.\n- Add tests for: bare leaf passed to `Option<T>` slot, `List<T>` arg passed to `Option<T>` slot, `Map<K,V>` arg passed to `List<T>` slot.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T18:23:37.944Z",
+        "updatedAt": "2026-04-26T19:03:52.675Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance",
@@ -49377,7 +49377,10 @@
               "DiagnosticCode variants conformance producer sites task 2258"
             ]
           },
-          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd",
+          "done_provenance": {
+            "commit": "e111d8a8fe81da9fba9320e6650db9717701b30a"
+          }
         }
       },
       {
@@ -49637,9 +49640,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:03:43.482Z",
+      "lastModified": "2026-04-26T19:03:52.675Z",
       "taskCount": 2279,
-      "completedCount": 2053,
+      "completedCount": 2054,
       "tags": [
         "master"
       ]
