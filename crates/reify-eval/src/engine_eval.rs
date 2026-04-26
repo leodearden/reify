@@ -164,15 +164,7 @@ fn post_solver_re_eval_guard_cells(
     }
 }
 
-/// Engine-scoped state threaded through [`eval_guarded_group_param_cell`].
-///
-/// Bundles the five parameters that are shared across the members and
-/// else_members loops inside `Engine::eval`'s third pass, reducing the
-/// helper's argument list from 10 to 6 and allowing the
-/// `#[allow(clippy::too_many_arguments)]` suppression to be removed.
-///
-/// Lifetime `'a` ties all borrowed fields to the call scope in `Engine::eval`.
-/// `version` is `Copy` and stored by value — no ref needed.
+/// Engine-scoped state shared by [`eval_guarded_group_param_cell`] callers within `Engine::eval`'s third pass.
 struct GuardedParamCtx<'a> {
     journal: &'a mut crate::journal::EventJournal,
     cache: &'a mut crate::cache::CacheStore,
@@ -442,12 +434,13 @@ impl Engine {
         self.next_snapshot_id += 1;
         let version_id = self.next_version_id;
         self.next_version_id += 1;
+        let version = VersionId(version_id);
 
         let mut snapshot = Snapshot::from_compiled_module(module);
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
         snapshot.id = SnapshotId(snapshot_id);
-        snapshot.version = VersionId(version_id);
+        snapshot.version = version;
         snapshot.provenance = SnapshotProvenance::Initial;
 
         // Purge orphaned param_overrides entries BEFORE the per-cell Param
@@ -527,7 +520,7 @@ impl Engine {
                         timestamp: start,
                         node_id: node_id.clone(),
                         kind: EventKind::Started,
-                        version: VersionId(version_id),
+                        version,
                         payload: None,
                     });
 
@@ -544,7 +537,7 @@ impl Engine {
                     let outcome = self.cache.record_evaluation(
                         node_id.clone(),
                         cached_result,
-                        VersionId(version_id),
+                        version,
                         trace,
                     );
 
@@ -552,7 +545,7 @@ impl Engine {
                         timestamp: Instant::now(),
                         node_id,
                         kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
+                        version,
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
                 } else if cell.kind == ValueCellKind::Param {
@@ -646,7 +639,7 @@ impl Engine {
                         timestamp: start,
                         node_id: node_id.clone(),
                         kind: EventKind::Started,
-                        version: VersionId(version_id),
+                        version,
                         payload: None,
                     });
 
@@ -705,7 +698,7 @@ impl Engine {
                             &mut self.cache,
                             node_id,
                             CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-                            VersionId(version_id),
+                            version,
                             start,
                         );
                         continue;
@@ -722,7 +715,7 @@ impl Engine {
                         &mut self.cache,
                         node_id,
                         CachedResult::Value(val, DeterminacyState::Determined),
-                        VersionId(version_id),
+                        version,
                         start,
                     );
                 }
@@ -768,14 +761,18 @@ impl Engine {
                 let guard_is_true = matches!(&guard_val, Value::Bool(true));
                 let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
-                // Evaluate members (active when guard is true)
-                let mut members_ctx = GuardedParamCtx {
+                // Single ctx reused by both the members and else_members loops —
+                // the mutable borrows on journal/cache are released when each loop
+                // ends, so a single GuardedParamCtx compiles cleanly across both.
+                let mut param_ctx = GuardedParamCtx {
                     journal: &mut self.journal,
                     cache: &mut self.cache,
                     functions: &functions,
                     meta_map: &self.meta_map,
-                    version: VersionId(version_id),
+                    version,
                 };
+
+                // Evaluate members (active when guard is true)
                 for cell in &group.members {
                     if guard_is_true {
                         // Evaluate normally
@@ -786,7 +783,7 @@ impl Engine {
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
-                                &mut members_ctx,
+                                &mut param_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
@@ -825,13 +822,6 @@ impl Engine {
                 }
 
                 // Evaluate else_members (active when guard is false)
-                let mut else_ctx = GuardedParamCtx {
-                    journal: &mut self.journal,
-                    cache: &mut self.cache,
-                    functions: &functions,
-                    meta_map: &self.meta_map,
-                    version: VersionId(version_id),
-                };
                 for cell in &group.else_members {
                     if guard_is_false {
                         // Mirror the top-level Param branch and the members loop above:
@@ -844,7 +834,7 @@ impl Engine {
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
-                                &mut else_ctx,
+                                &mut param_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {

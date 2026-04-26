@@ -1483,3 +1483,117 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
         result.diagnostics
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2270 step-1: version-threading regression lock — top-level Param branch
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression-lock test: every `EvalEvent` emitted for a top-level Param cell
+/// must carry `event.version == engine.snapshot().unwrap().version`.
+///
+/// This pins the version-threading invariant for the top-level Param branch in
+/// `Engine::eval`. A future regression where the hoisted `version` binding drifts
+/// from the snapshot's `VersionId` (e.g., reading a stale value, off-by-one
+/// increment) would break this test.
+///
+/// Setup: `structure S { param width: Scalar = 100mm }` — single top-level Param
+/// cell. After `engine.eval(&module)`, the journal for `S.width` must hold a
+/// Started+Completed pair, and both events must carry the engine's snapshot version.
+#[test]
+fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
+    let mut engine = fresh_engine();
+    let module = compile_source("structure S { param width: Scalar = 100mm }");
+    engine.eval(&module);
+
+    let width_id = ValueCellId::new("S", "width");
+    let node_id = NodeId::Value(width_id);
+
+    let snapshot_version = engine.snapshot().unwrap().version;
+    let events = engine.journal().events_for_node(&node_id);
+
+    assert!(
+        !events.is_empty(),
+        "journal must have at least one event for S.width after eval"
+    );
+
+    for event in &events {
+        assert_eq!(
+            event.version,
+            snapshot_version,
+            "every journal event for S.width must carry the engine snapshot version \
+             (event.version={:?}, snapshot.version={:?})",
+            event.version,
+            snapshot_version,
+        );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2270 step-3: version-threading regression lock — guarded-group both arms
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression-lock test: every `EvalEvent` emitted for a guarded-group Param
+/// cell must carry `event.version == engine.snapshot().unwrap().version`, for
+/// BOTH the members (active-branch) and else_members (else-branch) call sites
+/// of `eval_guarded_group_param_cell`.
+///
+/// Uses two separate engine instances so each arm can be exercised independently
+/// (a single module's guard is either true or false, not both at once):
+///   (1) `engine_a` with `guarded_module(true, "Scalar", "5mm")` — members call site.
+///   (2) `engine_b` with `guarded_module_with_else("Scalar", "10mm")` — else_members call site.
+///
+/// If either call site threads a different or stale version (e.g., a future
+/// refactor moves the `param_ctx` initialization into the wrong scope and captures
+/// an outdated `version_id`), this test breaks.
+#[test]
+fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_both_call_sites() {
+    // (1) members call site — guard is true, x is evaluated via the members loop.
+    let mut engine_a = fresh_engine();
+    let module_a = guarded_module(true, "Scalar", "5mm");
+    engine_a.eval(&module_a);
+
+    let x_id = ValueCellId::new("S", "x");
+    let node_id_x = NodeId::Value(x_id);
+    let snap_version_a = engine_a.snapshot().unwrap().version;
+    let events_a = engine_a.journal().events_for_node(&node_id_x);
+
+    assert!(
+        !events_a.is_empty(),
+        "journal must have at least one event for S.x (members call site)"
+    );
+    for event in &events_a {
+        assert_eq!(
+            event.version,
+            snap_version_a,
+            "members-branch journal event for S.x must carry the engine snapshot version \
+             (event.version={:?}, snapshot.version={:?})",
+            event.version,
+            snap_version_a,
+        );
+    }
+
+    // (2) else_members call site — guard is false, y is evaluated via the else_members loop.
+    let mut engine_b = fresh_engine();
+    let module_b = guarded_module_with_else("Scalar", "10mm");
+    engine_b.eval(&module_b);
+
+    let y_id = ValueCellId::new("S", "y");
+    let node_id_y = NodeId::Value(y_id);
+    let snap_version_b = engine_b.snapshot().unwrap().version;
+    let events_b = engine_b.journal().events_for_node(&node_id_y);
+
+    assert!(
+        !events_b.is_empty(),
+        "journal must have at least one event for S.y (else_members call site)"
+    );
+    for event in &events_b {
+        assert_eq!(
+            event.version,
+            snap_version_b,
+            "else-branch journal event for S.y must carry the engine snapshot version \
+             (event.version={:?}, snapshot.version={:?})",
+            event.version,
+            snap_version_b,
+        );
+    }
+}
