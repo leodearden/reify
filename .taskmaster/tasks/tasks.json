@@ -50548,15 +50548,16 @@
         "description": "PRD docs/prds/warm-state-eviction.md. Per arch §4.3 line 539: pool.checkout(node_id) returns None when state has been evicted; the recursive evaluator's existing Option<State> handling falls back to compute_cold transparently per the WarmStartable protocol (arch §4.1). Confirm all warm-startable node types (RealizationNode, ResolutionNode, ComputeNode) handle the None case correctly. Add force-eviction integration test asserting identical results between warm-fallback and cold-only runs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:08:24.638Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:08:23.214Z",
+      "lastModified": "2026-04-26T20:08:24.638Z",
       "taskCount": 2334,
       "completedCount": 2059,
       "tags": [
