@@ -751,24 +751,24 @@ impl Engine {
                 let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
                 // Evaluate members (active when guard is true)
+                let mut members_ctx = GuardedParamCtx {
+                    journal: &mut self.journal,
+                    cache: &mut self.cache,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                    version: VersionId(version_id),
+                };
                 for cell in &group.members {
                     if guard_is_true {
                         // Evaluate normally
                         if cell.kind == ValueCellKind::Param {
-                            let mut ctx = GuardedParamCtx {
-                                journal: &mut self.journal,
-                                cache: &mut self.cache,
-                                functions: &functions,
-                                meta_map: &self.meta_map,
-                                version: VersionId(version_id),
-                            };
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
-                                &mut ctx,
+                                &mut members_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
@@ -807,26 +807,26 @@ impl Engine {
                 }
 
                 // Evaluate else_members (active when guard is false)
+                let mut else_ctx = GuardedParamCtx {
+                    journal: &mut self.journal,
+                    cache: &mut self.cache,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                    version: VersionId(version_id),
+                };
                 for cell in &group.else_members {
                     if guard_is_false {
                         // Mirror the top-level Param branch and the members loop above:
                         // consult param_overrides for Param cells, validate, warn-and-retain
                         // on rejection, fall back to default_expr.
                         if cell.kind == ValueCellKind::Param {
-                            let mut ctx = GuardedParamCtx {
-                                journal: &mut self.journal,
-                                cache: &mut self.cache,
-                                functions: &functions,
-                                meta_map: &self.meta_map,
-                                version: VersionId(version_id),
-                            };
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
-                                &mut ctx,
+                                &mut else_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
