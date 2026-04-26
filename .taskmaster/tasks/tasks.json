@@ -50626,6 +50626,17 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:11:14.289Z"
+      },
+      {
+        "id": "2351",
+        "title": "reify-doc model_tests.rs: integration coverage for build_doc_model output shape",
+        "description": "Snapshot/assertion tests for the DocModel shape produced by reify_doc::build_doc_model. Distinct from the scaffolding/builder task (#2342): this is purely test coverage. Verify against a small fixture module containing one trait, one structure conforming to it with @test annotation, one enum with doc comments, one function with @deprecated, a meta block, and an @solver_hint(\"discrete_set\", standard_bolt_lengths) on a param. Assert: doc strings flow into ItemDoc.doc; trait_bounds populated; meta entries copied verbatim; sort order is traits→structures→occurrences→enums→functions→constants alphabetical; constraint expressions match the source byte-range; @solver_hint surfaces as an AnnotationDoc on the param. Tests in crates/reify-doc/tests/model_tests.rs. PRD: docs/prds/reify-doc-tool.md slice 2 (test column).</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50635,7 +50646,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:11:33.185Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:11:33.220Z"
     }
   }
 }
