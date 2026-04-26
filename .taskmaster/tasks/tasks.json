@@ -51173,6 +51173,21 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2377",
+        "title": "Audit Money dimension representation in compiler/runtime",
+        "description": "Verify that slot 9 of the Money dimension is correctly populated, displayed, hashed, and serialized in both the compiler and runtime environments.",
+        "details": "Review the Money dimension representation in the compiler and runtime to ensure slot 9 is correctly handled. This involves checking the population of slot 9, its display output, hashing mechanisms, and serialization processes. Reference the PRD document at docs/prds/money-dimension.md and spec section §3.2 for detailed requirements. Identify any paths that are Money-blind and add necessary unit tests to cover these paths. Ensure that the implementation aligns with the dimensional integrity and expected behavior outlined in the specification.",
+        "testStrategy": "1. Create unit tests to verify that slot 9 is populated correctly in both the compiler and runtime.\n2. Test the display output to ensure slot 9 is represented accurately.\n3. Verify the hashing mechanism includes slot 9 correctly.\n4. Check the serialization process to confirm slot 9 is serialized as expected.\n5. Add tests for any previously uncovered paths that were Money-blind, ensuring comprehensive coverage.",
+        "status": "pending",
+        "dependencies": [
+          "1221",
+          "1290",
+          "38"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51185,7 +51200,7 @@
       ],
       "created": "2026-04-26T20:24:07.914Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:15.940Z"
+      "updated": "2026-04-26T20:24:21.016Z"
     }
   }
 }
