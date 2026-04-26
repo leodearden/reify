@@ -49712,11 +49712,16 @@
         "description": "Apply three reviewer-suggested polish items to crates/reify-compiler/tests/trait_arg_conformance_bench.rs introduced in task 2280.",
         "details": "Source: review suggestions on task 2280 (esc-2280-3, items 1-3).\n\n1. **Dedupe error-assertion block (lines 60-101).** The `Severity::Error`-filter-and-assert-empty block is duplicated between `trait_arg_conformance_correctness_small` and `compile_large_literal_trait_arg_conformance_timing` (textually identical apart from N). Extract a private helper:\n   ```rust\n   fn assert_no_errors(module: &CompiledModule, n: usize) { ... }\n   ```\n   and call from both tests.\n\n2. **Add wall-clock ceiling assertion (lines 79-101).** The timing test prints elapsed times but has no automated regression signal — a 100x slowdown would still pass silently. Mirror the precedent at `crates/reify-lsp/tests/incremental_eval_benchmark.rs:124-132` (\"Loose sanity assertion\") and add e.g. `assert!(elapsed < Duration::from_secs(30))` for N=200 so a catastrophic regression surfaces even when --nocapture is forgotten.\n\n3. **Defensive `n > 0` assert in `make_source` (lines 35-49).** Currently `make_source(0)` would yield `[ ]` — vacuous but syntactically valid. Add `debug_assert!(n > 0, \"make_source requires n >= 1\");` at the top, or rewrite using `(0..n).map(|_| \"some(Steel())\").collect::<Vec<_>>().join(\", \")` to avoid the trailing-separator dance.\n\nAll three are small, file-local, test-only changes; can be completed in one PR.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:24:03.889Z"
+        "updatedAt": "2026-04-26T20:02:03.324Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "c0e0f704c80043b8b7cdcbf9ea26014d237357bc"
+          }
+        }
       },
       {
         "id": "2294",
@@ -50345,15 +50350,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:01:17.421Z",
-      "taskCount": 2318,
-      "completedCount": 2058,
+      "lastModified": "2026-04-26T20:02:03.324Z",
+      "taskCount": 2321,
+      "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:01:55.024Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:02:00.147Z"
+      ]
     }
   }
 }
