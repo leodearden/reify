@@ -1602,10 +1602,9 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) 
 
 rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index) {
     try {
-        // Build a stable 0-based face index via TopExp::MapShapes (the
-        // 1-based IndexedMap deduplicates by IsSame).
-        TopTools_IndexedMapOfShape face_map;
-        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+        // Use the lazy cached face map (1-based IndexedMap, deduplicates by
+        // IsSame). Converts 1-based OCCT indices to 0-based for callers.
+        const TopTools_IndexedMapOfShape& face_map = shape.face_map();
 
         const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
         if (face_a_index >= face_count) {
@@ -1631,12 +1630,9 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
             return rust::Vec<uint32_t>{};
         }
 
-        // Materialize a stable 0-based edge index via TopExp::MapShapes,
-        // which deduplicates by IsSame (TopExp_Explorer alone would visit
-        // each shared edge once per parent face). The resulting IndexedMap
-        // is 1-based; we expose 0-based indices to callers.
-        TopTools_IndexedMapOfShape edge_map;
-        TopExp::MapShapes(shape.shape, TopAbs_EDGE, edge_map);
+        // Use the lazy cached edge map (1-based IndexedMap, deduplicates by
+        // IsSame). Exposes 0-based indices to callers.
+        const TopTools_IndexedMapOfShape& edge_map = shape.edge_map();
 
         const TopoDS_Shape& face_a =
             face_map.FindKey(static_cast<Standard_Integer>(face_a_index + 1));
