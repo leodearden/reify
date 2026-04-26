@@ -48834,7 +48834,20 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_cached_diagnostics.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached",
+              "evaluate_let_bindings"
+            ],
+            "queries": [
+              "eval_cached cyclic let-cells garbage cache fix",
+              "evaluate_let_bindings sorted_lets skip cyclic cells",
+              "eval() vs eval_cached divergence task 2259",
+              "cache record_evaluation cyclic cells invalid entries"
+            ]
+          },
+          "_causation_id": "f99f1a36-cbbb-44de-a0fe-73d40513e7ca"
         }
       },
       {
@@ -48966,7 +48979,9 @@
       "completedCount": 2023,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T11:28:33.178Z",
+      "description": "Tasks for master context"
     }
   }
 }
