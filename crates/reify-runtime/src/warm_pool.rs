@@ -449,4 +449,69 @@ mod tests {
         let pool = WarmStatePool::from_env_value(Some("not-a-number"));
         assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
     }
+
+    // --- Step 5: cost_per_byte metadata tests (compile-fails until step-6) ---
+
+    #[test]
+    fn donate_with_cost_records_cost_per_byte() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 0.5);
+        assert_eq!(pool.cost_per_byte_of(&node), Some(0.5));
+    }
+
+    #[test]
+    fn legacy_donate_defaults_cost_to_zero() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node.clone(), OpaqueState::new(0u8, 100));
+        assert_eq!(pool.cost_per_byte_of(&node), Some(0.0));
+    }
+
+    #[test]
+    fn cost_per_byte_of_missing_node_is_none() {
+        let pool = WarmStatePool::new(1024);
+        let unknown = NodeId::Value(ValueCellId::new("T", "unknown"));
+        assert_eq!(pool.cost_per_byte_of(&unknown), None);
+    }
+
+    #[test]
+    fn donate_with_cost_replaces_cost_on_same_node() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 0.5);
+        pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 1.5);
+        assert_eq!(pool.cost_per_byte_of(&node), Some(1.5));
+    }
+
+    #[test]
+    fn cost_per_byte_does_not_alter_lru_eviction_order() {
+        // Eviction is still pure LRU; cost_per_byte is stored but not consulted.
+        // Setup: budget=250, donate A(50,cost=10.0), B(50,cost=0.1), C(50,cost=5.0).
+        // Touch B (retrieve+re-donate), then donate large D(200).
+        // Expect A and C evicted (oldest), B and D retained — same as pure LRU.
+        let mut pool = WarmStatePool::new(250);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+        let node_d = NodeId::Value(ValueCellId::new("T", "d"));
+
+        // High cost on the would-be LRU victim — eviction must still be LRU
+        pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 50), 10.0);
+        pool.donate_with_cost(node_b.clone(), OpaqueState::new(2i32, 50), 0.1);
+        pool.donate_with_cost(node_c.clone(), OpaqueState::new(3i32, 50), 5.0);
+
+        // Touch B to make it newer than A and C
+        let b_state = pool.retrieve(&node_b).unwrap();
+        pool.donate_with_cost(node_b.clone(), b_state, 0.1);
+
+        // Large donation forces eviction
+        pool.donate_with_cost(node_d.clone(), OpaqueState::new(4i32, 200), 2.0);
+
+        // Pure LRU order: A and C (oldest) must be evicted; B and D retained
+        assert!(pool.retrieve(&node_a).is_none(), "A should be LRU-evicted");
+        assert!(pool.retrieve(&node_c).is_none(), "C should be LRU-evicted");
+        assert!(pool.retrieve(&node_b).is_some(), "B should be retained (recently accessed)");
+        assert!(pool.retrieve(&node_d).is_some(), "D should be retained (just added)");
+    }
 }
