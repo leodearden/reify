@@ -136,8 +136,8 @@ structure S {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("expects 1 arguments, got 2")),
-        "expected 'expects 1 arguments, got 2' error, got: {:?}",
+            .any(|d| d.message.contains("expects 1 argument, got 2")),
+        "expected 'expects 1 argument, got 2' error, got: {:?}",
         errors
     );
 }

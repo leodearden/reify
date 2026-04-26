@@ -1,4 +1,5 @@
 mod annotations;
+mod arg_check;
 mod compile_builder;
 mod conformance;
 mod connect;
@@ -7,7 +8,6 @@ mod entity;
 mod expr;
 mod functions;
 mod geometry;
-mod arg_check;
 mod geometry_boolean;
 mod geometry_curve;
 mod geometry_modify;
@@ -34,6 +34,7 @@ pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
 pub(crate) use annotations::*;
+pub(crate) use arg_check::*;
 pub(crate) use conformance::*;
 pub(crate) use connect::*;
 pub(crate) use entity::*;
@@ -41,7 +42,6 @@ pub(crate) use expr::*;
 #[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
-pub(crate) use arg_check::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
 pub(crate) use geometry_modify::*;

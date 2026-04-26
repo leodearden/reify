@@ -15,8 +15,9 @@ pub(crate) fn check_arg_count_exact(
     if got == expected {
         return true;
     }
+    let noun = if expected == 1 { "argument" } else { "arguments" };
     diagnostics.push(
-        Diagnostic::error(format!("{name}() expects {expected} arguments, got {got}"))
+        Diagnostic::error(format!("{name}() expects {expected} {noun}, got {got}"))
             .with_label(DiagnosticLabel::new(span, "wrong number of arguments")),
     );
     false
@@ -37,9 +38,10 @@ pub(crate) fn check_arg_count_at_least(
     if got >= min_expected {
         return true;
     }
+    let noun = if min_expected == 1 { "argument" } else { "arguments" };
     diagnostics.push(
         Diagnostic::error(format!(
-            "{name}() expects at least {min_expected} arguments, got {got}"
+            "{name}() expects at least {min_expected} {noun}, got {got}"
         ))
         .with_label(DiagnosticLabel::new(span, "wrong number of arguments")),
     );

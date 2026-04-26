@@ -285,9 +285,8 @@ structure S {
 }
 
 /// Compile `p @ face("a", "b")` — two arguments instead of one.
-/// Should emit exactly one error whose message contains the @face custom text
-/// AND whose label is the canonical "wrong number of arguments" text.
-/// (RED before expr.rs sites 3 & 4 are migrated — currently label is "wrong argument count".)
+/// Asserts: (a) an error whose message contains the @face custom text, and
+/// (b) that error has a label with the canonical "wrong number of arguments" text.
 #[test]
 fn compile_face_wrong_arg_count_uses_canonical_label() {
     let source = r#"
