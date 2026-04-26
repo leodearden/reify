@@ -54,11 +54,13 @@ fi
 # after step 3) and the commit-message regex is the sole gate.
 #
 # Gate conditions:
-#   (a) Commit message matches set_task_status(NNN=done) — avoids spurious work
-#       on in-progress/pending transitions and plain source commits.
-#       Regex `set_task_status\([0-9]+=done\)` is strict: requires the literal
-#       token "=done)" so "=in-progress" or "=pending" commits are excluded.
-#       Tests/infra/test_post_commit_hook.sh Checks 10-11 verify this boundary.
+#   (a) Commit message exactly matches the auto-commit prefix:
+#         ^chore(tasks): auto-commit after set_task_status(NNN=done)$
+#       Anchoring to the full canonical prefix prevents hand-authored commits
+#       that mention set_task_status(N=done) in their body from accidentally
+#       triggering the briefing check.  The auto-commit format is stable —
+#       every entry in git log for status transitions follows this pattern.
+#       Tests/infra/test_post_commit_hook.sh Checks 10-13 verify the boundary.
 #   (b) Both review/briefing.yaml and scripts/refresh_briefing_known_gaps.py
 #       exist in the worktree — silently no-ops if either is absent.
 #
@@ -70,7 +72,7 @@ fi
 # are exempt from set -e by shell semantics. No set +e / set -e wrapping needed.
 _commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
 if command -v python3 >/dev/null 2>&1 \
-    && echo "$_commit_msg" | grep -qE 'set_task_status\([0-9]+=done\)' \
+    && echo "$_commit_msg" | grep -qE '^chore\(tasks\): auto-commit after set_task_status\([0-9]+=done\)$' \
     && [ -f "$ROOT/review/briefing.yaml" ] \
     && [ -f "$ROOT/scripts/refresh_briefing_known_gaps.py" ]; then
     python3 "$ROOT/scripts/refresh_briefing_known_gaps.py" \

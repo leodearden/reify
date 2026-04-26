@@ -597,5 +597,53 @@ assert "Check 12: HEAD advanced (commit was not rolled back)" \
 assert "Check 12: .git/NORMALIZE_FAILED not created (briefing failure ≠ normalize failure)" \
     test ! -f "$_repo12/.git/NORMALIZE_FAILED"
 
+# ==============================================================================
+# Check 13: non-canonical commit message embedding the pattern does NOT trigger
+# ==============================================================================
+# The regex in step (3.5) is anchored to the full canonical auto-commit prefix:
+#   ^chore(tasks): auto-commit after set_task_status(NNN=done)$
+# A hand-authored commit like "fix: don't call set_task_status(555=done) twice"
+# contains the pattern but is NOT anchored — it must NOT trigger the check.
+echo ""
+echo "--- Check 13: non-canonical commit embedding pattern does not invoke briefing script ---"
+
+mk_repo_fixture _repo13
+
+REFRESH_SCRIPT_LOCAL="$REPO_ROOT/scripts/refresh_briefing_known_gaps.py"
+
+mkdir -p "$_repo13/review" "$_repo13/.taskmaster/tasks"
+cat > "$_repo13/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+cat > "$_repo13/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a sentinel stub.
+_sentinel13="$_tmpdir/sentinel13.txt"
+cat > "$_repo13/scripts/refresh_briefing_known_gaps.py" <<STUB
+#!/usr/bin/env python3
+import sys
+with open("$_sentinel13", "w") as f:
+    f.write("called\n")
+sys.exit(0)
+STUB
+chmod +x "$_repo13/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD (no-verify so hook does not fire on the seed commit).
+git -C "$_repo13" add .
+git -C "$_repo13" commit --no-verify -m "chore: seed" -q
+
+# Commit with the pattern embedded in the subject but NOT at the canonical
+# auto-commit prefix position.  The anchored regex should NOT match.
+echo "extra" > "$_repo13/extra.txt"
+git -C "$_repo13" add extra.txt
+git -C "$_repo13" commit -m "fix: don't call set_task_status(555=done) twice" 2>/dev/null || true
+
+assert "Check 13: non-canonical embed does not invoke briefing script (sentinel absent)" \
+    test ! -f "$_sentinel13"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
