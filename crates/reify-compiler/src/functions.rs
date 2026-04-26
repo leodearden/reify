@@ -213,6 +213,29 @@ pub(crate) fn compile_field(
     let source = match &field_def.source {
         reify_syntax::FieldSource::Analytical { expr } => {
             let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+            // Codomain type-check: the lambda body's inferred type must implicitly
+            // convert to the declared codomain. Skip the check when either type is
+            // already poisoned (anti-cascade — task-1918).
+            if let reify_types::CompiledExprKind::Lambda { body, .. } = &compiled_expr.kind {
+                let body_ty = &body.result_type;
+                if !body_ty.is_error()
+                    && !codomain_type.is_error()
+                    && !implicitly_converts_to(body_ty, &codomain_type)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "field '{}' codomain mismatch: declared codomain `{}`, \
+                             lambda body produces `{}`",
+                            field_def.name, codomain_type, body_ty
+                        ))
+                        .with_code(DiagnosticCode::FieldCodomainMismatch)
+                        .with_label(DiagnosticLabel::new(
+                            field_def.codomain_type.span,
+                            "declared codomain",
+                        )),
+                    );
+                }
+            }
             CompiledFieldSource::Analytical {
                 expr: compiled_expr,
             }
