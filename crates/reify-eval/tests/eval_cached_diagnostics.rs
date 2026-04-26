@@ -342,6 +342,107 @@ fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
     );
 }
 
+// ── step-10: repeat-call regression lock for solver diagnostics ──────────────
+
+/// Calling eval_cached twice on the same (unchanged) module must continue to
+/// surface Infeasible diagnostics from the solver on BOTH calls.
+///
+/// Fails today because the solver pass is gated on `any_auto_miss`: on the second
+/// call every auto cell hits the version fast-path or cache-reuse path, so
+/// `any_auto_miss` stays false and the solver is silently skipped — the Infeasible
+/// diagnostic is dropped. The LSP needs this on every keystroke.
+#[test]
+fn eval_cached_repeat_call_re_emits_solver_infeasible_diagnostic() {
+    let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+        "infeasible: x has no satisfying assignment",
+    )]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver));
+
+    // First call — cold start (any_auto_miss = true, solver runs, diagnostic surfaces)
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1
+            .eval_result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+        "first eval_cached call must forward Infeasible solver diagnostic; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — same module, bumped version (models repeat keystroke in LSP).
+    // Auto cell hits the cache, any_auto_miss=false — solver must still run.
+    let result2 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result2
+            .eval_result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+        "second eval_cached call must also forward Infeasible solver diagnostic \
+         (must not drop on cache hit); got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+}
+
+/// Calling eval_cached twice on the same (unchanged) module must continue to
+/// surface NoProgress warnings from the solver on BOTH calls.
+///
+/// Fails today because the solver pass is gated on `any_auto_miss`: on the second
+/// call every auto cell hits the cache, so `any_auto_miss` stays false and the
+/// solver is silently skipped — the NoProgress warning is dropped.
+#[test]
+fn eval_cached_repeat_call_re_emits_solver_no_progress_warning() {
+    let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver));
+
+    // First call — cold start
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("Constraint solver made no progress")
+                && d.message.contains("iteration limit reached")
+        }),
+        "first eval_cached call must emit NoProgress warning; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — same module, bumped version (models repeat keystroke in LSP).
+    // Auto cell hits the cache — solver must still run.
+    let result2 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result2.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("Constraint solver made no progress")
+                && d.message.contains("iteration limit reached")
+        }),
+        "second eval_cached call must also emit NoProgress warning \
+         (must not drop on cache hit); got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+}
+
 // ── step-9: repeat-call regression lock ──────────────────────────────────────
 
 /// Calling eval_cached twice on the same (unchanged) module must continue to
