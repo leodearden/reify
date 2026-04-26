@@ -2572,6 +2572,32 @@ mod tests {
         }
     }
 
+    // ── ResultRef tests (step-1) ─────────────────────────────────────────────
+
+    #[test]
+    fn test_result_ref_none() {
+        let r = ResultRef::none();
+        assert!(r.is_none());
+        assert_eq!(r.content_hash(), None);
+    }
+
+    #[test]
+    fn test_result_ref_of_hash() {
+        let hash = ContentHash::of(b"x");
+        let r = ResultRef::of_hash(hash);
+        assert!(!r.is_none());
+        assert_eq!(r.content_hash(), Some(hash));
+    }
+
+    #[test]
+    fn test_result_ref_clone_eq_debug() {
+        let hash = ContentHash::of(b"y");
+        let r = ResultRef::of_hash(hash);
+        let r2 = r.clone();
+        assert_eq!(r, r2);
+        assert!(!format!("{:?}", r).is_empty());
+    }
+
     #[test]
     fn test_eval_error_display() {
         let err = EvalError("division by zero".to_string());
