@@ -1136,3 +1136,77 @@ fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
         msgs_b[0],
     );
 }
+
+/// Pin the wording-parity contract for solver `NoProgress` warnings.
+///
+/// Asserts that `eval()` and `eval_cached()` emit **byte-identical** warning
+/// messages when the constraint solver returns `SolveResult::NoProgress`.
+///
+/// Passes today (both paths format `"Constraint solver made no progress: {}"`
+/// identically) and locks the contract: a future fix at one site that forgets
+/// the other will cause this test to fail.
+///
+/// The `Infeasible` variant is not separately locked here: both paths forward
+/// solver-supplied diagnostics verbatim via `diagnostics.extend(solver_diags)`,
+/// so wording parity for `Infeasible` reduces to whatever `MockConstraintSolver`
+/// was constructed with — there is no format string to keep in sync.
+#[test]
+fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
+    let solver_a = MockConstraintSolver::new_no_progress("iteration limit reached");
+    let solver_b = MockConstraintSolver::new_no_progress("iteration limit reached");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine_a =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+            .with_solver(Box::new(solver_a));
+    let result_a = engine_a.eval(&module);
+
+    let mut engine_b =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+            .with_solver(Box::new(solver_b));
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    let msgs_a: Vec<&str> = result_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Constraint solver made no progress"))
+        .map(|d| d.message.as_str())
+        .collect();
+    let msgs_b: Vec<&str> = result_b
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Constraint solver made no progress"))
+        .map(|d| d.message.as_str())
+        .collect();
+
+    assert_eq!(
+        msgs_a.len(),
+        1,
+        "eval() must emit exactly one NoProgress warning; got: {:?}",
+        result_a.diagnostics,
+    );
+    assert_eq!(
+        msgs_b.len(),
+        1,
+        "eval_cached() must emit exactly one NoProgress warning; got: {:?}",
+        result_b.eval_result.diagnostics,
+    );
+    assert_eq!(
+        msgs_a[0],
+        msgs_b[0],
+        "NoProgress warning must be byte-identical between eval() and eval_cached();\n\
+         eval():        {:?}\n\
+         eval_cached(): {:?}",
+        msgs_a[0],
+        msgs_b[0],
+    );
+}
