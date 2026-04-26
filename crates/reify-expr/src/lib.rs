@@ -3642,4 +3642,64 @@ mod tests {
         let expr = CompiledExpr::unop(UnOp::Not, lit(Value::Int(3), Type::Int), Type::Bool);
         assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
     }
+
+    /// Returns a `CompiledExpr` that panics if it is ever evaluated.
+    ///
+    /// Uses `CompiledExprKind::MetaAccess` as the panic mechanism: when
+    /// `EvalContext.meta` is `None` (which is the case for
+    /// `EvalContext::simple(&values)`), evaluation panics with
+    /// "MetaAccess evaluation requires meta context in EvalContext".
+    ///
+    /// Place this expression on the right operand of AND/OR short-circuit
+    /// tests. If the implementation correctly short-circuits, the sentinel is
+    /// never evaluated → no panic → test passes. If a future refactor
+    /// silently evaluates the right operand, the test panics loudly.
+    fn panic_on_eval_sentinel() -> CompiledExpr {
+        CompiledExpr::meta_access("__sentinel".into(), "should_not_evaluate".into())
+    }
+
+    /// Pins that `eval_and` short-circuits on a non-bool left operand:
+    /// the right operand is **never evaluated** when the left is not bool/undef.
+    ///
+    /// Contract: non-bool left → `Value::Undef`, right NOT evaluated
+    /// (see `eval_and` at lib.rs:1116-1132, type-error branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_and_short_circuit_on_non_bool_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::And,
+            lit(Value::Int(3), Type::Int),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    /// Pins that `eval_and` short-circuits on the absorbing element `False`:
+    /// the right operand is **never evaluated** when the left is `Bool(false)`.
+    ///
+    /// Contract: `False` left → `Value::Bool(false)`, right NOT evaluated
+    /// (see `eval_and` at lib.rs:1122-1125, absorbing-element branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_and_short_circuit_on_false_absorbing_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::And,
+            lit(Value::Bool(false), Type::Bool),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(false)
+        );
+    }
 }
