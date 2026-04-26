@@ -897,3 +897,165 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
     let result_b2 = engine_b.eval_cached(&module, VersionId(2));
     assert_b_invariants("second eval_cached() call (VersionId(2))", &engine_b, &result_b2);
 }
+
+// ── task-2268: wording-parity locks ────────────────────────────────────────────
+
+/// Pin the wording-parity contract for param_override rejection warnings.
+///
+/// Asserts that `eval()` and `eval_cached()` emit **byte-identical** warning
+/// messages for both `TypeKindMismatch` (Bool into Length) and
+/// `ScalarDimensionMismatch` (Mass scalar into Length).
+///
+/// These tests pass today (wording is already byte-identical at every call site)
+/// and will continue to pass after the step-2 refactor extracts the shared
+/// `emit_param_override_rejection_warning` helper.  They become regression guards:
+/// if a future fix changes the warning text at ONE call site without updating the
+/// shared helper, these assertions fire — catching the exact "future fix to one
+/// site silently fails to propagate" failure mode this task is designed to prevent.
+#[test]
+fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() {
+    // ── TypeKindMismatch: Bool override into a Length param ───────────────────
+    {
+        let x_id = ValueCellId::new("S", "x");
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(mm(1.0), Type::length())),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine_a =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_a.set_param_and_invalidate(&x_id, Value::Bool(true));
+        let result_a = engine_a.eval(&module);
+
+        let mut engine_b =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_b.set_param_and_invalidate(&x_id, Value::Bool(true));
+        let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+        let msgs_a: Vec<&str> = result_a
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("param_override for")
+                    && d.message.contains("type-kind mismatch")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+        let msgs_b: Vec<&str> = result_b
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("param_override for")
+                    && d.message.contains("type-kind mismatch")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+
+        assert_eq!(
+            msgs_a.len(),
+            1,
+            "eval() must emit exactly one TypeKindMismatch warning; got: {:?}",
+            result_a.diagnostics,
+        );
+        assert_eq!(
+            msgs_b.len(),
+            1,
+            "eval_cached() must emit exactly one TypeKindMismatch warning; got: {:?}",
+            result_b.eval_result.diagnostics,
+        );
+        assert_eq!(
+            msgs_a[0],
+            msgs_b[0],
+            "TypeKindMismatch warning must be byte-identical between eval() and eval_cached();\n\
+             eval():        {:?}\n\
+             eval_cached(): {:?}",
+            msgs_a[0],
+            msgs_b[0],
+        );
+    }
+
+    // ── ScalarDimensionMismatch: Mass-dimensioned override into a Length param ─
+    {
+        let x_id = ValueCellId::new("S", "x");
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(mm(1.0), Type::length())),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mass_val = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+
+        let mut engine_a =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_a.set_param_and_invalidate(&x_id, mass_val.clone());
+        let result_a = engine_a.eval(&module);
+
+        let mut engine_b =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_b.set_param_and_invalidate(&x_id, mass_val);
+        let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+        let msgs_a: Vec<&str> = result_a
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("param_override for")
+                    && d.message.contains("dimension mismatch")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+        let msgs_b: Vec<&str> = result_b
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("param_override for")
+                    && d.message.contains("dimension mismatch")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+
+        assert_eq!(
+            msgs_a.len(),
+            1,
+            "eval() must emit exactly one ScalarDimensionMismatch warning; got: {:?}",
+            result_a.diagnostics,
+        );
+        assert_eq!(
+            msgs_b.len(),
+            1,
+            "eval_cached() must emit exactly one ScalarDimensionMismatch warning; got: {:?}",
+            result_b.eval_result.diagnostics,
+        );
+        assert_eq!(
+            msgs_a[0],
+            msgs_b[0],
+            "ScalarDimensionMismatch warning must be byte-identical between eval() and eval_cached();\n\
+             eval():        {:?}\n\
+             eval_cached(): {:?}",
+            msgs_a[0],
+            msgs_b[0],
+        );
+    }
+}
