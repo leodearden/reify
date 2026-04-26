@@ -4,7 +4,8 @@ use reify_constraints::CpSatSolver;
 use reify_test_support::builders::*;
 use reify_test_support::values::*;
 use reify_types::{
-    AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, Value, ValueMap,
+    AutoParam, ConstraintSolver, DiagnosticCode, ResolutionProblem, SolveResult, Type, Value,
+    ValueMap,
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,13 @@ fn boolean_infeasible_contradiction() {
     match result {
         SolveResult::Infeasible { diagnostics } => {
             assert!(!diagnostics.is_empty(), "expected non-empty diagnostics");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintUnsatisfiable)),
+                "infeasible diagnostic must carry ConstraintUnsatisfiable code; got: {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            );
         }
         other => panic!("expected Infeasible, got {:?}", other),
     }

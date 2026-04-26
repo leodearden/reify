@@ -888,7 +888,7 @@ impl ConstraintSolver for DimensionalSolver {
                                           for exploration"
                                     .to_string(),
                                 labels: vec![],
-                                code: None,
+                                code: Some(DiagnosticCode::ConstraintNonUnique),
                             }],
                         }
                     }
