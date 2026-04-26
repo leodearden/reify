@@ -274,7 +274,10 @@ pub struct Engine {
     /// User-defined functions from the last eval() call.
     /// Stored so that edit_param() and other incremental paths can evaluate
     /// expressions containing UserFunctionCall nodes.
-    functions: Vec<CompiledFunction>,
+    /// Wrapped in Arc so per-call clones in eval(), edit_param(), and
+    /// prepare_concurrent_edit() become O(1) refcount bumps rather than deep
+    /// copies of the entire compiled function tree (task #1997).
+    functions: Arc<Vec<CompiledFunction>>,
     /// Compiled purpose declarations from the last eval() call.
     /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
     compiled_purposes: Vec<CompiledPurpose>,

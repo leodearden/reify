@@ -99,7 +99,7 @@ fn simple_setup() -> ConcurrentEditSetup {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
-        functions: vec![],
+        functions: Arc::new(vec![]),
         meta_map: Arc::new(HashMap::new()),
         objective: None,
     }
@@ -3632,7 +3632,7 @@ async fn adapter_evaluate_returns_unchanged_for_cell_without_default_expr() {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
-        functions: vec![],
+        functions: Arc::new(vec![]),
         meta_map: Arc::new(HashMap::new()),
         objective: None,
     };
@@ -3699,7 +3699,7 @@ async fn adapter_evaluate_returns_changed_for_let_cell_with_default_expr() {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells: HashSet::new(),
-        functions: vec![],
+        functions: Arc::new(vec![]),
         meta_map: Arc::new(HashMap::new()),
         objective: None,
     };
