@@ -17057,7 +17057,7 @@
         "id": "763",
         "title": "Add From<&CompiledUnit> for UnitEntry conversion",
         "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nMemory hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes. Attach memory hints: entities [\"UnitEntry\", \"CompiledUnit\"]; queries [\"UnitEntry CompiledUnit struct fields conversion\", \"From trait impl seeding loop compile_with_prelude\"].",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Ensure that the `From` trait implementation correctly maps all fields from `CompiledUnit` to `UnitEntry`, including any new fields that may be added in the future.",
@@ -17083,9 +17083,12 @@
               "From trait impl seeding loop compile_with_prelude"
             ]
           },
-          "_causation_id": "ab53b07c-1edc-4e1f-bc6c-4a4c4bb11af9"
+          "_causation_id": "ab53b07c-1edc-4e1f-bc6c-4a4c4bb11af9",
+          "done_provenance": {
+            "commit": "423777c5deeeac458fa1115f9c8f1b141407a3cf"
+          }
         },
-        "updatedAt": "2026-04-26T14:13:38.109Z"
+        "updatedAt": "2026-04-26T14:35:02.440Z"
       },
       {
         "id": "764",
@@ -49418,15 +49421,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T14:29:01.467Z",
-      "taskCount": 2272,
-      "completedCount": 2042,
+      "lastModified": "2026-04-26T14:35:02.440Z",
+      "taskCount": 2273,
+      "completedCount": 2043,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T14:29:55.888Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T14:34:49.049Z"
+      ]
     }
   }
 }
