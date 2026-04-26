@@ -645,6 +645,17 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
         "dimension-mismatch warning should mention 'dimension', got: {:?}",
         warnings[0].message
     );
+    // Also lock total warning count so spurious unrelated warnings are caught.
+    assert_eq!(
+        result_b
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count(),
+        1,
+        "expected exactly one Warning diagnostic in total, got: {:?}",
+        result_b.diagnostics
+    );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
     let module_a_again = guarded_module(true, "Scalar", "5mm");
@@ -791,6 +802,17 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
         warnings[0].message.contains("dimension"),
         "dimension-mismatch warning should mention 'dimension', got: {:?}",
         warnings[0].message
+    );
+    // Also lock total warning count so spurious unrelated warnings are caught.
+    assert_eq!(
+        result_b
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count(),
+        1,
+        "expected exactly one Warning diagnostic in total, got: {:?}",
+        result_b.diagnostics
     );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
@@ -1127,8 +1149,13 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
     let x_id = ValueCellId::new("S", "x");
     let node_id = NodeId::Value(x_id.clone());
 
-    // (a) Journal: at least one paired Started+Completed; additional re-eval events tolerated.
+    // (a) Journal: exactly one Started+Completed pair, in order — FAILS before step-4 impl.
     let events = engine.journal().events_for_node(&node_id);
+    assert_eq!(
+        events.len(),
+        2,
+        "guarded-group active-branch Param must emit exactly one Started+Completed pair (task-2195)"
+    );
     assert!(
         matches!(events[0].kind, EventKind::Started),
         "first journal event for x must be Started (task-2195)"
@@ -1136,18 +1163,6 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
     assert!(
         matches!(events[1].kind, EventKind::Completed { .. }),
         "second journal event for x must be Completed (task-2195)"
-    );
-    let started = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
-        .count();
-    let completed = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Completed { .. }))
-        .count();
-    assert_eq!(
-        started, completed,
-        "Started/Completed must be paired (tolerates additional re-eval events)"
     );
 
     // (b) Cache entry: CachedResult::Value(5mm as SI, Determined) — FAILS before step-4 impl.
@@ -1200,8 +1215,13 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param
     let y_id = ValueCellId::new("S", "y");
     let node_id = NodeId::Value(y_id.clone());
 
-    // (a) Journal: at least one paired Started+Completed; additional re-eval events tolerated.
+    // (a) Journal: exactly one Started+Completed pair, in order (else_members call site).
     let events = engine.journal().events_for_node(&node_id);
+    assert_eq!(
+        events.len(),
+        2,
+        "else-branch Param y must emit exactly one Started+Completed pair (else_members call site)"
+    );
     assert!(
         matches!(events[0].kind, EventKind::Started),
         "first journal event for y must be Started (else_members call site)"
@@ -1209,18 +1229,6 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param
     assert!(
         matches!(events[1].kind, EventKind::Completed { .. }),
         "second journal event for y must be Completed (else_members call site)"
-    );
-    let started = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
-        .count();
-    let completed = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Completed { .. }))
-        .count();
-    assert_eq!(
-        started, completed,
-        "Started/Completed must be paired (tolerates additional re-eval events)"
     );
 
     // (b) Cache: CachedResult::Value(10mm SI, Determined) for y.
@@ -1292,10 +1300,14 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
     let journal_len_before_b = engine.journal().events_for_node(&node_id).len();
     let result_b = engine.eval(&module_b);
 
-    // (a) Journal: at least one paired Started+Completed added by phase B; additional
-    //     re-eval events tolerated.
+    // (a) Journal: exactly one Started+Completed pair added by phase B, in order.
     let events = engine.journal().events_for_node(&node_id);
     let phase_b_events = &events[journal_len_before_b..];
+    assert_eq!(
+        phase_b_events.len(),
+        2,
+        "helper rejected-no-default arm must emit exactly one Started+Completed pair"
+    );
     assert!(
         matches!(phase_b_events[0].kind, EventKind::Started),
         "first phase-B journal event for y must be Started"
@@ -1303,18 +1315,6 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
     assert!(
         matches!(phase_b_events[1].kind, EventKind::Completed { .. }),
         "second phase-B journal event for y must be Completed"
-    );
-    let started = phase_b_events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
-        .count();
-    let completed = phase_b_events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Completed { .. }))
-        .count();
-    assert_eq!(
-        started, completed,
-        "Started/Completed must be paired (tolerates additional re-eval events)"
     );
 
     // (b) Cache: CachedResult::Value(Undef, Undetermined).
@@ -1424,8 +1424,13 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
     let x_id = ValueCellId::new("S", "x");
     let node_id = NodeId::Value(x_id.clone());
 
-    // (a) Journal: at least one paired Started+Completed; additional re-eval events tolerated.
+    // (a) Journal: exactly one Started+Completed pair, in order (no-override-no-default path).
     let events = engine.journal().events_for_node(&node_id);
+    assert_eq!(
+        events.len(),
+        2,
+        "helper no-override-no-default arm must emit exactly one Started+Completed pair"
+    );
     assert!(
         matches!(events[0].kind, EventKind::Started),
         "first journal event for x must be Started (no-override-no-default)"
@@ -1433,18 +1438,6 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
     assert!(
         matches!(events[1].kind, EventKind::Completed { .. }),
         "second journal event for x must be Completed (no-override-no-default)"
-    );
-    let started = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
-        .count();
-    let completed = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Completed { .. }))
-        .count();
-    assert_eq!(
-        started, completed,
-        "Started/Completed must be paired (tolerates additional re-eval events)"
     );
 
     // (b) Cache: CachedResult::Value(Undef, Undetermined).
