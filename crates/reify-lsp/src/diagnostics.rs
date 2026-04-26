@@ -850,6 +850,49 @@ mod tests {
         }
     }
 
+    /// Negative-assertion helper: asserts that none of `diags` match the inline
+    /// `strip_prefix("constraint ") / strip_suffix(" violated") / !contains(' ')` format
+    /// that `compute_diagnostics_with_state` relies on never appearing in eval output.
+    /// `label` is embedded in the panic message to identify which emitter path failed.
+    fn assert_no_violation_format(diags: &[Diagnostic], label: &str) {
+        for diag in diags {
+            let is_violation_format = diag
+                .message
+                .strip_prefix("constraint ")
+                .and_then(|s| s.strip_suffix(" violated"))
+                .map_or(false, |id| !id.is_empty() && !id.contains(' '));
+            assert!(
+                !is_violation_format,
+                "[{label}] eval() emitted a 'constraint ... violated' format message: {:?}. \
+                 The compute_diagnostics_with_state merge loop relies on eval diagnostics \
+                 never using this format — add a filter on the eval merge or update the loop.",
+                diag.message
+            );
+        }
+    }
+
+    /// Locks the `ConstraintNodeId` Display invariant independently of any emitter.
+    ///
+    /// The production format `format!("constraint {} violated", ConstraintNodeId::new("S", 0))`
+    /// must satisfy the inline `strip_prefix / strip_suffix / !contains(' ')` check so that
+    /// drift in `ConstraintNodeId::Display` trips this test before the negative checks in the
+    /// per-emitter cluster.
+    #[test]
+    fn eval_diag_format_anchor() {
+        let real_id = ConstraintNodeId::new("S", 0u32);
+        let anchor = format!("constraint {} violated", real_id);
+        assert!(
+            anchor
+                .strip_prefix("constraint ")
+                .and_then(|s| s.strip_suffix(" violated"))
+                .map_or(false, |id| !id.is_empty() && !id.contains(' ')),
+            "anchor: ConstraintNodeId::new(\"S\", 0) formats as {real_id:?} which does not \
+             match the inline constraint-violation check; if ConstraintNodeId Display changed, \
+             update the inline check in this cluster and in \
+             eval_diagnostics_never_use_constraint_violation_format."
+        );
+    }
+
     /// Regression-lock cluster: `eval()` must never emit the `"constraint ... violated"`
     /// format (checked by inline `strip_prefix / strip_suffix / !contains(' ')`) from any
     /// of the known eval-time diagnostic emitters.
