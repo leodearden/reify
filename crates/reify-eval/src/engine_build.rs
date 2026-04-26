@@ -205,6 +205,18 @@ impl Engine {
     /// Default tessellation tolerance in SI meters (0.1mm).
     const DEFAULT_TESSELLATION_TOLERANCE: f64 = 0.0001;
 
+    /// Returns the tessellation tolerance to use for `module`, in SI metres.
+    ///
+    /// Threads the module-level `#precision` pragma value (stored on
+    /// `CompiledModule::default_tolerance` by `apply_module_pragmas`) through
+    /// to the kernel. Falls back to [`Self::DEFAULT_TESSELLATION_TOLERANCE`]
+    /// when the pragma is absent or was malformed.
+    fn effective_tessellation_tolerance(module: &CompiledModule) -> f64 {
+        module
+            .default_tolerance
+            .unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE)
+    }
+
     /// Shared helper: execute geometry operations and tessellate each realization.
     ///
     /// Used by both `tessellate_realizations()` and `tessellate_snapshot()`.
@@ -249,7 +261,9 @@ impl Engine {
                 // Tessellate this realization's final handle (if any new handles were produced)
                 if step_handles.len() > handle_start {
                     let last_handle = step_handles[step_handles.len() - 1];
-                    match kernel.tessellate(last_handle, Self::DEFAULT_TESSELLATION_TOLERANCE) {
+                    match kernel
+                        .tessellate(last_handle, Self::effective_tessellation_tolerance(module))
+                    {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
