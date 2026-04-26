@@ -48400,11 +48400,14 @@
             "crates/reify-eval/src/engine_edit.rs"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "edit_param",
+              "edit_source"
+            ],
             "queries": [
-              "phase3_skip_group group_needs_phase3 engine_edit.rs helper consolidation",
-              "edit_param edit_source Phase 3 guard cell wave2 guard flip",
-              "engine_edit.rs Phase 3 loop guard-value-unchanged skip pattern"
+              "phase3_skip_group group_needs_phase3 guard evaluation logic",
+              "phase 3 guard cell missing handling edit_param edit_source",
+              "cross-phase dedup phase3 group skipping consolidation"
             ]
           }
         }
