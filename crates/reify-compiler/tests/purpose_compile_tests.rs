@@ -1114,3 +1114,49 @@ purpose check(subject : Drone) {
         no_member_errors
     );
 }
+
+// ── task-2201: multi-StructureRef-param rejection ─────────────────────────────
+
+/// RED test: a purpose with two StructureRef params must be rejected with a
+/// clear "multi-StructureRef purpose params not supported" diagnostic.
+///
+/// The body uses `constraint 80mm > 0mm` (literal-only) to isolate the
+/// rejection cause from any cascading "has no member" diagnostics — the test
+/// is about the param-count check, not body-compilation.
+///
+/// RED before step-2 impl: today no such diagnostic is emitted, so
+/// `errors.is_empty()` is true and the assertion fails.
+#[test]
+fn compile_purpose_rejects_multi_structureref_params() {
+    let source = r#"
+purpose check(a : Structure, b : Structure) {
+    constraint 80mm > 0mm
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Severity::Error diagnostic for multi-StructureRef purpose, \
+         but got none.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
+
+    let rejection_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("multi-StructureRef purpose params not supported"))
+        .collect();
+
+    assert!(
+        !rejection_errors.is_empty(),
+        "expected at least one error containing 'multi-StructureRef purpose params not supported', \
+         but no such error was found.\nAll errors: {:#?}",
+        errors
+    );
+}
