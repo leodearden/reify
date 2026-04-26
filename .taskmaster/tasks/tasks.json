@@ -48258,23 +48258,21 @@
         "description": "Polish: in `crates/reify-lsp/src/diagnostics.rs` around line 833, the comment in `eval_diagnostics_never_use_constraint_violation_format` references `compute_diagnostics_with_state:174` as the line where `format!(\"constraint {} violated\", e.id)` is produced. After the task-2242 diff that construction now lives at line 191/213 (the actual format! call appears at line 213, in the constraint-violation diagnostic builder). Future readers chasing the link will land on the wrong line, and line numbers tend to bitrot fast.\n\nFix: replace the `compute_diagnostics_with_state:174` reference with a symbolic anchor — e.g. \"the constraint-violation builder in `compute_diagnostics_with_state` (look for `format!(\\\"constraint {} violated\\\", entry.id)`)\" — so the comment doesn't drift on re-numbering.\n\nSource: post-merge reviewer_comprehensive suggestion on task 2242.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T07:42:31.138Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:36:16.363Z",
-      "taskCount": 2235,
+      "lastModified": "2026-04-26T07:42:31.138Z",
+      "taskCount": 2236,
       "completedCount": 1999,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T07:36:19.975Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T07:42:23.240Z"
+      ]
     }
   }
 }
