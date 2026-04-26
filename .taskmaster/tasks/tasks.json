@@ -46959,7 +46959,7 @@
         "id": "2194",
         "title": "engine_eval: unify Param-cell skip paths or document EvalResult.values partial-map invariant",
         "description": "Two coupled improvements in the Param-cell override subsystem to reduce future maintenance hazards: (1) the four task-2154 tests in eval_param_overrides.rs (~lines 584-727) duplicate the same `compile_source(\"structure S { param active : Bool = ...\")` string 8+ times with tiny variations; extract a module-scope `guarded_module(active: bool, x_type: &str, x_default: &str)` helper before more guarded-group tests compound the drift risk. (2) Task 2179 introduced an intentional asymmetry in engine_eval.rs's Param-cell loop: the rejected-override-no-default path writes `(Undef, Undetermined)` into both `values` and `snapshot.values`, while the no-override-no-default path silently `continue`s leaving `values` without an entry — either unify these paths or explicitly document the partial-map invariant so future callers know the map is intentionally sparse.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "**S1 — Extract guarded_module() helper (eval_param_overrides.rs ~lines 584-727)**\n\nThe four task-2154 tests (type-kind variants, override-survival siblings) each inline a near-identical `compile_source(\"structure S { param active : Bool = ...\")` string. Extract:\n```rust\nfn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule {\n    compile_source(&format!(\n        \"structure S {{ param active : Bool = {active}\\n  param x : {x_type} = {x_default} }}\"\n    ))\n}\n```\nReplace all 8+ duplicates with calls to this helper.\n\nAcceptance: `git grep 'compile_source.*param active' crates/reify-eval/tests/eval_param_overrides.rs` returns only the helper body.\n\n**S2 — Document or unify partial-map invariant (engine_eval.rs)**\n\nTask 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n- **Rejected-override-no-default** (~lines 460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (~lines 394-416): silently `continue`s, leaving `values` without an entry for that cell (preserves pre-task-2017 behaviour).\n\nThis partial-map shape is a latent API hazard: callers that iterate `EvalResult.values` and assume every Param cell has an entry will silently miss no-default-no-override cells. Either:\n  (a) Unify: write `(Undef, Undetermined)` on the no-override-no-default path too, OR\n  (b) Document: add a named constant or prominent comment at the `continue` site that explicitly names the invariant (\"EvalResult.values intentionally omits Param cells with no override and no default\") so tooling authors know to guard their lookups.\n\nPick option (a) only if tests confirm no regression in downstream callers; otherwise option (b) with a doc comment and a matching test assertion is sufficient.\n\nAcceptance: a reader of engine_eval.rs can determine from code alone whether `EvalResult.values` always has an entry for every Param cell or may legitimately omit no-default-no-override cells.",
@@ -46983,9 +46983,12 @@
           },
           "curator_action": "combine",
           "curator_justification": "The candidate is tiny (single file, pure test-helper extraction) — standalone orchestrator overhead is disproportionate to the work. Task 2194 is pending, combine_eligible, and already touches eval_param_overrides.rs. The implementer of 2194 will be writing new tests in that file to validate the partial-map invariant; having the guarded_module() helper available at that moment is a natural force-multiplier. The union of files stays within the same two-file module lock (engine_eval.rs + eval_para",
-          "combined_at": "2026-04-25T08:54:14.620076+00:00"
+          "combined_at": "2026-04-25T08:54:14.620076+00:00",
+          "done_provenance": {
+            "commit": "06f27b8a2642cffbcd480bddd92c8653e378c29b"
+          }
         },
-        "updatedAt": "2026-04-25T08:54:53.337Z"
+        "updatedAt": "2026-04-26T06:57:02.667Z"
       },
       {
         "id": "2195",
@@ -47945,14 +47948,13 @@
       {
         "id": "2234",
         "title": "Add eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning",
-        "description": "Test coverage for the new `eval_guarded_group_param_cell` helper is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests\n- else_members-loop: type-kind + override-survival ONLY (no dimension test)\n\nDimension-mismatch on the else-branch goes through the same helper today, but a future change that special-cases members vs else_members inside the helper (e.g. branching on a new field) would not be caught.\n\nFix: add `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning` in crates/reify-eval/tests/eval_param_overrides.rs mirroring the members-branch dimension test (currently named `eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning`). Use the else-branch source pattern from `eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_warning` (active=false; param x in `where active { ... }`; test param y in `else { ... }`). Source: esc-2154-17 review_suggestion #3.",
-        "details": "",
-        "testStrategy": "",
+        "description": "Two test-quality improvements to `crates/reify-eval/tests/eval_param_overrides.rs` in the guarded-group Param helper system:\n\n1. **Drop unused `active` parameter from `guarded_module_with_else`** (line ~53): The helper was introduced by task 2194 with an `active: bool` parameter; every existing caller passes `false` (lines ~500, 684, 690, 719) and the doc comment acknowledges the parameter is speculative. Drop the parameter, inline `param active : Bool = false` in the format string, and update all four call sites.\n\n2. **Add else_members dimension-mismatch test**: Test coverage for `eval_guarded_group_param_cell` is asymmetric — the members-loop has type-kind + dimension + override-survival tests, but the else_members-loop only has type-kind + override-survival (no dimension test). Add `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning` to cover this gap. Dimension-mismatch on the else-branch goes through the same helper today; a future change that special-cases members vs else_members inside the helper would not be caught without this test.",
         "status": "pending",
         "dependencies": [],
-        "priority": "medium",
+        "priority": "low",
+        "details": "**S1 — Drop unused active param from guarded_module_with_else (~line 53)**\n\nThe signature `guarded_module_with_else(active: bool, y_type: &str, y_default: &str)` has `active` unused by every caller. Simplify to `guarded_module_with_else(y_type: &str, y_default: &str)` and hardcode `param active : Bool = false` in the format string body. Update call sites at approximately lines 500, 684, 690, 719 (remove the `false` argument).\n\nAcceptance: all existing callers compile with one fewer argument; `cargo test -p reify-eval` still green.\n\n**S2 — Add else_members dimension-mismatch test**\n\nTask 2234's original scope: test coverage for `eval_guarded_group_param_cell` is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests ✓\n- else_members-loop: type-kind + override-survival ONLY — **no dimension test** ✗\n\nAdd `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning`:\n- Construct a guarded group where `y` is in `else_members`\n- Supply a dimension-mismatched override for `y`\n- Assert the override is skipped and a warning diagnostic is emitted\n- Mirror the structure of the existing dimension-mismatch test for `members` so the two tests are symmetric\n\nAcceptance: new test passes; `cargo test -p reify-eval eval_skips_dimension` green.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:57:42.154Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/eval_param_overrides.rs"
@@ -47966,7 +47968,10 @@
               "dimension-mismatch override test else-member guarded group eval_param_overrides",
               "guarded-group else_members dimension mismatch test coverage task 2154"
             ]
-          }
+          },
+          "curator_action": "combine",
+          "curator_justification": "Both candidates are tiny (< 300 chars real detail, 1 file each) and touch only `crates/reify-eval/tests/eval_param_overrides.rs`. Task 2234 is pending + combine_eligible, covers the same helper system (guarded_module_with_else / eval_guarded_group_param_cell), and will be serialized on the same module lock regardless. Combining loses zero parallelism and avoids a full second orchestrator cycle for a one-liner parameter removal.",
+          "combined_at": "2026-04-26T06:56:41.266926+00:00"
         }
       },
       {
@@ -48098,11 +48103,11 @@
         "description": "Task 2177 (Route Engine::edit_param through validate_param_override) was fully merged into main (commits 2343823b1, 971c9f109, bd5aa6a58, 9ac80393f, 85efea053, f38a990dd) yet the architect observed an `auto-commit after set_task_status(2177=pending)` landing two minutes before the architect re-picked the task — suggesting something beyond the one-shot startup reconcile re-flipped 2177 back to pending. The startup reconcile runs once to reset in-progress tasks whose worktrees are absent; a periodic or event-triggered variant could affect already-completed tasks whose worktrees have been cleaned up.",
         "details": "## What to investigate\n\n1. Audit all reconcile-loop entry points in the orchestrator (dark-factory) for any non-startup periodic stranded-task check that could query task status and reset it when the worktree lock is absent.\n2. Specifically look for: cron/timer-driven reconcile cycles, event-driven reconcile triggered by steward state changes, any status-flip pathway that runs outside the initial startup sweep.\n3. Check if the status flip from done→pending on task 2177 happened via the normal reconcile path or a different code path.\n4. If a periodic re-flip pathway exists: either add a guard to skip tasks whose commits are already on main, or add a done-status check before any status reset.\n\n## Evidence\n- Mem0 memory 05bfdcba-4ac9-41a1-9435-f8db35c1f350 captures the original observation.\n- Task 2177 commit: f38a990ddcf24d1168d5957a996c99e92b252f47 (already on main).\n\n## Memory hints\n- search: \"orchestrator startup reconcile stranded task status flip in-progress pending\"\n- search: \"reconcile loop periodic task status reset worktree lock absent\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T06:56:02.961Z"
+        "updatedAt": "2026-04-26T06:57:03.304Z"
       },
       {
         "id": "2241",
@@ -48115,16 +48120,30 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T06:54:58.060Z"
+      },
+      {
+        "id": "2242",
+        "title": "LSP diagnostics.rs polish: enforce engine-init invariant + clarify eval_cached limitation test/filter",
+        "description": "Three small follow-up improvements to crates/reify-lsp/src/diagnostics.rs from the task 2236 review (all in the eval/eval_cached diagnostics-capture path landed there):\n\n1. (robustness) In `compute_diagnostics_with_state` (~lines 106-109), tighten the `content_unchanged` predicate from `state.last_content_hash.map(|h| h == compiled.content_hash).unwrap_or(false)` to also require `state.is_engine_initialized()`. The existing comment-only invariant (\"last_content_hash is Some only after a successful eval()/eval_cached() call\") relies on no other code path setting `last_content_hash` independently — but `EvalState` is `pub`, and `last_content_hash` / `engine` are decoupled in principle. Making the check explicit guarantees an unprimed engine deterministically takes the cold-start branch. The `is_engine_initialized()` accessor already exists (diagnostics.rs:39).\n\n2. (test_quality) Rewrite or drop `eval_cached_path_does_not_surface_circular_let_binding_known_limitation` (diagnostics.rs:610-653). Today it pins the known eval_cached bug (engine_eval.rs:1179 — immutable `let diagnostics = Vec::new()`) as the asserted behavior; when the bug is fixed, it will fail with no real regression. Preferred fix: rewrite as an `#[ignore = \"enable when eval_cached emits diagnostics\"]`'d positive test that asserts the post-fix behavior, so a future maintainer just removes the `ignore` attribute. The cold-start positive test (`eval_diagnostic_surfaces_via_stateful_pipeline_for_circular_let_binding`) plus a TODO comment in production code already covers the new capture logic.\n\n3. (code_quality) The `violated_messages` filter applied to the `eval_diagnostics` merge loop (diagnostics.rs:179-190) is a no-op today by the author's own comment — eval-time diagnostics never use the `\"constraint {id} violated\"` format. Either drop the filter and rely on a unit test that fails if eval ever starts emitting that format, or extract `is_constraint_violation_message(&str)` so the predicate is explicit and reusable rather than expressed as set membership in a HashSet built for an unrelated loop.\n\nThese are all small polish items in the same function and file; bundling minimizes overhead.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:56:02.961Z",
+      "lastModified": "2026-04-26T06:57:03.305Z",
       "taskCount": 2230,
-      "completedCount": 1990,
+      "completedCount": 1991,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T06:57:03.700Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T06:57:03.763Z"
     }
   }
 }
