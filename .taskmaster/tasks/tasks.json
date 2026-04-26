@@ -48231,23 +48231,21 @@
         "description": "The review/briefing.yaml known_gaps section routinely lags live task state: Task 2225 was added as a known_gap in the 2026-04-25 briefing refresh and completed ~2h later; this is the second occurrence of this pattern (first: all 9 original known_gaps closed before the refresh was triggered). Reviewers may incorrectly dismiss implemented features as still-open gaps.\\n\\nImplement a lightweight automation: when the reconciliation system marks a task done whose title/id appears in review/briefing.yaml known_gaps, automatically queue a /review-briefing task (or directly remove the entry). Options: (1) post-done reconciliation hook that scans briefing.yaml for the task id, (2) a Stage 3 check during reconciliation that detects known_gaps/done mismatch and submits a briefing-refresh task, (3) add briefing.yaml known_gaps entries with the task id as structured metadata so they can be programmatically removed.\\n\\nMinimum viable: Stage 2 reconciliation creates a 'Refresh briefing: remove task N from known_gaps' task whenever it detects a done task whose id is listed in known_gaps.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T07:36:16.362Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:35:43.083Z",
-      "taskCount": 2234,
+      "lastModified": "2026-04-26T07:36:16.363Z",
+      "taskCount": 2235,
       "completedCount": 1999,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T07:36:01.472Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T07:36:01.492Z"
+      ]
     }
   }
 }
