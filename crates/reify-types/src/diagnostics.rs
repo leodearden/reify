@@ -201,7 +201,7 @@ pub struct DiagnosticRef {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceSpan;
+    use super::{Diagnostic, DiagnosticCode, SourceSpan};
 
     #[test]
     fn prelude_sentinel_is_prelude() {
@@ -234,6 +234,45 @@ mod tests {
             SourceSpan::empty(0),
             "SourceSpan::prelude() must be distinct from SourceSpan::empty(0)"
         );
+    }
+
+    /// `Diagnostic::error` defaults `code` to `None` — opt-in via `with_code` only.
+    #[test]
+    fn diagnostic_default_code_is_none() {
+        let d = Diagnostic::error("x");
+        assert_eq!(d.code, None);
+    }
+
+    /// `with_code` attaches the supplied `DiagnosticCode` and is fluent (returns `Self`).
+    #[test]
+    fn diagnostic_with_code_attaches_code() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::TraitNotImplemented);
+        assert_eq!(d.code, Some(DiagnosticCode::TraitNotImplemented));
+    }
+
+    /// `DiagnosticCode` is `Copy + Clone + PartialEq + Eq + Hash + Debug`.
+    /// (Compile-tested by exercising each of those bounds in the body.)
+    #[test]
+    fn diagnostic_code_derives() {
+        use std::collections::HashSet;
+        let a = DiagnosticCode::TraitNotImplemented;
+        let b: DiagnosticCode = a; // Copy
+        let c = a; // Copy again — `a` still usable below
+        assert_eq!(a, b); // PartialEq
+        assert_eq!(a, c); // PartialEq
+        let _: DiagnosticCode = a.clone(); // Clone
+        let mut set: HashSet<DiagnosticCode> = HashSet::new();
+        assert!(set.insert(a)); // Hash + Eq
+        assert!(!set.insert(b)); // dedup on Eq
+        let _ = format!("{:?}", a); // Debug
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode` serializes to its PascalCase variant name.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TraitNotImplemented).unwrap();
+        assert_eq!(s, "\"TraitNotImplemented\"");
     }
 }
 
