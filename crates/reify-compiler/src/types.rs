@@ -365,6 +365,13 @@ pub struct SubComponentDecl {
     pub count_cell: Option<ValueCellId>,
     /// Optional guard expression for recursive termination (e.g., `where n > 0`).
     pub guard_expr: Option<CompiledExpr>,
+    /// True when the user wrote a `where` clause but it failed to compile
+    /// (Severity::Error diagnostics were emitted during guard compilation).
+    /// Distinct from `guard_expr.is_none() && !guard_compile_failed`, which means
+    /// the user wrote no guard at all. Used by the termination check to suppress
+    /// the misleading "add a where clause" cascade error when the user already
+    /// wrote one — it just did not compile.
+    pub guard_compile_failed: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
