@@ -506,6 +506,16 @@ impl Engine {
         let functions = self.functions.clone();
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
+        // Reset the test-instrumentation diff snapshot. The "most recent
+        // edit_source call" invariant on `Engine::last_diff_value_cells()`
+        // is enforced rather than documented — a subsequent edit_param
+        // clears the field so callers cannot observe a stale diff (task 2265).
+        // Gated to match the writer site in this same file (and to avoid
+        // touching the production hot path).
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        {
+            self.last_diff_value_cells = None;
+        }
         let state = self
             .eval_state
             .as_ref()
