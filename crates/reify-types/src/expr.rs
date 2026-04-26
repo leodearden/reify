@@ -784,6 +784,137 @@ impl CompiledExpr {
         }
     }
 
+    /// Rewrite every `ValueCellId` equal to `from` to `to`, traversing all
+    /// variants that carry a cell. This is used by activation-time expansion
+    /// of reflective-aggregation placeholders to carry a populated element's
+    /// cell ID into a quantifier predicate (e.g. `DeterminacyPredicate { cell }`)
+    /// after binding the synthetic loop var to the iterated cell (task-2289).
+    ///
+    /// Mirrors the structure of `remap_entity` arm-for-arm so future variant
+    /// additions touch one place.
+    pub fn remap_cell(&mut self, from: &ValueCellId, to: &ValueCellId) {
+        match &mut self.kind {
+            CompiledExprKind::ValueRef(id) => {
+                if id == from {
+                    *id = to.clone();
+                }
+            }
+            CompiledExprKind::Literal(_) => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                left.remap_cell(from, to);
+                right.remap_cell(from, to);
+            }
+            CompiledExprKind::UnOp { operand, .. } => {
+                operand.remap_cell(from, to);
+            }
+            CompiledExprKind::FunctionCall { args, .. } => {
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.remap_cell(from, to);
+                then_branch.remap_cell(from, to);
+                else_branch.remap_cell(from, to);
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                discriminant.remap_cell(from, to);
+                for arm in arms {
+                    arm.body.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::UserFunctionCall { args, .. } => {
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::Lambda {
+                body,
+                captures,
+                param_ids,
+                ..
+            } => {
+                body.remap_cell(from, to);
+                for cap in captures {
+                    if cap == from {
+                        *cap = to.clone();
+                    }
+                }
+                for pid in param_ids {
+                    if pid == from {
+                        *pid = to.clone();
+                    }
+                }
+            }
+            CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::SetLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    key.remap_cell(from, to);
+                    val.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                object.remap_cell(from, to);
+                index.remap_cell(from, to);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                object.remap_cell(from, to);
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::Quantifier {
+                variable_id,
+                collection,
+                predicate,
+                ..
+            } => {
+                if variable_id == from {
+                    *variable_id = to.clone();
+                }
+                collection.remap_cell(from, to);
+                predicate.remap_cell(from, to);
+            }
+            CompiledExprKind::OptionSome(inner) => {
+                inner.remap_cell(from, to);
+            }
+            CompiledExprKind::OptionNone => {}
+            CompiledExprKind::MetaAccess { .. } => {}
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
+                if cell == from {
+                    *cell = to.clone();
+                }
+            }
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+                if let Some(lo) = lower {
+                    lo.remap_cell(from, to);
+                }
+                if let Some(hi) = upper {
+                    hi.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                base.remap_cell(from, to);
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+        }
+    }
+
     /// Create a method call expression.
     pub fn method_call(
         object: CompiledExpr,
