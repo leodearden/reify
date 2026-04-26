@@ -1187,6 +1187,158 @@ fn xyz_sum_field_helper_returns_expected_structure() {
     }
 }
 
+// ── Step 2336: Kleene undef propagation regression tests ──────────────────────────
+
+/// `sample(field, Undef)` returns Undef regardless of the lambda body.
+///
+/// Pins the strict-undef short-circuit in `eval_expr` at
+/// `crates/reify-expr/src/lib.rs` (the `evaluated_args.iter().any(|v| v.is_undef())`
+/// guard before dispatching `sample`). The lambda body `|x| x + 1.0` is
+/// well-defined for any Real input; this test confirms that supplying an Undef
+/// *argument* bypasses the body entirely and immediately yields Undef.
+#[test]
+fn sample_propagates_undef_point_argument() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x + 1.0  (well-defined for any Real input)
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Undef) → Undef: strict-undef short-circuit fires before
+    // the lambda body is evaluated.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Undef, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample(field, Undef) must short-circuit to Undef via the strict-undef \
+         argument guard (lib.rs evaluated_args.iter().any(|v| v.is_undef()))"
+    );
+}
+
+/// Division-by-zero inside the lambda body propagates to Undef through `sample`.
+///
+/// Pins the per-op Kleene rule for division: when a lambda body evaluates
+/// `1.0 / 0.0`, `eval_binop` returns `Value::Undef`. That Undef then propagates
+/// back through `apply_lambda` → `apply_lambda_with_point_unpacking` →
+/// `eval_expr`'s `sample` dispatch arm, making `sample(field, 0.0)` return Undef.
+///
+/// References: `crates/reify-expr/src/lib.rs` (eval_binop Div arm, Kleene
+/// per-op rule for real division-by-zero).
+#[test]
+fn sample_propagates_undef_from_lambda_body_division_by_zero() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 1.0 / x  (Undef when x == 0.0 due to division-by-zero)
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Div,
+        CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, 0.0) → Undef: body evaluates 1.0 / 0.0 which yields Undef
+    // via the per-op Kleene rule for real division-by-zero in eval_binop.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(0.0), domain_type.clone()),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample(field, 0.0) where body is `1.0 / x` must return Undef: \
+         division-by-zero in eval_binop yields Undef per the Kleene per-op rule, \
+         and that Undef propagates back through the lambda invocation"
+    );
+
+    // Positive control: non-zero x gives a well-defined result.
+    let field2 = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Analytical,
+        lambda: {
+            let x_id2 = ValueCellId::new("$lambda0.S", "x");
+            let body2 = CompiledExpr::binop(
+                reify_types::BinOp::Div,
+                CompiledExpr::literal(Value::Real(1.0), Type::Real),
+                CompiledExpr::value_ref(x_id2.clone(), Type::Real),
+                Type::Real,
+            );
+            Arc::new(make_value_lambda(vec![("x", x_id2)], body2, ValueMap::new()))
+        },
+    };
+    let field2_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+    let sample_nonzero = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field2, field2_type),
+            CompiledExpr::literal(Value::Real(2.0), domain_type),
+        ],
+        Type::Real,
+    );
+    let nonzero_result = eval_expr(&sample_nonzero, &EvalContext::simple(&values));
+    assert_eq!(
+        nonzero_result,
+        Value::Real(0.5),
+        "sample(field, 2.0) where body is `1.0 / x` must return 0.5 (positive control)"
+    );
+}
+
 /// Verifies that `make_xyz_sum_field` produces the correct structure when
 /// called with `Type::vec3(Type::Real)` as the domain type.
 ///
