@@ -25,7 +25,7 @@
 //! cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture
 //! ```
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::compile_source_with_stdlib;
@@ -105,5 +105,17 @@ fn compile_large_literal_trait_arg_conformance_timing() {
         eprintln!("[task-2280] compiled N={n} List<Option<MaterialSpec>> in {elapsed:?}");
         // Verify correctness at each size so a walker regression surfaces here too.
         assert_no_errors(&module, n);
+        // Loose sanity assertion for the N=200 leg only: fire if compile time exceeds 30 s.
+        // This is categorical — it only fires on a catastrophic (~100×) regression, not a
+        // small ratio slowdown.  No ratio is pinned because exact timing varies by machine;
+        // 30 s is generous enough for shared CI runners but catches anything truly broken.
+        // Mirrors the pattern at crates/reify-lsp/tests/incremental_eval_benchmark.rs:124-132.
+        if n == 200 {
+            assert!(
+                elapsed < Duration::from_secs(30),
+                "[task-2293] catastrophic regression: N=200 trait_arg_conformance compile took \
+                 {elapsed:?}, expected < 30 s",
+            );
+        }
     }
 }
