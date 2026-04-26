@@ -28130,11 +28130,11 @@
         "description": "Two issues in the guard compilation fallback at lib.rs:5761-5772:\n\n1. **Misleading cascade**: Setting `guard_expr = None` when guard compilation fails prevents the old \"guard references no Int/Bool param\" cascade, but introduces a new one — the termination check sees `guard_expr: None` and emits \"recursive sub has no termination condition: add a where clause\" even though the user DID write a where clause. Fix: add a `guard_compile_failed: bool` field to `SubComponentDecl` (or use a sentinel like `guard_expr: Some(POISON)`) so the termination check can distinguish \"no guard written\" from \"guard written but broken\" and skip checking entirely for the latter.\n\n2. **Severity filtering**: The `diagnostics.len()` delta approach counts ALL diagnostic severities. If `compile_expr` ever emits a warning for a valid guard, the guard would be incorrectly dropped. Fix: filter by `Severity::Error` instead of comparing total lengths: `diagnostics[diag_count_before..].iter().any(|d| d.severity == Severity::Error)`.\n\nAlso fix while in the area:\n- Update test file line 10 doc comment: \"undef in recursive sub args\" → \"undef in guard-referenced recursive sub args\"\n- Update test comment at line 428 to say \"Must NOT have the specific guard-references-no-param cascading error\" instead of claiming exactly one error\n\nmemory_hints: search \"termination check guard compilation SubComponentDecl\", get_entity \"SubComponentDecl\"\n\nSource: review suggestions S2+S3 from esc-408-1075 (task 408).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:37.588Z",
+        "updatedAt": "2026-04-26T11:44:35.997Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/connect.rs",
@@ -28161,6 +28161,9 @@
               "guard compilation failure distinguish no-guard broken-guard severity",
               "guard compilation diagnostic severity filter reify-compiler"
             ]
+          },
+          "done_provenance": {
+            "commit": "590f9990eba905a4c70ede4aed4dde7ee7756c24"
           }
         }
       },
@@ -49000,15 +49003,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:43:48.087Z",
-      "taskCount": 2260,
-      "completedCount": 2024,
+      "lastModified": "2026-04-26T11:44:35.997Z",
+      "taskCount": 2261,
+      "completedCount": 2025,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T11:44:26.122Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T11:44:26.180Z"
+      ]
     }
   }
 }
