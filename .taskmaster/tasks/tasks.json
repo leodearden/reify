@@ -50110,10 +50110,11 @@
         "description": "PRD docs/prds/kleene-logic.md. Audit the forall evaluator in crates/reify-expr against §9.2.6 (lines 1718-1731). Verify \"no false, some undef ⇒ undef\" and \"empty ⇒ true (vacuous truth)\". Add 4 truth-table rows × {List, Set} test matrix. Watch for incorrect short-circuit on undef when a later false would force determined. Depends on #2294.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:57:07.204Z"
       },
       {
         "id": "2317",
@@ -50131,15 +50132,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:55:00.972Z",
-      "taskCount": 2302,
+      "lastModified": "2026-04-26T19:57:07.204Z",
+      "taskCount": 2306,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:55:29.913Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:56:58.197Z"
+      ]
     }
   }
 }
