@@ -14,7 +14,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::parse_and_compile_with_stdlib;
-use reify_types::{FieldSourceKind, ModulePath, Severity, Value, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_types::{FieldSourceKind, ModulePath, Satisfaction, Severity, Value, FIELD_ENTITY_PREFIX, ValueCellId};
 
 /// Absolute path to the fixture, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -113,5 +113,49 @@ fn composed_stiffness_evals_with_three_field_source_kinds() {
                 field_name, other
             ),
         }
+    }
+}
+
+/// Eval and check `examples/fields/composed_stiffness.ri` and verify all
+/// structure constraints (at least 4) are Satisfied.
+///
+/// The four range constraints come from the `ComposedStiffnessDemo` structure:
+///   - `temp_at_p > 399.999` and `temp_at_p < 400.001` (analytical sample at 2.0)
+///   - `stiff_at_p > 8.999` and `stiff_at_p < 9.001` (composed sample at 4.0)
+#[test]
+fn composed_stiffness_constraints_all_satisfied() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/fields/composed_stiffness.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors.
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    // Check constraints.
+    let check = engine.check(&compiled);
+    assert!(
+        check.constraint_results.len() >= 4,
+        "expected >=4 constraint results, got {}",
+        check.constraint_results.len()
+    );
+
+    for entry in &check.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
     }
 }
