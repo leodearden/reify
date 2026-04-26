@@ -1410,9 +1410,45 @@ impl Engine {
                         payload: None,
                     });
 
-                    // Use override if available, otherwise evaluate default
+                    // Use override if available (with validation), otherwise evaluate default.
+                    // Mirrors eval() lines 603-622: on mismatch emit a warning and fall back.
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
-                        override_val.clone()
+                        match validate_param_override(override_val, &cell.cell_type) {
+                            Ok(()) => override_val.clone(),
+                            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                                    cell.id, cell.cell_type, override_val
+                                )));
+                                // fall back to default
+                                if let Some(ref expr) = cell.default_expr {
+                                    reify_expr::eval_expr(
+                                        expr,
+                                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                                    )
+                                } else {
+                                    reify_types::Value::Undef
+                                }
+                            }
+                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
+                                expected,
+                                got,
+                            }) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                                    cell.id, expected, got
+                                )));
+                                // fall back to default
+                                if let Some(ref expr) = cell.default_expr {
+                                    reify_expr::eval_expr(
+                                        expr,
+                                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                                    )
+                                } else {
+                                    reify_types::Value::Undef
+                                }
+                            }
+                        }
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
