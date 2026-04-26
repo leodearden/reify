@@ -6,8 +6,8 @@
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
-    SolveResult, Type, Value, ValueMap,
+    AutoParam, BinOp, ConstraintSolver, DiagnosticCode, DimensionVector, OptimizationObjective,
+    ResolutionProblem, SolveResult, Type, Value, ValueMap,
 };
 
 #[test]
@@ -1707,6 +1707,48 @@ fn free_auto_resolves_underdetermined_system() {
         }
         other => panic!(
             "expected Solved for underdetermined free auto, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Infeasible diagnostic must carry DiagnosticCode::ConstraintUnsatisfiable.
+/// Bounds [0, 10mm], constraint x > 15mm — mirrors bounds_dont_hide_infeasibility setup.
+#[test]
+fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // constraint: x > 15mm, but bounds cap x at 10mm → Infeasible
+    let constraint = gt(x_ref, literal(mm(15.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)), // max 10mm
+            free: false,
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostic messages");
+            assert_eq!(
+                diagnostics[0].code,
+                Some(DiagnosticCode::ConstraintUnsatisfiable),
+                "infeasible diagnostic must carry ConstraintUnsatisfiable code",
+            );
+        }
+        other => panic!(
+            "expected Infeasible for constraint beyond bounds, got {:?}",
             other
         ),
     }
