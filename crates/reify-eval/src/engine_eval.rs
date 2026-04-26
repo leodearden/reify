@@ -1640,6 +1640,74 @@ impl Engine {
                     )));
                 }
             }
+
+            // Solver pass: invoke constraint solver for diagnostic purposes.
+            // Mirrors eval() lines 1006-1158, but with an intentionally empty Solved arm —
+            // value/snapshot updates in eval_cached are a separate gap (see design decision:
+            // "Solver Solved arm in eval_cached is intentionally empty"). Only the
+            // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
+            if self.solver.is_some() {
+                let auto_ids: std::collections::HashSet<ValueCellId> = template
+                    .value_cells
+                    .iter()
+                    .filter(|cell| cell.kind.is_auto())
+                    .map(|cell| cell.id.clone())
+                    .collect();
+
+                if !auto_ids.is_empty() {
+                    let filtered_constraints: Vec<_> = template
+                        .constraints
+                        .iter()
+                        .filter(|c| {
+                            let trace = extract_dependency_trace(&c.expr);
+                            trace.reads.iter().any(|r| auto_ids.contains(r))
+                        })
+                        .map(|c| (c.id.clone(), c.expr.clone()))
+                        .collect();
+
+                    let auto_param_list: Vec<AutoParam> = template
+                        .value_cells
+                        .iter()
+                        .filter(|cell| cell.kind.is_auto())
+                        .map(|cell| AutoParam {
+                            id: cell.id.clone(),
+                            param_type: cell.cell_type.clone(),
+                            bounds: None,
+                            free: cell.kind.is_auto_free(),
+                        })
+                        .collect();
+
+                    let problem = ResolutionProblem {
+                        auto_params: auto_param_list,
+                        constraints: filtered_constraints,
+                        current_values: values.clone(),
+                        objective: template.objective.clone(),
+                        functions: self.functions.clone(),
+                    };
+
+                    let solve_result = self.solver.as_ref().unwrap().solve(&problem);
+
+                    match solve_result {
+                        SolveResult::Solved { .. } => {
+                            // Intentional no-op: value/snapshot updates from a Solved result
+                            // are out of scope for this task (diagnostic-emission only).
+                            // See plan design decision: "Solver Solved arm in eval_cached is
+                            // intentionally empty — no value/snapshot updates".
+                        }
+                        SolveResult::Infeasible {
+                            diagnostics: solver_diags,
+                        } => {
+                            diagnostics.extend(solver_diags);
+                        }
+                        SolveResult::NoProgress { reason } => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Constraint solver made no progress: {}",
+                                reason
+                            )));
+                        }
+                    }
+                }
+            }
         }
 
         CachedEvalResult {
