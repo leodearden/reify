@@ -464,6 +464,29 @@ pub(crate) fn eval_ctx_with_meta<'a>(
     reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
 }
 
+/// Build the per-template meta-map consumed by `eval_ctx_with_meta`.
+///
+/// Filters out templates with empty `meta` blocks and clones each
+/// non-empty entry into the returned `Arc`-wrapped HashMap so the result
+/// can be cheaply shared (Arc::clone) with `ConcurrentEditSetup` and
+/// other consumers without deep-copying the inner string maps.
+///
+/// Centralised in `lib.rs` so future shape changes (interning, additional
+/// filter rules) land in exactly one place — see task 2216 / esc-397-72
+/// suggestion 2.
+pub(crate) fn build_meta_map(
+    module: &CompiledModule,
+) -> Arc<HashMap<String, HashMap<String, String>>> {
+    Arc::new(
+        module
+            .templates
+            .iter()
+            .filter(|t| !t.meta.is_empty())
+            .map(|t| (t.name.clone(), t.meta.clone()))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
