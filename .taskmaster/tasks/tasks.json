@@ -49604,7 +49604,9 @@
         "details": "",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "2308"
+        ],
         "priority": "high",
         "subtasks": [],
         "metadata": {
@@ -49959,7 +49961,15 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:52:29.740Z"
+        "updatedAt": "2026-04-26T19:52:29.740Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib Geometry Traits: Declare Marker Traits"
+            ]
+          }
+        }
       },
       {
         "id": "2308",
@@ -50017,7 +50027,9 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:52:31.286Z",
+      "description": "Tasks for master context"
     }
   }
 }
