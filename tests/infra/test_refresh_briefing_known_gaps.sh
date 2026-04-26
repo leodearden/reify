@@ -368,5 +368,91 @@ assert "Check 12: stderr contains ERROR" \
 assert "Check 12: stderr does NOT contain 'Traceback'" \
     bash -c "! grep -q 'Traceback' '$_stderr12'"
 
+# ==============================================================================
+# Check 13: --quiet suppresses OK message; default mode prints it on no mismatch
+# ==============================================================================
+echo ""
+echo "--- Check 13: --quiet suppresses OK message; default mode shows it ---"
+
+_brief13="$_tmpdir/briefing13.yaml"
+_tasks13="$_tmpdir/tasks13.json"
+
+# Gap with a tracked task that is NOT done — no mismatch, but there IS a gap
+# entry to process (so we reach the OK-message code, not the early return).
+cat > "$_brief13" <<'YAML'
+subprojects:
+  proj:
+    known_gaps:
+      - what: "open gap"
+        tracking: "77"
+YAML
+
+cat > "$_tasks13" <<'JSON'
+{"master":{"tasks":[{"id":"77","title":"Task 77","status":"in-progress"}]}}
+JSON
+
+# 13a: default mode (no --quiet) → stderr should contain OK message
+_stderr13a="$_tmpdir/stderr13a.txt"
+_exit13a=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief13" --tasks "$_tasks13" 2>"$_stderr13a" || _exit13a=$?
+
+assert "Check 13a: exit code is 0 (no done task)" \
+    test "$_exit13a" -eq 0
+
+assert "Check 13a: default mode prints OK message when no mismatches" \
+    grep -q "OK" "$_stderr13a"
+
+# 13b: --quiet → stderr must be empty (OK message suppressed)
+_stderr13b="$_tmpdir/stderr13b.txt"
+_exit13b=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief13" --tasks "$_tasks13" --quiet 2>"$_stderr13b" || _exit13b=$?
+
+assert "Check 13b: exit code is 0 (no done task)" \
+    test "$_exit13b" -eq 0
+
+assert "Check 13b: --quiet suppresses OK message (stderr empty)" \
+    bash -c "[ ! -s '$_stderr13b' ]"
+
+# ==============================================================================
+# Check 14: done subtask with dotted tracking ID is flagged
+# ==============================================================================
+echo ""
+echo "--- Check 14: done subtask (dotted tracking ID) is flagged ---"
+
+_brief14="$_tmpdir/briefing14.yaml"
+_tasks14="$_tmpdir/tasks14.json"
+
+cat > "$_brief14" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "LSP subtask that was fixed"
+        tracking: "42.1"
+YAML
+
+cat > "$_tasks14" <<'JSON'
+{"master":{"tasks":[{
+  "id": "42",
+  "title": "Parent task",
+  "status": "in-progress",
+  "subtasks": [
+    {"id": "1", "title": "Subtask one", "status": "done"}
+  ]
+}]}}
+JSON
+
+_stderr14="$_tmpdir/stderr14.txt"
+_exit14=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief14" --tasks "$_tasks14" 2>"$_stderr14" || _exit14=$?
+
+assert "Check 14: exit code is 1 (done subtask mismatch)" \
+    test "$_exit14" -eq 1
+
+assert "Check 14: stderr contains WARN" \
+    grep -q "WARN" "$_stderr14"
+
+assert "Check 14: stderr contains dotted subtask id '42.1'" \
+    grep -q "42.1" "$_stderr14"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

@@ -18,11 +18,21 @@ Exit codes:
 import argparse
 import json
 import sys
+from pathlib import Path
 
 try:
     import yaml
 except ImportError:
     yaml = None  # type: ignore[assignment]
+
+# Resolve defaults relative to this script's location so the script can be
+# invoked from any working directory without relying on the caller being at
+# the repo root.  The script lives at <repo-root>/scripts/refresh_*.py, so
+# the repo root is one level up.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent
+_DEFAULT_BRIEFING = str(_REPO_ROOT / "review" / "briefing.yaml")
+_DEFAULT_TASKS = str(_REPO_ROOT / ".taskmaster" / "tasks" / "tasks.json")
 
 
 def main() -> int:
@@ -34,15 +44,15 @@ def main() -> int:
     )
     parser.add_argument(
         "--briefing",
-        default="review/briefing.yaml",
+        default=_DEFAULT_BRIEFING,
         metavar="PATH",
-        help="Path to briefing.yaml (default: review/briefing.yaml)",
+        help="Path to briefing.yaml (default: <repo-root>/review/briefing.yaml)",
     )
     parser.add_argument(
         "--tasks",
-        default=".taskmaster/tasks/tasks.json",
+        default=_DEFAULT_TASKS,
         metavar="PATH",
-        help="Path to tasks.json (default: .taskmaster/tasks/tasks.json)",
+        help="Path to tasks.json (default: <repo-root>/.taskmaster/tasks/tasks.json)",
     )
     parser.add_argument(
         "--json",
@@ -53,7 +63,11 @@ def main() -> int:
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress diagnostic chatter; only print mismatch WARN lines",
+        help=(
+            "Suppress the informational 'OK: no stale known_gaps detected' message "
+            "printed when no mismatches are found. "
+            "ERROR lines (I/O or parse failures) are always shown regardless of --quiet."
+        ),
     )
 
     args = parser.parse_args()
@@ -109,6 +123,10 @@ def main() -> int:
     # ------------------------------------------------------------------ #
     # Build task index from tasks.json master tag                          #
     # ------------------------------------------------------------------ #
+    # Index top-level tasks AND subtasks so that dotted tracking IDs like
+    # "1751.2" resolve correctly.  Reify uses dotted subtask IDs extensively;
+    # conflating "subtask exists but not indexed" with "task does not exist"
+    # would silently treat done subtasks as orphans — a real coverage hole.
     tasks_index: dict[str, dict] = {}
     master = tasks_data.get("master", {}) if isinstance(tasks_data, dict) else {}
     if isinstance(master, dict):
@@ -116,7 +134,15 @@ def main() -> int:
             if isinstance(task, dict):
                 task_id = task.get("id")
                 if task_id is not None:
-                    tasks_index[str(task_id)] = task
+                    task_id_str = str(task_id)
+                    tasks_index[task_id_str] = task
+                    # Index subtasks as "{parent_id}.{subtask_id}" using the
+                    # dotted-ID convention Reify uses (e.g. "1751.2").
+                    for subtask in task.get("subtasks", []):
+                        if isinstance(subtask, dict):
+                            subtask_id = subtask.get("id")
+                            if subtask_id is not None:
+                                tasks_index[f"{task_id_str}.{subtask_id}"] = subtask
 
     # ------------------------------------------------------------------ #
     # Cross-reference: find gaps whose tracked task is "done"             #
@@ -162,6 +188,12 @@ def main() -> int:
                 f"— refresh review/briefing.yaml under subproject \"{m['subproject']}\"",
                 file=sys.stderr,
             )
+        # Print an informational OK message when no mismatches are found,
+        # unless --quiet suppresses it.  The post-commit hook uses --quiet so
+        # it only speaks when there is something actionable (a WARN line).
+        # ERROR lines are always emitted regardless of --quiet.
+        if not mismatches and not args.quiet:
+            print("OK: no stale known_gaps detected", file=sys.stderr)
 
     return 1 if mismatches else 0
 
