@@ -56,6 +56,9 @@ fi
 # Gate conditions:
 #   (a) Commit message matches set_task_status(NNN=done) — avoids spurious work
 #       on in-progress/pending transitions and plain source commits.
+#       Regex `set_task_status\([0-9]+=done\)` is strict: requires the literal
+#       token "=done)" so "=in-progress" or "=pending" commits are excluded.
+#       Tests/infra/test_post_commit_hook.sh Checks 10-11 verify this boundary.
 #   (b) Both review/briefing.yaml and scripts/refresh_briefing_known_gaps.py
 #       exist in the worktree — silently no-ops if either is absent.
 #
