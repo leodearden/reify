@@ -3,6 +3,7 @@
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
 use reify_test_support::{compile_source, errors_only};
+use reify_types::DiagnosticCode;
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
@@ -198,4 +199,41 @@ field def temp : Scalar -> Scalar { source = analytical { |x| x } }
         1,
         "expected only 1 compiled field (duplicate should be skipped)"
     );
+}
+
+// ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
+
+#[test]
+fn compile_field_imported_emits_v02_deferral_diagnostic() {
+    let module = compile_source(
+        r#"field def data : Point3 -> Scalar { source = imported { "data.vtu" } }"#,
+    );
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for imported field source, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_code_and_msg = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::FieldImportedV02)
+            && d.message.contains("v0.2")
+            && d.message.contains("imported")
+    });
+    assert!(
+        has_code_and_msg,
+        "expected DiagnosticCode::FieldImportedV02 with message containing 'v0.2' and 'imported', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let first = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FieldImportedV02))
+        .unwrap();
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
