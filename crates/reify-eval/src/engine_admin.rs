@@ -350,8 +350,10 @@ impl Engine {
     ///
     /// Returns a reference to the `(changed, added, removed)` triple captured
     /// from the `diff_value_cells` call inside the most recent `edit_source`
-    /// invocation. `None` means no `edit_source` has been called yet on this
-    /// `Engine`.
+    /// invocation, **or `None` if no `edit_source` has been called yet on this
+    /// `Engine` or if a subsequent `edit_param` has cleared the snapshot** (the
+    /// "most recent edit_source" invariant is enforced by a cfg-gated reset at
+    /// the top of `edit_param`, not just documented).
     ///
     /// Canonical use case: T3 premise lock
     /// (`edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip`)
