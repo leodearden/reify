@@ -49952,14 +49952,14 @@
         "description": "Declare Bounded, Watertight, Closed, Manifold, Orientable, Convex, Connected as marker traits in the geometry_traits.ri file.",
         "details": "Implement the marker traits Bounded, Watertight, Closed, Manifold, Orientable, Convex, and Connected in the `crates/reify-compiler/stdlib/geometry_traits.ri` file. These traits should be defined as empty traits to serve as markers for geometric properties. Follow the specifications outlined in the PRD document `docs/prds/geometry-traits.md`, specifically task 1. Ensure that the traits are correctly documented and integrated into the existing stdlib structure. Consider how these traits might interact with existing geometry-related traits and structures.",
         "testStrategy": "1. Verify that the `geometry_traits.ri` file compiles without errors.\n2. Ensure each marker trait is correctly declared and accessible.\n3. Write unit tests to check that objects can implement these traits without additional requirements.\n4. Confirm that the traits are documented and appear in generated documentation.\n5. Run `cargo test -p reify-compiler -- geometry_traits` to ensure all tests pass.",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "326",
           "329"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:50:02.093Z"
+        "updatedAt": "2026-04-26T19:52:29.740Z"
       },
       {
         "id": "2308",
@@ -50012,7 +50012,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:52:02.723Z",
+      "lastModified": "2026-04-26T19:52:29.740Z",
       "taskCount": 2300,
       "completedCount": 2058,
       "tags": [
