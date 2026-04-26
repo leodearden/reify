@@ -88,9 +88,35 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     .with_label(DiagnosticLabel::new(pragma.span, "ignored legacy form")),
                 );
             }
+            [PragmaArg::Bare(PragmaValue::Number(_))] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#precision: expected a Length literal (e.g. 0.001m), got a bare \
+                         number; ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            [PragmaArg::KeyValue { .. }] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#precision: expected a Length literal (e.g. 0.001m); key=value form \
+                         not recognised in v0.1; ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
             _ => {
-                // Other arg shapes (bare Number, KeyValue, etc.) handled
-                // in later steps.
+                // Catch-all for any other shape: zero args, multiple args, a
+                // bare String/Bool, or an Ident other than `float64`. All emit
+                // the same generic "expected a Length literal" warning and
+                // leave default_tolerance unset.
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#precision: expected a Length literal (e.g. 0.001m); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
             }
         }
     }
