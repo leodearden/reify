@@ -48415,11 +48415,11 @@
         "description": "Reduce parameter count and remove `u64`→`VersionId` impedance mismatch in `eval_guarded_group_param_cell` and its companion `record_eval_completed` (both in `crates/reify-eval/src/engine_eval.rs`).",
         "details": "Two related cleanups surfaced by review of task-2195:\n\n1. **Parameter explosion (engine_eval.rs:215-226).** `eval_guarded_group_param_cell` now takes 10 parameters and is silenced with `#[allow(clippy::too_many_arguments)]`. Five of them (`journal`, `cache`, `version_id`, `meta_map`, `functions`) are engine-scoped state and the helper is only called from `Engine::eval`. Introduce a small bundle (e.g. `struct GuardedParamCtx<'a> { journal: &'a mut EventJournal, cache: &'a mut CacheStore, functions: &'a [CompiledFunction], meta_map: &'a HashMap<String, HashMap<String, String>>, version: VersionId }`) and pass it as a single argument. Remove the `clippy::too_many_arguments` suppression.\n\n2. **Type strength (engine_eval.rs:178).** `record_eval_completed` and `eval_guarded_group_param_cell` accept `version_id: u64` and immediately wrap it as `VersionId(version_id)` at every use site (twice in the helper). Other engine code wraps once at the call boundary. Change `version_id: u64` → `version: VersionId` in both helpers; update the four `Engine::eval` call sites to wrap once at the boundary.\n\nCombine both because they touch the same signatures — doing them in one PR avoids a second churn of `engine_eval.rs`. Lock with the existing journal+cache regression tests in `crates/reify-eval/tests/eval_param_overrides.rs` (no behaviour change expected).\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T08:18:47.317Z",
+        "updatedAt": "2026-04-26T10:46:59.213Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
@@ -48840,7 +48840,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T10:46:53.783Z",
+      "lastModified": "2026-04-26T10:46:59.214Z",
       "taskCount": 2258,
       "completedCount": 2021,
       "tags": [
