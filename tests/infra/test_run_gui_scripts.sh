@@ -218,7 +218,7 @@ assert "scripts/run-gui-dev.sh installs a trap on EXIT" \
     bash -c "grep -qE '^[[:space:]]*trap .* EXIT' '$RUN_GUI_DEV'"
 
 assert "scripts/run-gui-dev.sh trap references the vite PID variable" \
-    bash -c "grep -E '^[[:space:]]*trap ' '$RUN_GUI_DEV' | grep -qE 'VITE_PID|kill'"
+    bash -c "grep -E '^[[:space:]]*trap ' '$RUN_GUI_DEV' | grep -qE 'VITE_PID|kill|cleanup'"
 
 # -- Test 17: cargo build is DEBUG profile (no --release) ------------------
 echo ""
