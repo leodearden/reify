@@ -50287,6 +50287,21 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2329",
+        "title": "Re-route Filtered Selectors through Feature-Tag Resolution",
+        "description": "Update the routing of filtered selectors to use feature-tag resolution, replacing raw re-iteration methods.",
+        "details": "Modify the selector routing logic to utilize feature-tag resolution as described in the PRD document (prds/topology-selectors.md, task 5). Specifically, transition the handling of `edges_at_height`, `edges_parallel_to`, `edges_by_length`, and `faces_by_area` from raw re-iteration to a feature-tag-based approach. Implement a behavior change where stale tags return `undef` and emit a `W_TOPOLOGY_TAG_STALE` warning instead of returning stale results. Ensure that the existing tests (#318) continue to pass with the new implementation path. This will involve updating the logic in the relevant modules to check for tag staleness and handle it appropriately, as well as ensuring that the feature-tag resolution is integrated seamlessly into the existing selector framework.",
+        "testStrategy": "Run the pre-existing test suite (#318) to verify that all tests pass with the new feature-tag resolution path. Additionally, create new tests to specifically verify that stale tags return `undef` and emit the `W_TOPOLOGY_TAG_STALE` warning. These tests should cover scenarios where tags are fresh, stale, and missing, ensuring that the correct behavior is exhibited in each case.",
+        "status": "pending",
+        "dependencies": [
+          "248",
+          "249",
+          "250"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50299,7 +50314,7 @@
       ],
       "created": "2026-04-26T20:01:03.561Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:01:09.051Z"
+      "updated": "2026-04-26T20:01:15.381Z"
     }
   }
 }
