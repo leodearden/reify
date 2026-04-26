@@ -5,6 +5,7 @@
 //! that the traits resolve from the prelude in user `.ri` sources.
 
 use reify_compiler::*;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -188,4 +189,38 @@ fn all_seven_traits_are_pure_markers() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ─── step-11: marker trait resolves from prelude in user source ──────────────
+
+/// Step 11: A user `.ri` source can reference a geometry marker trait by bare
+/// name and have it resolve via the prelude. Compile a structure conforming
+/// to Bounded, assert no errors, and assert the trait bound landed on the
+/// generated template. Mirrors stdlib_loader_tests.rs's
+/// compile_with_prelude_makes_traits_visible pattern.
+#[test]
+fn marker_trait_resolves_from_prelude_in_user_source() {
+    let source = r#"
+structure def Box : Bounded {
+    param x : Real = 1.0
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "Box : Bounded should compile without errors via the prelude, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        template.trait_bounds.contains(&"Bounded".to_string()),
+        "Box should have 'Bounded' trait bound, got: {:?}",
+        template.trait_bounds
+    );
 }
