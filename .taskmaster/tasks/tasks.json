@@ -48198,11 +48198,11 @@
         "description": "Add a behavioral test for the vite-process-death early exit added to `scripts/run-gui-dev.sh` (lines 90-95) in task 2237. The branch detects when the npm/vite child dies before binding :1420 (via `kill -0 \"$VITE_PID\"`), surfaces the actual rc, and exits non-zero — but it currently has no test coverage, making it easy to silently break on future refactors (e.g. someone changes how VITE_PID is assigned or moves the readiness loop above the trap).\n\nSuggested approach (from reviewer_comprehensive on task 2237):\n- Stub `npm` on PATH so `npm run dev -- --port 1420` exits non-zero immediately (e.g. write a temp `npm` shim that exits 1 when invoked with `run dev`).\n- Run `scripts/run-gui-dev.sh somefile.ri` with the stubbed PATH.\n- Assert the script exits non-zero AND stderr contains the substring `vite process exited` (NOT the 30s-timeout message `did not become ready on 127.0.0.1:1420`).\n\nThe test should live alongside the project's other shell-script behavioral tests (see `tests/infra/` patterns in the repo). It needs to also bypass the sidecar/npm-install steps that run BEFORE the vite spawn — either by stubbing those too, or by structuring the test to short-circuit them.\n\nSource: review of task 2237; reviewer_comprehensive suggestion #1.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:13:34.095Z",
+        "updatedAt": "2026-04-26T07:58:27.401Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -48212,7 +48212,10 @@
               "run-gui-dev.sh file existence preflight vite process death detection"
             ]
           },
-          "_causation_id": "94644130-2f15-41ed-9dc9-f2551db2f971"
+          "_causation_id": "94644130-2f15-41ed-9dc9-f2551db2f971",
+          "done_provenance": {
+            "commit": "a0c0f798b404055127e51387e96700f45239ec55"
+          }
         }
       },
       {
@@ -48330,9 +48333,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:57:50.040Z",
+      "lastModified": "2026-04-26T07:58:27.427Z",
       "taskCount": 2239,
-      "completedCount": 2002,
+      "completedCount": 2003,
       "tags": [
         "master"
       ]
