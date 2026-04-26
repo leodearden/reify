@@ -50262,6 +50262,31 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2327",
+        "title": "Implement OCCT FFI for Topology-Relational Selectors",
+        "description": "Develop FFI bindings for adjacent_faces and shared_edges topology selectors, enabling topology iteration and evaluation.",
+        "details": "Implement the OCCT FFI for topology-relational selectors as specified in the PRD document. For adjacent_faces, iterate over a face's edge loop, collecting faces that share each edge. For shared_edges, intersect the edge lists of two faces to find shared edges. Integrate these functionalities into the standard library bindings and ensure they are correctly wired for evaluation. Consider edge cases such as non-manifold edges and ensure robust error handling. Use the OCCT API to access and manipulate the topology data efficiently.",
+        "testStrategy": "Create tests using a box geometry to verify that each face has exactly four adjacent faces and that each adjacent pair shares exactly one edge. Validate the correct operation of both adjacent_faces and shared_edges selectors. Include tests for edge cases such as non-manifold edges and ensure that the system handles these gracefully without errors.",
+        "status": "pending",
+        "dependencies": [
+          "249",
+          "250"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2328",
+        "title": "Freshness: wire propagation rule (input freshness → output freshness) in evaluator",
+        "description": "PRD docs/prds/freshness-4-variant.md. Wire arch §7.2 (lines 730-749) propagation rule into the recursive evaluator: output.freshness = if self.still_refining { Intermediate } else if any input != Final { Intermediate } else { Final }. Add unit tests for each row of the §7.2 truth table over a small synthetic graph in crates/reify-eval. Builds on the NodeCache freshness-field task.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50274,7 +50299,7 @@
       ],
       "created": "2026-04-26T20:01:03.561Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:01:03.585Z"
+      "updated": "2026-04-26T20:01:09.051Z"
     }
   }
 }
