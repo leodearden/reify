@@ -48456,12 +48456,13 @@
           "memory_hints": {
             "entities": [
               "EvalOutcome",
-              "record_eval_completed"
+              "Engine::eval"
             ],
             "queries": [
-              "EvalOutcome variant record_evaluation task-2195 engine_eval.rs rejected override no default",
-              "cache record_evaluation Completed outcome EvalOutcome New Unchanged hardcoded",
-              "engine_eval.rs rationale comment deferred-cache reversal task-2195"
+              "EvalOutcome rejected-override-no-default variant S4 rationale",
+              "param_overrides rejected override no default EvalOutcome",
+              "eval_guarded_group_param_cell EvalOutcome variant documentation",
+              "engine_eval S4 phase rationale decisions"
             ]
           }
         }
