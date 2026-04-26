@@ -1271,11 +1271,6 @@ impl Engine {
         );
 
         for template in &module.templates {
-            // Track whether any auto cell missed the cache this template this call.
-            // Used to gate the solver pass: if all auto inputs hit the cache, the
-            // constraint problem inputs are unchanged and we can skip the solve.
-            let mut any_auto_miss = false;
-
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
                 if cell.kind.is_auto() {
@@ -1321,7 +1316,6 @@ impl Engine {
                     }
 
                     stats.cache_misses += 1;
-                    any_auto_miss = true;
 
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
@@ -1681,12 +1675,14 @@ impl Engine {
                     .map(|cell| cell.id.clone())
                     .collect();
 
-                // Only invoke the solver if at least one auto cell missed the cache this
-                // call. When all auto inputs hit the version fast-path or cache-reuse path
-                // their values are unchanged, so the constraint problem is identical to the
-                // last invocation — skipping the solve avoids duplicate work on the LSP hot
-                // path (eval_cached is called on every keystroke).
-                if !auto_ids.is_empty() && any_auto_miss {
+                // Invoke the solver unconditionally (when auto cells exist), mirroring
+                // eval()'s solver invocation pattern. The solver must run on every
+                // eval_cached call — even when all auto cells hit the cache — so that
+                // Infeasible/NoProgress diagnostics surface on every LSP keystroke.
+                // See step-10/step-11 regression tests. Cycle detection and sub-component
+                // validation in the same loop body also run unconditionally; the solver
+                // was the only outlier.
+                if !auto_ids.is_empty() {
                     let filtered_constraints: Vec<_> = template
                         .constraints
                         .iter()
