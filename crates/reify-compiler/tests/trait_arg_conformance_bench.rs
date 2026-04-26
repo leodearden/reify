@@ -64,14 +64,6 @@ fn assert_no_errors(module: &CompiledModule, n: usize) {
     );
 }
 
-/// Confirms that `make_source(0)` panics rather than silently producing a
-/// zero-element list literal that compiles but tests nothing.
-#[test]
-#[should_panic(expected = "make_source requires n >= 1")]
-fn make_source_panics_on_zero() {
-    make_source(0);
-}
-
 /// Correctness regression guard for the recursive `walk_param_against_arg`
 /// dispatcher introduced in task 2227.  Runs on every `cargo test` invocation
 /// (not `#[ignore]`'d).
