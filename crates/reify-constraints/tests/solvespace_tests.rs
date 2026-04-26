@@ -3,8 +3,8 @@
 use reify_constraints::SolveSpaceSolver;
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash, DimensionVector,
-    ResolutionProblem, ResolvedFunction, SolveResult, Type, Value, ValueMap,
+    AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash, DiagnosticCode,
+    DimensionVector, ResolutionProblem, ResolvedFunction, SolveResult, Type, Value, ValueMap,
 };
 
 // --- Helpers ---
@@ -915,6 +915,71 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
         }
         other => panic!(
             "expected NoProgress for constraint with non-auto missing value, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Inconsistent geometric constraints must carry DiagnosticCode::ConstraintUnsatisfiable.
+/// Reuses the overconstrained setup from solve_overconstrained_returns_infeasible.
+#[test]
+fn inconsistent_geometric_diagnostic_carries_constraint_unsatisfiable_code() {
+    let solver = SolveSpaceSolver;
+
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    // distance(pt, origin) == 10mm
+    let dist1 = geo_fn("pt_pt_distance", vec![pt.clone(), origin.clone()], Type::length());
+    let c1 = eq(dist1, literal(mm(10.0)));
+
+    // distance(pt, origin) == 20mm — contradicts c1
+    let dist2 = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let c2 = eq(dist2, literal(mm(20.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: None, free: false },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: None, free: false },
+        ],
+        constraints: vec![(cnid("Over", 0), c1), (cnid("Over", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostics");
+            assert_eq!(
+                diagnostics[0].code,
+                Some(DiagnosticCode::ConstraintUnsatisfiable),
+                "inconsistent geometric diagnostic must carry ConstraintUnsatisfiable code",
+            );
+        }
+        other => panic!(
+            "overconstrained system should be Infeasible, got {:?}",
             other
         ),
     }
