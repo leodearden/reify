@@ -50392,10 +50392,11 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Per arch §3.5 lines 432-436: when a node's value is unchanged but its freshness transitions (e.g. Intermediate → Final via upstream cutoff), propagate freshness downstream without value recomputation. Lightweight mode within dirty-cone walk; freshness early cutoff stops walk when freshness doesn't change at a node. Test: synthetic graph where upstream Intermediate→Final transition with no value change correctly updates downstream freshness metadata, no value evaluator calls fired.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:04:13.069Z"
       },
       {
         "id": "2336",
@@ -50413,15 +50414,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:02:44.864Z",
-      "taskCount": 2321,
+      "lastModified": "2026-04-26T20:04:13.159Z",
+      "taskCount": 2325,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:02:51.072Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:04:04.154Z"
+      ]
     }
   }
 }
