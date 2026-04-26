@@ -1,37 +1,11 @@
-//! TDD tests pinning the import-warning behaviour introduced in task 2226.
-//!
-//! Tests are added in TDD order across steps 1 and 3:
-//!
-//! Step-1 tests (silent-on-resolved):
-//! 1. `module_dag_resolved_user_import_emits_no_warning` — when ModuleDag
-//!    recursively compiles a user import and seeds the result into the entry
-//!    module's prelude, the import declaration in the entry module should NOT
-//!    produce a warning diagnostic (the import was resolved).
-//!
-//! 2. `compile_with_stdlib_resolved_std_import_emits_no_warning` — when
-//!    `compile_with_stdlib` is used and the source imports a stdlib module
-//!    (e.g. `std.units`), no warning should fire because the stdlib prelude
-//!    already contains `std.units`.
-//!
-//! Step-3 test (specific wording):
-//! 3. `compile_with_stdlib_unresolved_user_import_emits_specific_warning` —
-//!    when `compile_with_stdlib` is used and the source imports a user module
-//!    that is not in the prelude, a Warning diagnostic is emitted with accurate
-//!    wording (references compile_project / ModuleDag; does NOT say "not yet
-//!    implemented").
-//!
-//! Amendment test (coverage gap from reviewer):
-//! 4. `module_dag_resolved_destructured_import_emits_no_warning` — pins the
-//!    path-form invariant: `import a.{Foo}` has path="a" in the AST, and
-//!    ModuleDag's prelude key for `a.ri` is also "a", so the gate matches and
-//!    no warning fires.
+//! Pin the import-warning behaviour: silent when the import path is in the prelude
+//! (resolved by ModuleDag or by `compile_with_stdlib`'s stdlib seed), and a
+//! specific actionable warning otherwise.
 
 use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_types::Severity;
-
-// ── Step-1: silent-on-resolved tests ─────────────────────────────────────────
 
 /// ModuleDag-resolved user import: no warning diagnostic on the entry module.
 ///
@@ -80,8 +54,6 @@ fn module_dag_resolved_user_import_emits_no_warning() {
             .collect::<Vec<_>>()
     );
 }
-
-// ── Step-3: specific wording for unresolved user imports ─────────────────────
 
 /// Unresolved user import through `compile_with_stdlib`: the warning must use
 /// accurate, actionable wording.
@@ -192,8 +164,6 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
             .collect::<Vec<_>>()
     );
 }
-
-// ── Amendment: path-form invariant for destructured imports ──────────────────
 
 /// Destructured import `import a.{Foo}` is resolved silently by ModuleDag.
 ///
