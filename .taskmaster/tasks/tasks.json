@@ -48396,7 +48396,19 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "eval_guarded_group_param_cell",
+              "VersionId",
+              "EventJournal"
+            ],
+            "queries": [
+              "eval_guarded_group_param_cell too_many_arguments signature GuardedParamCtx context struct",
+              "VersionId u64 type wrapping engine_eval record_eval_completed",
+              "journal cache version meta_map functions engine-scoped state engine_eval"
+            ]
+          }
         }
       },
       {
