@@ -50048,6 +50048,17 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2313",
+        "title": "Pragma #kernel: validate occt and reject other kernels with explicit v0.2-deferred error",
+        "description": "v0.1 #kernel pragma: accept #kernel(occt); reject other kernel names with ERROR \"kernel '<other>' is deferred to v0.2; v0.1 supports only #kernel(occt)\" — makes the v0.1 limitation discoverable. Record on CompiledModule.kernel_pragma: Option<String> for round-trip and doc-tool consumption. Block-level: ignored-with-warning (already in KNOWN_BLOCK_PRAGMAS). PRD: docs/prds/pragmas.md item 4. Architecture ref: reify-implementation-architecture.md §10.3.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50059,7 +50070,8 @@
         "master"
       ],
       "created": "2026-04-26T19:54:06.522Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:54:44.181Z"
     }
   }
 }
