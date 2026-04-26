@@ -25,7 +25,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledFunction, CompiledModule};
