@@ -11,7 +11,7 @@
 //! builtins), and Undef is accepted by the kind-match for any type.
 
 use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellDecl};
-use reify_types::{ModulePath, Severity, Type};
+use reify_types::{ModulePath, Severity};
 
 /// Walk every ValueCellDecl in a CompiledModule — primary template cells,
 /// guarded-group member/else-member cells, and (via sub_components) any
@@ -79,10 +79,13 @@ fn user_fixture_value_cells_are_representable() {
     // (convention established by task 348; mirrors m10_combined.rs:18 et al.).
     const PATH_MATH_LINALG: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/math_linalg.ri");
-    let source = std::fs::read_to_string(PATH_MATH_LINALG)
-        .expect("math_linalg.ri fixture");
+    let source = std::fs::read_to_string(PATH_MATH_LINALG).expect("math_linalg.ri fixture");
     let parsed = reify_syntax::parse(&source, ModulePath::single("math_linalg"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -106,12 +109,17 @@ fn boltflange_value_cells_are_representable() {
     // BoltFlange conforms to `Rigid` and uses the stdlib `Material` struct, so
     // compile with full stdlib prelude (unlike math_linalg.ri which is
     // stdlib-independent).
-    const PATH_BOLTFLANGE: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
-    let source = std::fs::read_to_string(PATH_BOLTFLANGE)
-        .expect("m5_geometry_flange.ri fixture");
+    const PATH_BOLTFLANGE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/m5_geometry_flange.ri"
+    );
+    let source = std::fs::read_to_string(PATH_BOLTFLANGE).expect("m5_geometry_flange.ri fixture");
     let parsed = reify_syntax::parse(&source, ModulePath::single("m5_geometry_flange"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics

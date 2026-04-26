@@ -25,10 +25,7 @@ use reify_types::{Severity, Value, ValueCellId};
 
 // ── Path constant ─────────────────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kleene_e2e.ri"
-);
+const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/kleene_e2e.ri");
 
 // ── Cached helpers ────────────────────────────────────────────────────────────
 
