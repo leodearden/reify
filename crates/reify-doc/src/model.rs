@@ -4,6 +4,18 @@
 //! `reify-compiler`, `reify-syntax`, or `reify-types`. String fields carry
 //! rendered/printable representations rather than typed AST nodes.
 
+use serde::{Deserialize, Serialize};
+
+/// Root documentation model for a set of compiled Reify modules.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DocModel {
+    pub modules: Vec<ModuleDoc>,
+}
+
+/// Documentation for a single compiled Reify module (fields expanded in later cycles).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModuleDoc {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
