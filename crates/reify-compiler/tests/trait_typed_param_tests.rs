@@ -1236,3 +1236,158 @@ fn nested_wrapper_type_level_list_option_accepts_valueref_of_conforming_subtrait
         errors
     );
 }
+
+// ─── Wrapper shape-mismatch tests (task 2281) ─────────────────────────────────
+//
+// Tests that the compiler emits a diagnostic when the argument wrapper shape
+// (Option/List/Set/Map) does not match the declared param wrapper shape.
+// All four cases below exercise the `walk_param_against_arg_type` fallback `_`
+// arm that currently silently drops wrapper-shape mismatches.
+
+/// Negative test: passing `Steel()` (a bare FunctionCall, not wrapped in `some()`)
+/// to an `Option<MaterialSpec>` param must produce a wrapper-shape-mismatch error.
+///
+/// Walk sequence:
+/// 1. `walk_param_against_arg(Option<MaterialSpec>, FunctionCall{Steel})` →
+///    `(Type::Option, FunctionCall)` — no literal-walker match → fallback →
+/// 2. `walk_param_against_arg_type(Option<MaterialSpec>, Real)` →
+///    `(Option<MaterialSpec>, Real)` — no match → fallback `_` → emits.
+#[test]
+fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: Steel())
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not match") && d.message.contains("Option")),
+        "expected a wrapper-shape-mismatch error for Steel() passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test: passing `[Steel()]` (a list literal) to an `Option<MaterialSpec>`
+/// param must produce a wrapper-shape-mismatch error.
+///
+/// Walk sequence:
+/// 1. `walk_param_against_arg(Option<MaterialSpec>, ListLiteral([Steel()]))` →
+///    `(Type::Option, ListLiteral)` — no literal-walker match → fallback →
+/// 2. `walk_param_against_arg_type(Option<MaterialSpec>, List<…>)` →
+///    `(Option, List)` — no match → fallback `_` → emits.
+#[test]
+fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: [Steel()])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not match") && d.message.contains("Option")),
+        "expected a wrapper-shape-mismatch error for [Steel()] passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test: passing `map{\"k\" => Steel()}` (a map literal) to a
+/// `List<MaterialSpec>` param must produce a wrapper-shape-mismatch error.
+///
+/// Walk sequence:
+/// 1. `walk_param_against_arg(List<MaterialSpec>, MapLiteral({\"k\" => Steel()}))` →
+///    `(Type::List, MapLiteral)` — no literal-walker match → fallback →
+/// 2. `walk_param_against_arg_type(List<MaterialSpec>, Map<String, …>)` →
+///    `(List, Map)` — no match → fallback `_` → emits.
+#[test]
+fn map_literal_passed_to_list_trait_param_emits_shape_mismatch() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: map{"k" => Steel()})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not match") && d.message.contains("List")),
+        "expected a wrapper-shape-mismatch error for map{{...}} passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test: a `param p : List<Material>` ValueRef passed to an
+/// `Option<Material>` slot must produce a wrapper-shape-mismatch error.
+///
+/// Walk sequence:
+/// 1. `walk_param_against_arg(Option<Material>, ValueRef(p))` →
+///    `(Type::Option, ValueRef)` — no literal-walker match → fallback →
+/// 2. `walk_param_against_arg_type(Option<Material>, List<Material>)` →
+///    `(Option, List)` — no match → fallback `_` → emits.
+///
+/// Uses `compile_source` (no stdlib) — inline trait only.
+#[test]
+fn valueref_of_list_passed_to_option_slot_emits_shape_mismatch() {
+    let source = r#"
+        trait Material {}
+        structure def Host { param m : Option<Material> }
+        structure def Top {
+            param p : List<Material>
+            sub h = Host(m: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not match") && d.message.contains("Option")),
+        "expected a wrapper-shape-mismatch error for List<Material> ValueRef passed to Option<Material> param, got: {:?}",
+        errors
+    );
+}
