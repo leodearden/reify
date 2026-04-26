@@ -8,6 +8,8 @@
 
 use reify_compiler::CompiledModule;
 use reify_eval::Engine;
+use reify_eval::cache::{CachedResult, NodeId};
+use reify_eval::journal::EventKind;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
 use reify_types::{DeterminacyState, DimensionVector, Severity, Value, ValueCellId};
@@ -955,5 +957,67 @@ fn eval_omits_no_default_no_override_param_cell_from_result_values() {
         result.diagnostics.is_empty(),
         "no-override-no-default Param cell must not emit any diagnostics, got: {:?}",
         result.diagnostics
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2195 step-1: S4 top-level path records cache entry alongside journal pair
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Before task-2195, the S4 top-level Param branch (rejected-override-no-default)
+/// intentionally omitted `cache.record_evaluation` — the deferred-cache rationale
+/// comment (engine_eval.rs:584-593) documents that deferral. Task-2195 resolves it.
+///
+/// Setup mirrors `eval_inserts_undef_for_no_default_param_with_rejected_override`:
+///   A) Param `p: Scalar = 1mm` — set a Scalar[LENGTH] override.
+///   B) Param `p: Int` (NO default) — override is type-kind incompatible → S4 arm fires.
+///
+/// Assertions (on state after evaluating module B):
+///   (a) `engine.cache_store().get(&NodeId::Value(p_id))` is Some with
+///       `entry.result == CachedResult::Value(Value::Undef, Undetermined)`.
+///       Currently FAILS — S4 arm skips cache.record_evaluation.
+///   (b) Journal for `p` has both a `Started` and a `Completed` event (sanity check).
+#[test]
+fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
+    let mut engine = fresh_engine();
+    let p_id = ValueCellId::new("S", "p");
+
+    // Phase A: set a valid Scalar override so it's stored.
+    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
+
+    // Phase B: Int param with no default — S4 arm fires.
+    let module_b = compile_source("structure S { param p: Int\n let q: Int = p }");
+    let _ = engine.eval(&module_b);
+
+    let node_id = NodeId::Value(p_id.clone());
+
+    // (a) Cache entry must exist for p — FAILS before step-2 impl.
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("S4 path must write a cache entry for p (task-2195 resolves deferred-cache)");
+    match &entry.result {
+        CachedResult::Value(val, det) => {
+            assert_eq!(*val, Value::Undef, "S4 cache entry value must be Undef");
+            assert_eq!(
+                *det,
+                DeterminacyState::Undetermined,
+                "S4 cache entry determinacy must be Undetermined"
+            );
+        }
+        other => panic!("expected CachedResult::Value for S4 path, got {:?}", other),
+    }
+
+    // (b) Journal sanity check: Started + Completed pair present.
+    let events = engine.journal().events_for_node(&node_id);
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
+        "journal must have a Started event for p (S4 path)"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
+        "journal must have a Completed event for p (S4 path)"
     );
 }
