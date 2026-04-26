@@ -305,4 +305,66 @@ assert "run-gui-dev.sh with non-existent .ri exits non-zero" \
 assert "run-gui-dev.sh non-existent .ri error message mentions 'not found'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$dev_miss_out"
 
+# -- Test 25: behavioral — vite-process-death early-exit branch ---------------
+echo ""
+echo "--- Test 25: run-gui-dev.sh vite-process-death early-exit branch ---"
+
+_t25_tmpdir=$(mktemp -d)
+trap 'rm -rf "$_t25_tmpdir"' EXIT
+
+# Build temp fixture: the script resolves REPO_ROOT from ${BASH_SOURCE[0]}/..
+# so we copy run-gui-dev.sh into $tmpdir/scripts/ to make REPO_ROOT=$tmpdir.
+mkdir -p "$_t25_tmpdir/scripts" "$_t25_tmpdir/gui/sidecar" "$_t25_tmpdir/bin"
+cp "$RUN_GUI_DEV" "$_t25_tmpdir/scripts/run-gui-dev.sh"
+chmod +x "$_t25_tmpdir/scripts/run-gui-dev.sh"
+
+# Stub: build-sidecar.sh — no-op so the script reaches the vite spawn.
+cat > "$_t25_tmpdir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
+#!/usr/bin/env bash
+exit 0
+SIDECAR_STUB
+chmod +x "$_t25_tmpdir/gui/sidecar/build-sidecar.sh"
+
+# Minimal package.json so (cd gui && npm install ...) does not crash on missing dir.
+printf '{}' > "$_t25_tmpdir/gui/package.json"
+
+# Empty fixture file (the script requires a .ri file that exists).
+touch "$_t25_tmpdir/test.ri"
+
+# Stub npm: install → exit 0 (no-op); run dev → exit 1 immediately so the
+# polling loop's `kill -0 "$VITE_PID"` branch fires and the early-exit path runs.
+cat > "$_t25_tmpdir/bin/npm" <<'NPM_STUB'
+#!/usr/bin/env bash
+# Stub for run-gui-dev.sh behavioral test (task 2243):
+#   - `npm run dev ...` exits 1 immediately so the polling loop's
+#     `kill -0 "$VITE_PID"` branch fires within ~0.5s.
+#   - `npm install ...` is a no-op so the script reaches the vite spawn.
+case "${1:-}" in
+    install) exit 0 ;;
+    run)
+        shift
+        case "${1:-}" in
+            dev) exit 1 ;;
+            *)   exit 0 ;;
+        esac
+        ;;
+    *) exit 0 ;;
+esac
+NPM_STUB
+chmod +x "$_t25_tmpdir/bin/npm"
+
+# Run the script with the stubbed PATH; capture combined output + rc in one shot.
+_t25_out=$(PATH="$_t25_tmpdir/bin:$PATH" \
+    bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
+    && _t25_rc=0 || _t25_rc=$?
+
+assert "run-gui-dev.sh: vite-death branch exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t25_rc"
+
+assert "run-gui-dev.sh: vite-death branch emits 'vite process exited'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "vite process exited"' _ "$_t25_out"
+
+assert "run-gui-dev.sh: vite-death branch does NOT hit the 30s timeout message" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "did not become ready"' _ "$_t25_out"
+
 test_summary
