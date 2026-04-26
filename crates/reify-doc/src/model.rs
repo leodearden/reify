@@ -120,6 +120,21 @@ pub struct RealizationDoc {
     pub op_summaries: Vec<String>,
 }
 
+/// Cross-reference information gathered for a module or item.
+///
+/// Populated by later slices (the lowering pass from `CompiledModule`).
+/// In slice 1 the type exists solely so downstream crates can take a
+/// dependency on the schema without needing to wait for the lowering pass.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CrossRefs {
+    /// Fully-qualified paths of modules imported or referenced.
+    pub referenced_modules: Vec<String>,
+    /// Qualified names of items (structures, occurrences, functions, …) referenced.
+    pub referenced_items: Vec<String>,
+    /// Qualified names of traits referenced.
+    pub referenced_traits: Vec<String>,
+}
+
 /// A single top-level declaration documented in a module.
 ///
 /// Uses a `"kind"` tag in JSON so downstream consumers can discriminate on
