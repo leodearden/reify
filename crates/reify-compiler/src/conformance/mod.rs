@@ -48,16 +48,21 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-        check_phase_pre_register_default_types(
-            &ctx,
-            &structure_all_members,
-            structure.name,
-            scope,
-            enum_defs,
-            functions,
-            diagnostics,
-        );
+    let (
+        inferred_let_exprs,
+        pass1_skipped,
+        pass1_param_skipped,
+        pass2_skipped,
+        pass2_compile_errors,
+    ) = check_phase_pre_register_default_types(
+        &ctx,
+        &structure_all_members,
+        structure.name,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    );
 
     let available_defaults = check_phase_build_available_defaults_map(
         &ctx,
@@ -801,16 +806,21 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         // --- Phase 3: pre-register default types ---
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_all_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_all_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // Sanity: pass2_skipped must contain "x" for the guard path to be exercised.
         // If this fails, the fixture is misconfigured and would not test the guard at all.
@@ -1481,16 +1491,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         assert!(
             diagnostics.is_empty(),
@@ -1572,16 +1587,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         assert!(
             diagnostics.is_empty(),
@@ -1686,16 +1706,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // The collision must be recorded in pass2_skipped, not the expression cache.
         assert!(
@@ -1817,16 +1842,21 @@ mod tests {
         // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
         // return type from (HashMap, HashSet, HashSet, HashSet) to
         // (HashMap, HashSet, HashSet, HashSet, HashSet), adding pass1_param_skipped.
-        let (inferred_let_exprs, pass1_skipped, _pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            _pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // The annotated-Let loser must be recorded in pass1_skipped.
         assert!(
@@ -1950,16 +1980,21 @@ mod tests {
 
         // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
         // return type to (HashMap, HashSet, HashSet, HashSet, HashSet).
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // The Param loser must be recorded in pass1_param_skipped.
         assert!(
@@ -2060,16 +2095,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, _pass1_skipped, _pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            _pass1_skipped,
+            _pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // (a) Exactly one Warning diagnostic emitted by compile_expr for the empty list.
         assert_eq!(
