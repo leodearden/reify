@@ -13,7 +13,7 @@
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::*;
-use reify_types::{BinOp, ModulePath, Type, Value, VersionId};
+use reify_types::{BinOp, CompiledExpr, DimensionVector, ModulePath, Type, Value, ValueCellId, VersionId};
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
 
@@ -55,6 +55,87 @@ fn eval_cached_emits_circular_let_binding_diagnostic() {
                 && d.message.contains("in template S")
         }),
         "eval_cached must emit a circular let-binding diagnostic; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
+// ── step-3: param_override validation ────────────────────────────────────────
+
+/// eval_cached must warn when a param_override's type kind doesn't match the
+/// cell type (e.g. pushing a Bool value into a Length cell).
+///
+/// Fails today because eval_cached's Param branch (engine_eval.rs:1414) uses
+/// the override directly without calling `validate_param_override`.
+#[test]
+fn eval_cached_emits_param_override_type_kind_mismatch_warning() {
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(1.0), Type::length())),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Push a Bool override into a Length param — type-kind mismatch
+    engine.set_param_and_invalidate(&x_id, Value::Bool(true));
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert!(
+        result.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
+        }),
+        "eval_cached must warn about type-kind mismatch on param_override; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
+/// eval_cached must warn when a param_override's scalar dimension doesn't match
+/// the cell's declared dimension (e.g. pushing a Mass value into a Length cell).
+///
+/// Fails today because eval_cached's Param branch never calls `validate_param_override`.
+#[test]
+fn eval_cached_emits_param_override_dimension_mismatch_warning() {
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(1.0), Type::length())),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Push a Mass-dimensioned scalar into a Length param — dimension mismatch
+    engine.set_param_and_invalidate(
+        &x_id,
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        },
+    );
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert!(
+        result.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("dimension mismatch")
+        }),
+        "eval_cached must warn about dimension mismatch on param_override; got: {:?}",
         result.eval_result.diagnostics,
     );
 }
