@@ -241,5 +241,63 @@ assert "Check 8: exit code is 0 (orphan ID gracefully skipped)" \
 assert "Check 8: no WARN emitted for orphan tracking ID" \
     bash -c "! grep -q 'WARN' '$_stderr8'"
 
+# ==============================================================================
+# Check 9: --json mode — two mismatches across two subprojects
+# ==============================================================================
+echo ""
+echo "--- Check 9: --json mode emits structured output ---"
+
+_brief9="$_tmpdir/briefing9.yaml"
+_tasks9="$_tmpdir/tasks9.json"
+
+cat > "$_brief9" <<'YAML'
+subprojects:
+  subproject_a:
+    known_gaps:
+      - what: "gap in A"
+        tracking: "1"
+  subproject_b:
+    known_gaps:
+      - what: "gap in B"
+        tracking: "2"
+YAML
+
+cat > "$_tasks9" <<'JSON'
+{"master":{"tasks":[
+  {"id":"1","title":"Task one","status":"done"},
+  {"id":"2","title":"Task two","status":"done"}
+]}}
+JSON
+
+_stdout9="$_tmpdir/stdout9.txt"
+_stderr9="$_tmpdir/stderr9.txt"
+_exit9=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief9" --tasks "$_tasks9" --json \
+    >"$_stdout9" 2>"$_stderr9" || _exit9=$?
+
+assert "Check 9: exit code is 1 (mismatches found)" \
+    test "$_exit9" -eq 1
+
+assert "Check 9: stderr contains no WARN lines (--json suppresses stderr)" \
+    bash -c "! grep -q 'WARN' '$_stderr9'"
+
+assert "Check 9: stdout is valid JSON" \
+    bash -c "jq . '$_stdout9' >/dev/null"
+
+assert "Check 9: JSON list has length 2" \
+    bash -c "[ \"\$(jq 'length' '$_stdout9')\" = '2' ]"
+
+assert "Check 9: JSON contains task_id '1'" \
+    bash -c "jq -e '[.[].task_id] | contains([\"1\"])' '$_stdout9' >/dev/null"
+
+assert "Check 9: JSON contains task_id '2'" \
+    bash -c "jq -e '[.[].task_id] | contains([\"2\"])' '$_stdout9' >/dev/null"
+
+assert "Check 9: JSON contains subproject 'subproject_a'" \
+    bash -c "jq -e '[.[].subproject] | contains([\"subproject_a\"])' '$_stdout9' >/dev/null"
+
+assert "Check 9: JSON contains subproject 'subproject_b'" \
+    bash -c "jq -e '[.[].subproject] | contains([\"subproject_b\"])' '$_stdout9' >/dev/null"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
