@@ -48359,11 +48359,11 @@
         "description": "Test-coverage gap: `eval_diagnostics_never_use_constraint_violation_format` at `crates/reify-lsp/src/diagnostics.rs:813-856` is the regression lock that justifies dropping the `violated_messages` filter from the eval-diagnostics merge loop in `compute_diagnostics_with_state`. The invariant the merge loop relies on is that `eval()` *globally* never emits `\"constraint {id} violated\"` format — but the test only exercises a single eval-time emitter (circular let-binding). A future code path in eval that synthesizes such a message wouldn't be triggered by this source, so the regression lock can give a false sense of safety.\n\nTwo issues to address (either is acceptable; both is best):\n\n1. Coverage breadth — extend the test (or add sibling tests) to also exercise the other known eval-time diagnostic emitters: param_override type/dimension mismatches, sub-component lookup failures, and solver Infeasible / NoProgress paths. Each should still emit at least one diagnostic (sanity assertion) and none should match the \"constraint {id} violated\" exact format.\n\n2. Format-match precision — the current check uses `strip_prefix(\"constraint \").and_then(|s| s.strip_suffix(\" violated\")).map_or(false, |id| !id.is_empty() && !id.contains(' '))`. Production format is `format!(\"constraint {} violated\", entry.id)` where `entry.id`'s Display is `<entity>#constraint[<n>]`. Tighten the regex/match to mirror this Display format so prose like `\"constraint foo#constraint[0] violated\"` is correctly caught — the current \"no spaces in middle token\" check accepts any single-token ID.\n\nIf the broader coverage is too costly to set up, at minimum document the test's narrowness in its docstring and treat it as a smoke-test rather than a complete invariant lock.\n\nSource: post-merge reviewer_comprehensive suggestion on task 2242.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:59:10.405Z",
+        "updatedAt": "2026-04-26T11:59:17.953Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src/diagnostics.rs"
@@ -49076,7 +49076,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:59:15.742Z",
+      "lastModified": "2026-04-26T11:59:17.955Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
