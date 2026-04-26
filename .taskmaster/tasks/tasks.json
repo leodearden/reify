@@ -49316,13 +49316,14 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "CompiledExpr",
+              "WalkCtx",
               "PendingBoundCheck",
-              "Engine::eval_cached"
+              "CompiledExpr"
             ],
             "queries": [
-              "compiled_arg clone cost PendingBoundCheck TraitArgConformance Rc Arc performance",
-              "conformance entity.rs compiled_arg clone allocation large literal tree"
+              "WalkCtx conformance walk_param_against_arg extraction task 2279",
+              "compiled_arg clone cost conformance TraitArgConformance",
+              "Rc vs Arc performance reify-compiler"
             ]
           },
           "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd",
@@ -49435,7 +49436,9 @@
       "completedCount": 2045,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T14:58:42.394Z",
+      "description": "Tasks for master context"
     }
   }
 }
