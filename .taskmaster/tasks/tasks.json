@@ -49387,7 +49387,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T14:11:19.584Z"
+        "updatedAt": "2026-04-26T14:11:19.584Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/value_cell_type_invariants.rs"
+          ]
+        }
       }
     ],
     "metadata": {
