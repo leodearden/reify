@@ -49824,11 +49824,11 @@
         "description": "Test suite for the shadowing warning (PRD: docs/prds/shadowing-warning.md). Positive cases: param-shadows-param across one scope, let-shadows-param, multi-hop shadow (grandparent), shadow inside specialization scope. Negative cases: match-arm same-name guarded decls (no warn), trait-merge of identical members (no warn), sibling scopes with same name (no warn).\n\nGoldens for diagnostic message format. LSP diagnostic-channel snapshot test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:44:57.555Z"
+        "updatedAt": "2026-04-26T19:50:57.323Z"
       },
       {
         "id": "2300",
@@ -49928,7 +49928,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:50:15.111Z"
+        "updatedAt": "2026-04-26T19:50:15.111Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: [v0.2] `reify migrate` + `#version` migration toolchain"
+            ]
+          }
+        }
       },
       {
         "id": "2307",
@@ -49960,7 +49968,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:50:15.111Z",
+      "lastModified": "2026-04-26T19:50:57.323Z",
       "taskCount": 2297,
       "completedCount": 2058,
       "tags": [
