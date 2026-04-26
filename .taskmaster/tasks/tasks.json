@@ -49884,7 +49884,13 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:44:58.703Z"
+        "updatedAt": "2026-04-26T19:44:58.703Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/quantifier_eval_tests.rs"
+          ]
+        }
       },
       {
         "id": "2302",
@@ -50137,7 +50143,9 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:57:23.359Z",
+      "description": "Tasks for master context"
     }
   }
 }
