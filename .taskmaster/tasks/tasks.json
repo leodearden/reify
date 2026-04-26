@@ -49052,7 +49052,13 @@
               "DiagnosticCode guard termination stable assertion replace",
               "broken guard compile error diagnostic kind assertion"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/tests/termination_check_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
