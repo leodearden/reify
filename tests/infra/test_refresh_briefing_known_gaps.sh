@@ -179,5 +179,36 @@ YAML
         bash -c "! grep -q 'WARN' '$_stderr_s'"
 done
 
+# ==============================================================================
+# Check 7: known_gap entry with no tracking: field is silently skipped
+# ==============================================================================
+echo ""
+echo "--- Check 7: legacy gap with no tracking field is silently skipped ---"
+
+_brief7="$_tmpdir/briefing7.yaml"
+_tasks7="$_tmpdir/tasks7.json"
+
+cat > "$_brief7" <<'YAML'
+subprojects:
+  proj:
+    known_gaps:
+      - what: "legacy gap"
+        why: "was there before tracking field was added"
+YAML
+
+cat > "$_tasks7" <<'JSON'
+{"master":{"tasks":[{"id":"99","title":"Unrelated","status":"done"}]}}
+JSON
+
+_stderr7="$_tmpdir/stderr7.txt"
+_exit7=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief7" --tasks "$_tasks7" 2>"$_stderr7" || _exit7=$?
+
+assert "Check 7: exit code is 0 (legacy gap silently skipped)" \
+    test "$_exit7" -eq 0
+
+assert "Check 7: stderr contains no WARN about 'legacy gap'" \
+    bash -c "! grep -q 'legacy gap' '$_stderr7'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
