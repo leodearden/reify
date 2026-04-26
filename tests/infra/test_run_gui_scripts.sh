@@ -312,14 +312,14 @@ echo ""
 echo "--- Test 25: run-gui-dev.sh polling loop checks vite process liveness ---"
 
 assert "polling loop checks vite process liveness via 'kill -0'" \
-    bash -c 'grep -qE '"'"'kill -0[[:space:]]+"$VITE_PID"'"'"' "$1"' _ "$RUN_GUI_DEV"
+    bash -c 'grep -qE '"'"'kill -0[[:space:]]+"\$VITE_PID"'"'"' "$1"' _ "$RUN_GUI_DEV"
 
 assert "script emits a 'vite process exited' error message" \
     bash -c 'grep -qF '"'"'vite process exited'"'"' "$1"' _ "$RUN_GUI_DEV"
 
 assert "kill -0 check is inside the readiness polling loop" \
     bash -c '
-        kill_line=$(grep -n '"'"'kill -0[[:space:]]+"$VITE_PID"'"'"' "$1" | head -1 | cut -d: -f1)
+        kill_line=$(grep -nE '"'"'kill -0[[:space:]]+"\$VITE_PID"'"'"' "$1" | head -1 | cut -d: -f1)
         for_line=$(grep -n '"'"'for _ in $(seq 1 60); do'"'"' "$1" | head -1 | cut -d: -f1)
         done_line=$(awk -v s="$for_line" '"'"'NR>s && /^done$/ { print NR; exit }'"'"' "$1")
         [ -n "$kill_line" ] && [ "$kill_line" -gt "$for_line" ] && [ "$kill_line" -lt "$done_line" ]

@@ -87,6 +87,10 @@ for _ in $(seq 1 60); do
         VITE_READY=1
         break
     fi
+    if ! kill -0 "$VITE_PID" 2>/dev/null; then
+        echo "Error: vite process exited before becoming ready" >&2
+        exit 1
+    fi
     sleep 0.5
 done
 
