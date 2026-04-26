@@ -3747,11 +3747,10 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
             .map(|s| s.as_str())
             .or_else(|| err.downcast_ref::<&str>().copied())
             .unwrap_or("<non-string panic>");
-        // The literal mirrors `crate::engine_eval::ASSERT_MSG_PREFIX` (pub(crate) — not
-        // importable from an integration-test binary, so the substring is spelled out here).
         assert!(
-            msg.contains("unrepresentable cell_type"),
-            "panic message did not contain expected substring \"unrepresentable cell_type\": {msg}",
+            msg.contains(reify_eval::ASSERT_MSG_PREFIX),
+            "panic message did not contain expected substring {:?}: {msg}",
+            reify_eval::ASSERT_MSG_PREFIX,
         );
     }
 }

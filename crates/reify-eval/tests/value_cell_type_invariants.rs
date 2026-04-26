@@ -42,7 +42,8 @@ fn assert_template_cells_representable(template: &TopologyTemplate) {
         // only `Type::TypeParam(_) | Type::Geometry`.
         assert!(
             !matches!(&cell.cell_type, Type::TypeParam(_) | Type::Geometry),
-            "template `{}` cell `{}` has unrepresentable cell_type {:?}",
+            "{}: template `{}` cell `{}` has cell_type {:?}",
+            reify_eval::ASSERT_MSG_PREFIX,
             template.name,
             cell.id,
             cell.cell_type,

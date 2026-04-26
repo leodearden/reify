@@ -9,6 +9,8 @@ mod engine_build;
 mod engine_constraints;
 mod engine_edit;
 mod engine_eval;
+#[doc(hidden)]
+pub use engine_eval::ASSERT_MSG_PREFIX;
 mod engine_purposes;
 mod geometry_ops;
 pub mod graph;

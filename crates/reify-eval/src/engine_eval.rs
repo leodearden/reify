@@ -26,10 +26,14 @@ use crate::{
 
 /// Sentinel substring included in every panic raised by
 /// [`assert_value_cell_types_representable`].  Used by the unit test
-/// (`invariant_tests::panics_on_unrepresentable_cell_types`) to assert the
-/// correct panic path fired without relying on an exact message match.
-#[cfg(debug_assertions)]
-pub(crate) const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
+/// (`invariant_tests::panics_on_unrepresentable_cell_types`) and integration
+/// tests (via `reify_eval::ASSERT_MSG_PREFIX`) to assert the correct panic
+/// path fired without relying on an exact message match.
+///
+/// The constant is intentionally always-available (no `cfg(debug_assertions)`)
+/// so that `tests/value_cell_type_invariants.rs`, which runs in both debug and
+/// release builds, can reference it as a single source of truth.
+pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
@@ -58,11 +62,11 @@ pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::Evalua
     for (id, node) in graph.value_cells.iter() {
         assert!(
             !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
-            "value cell `{}` has {} {:?} post-compilation; \
+            "{}: value cell `{}` has cell_type {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
-            id,
             ASSERT_MSG_PREFIX,
+            id,
             node.cell_type,
         );
     }
@@ -1951,9 +1955,13 @@ mod invariant_tests {
                 .or_else(|| err.downcast_ref::<&str>().copied())
                 .unwrap_or("<non-string panic>");
             assert!(
-                msg.contains(super::ASSERT_MSG_PREFIX),
-                "panic message did not contain expected substring {:?}: {msg}",
+                msg.starts_with(&format!("{}:", super::ASSERT_MSG_PREFIX)),
+                "panic message did not start with {:?} followed by colon: {msg}",
                 super::ASSERT_MSG_PREFIX,
+            );
+            assert!(
+                msg.contains("has cell_type "),
+                "panic message did not contain \"has cell_type \": {msg}",
             );
         }
     }
