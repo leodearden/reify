@@ -49833,15 +49833,16 @@
         "description": "Per PRD docs/prds/kleene-logic.md, audit the `exists` evaluator in `crates/reify-expr` against the §9.2.6 quantifier truth table (spec lines 1718-1731). Particularly verify \"no true, some undef ⇒ undef\" and \"empty collection ⇒ false (vacuous falsity)\". Add the 8-row test matrix × {List, Set}.",
         "details": "Source: docs/prds/kleene-logic.md.\n\n§9.2.6 exists rows:\n- Any true ⇒ true (short-circuit OK here)\n- All false ⇒ false\n- No true, some undef ⇒ undef\n- Empty ⇒ false\n\nMirror the test matrix from the forall task. Watch for premature `false` short-circuit when an `undef` element exists — `exists` must scan the whole collection if it sees `undef`s but no `true` yet.\n\nDepends on the truth-table-helper extraction.\n\nmemory_hints:\n- entities: Quantifier, Exists\n- queries: \"exists evaluator reify-expr Kleene undef\", \"exists quantifier vacuous falsity empty collection\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:44:58.703Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:44:58.146Z",
+      "lastModified": "2026-04-26T19:44:58.703Z",
       "taskCount": 2290,
       "completedCount": 2058,
       "tags": [
