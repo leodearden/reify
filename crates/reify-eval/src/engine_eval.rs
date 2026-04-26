@@ -1627,6 +1627,19 @@ impl Engine {
                     values.insert(cell.id.clone(), val);
                 }
             }
+
+            // Sub-component validation pass: emit "unknown structure" error for any
+            // sub_component whose structure_name has no matching template in the module.
+            // Mirrors eval() lines 855-864. We do NOT elaborate child instances here —
+            // this is lookup-only by design (see design decision in plan).
+            for sub in &template.sub_components {
+                if find_template(&module.templates, &sub.structure_name).is_none() {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "sub-component \"{}\" references unknown structure \"{}\"",
+                        sub.name, sub.structure_name
+                    )));
+                }
+            }
         }
 
         CachedEvalResult {
