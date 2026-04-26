@@ -58,11 +58,11 @@ pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::Evalua
     for (id, node) in graph.value_cells.iter() {
         assert!(
             !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
-            "value cell `{}` has {} {:?} post-compilation; \
+            "{}: value cell `{}` has cell_type {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
-            id,
             ASSERT_MSG_PREFIX,
+            id,
             node.cell_type,
         );
     }
