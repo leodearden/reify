@@ -48607,7 +48607,7 @@
         "description": "Task 2205 (status=done, commit 359fb3bf4cc73fe45937794b949a2190ea78ae51) introduced the typed `DiagnosticCode` enum and **explicitly listed** four variants the producer sites in conformance/checker.rs and conformance/mod.rs were supposed to attach via `.with_code(...)`:\n\n- `MissingRequiredMember`\n- `MissingRequiredSubComponent`\n- `TypeMismatchForTraitMember`\n- `TypeNotConformingToTrait`\n\nThe task description (docstring excerpt from tasks.json:2205) is unambiguous:\n> Wire `.with_code(DiagnosticCode::X)` at the matching `diagnostics.push(...)` sites in:\n> - crates/reify-compiler/src/conformance/checker.rs (~lines 810, 840, 866, 890, 895)\n> - crates/reify-compiler/src/conformance/mod.rs (~lines 191, 197, 210, 240)\n\nBut a global grep across the repo shows **zero producers** for any of those four variants — only the enum declaration (`crates/reify-types/src/diagnostics.rs:184–195`) and the historical task-tree entries. Concretely, the affected emission sites are still un-coded:\n\n- `conformance/checker.rs:808-814` \"missing required sub-component '{}' of type '{}'\" → needs `.with_code(MissingRequiredSubComponent)`\n- `conformance/checker.rs:838-844` \"type mismatch for trait member '{}': expected {}, got {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/checker.rs:864-871` \"type mismatch for trait member '{}': requirement expects {}, available default has {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/checker.rs:899-904` \"missing required member '{}' (expected type: {})\" (and the let/param-kind variant just above) → needs `.with_code(MissingRequiredMember)`\n- `conformance/checker.rs:1163-1171` \"type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/mod.rs:189-201` \"type '{}' does not conform to trait '{}' required by param '{}'\" (StructureRef arm) → needs `.with_code(TypeNotConformingToTrait)`\n- `conformance/mod.rs:208-220` same message, TraitObject arm → needs `.with_code(TypeNotConformingToTrait)`\n- `conformance/mod.rs:238-247` same message, fallback arm → needs `.with_code(TypeNotConformingToTrait)`\n\nWhy this matters at the integration boundary:\n1. The enum's `#[non_exhaustive]` and PascalCase serde wire format were committed deliberately so downstream tooling (MCP wire layer, tests) can match codes instead of substrings. Four reserved-but-unwired variants make those contracts a polite fiction.\n2. The follow-up tests called out in 2205's description (\"Migrate conformance-related tests from substring matching to code-based assertions\") cannot be done while the producer sites still emit `code: None`.\n3. The briefing convention \"Quality is king — issues may dangle briefly only if there is a task in the queue that will resolve them\" is currently being violated: the original task was closed, the variants exist, but no tracking task remains.\n\nDone means: every emission site listed above attaches the indicated `DiagnosticCode`; at least one test per variant in `crates/reify-compiler/tests/{trait_conformance_tests.rs,collection_sub_tests.rs,qualified_access_compile_tests.rs,m9_error_cases.rs}` asserts on `d.code == Some(DiagnosticCode::X)` (in addition to whatever message assertion remains as a secondary check); cargo test passes for `-p reify-compiler -p reify-types`.\n\nmemory_hints:\n- search: \"DiagnosticCode TraitNotImplemented MissingRequiredMember\"\n- search: \"task 2205 producer wiring conformance\"\n- entity: \"DiagnosticCode\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -48638,7 +48638,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-26T09:24:46.448Z"
+        "updatedAt": "2026-04-26T11:09:33.661Z"
       },
       {
         "id": "2259",
@@ -48731,11 +48731,11 @@
         "description": "scripts/refresh_briefing_known_gaps.py:163-175 documents a known limitation: subtasks are only re-indexed when the *parent* task is upgraded from non-done to done. If a tracked dotted ID (e.g. `100.1`) is `done` in tag B but the parent `100` is in-progress in both tags (or done only in the tag where the subtask is in-progress), the done subtask is never indexed and a briefing entry tracking it is silently skipped as an orphan — the same silent-default-on-error pattern Task 2257 set out to eliminate.\n\nPick one approach:\n(a) Apply done-wins per-subtask independently of the parent: iterate subtasks on every parent occurrence and merge per dotted ID using done-wins semantics.\n(b) Add a one-shot audit (script or test) confirming no current `tracking:` entries in review/briefing.yaml hit this edge case, and leave the parent-coupled limitation as documented.\n\n(a) closes the gap permanently; (b) is cheaper and matches the comment's \"rare edge case → defer to a separate audit\" stance. Either way, extend the test suite (tests/infra/test_refresh_briefing_known_gaps.sh) with a check that constructs a tasks.json hitting this divergence and asserts the chosen behaviour.",
         "details": "Edge case to cover in the new test: tasks.json has tag A {parent 100 in-progress, subtask 100.1 in-progress} and tag B {parent 100 in-progress, subtask 100.1 done}; briefing.yaml tracks \"100.1\". Current code: subtask 100.1 is indexed from whichever tag is iterated first (in-progress in tag A) and never upgraded because the parent never wins a done-upgrade. Briefing entry is silently skipped.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T09:43:33.660Z",
+        "updatedAt": "2026-04-26T11:09:33.773Z",
         "metadata": {
           "modules": [
             "scripts/refresh_briefing_known_gaps.py",
@@ -48840,11 +48840,11 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs:1362-1376`, the Param branch of eval_cached's first pass calls `try_fast_path(&node_id, version)` BEFORE the override-validation block (lines 1417-1453). When the override is rejected, the warning is only emitted on a cache-miss path. On a same-version repeat call where the rejected-override result is cached, the fast-path returns the cached (fallback) Value and the validation warning is silently skipped — the override is still rejected from the user's mental model but no diagnostic is surfaced.\n\nThis contradicts the broader goal of task 2259: every eval_cached call must re-emit eval-time diagnostics for the LSP. It is the same architectural bug class that step-10/step-11 fixed for the solver and cycle-detection passes, but eval_cached's existing param-override tests call eval_cached only once per scenario, so the regression isn't locked.\n\nFix: move the override-validation diagnostic emission outside the cache fast-path and reuse gating so it fires on every call when an override is set, mirroring how the solver and cycle-detection passes are run unconditionally. Add a regression test asserting the param-override warning is re-emitted on a second eval_cached call (with same and bumped versions) on the same module.\n\nDone means: param_override TypeKindMismatch and ScalarDimensionMismatch warnings surface on every eval_cached call when a rejected override is set, matching cold-start eval() behavior; new repeat-call regression test added.\n\nSpawned from review of task 2259 (esc-2259-71, suggestion 4).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:45:18.017Z",
+        "updatedAt": "2026-04-26T11:09:33.905Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -48870,11 +48870,11 @@
         "description": "Two large blocks of `crates/reify-eval/src/engine_eval.rs::eval_cached` were copy-pasted from their `eval()` counterparts during task 2259. Both sites format identical messages and identical control flow; any future fix to one will silently fail to propagate to the other.\n\n(a) Cycle detection (eval_cached lines 1491-1531 vs evaluate_let_bindings lines ~1768-1805): build let_cells map, extract traces, topological_sort, emit cyclic_members diagnostic. Extract a private helper `fn detect_let_cycle(template, diagnostics) -> (Vec<NodeId>, HashSet<NodeId>)` (or similar) and call from both sites. Alternatively, refactor `evaluate_let_bindings` itself so eval_cached can call it directly with the right cache/snapshot adapters.\n\n(b) Solver invocation (eval_cached lines 1665-1740 vs eval() lines ~1006-1158): auto_ids HashSet, filtered_constraints filter on dependency traces, AutoParam list construction, ResolutionProblem build, match on SolveResult. ~60 lines of structural duplication; the only difference is eval_cached's intentionally empty `Solved` arm. Extract `fn build_resolution_problem(&self, template, values) -> Option<ResolutionProblem>` returning None when no auto cells exist; both eval() and eval_cached dispatch on SolveResult locally. The Infeasible/NoProgress diagnostic-emission arms are identical and could be a second helper.\n\nDone means: cycle detection logic appears once; solver-invocation scaffolding appears once; existing tests pass with no behavioral change.\n\nSpawned from review of task 2259 (esc-2259-71, suggestions 2 and 3).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:45:18.524Z",
+        "updatedAt": "2026-04-26T11:09:34.040Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
@@ -48900,11 +48900,11 @@
         "description": "In `crates/reify-eval/tests/eval_cached_diagnostics.rs`, repeat-call regression locks exist for solver Infeasible/NoProgress (steps 10/11) and circular-let (step 9), but NOT for:\n- param_override type/dimension mismatch warnings\n- sub-component \"unknown structure\" errors\n\nBoth diagnostics are expected to surface on every eval_cached invocation per the LSP requirement and task 2259's stated goal. Without a repeat-call test, a future change that gates either pass on `any_auto_miss` or similar cache state would silently regress.\n\nFix: add two short repeat-call tests modeled on `eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic`:\n- one for param_override type/dimension mismatch (covers TypeKindMismatch and ScalarDimensionMismatch arms)\n- one for sub-component unknown structure\n\nEach calls eval_cached with VersionId(1) then VersionId(2) on the same module and asserts the diagnostic appears in both results.\n\nNote: depends on companion task that fixes the param_override fast-path bug (suggestion 4) — without that fix, the param_override repeat-call test would correctly fail.\n\nDone means: two new repeat-call regression tests added and passing.\n\nSpawned from review of task 2259 (esc-2259-71, suggestion 5).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:46:36.471Z",
+        "updatedAt": "2026-04-26T11:09:34.157Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -48945,7 +48945,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:09:33.528Z",
+      "lastModified": "2026-04-26T11:09:34.158Z",
       "taskCount": 2259,
       "completedCount": 2022,
       "tags": [
