@@ -451,6 +451,13 @@ pub enum SolverHintKind {
     DiscreteSet,
     /// Prefer values from the named stock/standard collection.
     PreferStock,
+    /// Advise the solver to use a named strategy when resolving this cell.
+    ///
+    /// The strategy name is stored in `SolverHint::collection`. Initial recognised
+    /// names are `argmin_default` and `slvs_default`, but ANY ident is accepted at
+    /// compile time — the back-end is responsible for emitting a runtime warning for
+    /// unknown strategy names, preserving the spec §12.2 advisory invariant.
+    PreferredStrategy,
 }
 
 /// Whether a value cell is a parameter (externally settable), a let (computed),
