@@ -50489,12 +50489,13 @@
         "description": "Emit a warning when a feature-tag selector matches zero or multiple sub-shapes after a topology change, referencing the original source span.",
         "details": "Implement the diagnostic W_TOPOLOGY_TAG_STALE in the topology module. When a feature-tag selector is evaluated and matches zero or multiple sub-shapes due to a topology change, emit a warning. This warning should include the original source span of the selector call. Modify the selector evaluation logic to check the number of matches and trigger the diagnostic if the count is not exactly one. Ensure the diagnostic message is clear and includes the selector's source span. Update the PRD documentation at docs/prds/topology-selectors.md task 6 for additional context.",
         "testStrategy": "Create tests to simulate a topology change where a tagged feature disappears or results in multiple matches. Verify that the selector returns 'undef' and that exactly one warning is emitted. Ensure the warning references the correct original source span of the selector call. Run the full test suite to confirm no regressions in existing functionality.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2317"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:25:51.499Z"
       },
       {
         "id": "2333",
@@ -50726,7 +50727,13 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Both tasks are tiny, high-priority, and wire opposite ends of the same WarmStatePool eviction contract from the same PRD section (arch §4.3). The candidate adds donation-on-removal (write path) while Task 2345 adds checkout→None→compute_cold fallback (read path). They will serialize on the same module lock, and combining loads WarmStatePool context once. Task 2345 is pending and combine_eligible. Coherence: 'Wire both ends of the WarmStatePool eviction interface — topology-removal state donation",
-          "combined_at": "2026-04-26T20:09:40.315367+00:00"
+          "combined_at": "2026-04-26T20:09:40.315367+00:00",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Warm-state eviction: wire pool.checkout None-return into compute_cold fallback"
+            ]
+          }
         },
         "updatedAt": "2026-04-26T20:25:47.838Z"
       },
@@ -51418,7 +51425,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:25:47.854Z",
+      "lastModified": "2026-04-26T20:25:51.499Z",
       "taskCount": 2381,
       "completedCount": 2060,
       "tags": [
