@@ -50491,6 +50491,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:05:48.644Z"
+      },
+      {
+        "id": "2342",
+        "title": "reify-doc crate scaffold + DocModel types",
+        "description": "Add a new crate crates/reify-doc to the workspace as the foundation for the `reify doc` documentation generator. Define DocModel and its child types (ModuleDoc, ItemDoc, ParamDoc, PortDoc, ConstraintDoc, SubComponentDoc, RealizationDoc, AnnotationDoc, PragmaDoc, CrossRefs) in src/model.rs as pure data with serde derives. No formatters yet. Add reify-doc to Cargo.toml workspace.members and workspace.dependencies. Empty `cargo test -p reify-doc` should pass green. Doc-comment / annotation / pragma / meta / sub-component / port plumbing already exists in CompiledModule (tasks #214–#217 and pragma tasks done). PRD: docs/prds/reify-doc-tool.md task slice 1.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50500,7 +50511,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:06:52.949Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:06:52.973Z"
     }
   }
 }
