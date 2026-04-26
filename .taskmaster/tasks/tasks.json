@@ -49603,7 +49603,7 @@
         "description": "The placeholder at crates/reify-compiler/src/expr.rs:1151 still emits an empty `ListLiteral` (Type::Real) for `subject.params`, `subject.geometric_params`, and `subject.material_params` in purpose bodies. Constraints like `forall p in subject.params: determined(p)` therefore evaluate vacuously true — a silent trap-pass per the §8 characterization test `manufacturing_ready_silently_passes_for_undetermined_params_trap` in `crates/reify-eval/tests/purpose_activation.rs`.\n\nThe original tracking task #2199 was closed by adding only the trap test, not by fixing the runtime expansion. Per the team norm \"No gaps should exist without tasks to fill them\" (briefing conventions), this gap needs a tracking task. The closed task 1904 also tracked this from a different angle and is also done.\n\nDesign context is fully documented in `docs/notes/purpose-reflective-aggregation.md`. Three coordinated blockers must land together (partial progress will hit a runtime debug_assert wiring-bug panic):\n\n- Blocker 1: At `activate_purpose`, replace the empty-list placeholder with `ListLiteral([ValueRef(entity_ref, member), ...])` for each param of the bound entity. Cell IDs are already in `CompiledPurpose.resolved_queries` (see `compile_purpose` in `traits.rs`); only the activation-path wiring is missing.\n- Blocker 2: Quantifier variable identity carry-through. Today `forall p in [Bracket.x]: determined(p)` compiles with the synthetic `variable_id` as the predicate cell, but the determinacy snapshot has no entry for it — `eval_expr` panics on `DeterminacyPredicate`. The quantifier must carry the actual `ValueCellId` of each iterated element into the predicate, not the synthetic loop var.\n- Blocker 3: Element-type lockstep (cf. task 1904). `Type::Real` is a placeholder element type; the populator must emit the correct per-param declared type or forall typechecks against the wrong type.\n\nAcceptance: when expansion lands, flip the §8 trap-test assertion from Satisfied to Violated (test name above) to confirm the constraint actually fires.\n\nFiles touched (estimate): crates/reify-compiler/src/expr.rs (remove placeholder branch), activate_purpose in reify-types/src/expr.rs (populate list), eval_expr DeterminacyPredicate handling in reify-eval, and the §8 trap test assertion in reify-eval/tests/purpose_activation.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "deferred",
         "dependencies": [
           "2308"
         ],
@@ -49636,7 +49636,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-26T18:23:36.877Z"
+        "updatedAt": "2026-04-26T19:52:53.156Z"
       },
       {
         "id": "2290",
@@ -50022,14 +50022,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:52:29.740Z",
+      "lastModified": "2026-04-26T19:52:53.156Z",
       "taskCount": 2300,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:52:31.286Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
