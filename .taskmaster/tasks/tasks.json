@@ -50720,6 +50720,17 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:13:32.505Z"
+      },
+      {
+        "id": "2357",
+        "title": "reify-doc Markdown formatter (GitHub-flavored, with --split mode)",
+        "description": "Implement crates/reify-doc/src/fmt_markdown.rs rendering DocModel as GitHub-flavored Markdown. Default: single file. With MarkdownOptions::split=true: one file per item plus index.md. Per-item layout: H2 with anchor (`<a id=\"…\">`), doc paragraphs, \"Parameters\" GFM table (Name | Type | Dimension | Default | Description), \"Ports\" GFM table (Name | Kind | Role | Type | Description), \"Constraints\" bullet list with line-numbers (rendered from source spans), \"Meta\" bullet list (alphabetical key order), \"Conforms to\" / \"Used by\" cross-ref bullets. TOC at the top groups by kind (Traits/Structures/Occurrences/Enums/Functions/Constants). @deprecated → callout; @test → grouped at the bottom under \"Tests\" subsection; @optimized → italic note; @solver_hint → italic suffix on the param Description cell. Snapshot test against examples/integration_full_v01.ri. PRD: docs/prds/reify-doc-tool.md slice 4.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50729,7 +50740,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:13:53.584Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:13:53.635Z"
     }
   }
 }
