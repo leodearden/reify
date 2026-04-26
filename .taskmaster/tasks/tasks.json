@@ -47989,23 +47989,21 @@
         "description": "Two small robustness improvements to the GUI launch wrappers added in task 2228.\n\n(1) Both `scripts/run-gui.sh` (≈line 31) and `scripts/run-gui-dev.sh` (≈line 36) validate the `.ri` extension but do not check that the file exists before kicking off the multi-minute build pipeline (sidecar → npm install → npm build → cargo). The reify CLI's own `cmd_gui` already does an `path.exists()` preflight (`crates/reify-cli/src/main.rs:298-302`); the wrappers bypass it by `exec`'ing `target/<profile>/reify-gui` directly. A typo on the path makes a user wait through the whole build before getting \"file not found\".\n\nFix: after the existing `*.ri` extension `case` block in each script, add `[ -f \"$FILE\" ] || { echo \"Error: file not found: $FILE\" >&2; exit 1; }`.\n\n(2) `scripts/run-gui-dev.sh` (lines 80-94) waits up to 30 s for vite to bind :1420 but never checks whether the npm/vite child has died. If `npm run dev` exits early (port 1420 already bound, missing dep, etc.) the user sees a generic 30-second timeout instead of the actual failure.\n\nFix: inside the polling loop add `if ! kill -0 \"$VITE_PID\" 2>/dev/null; then echo \"Error: vite process exited before becoming ready\" >&2; exit 1; fi` so the real failure surfaces immediately.\n\nBoth fixes are local, well-scoped, and confined to the two wrapper scripts.\n\nFrom review of task 2228; reviewer_comprehensive suggestions #1 and #2.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T06:28:03.063Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:27:20.787Z",
-      "taskCount": 2225,
+      "lastModified": "2026-04-26T06:28:03.063Z",
+      "taskCount": 2226,
       "completedCount": 1981,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T06:27:59.613Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T06:27:59.650Z"
+      ]
     }
   }
 }
