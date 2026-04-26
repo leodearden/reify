@@ -70,6 +70,11 @@ fi
 # The `|| true` on the python3 call absorbs any non-zero exit before it can
 # leak back through `set -eu`. The if-condition arms (command -v, grep, test -f)
 # are exempt from set -e by shell semantics. No set +e / set -e wrapping needed.
+# Test contract: tests/infra/test_post_commit_hook.sh Check 12 seeds tasks.json
+# with a numeric subtask id and asserts the normalizer (step 5) converts it to a
+# string AFTER the briefing script exits non-zero. Dropping `|| true` here causes
+# `set -eu` to abort the hook before step (5), leaving int IDs unnormalized —
+# Check 12 will catch that.
 _commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
 if command -v python3 >/dev/null 2>&1 \
     && echo "$_commit_msg" | grep -qE '^chore\(tasks\): auto-commit after set_task_status\([0-9]+=done\)$' \
