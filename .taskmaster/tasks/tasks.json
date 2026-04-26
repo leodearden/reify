@@ -50397,7 +50397,9 @@
         "details": "",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "2331"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:04:14.647Z"
@@ -50526,6 +50528,30 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:08:16.947Z"
+      },
+      {
+        "id": "2344",
+        "title": "Implement v0.2 Deferral Diagnostic for Imported Field Source",
+        "description": "Add error[E_FIELD_IMPORTED_V02] for the `imported { ... }` form, ensuring it references the v0.2 deferral.",
+        "details": "Update the compiler to emit a specific error code, error[E_FIELD_IMPORTED_V02], when the `imported { ... }` form is used. This error should reference the v0.2 deferral as outlined in the PRD documentation (docs/prds/field-source-kinds.md). Ensure that the parsing logic for this form is already handled as per task #79, which accepts this syntax. Modify the compile path to trigger the new diagnostic instead of a generic compile error.",
+        "testStrategy": "Create a test case that verifies the `imported { ... }` form is parsed correctly and that the error[E_FIELD_IMPORTED_V02] is emitted. Ensure the test checks for the specific error message related to the v0.2 deferral. Use existing test frameworks to validate both parsing and diagnostic emission.",
+        "status": "pending",
+        "dependencies": [
+          "79"
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2345",
+        "title": "Warm-state eviction: wire pool.checkout None-return into compute_cold fallback",
+        "description": "PRD docs/prds/warm-state-eviction.md. Per arch §4.3 line 539: pool.checkout(node_id) returns None when state has been evicted; the recursive evaluator's existing Option<State> handling falls back to compute_cold transparently per the WarmStartable protocol (arch §4.1). Confirm all warm-startable node types (RealizationNode, ResolutionNode, ComputeNode) handle the None case correctly. Add force-eviction integration test asserting identical results between warm-fallback and cold-only runs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50535,7 +50561,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:08:17.024Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:08:22.897Z"
     }
   }
 }
