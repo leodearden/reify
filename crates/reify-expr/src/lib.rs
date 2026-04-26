@@ -590,6 +590,20 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // which has access to the geometry kernel. The pure expression
         // evaluator returns Undef as a placeholder.
         CompiledExprKind::AdHocSelector { .. } => Value::Undef,
+
+        // Reflective-aggregation placeholder (task-2289). This variant is
+        // emitted by the compiler for `subject.params` etc. and is expected
+        // to be expanded by `Engine::activate_purpose` before any constraint
+        // expression is evaluated. Reaching the evaluator with this variant
+        // intact is a wiring bug — surface it via debug_assert; return Undef
+        // in release builds to keep the eval anti-cascade-safe.
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => {
+            debug_assert!(
+                false,
+                "PurposeReflectiveAggregation must be expanded by activate_purpose before evaluation"
+            );
+            Value::Undef
+        }
     }
 }
 

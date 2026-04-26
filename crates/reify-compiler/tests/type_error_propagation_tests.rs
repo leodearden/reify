@@ -79,6 +79,8 @@ fn find_node<'a>(
         CompiledExprKind::AdHocSelector { base, args, .. } => {
             find_node(base, pred).or_else(|| args.iter().find_map(|a| find_node(a, pred)))
         }
+        // Reflective-aggregation placeholder is a leaf — no children to walk.
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => None,
     }
 }
 
