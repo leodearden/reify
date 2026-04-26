@@ -23,6 +23,12 @@ struct PoolEntry {
     state: OpaqueState,
     last_accessed: Instant,
     size_bytes: usize,
+    /// Estimated cost of recomputing this state in seconds per byte of output.
+    ///
+    /// Per arch §4.3 line 538: `estimated_cold_compute_time_secs / size_bytes`.
+    /// Currently stored but not consulted by the eviction comparator (pure LRU).
+    /// Reserved for the future cost-weighted-LRU eviction policy.
+    cost_per_byte: f64,
 }
 
 /// Memory-budgeted pool for warm-start state across evaluation nodes.
@@ -96,17 +102,17 @@ impl WarmStatePool {
         Self::with_budget(budget)
     }
 
-    /// Store warm-start state for a node.
+    /// Store warm-start state for a node with an explicit cost-per-byte estimate.
     ///
-    /// If the pool exceeds its memory budget after insertion, LRU eviction
-    /// is triggered to bring usage back within budget.
-    /// Store warm-start state for a node.
+    /// `cost_per_byte` is `estimated_cold_compute_time_secs / size_bytes` per arch §4.3.
+    /// It is stored on the pool entry as metadata for the future cost-weighted-LRU eviction
+    /// policy but is **not** consulted by the current pure-LRU eviction comparator.
     ///
-    /// If the pool exceeds its memory budget after insertion, LRU eviction
-    /// is triggered to bring usage back within budget. A single item that
-    /// exceeds the entire budget is still stored (over-budget by one item
-    /// is acceptable).
-    pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
+    /// If the pool exceeds its memory budget after insertion, LRU eviction is triggered
+    /// to bring usage back within budget. A single item that exceeds the entire budget is
+    /// still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
+    /// is `None`) skip eviction entirely.
+    pub fn donate_with_cost(&mut self, node_id: NodeId, state: OpaqueState, cost_per_byte: f64) {
         let size = state.estimated_size_bytes();
 
         // If this node already has an entry, remove the old one first
@@ -125,9 +131,24 @@ impl WarmStatePool {
             state,
             last_accessed: Instant::now(),
             size_bytes: size,
+            cost_per_byte,
         };
         self.pool.insert(node_id, entry);
         self.used_bytes += size;
+    }
+
+    /// Store warm-start state for a node.
+    ///
+    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0` and is currently inert
+    /// (eviction is pure LRU). Use [`donate_with_cost`](Self::donate_with_cost) to record
+    /// the actual cost when known.
+    pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
+        self.donate_with_cost(node_id, state, 0.0);
+    }
+
+    /// Return the stored `cost_per_byte` for a node, or `None` if the node is not in the pool.
+    pub fn cost_per_byte_of(&self, node_id: &NodeId) -> Option<f64> {
+        self.pool.get(node_id).map(|e| e.cost_per_byte)
     }
 
     /// Evict the least-recently-accessed entry from the pool.
