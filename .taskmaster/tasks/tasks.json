@@ -45916,11 +45916,13 @@
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
           ],
-          "_causation_id": "ac11a8a1-5fc0-4327-80a4-77e85a643e6e",
+          "_causation_id": "7a19d25f-861d-4fa2-9676-d4456a4bd83b",
           "recon_stage2_verified_at": "2026-04-26",
-          "worktree_exists": true,
+          "worktree_exists": false,
           "group_needs_phase3_on_main": false,
-          "stale_worktree_path": ".worktrees/2146"
+          "stale_worktree_path": ".worktrees/2146",
+          "recon_stage2_reset_at": "2026-04-26",
+          "recon_note": "Reset to pending by stage2 sync. Remove stale worktree before re-implementing: git worktree remove --force .worktrees/2146. group_needs_phase3 does not exist on main (consolidated into phase3_skip_group by task 2250)."
         }
       },
       {
@@ -49537,7 +49539,9 @@
       "completedCount": 2049,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T16:29:25.875Z",
+      "description": "Tasks for master context"
     }
   }
 }
