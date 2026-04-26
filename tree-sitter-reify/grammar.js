@@ -359,6 +359,7 @@ module.exports = grammar({
       $.port_declaration,
       $.connect_statement,
       $.chain_statement,
+      $.forall_statement,
       $.meta_block,
       $.annotation,
       $.pragma,
@@ -651,6 +652,25 @@ module.exports = grammar({
     lambda_param: $ => seq(
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
+    ),
+
+    // ── Forall statement (member-level) ──────────────────────
+    // forall x in collection: connect ...
+    // forall x in collection: constraint ...
+    // Disambiguation: token after ':' must be 'connect' or 'constraint'.
+    // Reachable only through _member (not through _expression), so there is
+    // no GLR conflict with quantifier_expression.
+    forall_statement: $ => seq(
+      'forall',
+      field('variable', $.identifier),
+      'in',
+      field('collection', $._expression),
+      ':',
+      field('body', choice(
+        $.connect_statement,
+        $.constraint_declaration,
+        $.constraint_instantiation,
+      )),
     ),
 
     // ── Quantifier expression ─────────────────────────────
