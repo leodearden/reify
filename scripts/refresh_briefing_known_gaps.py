@@ -16,6 +16,11 @@ import argparse
 import json
 import sys
 
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -49,6 +54,54 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    # ------------------------------------------------------------------ #
+    # Load briefing.yaml                                                   #
+    # ------------------------------------------------------------------ #
+    if yaml is None:
+        print("ERROR: PyYAML is not installed — pip install pyyaml", file=sys.stderr)
+        return 2
+
+    try:
+        with open(args.briefing, "r", encoding="utf-8") as fh:
+            briefing_data = yaml.safe_load(fh)
+    except OSError as exc:
+        print(f"ERROR: cannot read {args.briefing}: {exc}", file=sys.stderr)
+        return 2
+    except yaml.YAMLError as exc:
+        print(f"ERROR: cannot parse {args.briefing}: {exc}", file=sys.stderr)
+        return 2
+
+    # ------------------------------------------------------------------ #
+    # Load tasks.json                                                      #
+    # ------------------------------------------------------------------ #
+    try:
+        with open(args.tasks, "r", encoding="utf-8") as fh:
+            tasks_data = json.load(fh)
+    except OSError as exc:
+        print(f"ERROR: cannot read {args.tasks}: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: cannot parse {args.tasks}: {exc}", file=sys.stderr)
+        return 2
+
+    # ------------------------------------------------------------------ #
+    # Collect (subproject_name, gap_dict) pairs from all subprojects       #
+    # ------------------------------------------------------------------ #
+    gap_pairs: list[tuple[str, dict]] = []
+    subprojects = briefing_data.get("subprojects", {}) if isinstance(briefing_data, dict) else {}
+    for subproject_name, subproject_data in subprojects.items():
+        if not isinstance(subproject_data, dict):
+            continue
+        known_gaps = subproject_data.get("known_gaps", [])
+        if not isinstance(known_gaps, list):
+            continue
+        for gap in known_gaps:
+            if isinstance(gap, dict):
+                gap_pairs.append((subproject_name, gap))
+
+    if not gap_pairs:
+        return 0
 
     return 0
 
