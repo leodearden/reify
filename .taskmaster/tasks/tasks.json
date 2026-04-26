@@ -48327,7 +48327,15 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "phase3_skip_group group_needs_phase3 engine_edit.rs helper consolidation",
+              "edit_param edit_source Phase 3 guard cell wave2 guard flip",
+              "engine_edit.rs Phase 3 loop guard-value-unchanged skip pattern"
+            ]
+          }
         }
       }
     ],
@@ -48338,7 +48346,9 @@
       "completedCount": 2003,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T08:04:53.475Z",
+      "description": "Tasks for master context"
     }
   }
 }
