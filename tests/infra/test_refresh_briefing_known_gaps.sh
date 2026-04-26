@@ -492,5 +492,46 @@ assert "Check 15: stderr contains task id 200" \
 assert "Check 15: stderr contains gap text 'feature gap'" \
     grep -q "feature gap" "$_stderr15"
 
+# ==============================================================================
+# Check 16: cross-tag collision — first occurrence by JSON insertion order wins
+# feature-branch is listed FIRST in tasks.json (status=done) → briefing mismatch
+# master is listed SECOND (status=in-progress) → must be skipped (not override)
+# ==============================================================================
+echo ""
+echo "--- Check 16: cross-tag collision — first occurrence wins ---"
+
+_brief16="$_tmpdir/briefing16.yaml"
+_tasks16="$_tmpdir/tasks16.json"
+
+cat > "$_brief16" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "collision gap"
+        tracking: "300"
+YAML
+
+# Note deliberate tag ordering: feature-branch FIRST, master SECOND.
+# feature-branch's done status must win; master's in-progress is skipped.
+cat > "$_tasks16" <<'JSON'
+{"feature-branch":{"tasks":[{"id":"300","title":"Branch version","status":"done"}]},"master":{"tasks":[{"id":"300","title":"Master version","status":"in-progress"}]}}
+JSON
+
+_stderr16="$_tmpdir/stderr16.txt"
+_exit16=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief16" --tasks "$_tasks16" 2>"$_stderr16" || _exit16=$?
+
+assert "Check 16: exit code is 1 (feature-branch done wins → mismatch)" \
+    test "$_exit16" -eq 1
+
+assert "Check 16: stderr contains WARN" \
+    grep -q "WARN" "$_stderr16"
+
+assert "Check 16: stderr contains task id 300" \
+    grep -q "300" "$_stderr16"
+
+assert "Check 16: stderr contains gap text 'collision gap'" \
+    grep -q "Branch version" "$_stderr16"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
