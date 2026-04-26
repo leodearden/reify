@@ -50169,6 +50169,19 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2320",
+        "title": "Implement Stdlib `conforms` Function and Per-Trait Helpers",
+        "description": "Develop the `conforms` function for geometry traits and implement helper functions for specific traits like watertight, manifold, and orientable.",
+        "details": "Implement the `conforms<T: Geometry, R: Trait>(g: T, _: Type<R>) -> Bool` function to check if a geometry conforms to a specified trait. Integrate OCCT runtime queries from the FFI task into the evaluation process. Develop helper functions such as `is_watertight(g)`, `is_manifold(g)`, and `is_orientable(g)` for ease of use. Ensure these functions leverage the traits defined in `geometry_traits.ri`. Update the stdlib to include these functions and ensure they are accessible via the prelude.",
+        "testStrategy": "Conduct end-to-end tests using known-good and known-bad shapes to verify the `conforms` function and trait helpers. Ensure that each helper function correctly identifies the trait conformance of various geometries. Use a combination of unit tests and integration tests to validate functionality. Execute tests using `cargo test -p reify-eval -- geometry_traits` to ensure comprehensive coverage.",
+        "status": "pending",
+        "dependencies": [
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50181,7 +50194,7 @@
       ],
       "created": "2026-04-26T19:57:23.359Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:57:44.495Z"
+      "updated": "2026-04-26T19:57:49.594Z"
     }
   }
 }
