@@ -139,3 +139,34 @@ fn eval_cached_emits_param_override_dimension_mismatch_warning() {
         result.eval_result.diagnostics,
     );
 }
+
+// ── step-5: sub-component unknown-structure ──────────────────────────────────
+
+/// eval_cached must emit "sub-component references unknown structure" when a
+/// template has a sub_component whose structure_name doesn't exist in the module.
+///
+/// Fails today because eval_cached has no sub-component iteration at all.
+#[test]
+fn eval_cached_emits_sub_component_unknown_structure_diagnostic() {
+    let template = TopologyTemplateBuilder::new("Parent")
+        .sub_component("rib", "DoesNotExist", vec![])
+        .build();
+
+    // Module only contains Parent — no DoesNotExist template
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert!(
+        result.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("sub-component")
+                && d.message.contains("references unknown structure")
+                && d.message.contains("DoesNotExist")
+        }),
+        "eval_cached must emit unknown-structure diagnostic for missing sub-component; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
