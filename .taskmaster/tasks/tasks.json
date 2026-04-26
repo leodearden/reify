@@ -49623,16 +49623,9 @@
             "crates/reify-eval/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "CompiledPurpose",
-              "activate_purpose",
-              "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS"
-            ],
+            "entities": [],
             "queries": [
-              "purpose reflective aggregation subject.params geometric_params material_params runtime expansion",
-              "activate_purpose populate ListLiteral empty placeholder expr.rs task 2181 2289",
-              "forall determined predicate quantifier variable_id cell identity DeterminacyPredicate",
-              "purpose_activation trap test manufacturing_ready silently_passes vacuously"
+              "resolution for: Implement runtime expansion for purpose reflective aggregation (subject.params / .geometric_params / .material_params)"
             ]
           }
         },
@@ -50018,6 +50011,19 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:52:02.723Z"
+      },
+      {
+        "id": "2312",
+        "title": "Geometry-traits inference: per-op trait propagation table",
+        "description": "Build per-op trait inference for Bounded/Connected/Convex on CompiledGeometryOp variants, new module geometry_traits_inference.rs. PRD task 2 of docs/prds/geometry-traits.md. Primitives produce Bounded+Connected+Convex; half_space/extrude_infinite produce Unbounded; Booleans/transforms/sweeps/modifiers propagate per the rules in the PRD.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50027,7 +50033,10 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:52:54.533Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:52:54.553Z"
     }
   }
 }
