@@ -94,6 +94,7 @@ pub(crate) fn collect_all_requirements(
                 "trait refinement chain too deep (exceeded {} levels) at '{}'",
                 MAX_TRAIT_DEPTH, trait_name
             ))
+            .with_code(DiagnosticCode::TraitRefinementChainTooDeep)
             .with_label(DiagnosticLabel::new(span, "trait chain too deep")),
         );
         return;
