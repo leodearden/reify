@@ -5,10 +5,21 @@
 //! public API surface exactly as `reify-eval`, `reify-test-support`, and other downstream
 //! crates do.  A unit test inside `types.rs` would pass even if `VARIANT_COUNT` were
 //! narrowed to `pub(crate)` by accident; placing it here pins the *external* contract.
+//!
+//! The actual numeric value of `VARIANT_COUNT` is already locked at compile time by
+//! `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, …)` in
+//! `geometry_modify.rs`.  Hard-coding it here would cause a spurious test failure
+//! whenever a new variant is added, without adding contract coverage not already present.
 
 use reify_compiler::ModifyKind;
 
+/// Compile-time visibility check: `VARIANT_COUNT` must be reachable from an external crate.
+const _: usize = ModifyKind::VARIANT_COUNT;
+
 #[test]
-fn variant_count_is_publicly_accessible_and_equals_five() {
-    assert_eq!(ModifyKind::VARIANT_COUNT, 5);
+fn variant_count_is_publicly_accessible() {
+    // Read the constant to exercise the public API at runtime.  We assert only
+    // that it is non-zero (sanity), not the exact value — the compile-time lock
+    // in geometry_modify.rs already pins VARIANT_COUNT == CASES.len().
+    assert!(ModifyKind::VARIANT_COUNT > 0);
 }
