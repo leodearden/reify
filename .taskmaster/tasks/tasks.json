@@ -49861,6 +49861,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2304",
+        "title": "Kleene logic: end-to-end .ri integration test mixing and/or/implies/forall over undef",
+        "description": "Per PRD docs/prds/kleene-logic.md, add a Reify-source-level integration test exercising a constraint that mixes `Bool` and `undef` operands across `and`/`or`/`implies` and a quantifier, to prove end-to-end propagation through `compile_with_stdlib` → eval. Pins regression at the user-visible surface, not just at the eval-layer helper.",
+        "details": "Source: docs/prds/kleene-logic.md.\n\nAdd a `.ri` test fixture (under `crates/reify-compiler/tests/` or `examples/` smoke set) such as:\n\n```reify\nstructure Foo {\n    param a : Bool = undef\n    param b : Bool = false\n    let p1 = a and b           // expect: false (absorption)\n    let p2 = a or true         // expect: true (absorption)\n    let p3 = b implies a       // expect: true (vacuously true premise)\n    let xs : List<Bool> = [true, undef, true]\n    let p4 = forall x in xs: x // expect: undef\n}\n```\n\nCompile, eval, assert each `let` resolves to the expected `Value`. Integration vector through compile_with_stdlib catches regressions where the operator works in isolation but breaks in a real compiled module (e.g., type inference flipping `Bool` to something the kleene helper doesn't recognize).\n\nDepends on the truth-table-helper extraction and forall/exists audit tasks.\n\nmemory_hints:\n- entities: compile_with_stdlib, EvalContext\n- queries: \"compile_with_stdlib integration test undef and or implies\", \"constraint Kleene end-to-end .ri test\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49873,7 +49884,7 @@
       ],
       "created": "2026-04-26T19:46:15.495Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:46:15.793Z"
+      "updated": "2026-04-26T19:46:16.263Z"
     }
   }
 }
