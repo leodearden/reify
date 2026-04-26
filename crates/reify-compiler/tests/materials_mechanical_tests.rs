@@ -507,6 +507,33 @@ fn remaining_five_traits_exist() {
     );
 }
 
+// ─── four mechanical traits refine MaterialSpec ───────────────────────────────
+
+/// FatigueRated, FractureTough, ImpactResistant, Damping must each declare
+/// `MaterialSpec` as a parent trait (refinements == ["MaterialSpec"]).
+/// This verifies that the four §6.2 mechanical-material traits are properly
+/// anchored to the base material contract, not free-standing.
+#[test]
+fn four_mechanical_traits_refine_material_spec() {
+    let module = load_stdlib_module();
+
+    for trait_name in &["FatigueRated", "FractureTough", "ImpactResistant", "Damping"] {
+        let trait_def = module
+            .trait_defs
+            .iter()
+            .find(|t| t.name == *trait_name)
+            .unwrap_or_else(|| panic!("expected '{}' trait in compiled module", trait_name));
+
+        assert_eq!(
+            trait_def.refinements,
+            vec!["MaterialSpec".to_string()],
+            "'{}' should refine MaterialSpec but got refinements: {:?}",
+            trait_name,
+            trait_def.refinements
+        );
+    }
+}
+
 // ─── step-17: full integration ────────────────────────────────────────────────
 
 /// Step 17: The complete .ri file compiles to exactly 9 traits and 1 enum,
