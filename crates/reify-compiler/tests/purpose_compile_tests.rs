@@ -975,6 +975,16 @@ purpose check(subject : Occurrence) {
 /// language-level wildcard form — member validation is skipped entirely, even though
 /// a concrete template exists in the registry.
 ///
+/// **Positive registration precondition (esc-2213-28 S1):** Before the wildcard-guard
+/// assertions, this test now positively asserts that `structure Structure` was
+/// actually registered in `module.templates`.  This catches the silent-rejection
+/// regression: if `Structure` ever becomes a reserved name (or the parser/typechecker
+/// silently drops the declaration), `module.templates` would contain no entry for
+/// `Structure`, and the wildcard guard would still suppress any "has no member"
+/// diagnostic — making the test trivially green while the precondition (template
+/// registered) does not hold.  The `Severity::Error` guard below catches *loud*
+/// failures only; this positive assertion catches silent ones.
+///
 /// When a future task replaces the magic-string guard with a proper semantic
 /// predicate (e.g., `entity_kind.is_wildcard()`), this test will turn RED because
 /// the user-declared `Structure` template would then be validated like any other
@@ -985,16 +995,47 @@ fn compile_purpose_user_defined_structure_named_structure_bypasses_validation() 
     // A user-declared structure that happens to share the wildcard sentinel name.
     // Accessing the non-existent member `bogus` must be silent today because the
     // magic-string guard treats any `Structure`-typed subject as the wildcard form.
+    // `subject.mass` references a *real* param of the declared template — it is
+    // included as a real-param probe so the combined `no_member_errors` filter
+    // covers both a spurious member access (`bogus`) and a legitimate one (`mass`).
+    // If a future refactor makes the wildcard guard registry-aware, `mass` would
+    // start failing the combined filter for the right reason.
     let source = r#"
 structure Structure {
     param mass : Mass = 1kg
 }
 purpose check(subject : Structure) {
     constraint subject.bogus > 0
+    constraint subject.mass > 0
 }
 "#;
     let module = compile_module_with_diagnostics(source);
 
+    // ── Positive precondition ──────────────────────────────────────────────────
+    // The user-declared `Structure` template MUST be registered.  If a future
+    // change makes `Structure` a reserved name (or causes the parser/typechecker
+    // to silently drop the declaration), `find_template` returns None — the
+    // wildcard-guard assertions below would then pass vacuously.  This assertion
+    // is the direct positive confirmation called for by esc-2213-28 S1.
+    let registered = find_template(&module.templates, "Structure");
+    assert!(
+        registered.is_some(),
+        "expected user-declared `structure Structure` to be registered in \
+         module.templates (positive precondition for the wildcard-guard \
+         characterization below); got templates: {:?}",
+        module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+    // Corroborate that the template body parsed and the `mass` param compiled —
+    // guards against partial-registration regression (name present, body dropped).
+    let template = registered.unwrap();
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "mass"),
+        "expected registered `Structure` template to contain a `mass` value \
+         cell, but value_cells were: {:?}",
+        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    // ── Wildcard-guard characterization ───────────────────────────────────────
     // The magic-string guard must NOT produce "has no member" diagnostics even
     // though a concrete template named "Structure" is now registered.
     let no_member_errors: Vec<_> = module
@@ -1011,13 +1052,15 @@ purpose check(subject : Structure) {
         no_member_errors
     );
 
+    // ── Bail-out safety net (third layer) ─────────────────────────────────────
     // Guard against a false-green: if compilation bails out early (e.g., because
     // `Structure` becomes reserved or the parser short-circuits on the name), no
     // member-access code runs at all, so `no_member_errors` is trivially empty for
     // the wrong reason.  A Severity::Error diagnostic from *any* cause would mean
-    // the member-access branch was never reached, making the assertion above
-    // meaningless.  Mirroring the defense in
-    // `compile_purpose_wildcard_occurrence_subject_bogus_member_still_silent`.
+    // the member-access branch was never reached, making the assertions above
+    // meaningless.  The positive registration assertion (above) already catches
+    // silent rejection; this catches loud (Error-severity) rejection.  Mirroring
+    // the defense in `compile_purpose_wildcard_occurrence_subject_bogus_member_still_silent`.
     let error_diags: Vec<_> = module
         .diagnostics
         .iter()
