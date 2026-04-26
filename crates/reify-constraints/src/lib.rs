@@ -95,7 +95,8 @@ impl ConstraintChecker for SimpleConstraintChecker {
 mod tests {
     use super::*;
     use reify_types::{
-        BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId, ValueMap,
+        BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, DimensionVector, Type, Value,
+        ValueCellId, ValueMap,
     };
 
     fn mm(v: f64) -> Value {
@@ -258,5 +259,51 @@ mod tests {
         assert_eq!(results.len(), 1);
         // Division by zero → Undef → Indeterminate
         assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+    }
+
+    #[test]
+    fn violated_constraint_carries_constraint_violated_code() {
+        let checker = SimpleConstraintChecker;
+        let expr = thickness_gt_2mm();
+        let mut values = ValueMap::new();
+        values.insert(vcid("Bracket", "thickness"), mm(1.0));
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Violated);
+        assert_eq!(
+            results[0].diagnostics.messages[0].code,
+            Some(DiagnosticCode::ConstraintViolated),
+        );
+    }
+
+    #[test]
+    fn non_bool_constraint_carries_constraint_violated_code() {
+        let checker = SimpleConstraintChecker;
+        // CompiledExpr evaluating to Int(42) — triggers the non-boolean fallback
+        let expr = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let values = ValueMap::new();
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Violated);
+        assert_eq!(
+            results[0].diagnostics.messages[0].code,
+            Some(DiagnosticCode::ConstraintViolated),
+        );
     }
 }
