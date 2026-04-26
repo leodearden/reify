@@ -50114,6 +50114,19 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2317",
+        "title": "Implement Diagnostic for E_GEOMETRY_UNBOUNDED Trait Binding",
+        "description": "Add a diagnostic to check for the presence of inferred_traits when resolving calls binding a Bounded trait parameter.",
+        "details": "In the geometry-traits module, modify the call resolution logic to check if the inferred_traits on an argument includes the Bounded trait. If it does not, emit the error E_GEOMETRY_UNBOUNDED. Reuse the existing trait-bound mismatch diagnostic path to ensure consistency. Refer to the PRD documentation at docs/prds/geometry-traits.md task 3 for additional context and requirements.",
+        "testStrategy": "Create tests to verify the new diagnostic: 1) Ensure that calling volume(half_space(plane_xy(0mm))) results in an error E_GEOMETRY_UNBOUNDED. 2) Verify that volume(intersection(half_space, box(10mm,10mm,10mm))) does not trigger the error. Run the full test suite to confirm no regressions in existing functionality.",
+        "status": "pending",
+        "dependencies": [
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50126,7 +50139,7 @@
       ],
       "created": "2026-04-26T19:55:29.913Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:56:54.397Z"
+      "updated": "2026-04-26T19:56:58.197Z"
     }
   }
 }
