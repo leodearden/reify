@@ -264,6 +264,45 @@ fn solver_hint_multiple_on_same_param() {
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
 
+// ── Step-5 (task 2339): preferred_strategy accepts any ident, no compile-time warning ──
+
+#[test]
+fn solver_hint_preferred_strategy_accepts_any_ident() {
+    // Verify slvs_default (second initial recognised name from task description)
+    let source_slvs = r#"structure S { @solver_hint("preferred_strategy", slvs_default) param length : Length = auto }"#;
+    let module_slvs = compile_source(source_slvs);
+    assert!(
+        errors_only(&module_slvs).is_empty(),
+        "slvs_default errors: {:?}",
+        errors_only(&module_slvs)
+    );
+    assert!(
+        warnings_only(&module_slvs).is_empty(),
+        "slvs_default: expected no compile-time warnings (spec §12.2 advisory invariant), got: {:?}",
+        warnings_only(&module_slvs)
+    );
+    let cell_slvs = &module_slvs.templates[0].value_cells[0];
+    assert_eq!(cell_slvs.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferredStrategy);
+    assert_eq!(cell_slvs.solver_hints[0].collection, "slvs_default");
+
+    // Verify an arbitrary unknown ident also produces NO compile-time warning
+    let source_custom = r#"structure S { @solver_hint("preferred_strategy", custom_xyz_strategy) param length : Length = auto }"#;
+    let module_custom = compile_source(source_custom);
+    assert!(
+        errors_only(&module_custom).is_empty(),
+        "custom_xyz_strategy errors: {:?}",
+        errors_only(&module_custom)
+    );
+    assert!(
+        warnings_only(&module_custom).is_empty(),
+        "custom_xyz_strategy: expected no compile-time warnings (spec §12.2 advisory invariant), got: {:?}",
+        warnings_only(&module_custom)
+    );
+    let cell_custom = &module_custom.templates[0].value_cells[0];
+    assert_eq!(cell_custom.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferredStrategy);
+    assert_eq!(cell_custom.solver_hints[0].collection, "custom_xyz_strategy");
+}
+
 // ── Step-3 (task 2339): unknown-kind warning message lists preferred_strategy ──
 
 #[test]
