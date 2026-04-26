@@ -96,7 +96,7 @@ impl WarmStatePool {
             Some(s) if s.eq_ignore_ascii_case("unlimited") => None,
             // An empty string is a common shell artifact (`VAR=` exports "" rather than unset).
             // Treat it the same as absent — use the default rather than emitting a spurious warn.
-            Some(s) if s.is_empty() => Some(DEFAULT_BUDGET_BYTES),
+            Some("") => Some(DEFAULT_BUDGET_BYTES),
             Some(s) => match s.parse::<usize>() {
                 Ok(n) => Some(n),
                 Err(_) => {
