@@ -48840,11 +48840,11 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs:1362-1376`, the Param branch of eval_cached's first pass calls `try_fast_path(&node_id, version)` BEFORE the override-validation block (lines 1417-1453). When the override is rejected, the warning is only emitted on a cache-miss path. On a same-version repeat call where the rejected-override result is cached, the fast-path returns the cached (fallback) Value and the validation warning is silently skipped — the override is still rejected from the user's mental model but no diagnostic is surfaced.\n\nThis contradicts the broader goal of task 2259: every eval_cached call must re-emit eval-time diagnostics for the LSP. It is the same architectural bug class that step-10/step-11 fixed for the solver and cycle-detection passes, but eval_cached's existing param-override tests call eval_cached only once per scenario, so the regression isn't locked.\n\nFix: move the override-validation diagnostic emission outside the cache fast-path and reuse gating so it fires on every call when an override is set, mirroring how the solver and cycle-detection passes are run unconditionally. Add a regression test asserting the param-override warning is re-emitted on a second eval_cached call (with same and bumped versions) on the same module.\n\nDone means: param_override TypeKindMismatch and ScalarDimensionMismatch warnings surface on every eval_cached call when a rejected override is set, matching cold-start eval() behavior; new repeat-call regression test added.\n\nSpawned from review of task 2259 (esc-2259-71, suggestion 4).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:33.905Z",
+        "updatedAt": "2026-04-26T11:09:35.324Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -48945,7 +48945,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:09:34.158Z",
+      "lastModified": "2026-04-26T11:09:35.324Z",
       "taskCount": 2259,
       "completedCount": 2022,
       "tags": [
