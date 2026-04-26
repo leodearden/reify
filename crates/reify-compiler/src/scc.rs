@@ -277,7 +277,7 @@ fn find_cycle_back_to(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EntityKind, SubComponentDecl, Visibility};
+    use crate::{EntityKind, GuardState, SubComponentDecl, Visibility};
     use reify_types::{ContentHash, SourceSpan};
     use std::collections::HashMap;
 
@@ -291,8 +291,7 @@ mod tests {
             type_args: vec![],
             is_collection: false,
             count_cell: None,
-            guard_expr: None,
-            guard_compile_failed: false,
+            guard_state: GuardState::None,
             span: SourceSpan::new(0, 0),
             content_hash: ContentHash(0),
         }

@@ -250,8 +250,7 @@ impl TopologyTemplateBuilder {
             type_args: Vec::new(),
             is_collection: false,
             count_cell: None,
-            guard_expr: None,
-            guard_compile_failed: false,
+            guard_state: reify_compiler::GuardState::None,
             span: SourceSpan::new(0, 0),
         });
         self
@@ -285,8 +284,7 @@ impl TopologyTemplateBuilder {
             type_args: Vec::new(),
             is_collection: false,
             count_cell: None,
-            guard_expr: Some(guard_expr),
-            guard_compile_failed: false,
+            guard_state: reify_compiler::GuardState::Compiled(guard_expr),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -310,8 +308,7 @@ impl TopologyTemplateBuilder {
             type_args: Vec::new(),
             is_collection: true,
             count_cell: Some(count_cell),
-            guard_expr: None,
-            guard_compile_failed: false,
+            guard_state: reify_compiler::GuardState::None,
             span: SourceSpan::new(0, 0),
         });
         self

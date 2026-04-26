@@ -54,22 +54,23 @@ structure S {
         .expect("expected sub named 'child'");
 
     assert!(
-        child_sub.guard_expr.is_some(),
-        "sub 'child' with where clause should have guard_expr set, got None"
+        matches!(child_sub.guard_state, GuardState::Compiled(_)),
+        "sub 'child' with where clause should have GuardState::Compiled(_), got {:?}",
+        child_sub.guard_state
     );
 
-    // The guard_expr should be BinOp::Gt (n > 0)
-    let guard = child_sub.guard_expr.as_ref().unwrap();
+    // The compiled guard should be BinOp::Gt (n > 0)
+    let guard = child_sub.guard_state.compiled().unwrap();
     assert!(
         matches!(&guard.kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
-        "guard_expr should be BinOp::Gt for 'n > 0', got {:?}",
+        "guard should be BinOp::Gt for 'n > 0', got {:?}",
         guard.kind
     );
 }
 
-/// A sub without a where-clause should have guard_expr == None.
+/// A sub without a where-clause should have GuardState::None.
 #[test]
-fn sub_without_where_clause_has_no_guard_expr() {
+fn sub_without_where_clause_has_guard_state_none() {
     let source = r#"
 structure Inner { param x : Int = 1 }
 structure Outer {
@@ -90,8 +91,9 @@ structure Outer {
         .expect("expected sub named 'inner'");
 
     assert!(
-        inner_sub.guard_expr.is_none(),
-        "sub 'inner' without where clause should have guard_expr == None"
+        matches!(inner_sub.guard_state, GuardState::None),
+        "sub 'inner' without where clause should have GuardState::None, got {:?}",
+        inner_sub.guard_state
     );
 }
 
@@ -795,21 +797,19 @@ structure S {
     );
 }
 
-// ─── Task 1296 structural: guard_compile_failed field wiring ─────────────────
+// ─── Task 2271 structural: GuardState enum wiring ────────────────────────────
 
-/// Verifies the three possible states of (guard_expr, guard_compile_failed) on
-/// a compiled SubComponentDecl:
+/// Verifies the three variants of `GuardState` on a compiled `SubComponentDecl`:
 ///
-/// (a) Valid guard: `guard_expr == Some(_)`, `guard_compile_failed == false`
-/// (b) Broken guard: `guard_expr == None`, `guard_compile_failed == true`
-/// (c) No guard:    `guard_expr == None`, `guard_compile_failed == false`
+/// (a) Valid guard:  `GuardState::Compiled(_)` — user wrote `where n > 0` and it compiled.
+/// (b) Broken guard: `GuardState::Broken`      — user wrote `where unknown_var > 0`; compile failed.
+/// (c) No guard:     `GuardState::None`         — user wrote no `where` clause.
 ///
-/// State (b) and (c) have identical `guard_expr` but different `guard_compile_failed`,
-/// which is the discriminator that allows the termination check to produce the
-/// right diagnostic in each case.
+/// Unlike the old (Option, bool) pair where (b) and (c) both had `guard_expr == None`
+/// and only differed in `guard_compile_failed`, the enum makes each state a distinct variant.
 #[test]
-fn broken_guard_marks_guard_compile_failed_field() {
-    // (a) Valid guard: field should be false, guard_expr should be Some.
+fn compiled_sub_carries_guard_state_enum_three_states() {
+    // (a) Valid guard: should produce GuardState::Compiled.
     let source_valid = r#"
 structure S {
     param n : Int = 5
@@ -823,42 +823,41 @@ structure S {
         .find(|s| s.name == "child")
         .expect("expected sub named 'child'");
     assert!(
-        !child.guard_compile_failed,
-        "(a) valid guard: expected guard_compile_failed == false, got true"
-    );
-    assert!(
-        child.guard_expr.is_some(),
-        "(a) valid guard: expected guard_expr == Some(_), got None"
+        matches!(child.guard_state, GuardState::Compiled(_)),
+        "(a) valid guard: expected GuardState::Compiled(_), got {:?}",
+        child.guard_state
     );
 
-    // (b) Broken guard: field should be true, guard_expr should be None.
+    // (b) Broken guard: should produce GuardState::Broken.
     // compile_first_template uses partial-recovery semantics: it returns the template
-    // even when guard compilation emits Severity::Error diagnostics (same contract as
-    // conformance/checker.rs:545-557, where compile_expr errors are collected but the
-    // template is still returned). The sub is present in sub_components; only
-    // guard_expr is set to None and guard_compile_failed to true.
+    // even when guard compilation emits Severity::Error diagnostics. The sub is still
+    // present in sub_components with GuardState::Broken, and the compile error is already
+    // recorded in diagnostics (verified below).
     let source_broken = r#"
 structure S {
     param n : Int = 5
     sub child = S(n: n - 1) where unknown_var > 0
 }
 "#;
-    let (template, _) = compile_first_template(source_broken);
+    let (template, diags) = compile_first_template(source_broken);
     let child = template
         .sub_components
         .iter()
         .find(|s| s.name == "child")
         .expect("expected sub named 'child'");
     assert!(
-        child.guard_compile_failed,
-        "(b) broken guard: expected guard_compile_failed == true, got false"
+        matches!(child.guard_state, GuardState::Broken),
+        "(b) broken guard: expected GuardState::Broken, got {:?}",
+        child.guard_state
     );
+    // Broken guards must still emit a compile error (not silently swallow it).
     assert!(
-        child.guard_expr.is_none(),
-        "(b) broken guard: expected guard_expr == None, got Some(_)"
+        diags.iter().any(|d| d.severity == Severity::Error),
+        "(b) broken guard: expected at least one Severity::Error diagnostic for the failed compile, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (c) No guard: field should be false, guard_expr should be None.
+    // (c) No guard: should produce GuardState::None.
     let source_no_guard = r#"
 structure S {
     param n : Int = 5
@@ -872,11 +871,8 @@ structure S {
         .find(|s| s.name == "child")
         .expect("expected sub named 'child'");
     assert!(
-        !child.guard_compile_failed,
-        "(c) no guard: expected guard_compile_failed == false, got true"
-    );
-    assert!(
-        child.guard_expr.is_none(),
-        "(c) no guard: expected guard_expr == None, got Some(_)"
+        matches!(child.guard_state, GuardState::None),
+        "(c) no guard: expected GuardState::None, got {:?}",
+        child.guard_state
     );
 }

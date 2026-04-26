@@ -349,6 +349,40 @@ pub struct CompiledPort {
     pub frame_expr: Option<CompiledExpr>,
 }
 
+/// Guard state for a sub-component's optional `where` clause.
+///
+/// Encodes the three valid states of a sub's termination guard, making the previously-
+/// impossible state `(Some(_), guard_compile_failed=true)` unrepresentable.
+#[derive(Debug, Clone)]
+pub enum GuardState {
+    /// The user wrote no `where` clause on this sub.
+    None,
+    /// The user wrote a `where` clause but it failed to compile (Severity::Error
+    /// diagnostics were emitted during guard compilation). Used by the termination
+    /// check to suppress the misleading "add a where clause" cascade error when the
+    /// user already wrote one — it just did not compile.
+    Broken,
+    /// The user wrote a `where` clause that compiled successfully.
+    Compiled(CompiledExpr),
+}
+
+impl GuardState {
+    /// Returns the compiled guard expression if the user wrote a `where` clause
+    /// that compiled successfully; `None` if there was no clause or it failed to compile.
+    pub fn compiled(&self) -> Option<&CompiledExpr> {
+        match self {
+            GuardState::Compiled(g) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if the user wrote a `where` clause that compiled successfully.
+    /// Equivalent to `self.compiled().is_some()`, but names the intent explicitly.
+    pub fn is_compiled(&self) -> bool {
+        matches!(self, GuardState::Compiled(_))
+    }
+}
+
 /// A sub-component declaration — compiled from a SubDecl.
 #[derive(Debug, Clone)]
 pub struct SubComponentDecl {
@@ -363,15 +397,8 @@ pub struct SubComponentDecl {
     pub is_collection: bool,
     /// For collection subs, the synthetic count ValueCell (e.g. `__count_bolts`)
     pub count_cell: Option<ValueCellId>,
-    /// Optional guard expression for recursive termination (e.g., `where n > 0`).
-    pub guard_expr: Option<CompiledExpr>,
-    /// True when the user wrote a `where` clause but it failed to compile
-    /// (Severity::Error diagnostics were emitted during guard compilation).
-    /// Distinct from `guard_expr.is_none() && !guard_compile_failed`, which means
-    /// the user wrote no guard at all. Used by the termination check to suppress
-    /// the misleading "add a where clause" cascade error when the user already
-    /// wrote one — it just did not compile.
-    pub guard_compile_failed: bool,
+    /// Guard state for the sub's optional `where` clause.
+    pub guard_state: GuardState,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

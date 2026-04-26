@@ -18,7 +18,7 @@ use crate::snapshot::Snapshot;
 /// Recursively unfold a recursive sub-component until the guard evaluates to false
 /// or the depth limit is reached.
 ///
-/// The guard expression in `sub.guard_expr` uses the owning template's entity name (e.g., "A.n").
+/// The guard expression in `sub.guard_state` (when `Compiled`) uses the owning template's entity name (e.g., "A.n").
 /// To correctly evaluate the guard at each recursion level, we build a "local" values context
 /// by remapping the current parent entity's values to the `scope_template`'s namespace.
 ///
@@ -66,9 +66,8 @@ pub(crate) fn unfold_recursive_sub<'t>(
         return;
     }
 
-    let guard_expr = match &sub.guard_expr {
-        Some(g) => g,
-        None => return,
+    let Some(guard_expr) = sub.guard_state.compiled() else {
+        return;
     };
 
     // Build a small overlay map with only the template-scoped entries needed for
@@ -159,7 +158,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
     let next_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
         .sub_components
         .iter()
-        .filter(|s| child_template.is_recursive && s.guard_expr.is_some())
+        .filter(|s| child_template.is_recursive && s.guard_state.is_compiled())
         .collect();
     let next_recursive_sub_names: Vec<&str> = next_recursive_subs
         .iter()
@@ -465,7 +464,7 @@ fn elaborate_child_lets_only<'t>(
                 // never unfolded (e.g., guard was false), so BFS terminates naturally.
                 // For structural intermediaries, the prefix check serves the same purpose.
                 for sub_decl in &entity_template.sub_components {
-                    if sub_decl.guard_expr.is_some() {
+                    if sub_decl.guard_state.is_compiled() {
                         if let Some(target_tmpl) =
                             find_template(templates, &sub_decl.structure_name)
                         {

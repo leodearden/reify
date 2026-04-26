@@ -362,8 +362,7 @@ pub(crate) fn compile_connection(
             type_args: vec![],
             is_collection: false,
             count_cell: None,
-            guard_expr: None,
-            guard_compile_failed: false,
+            guard_state: GuardState::None,
             span,
             content_hash: conn_hash,
         });

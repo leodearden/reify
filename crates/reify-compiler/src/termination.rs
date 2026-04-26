@@ -32,17 +32,15 @@ pub(crate) fn check_recursive_termination(
                 continue;
             }
 
-            // If the user wrote a where clause but it failed to compile, skip all termination
-            // checks for this sub. The underlying compile error is already in `diagnostics`;
-            // running termination checks on a None guard would emit misleading follow-on errors
-            // (e.g. "add a where clause" when the user already wrote one).
-            if sub.guard_compile_failed {
-                continue;
-            }
-
-            // Step 4: recursive sub must have a where-clause guard
-            let guard = match &sub.guard_expr {
-                None => {
+            // Dispatch on the sub's guard state.
+            // - Broken:   the user wrote a guard but it failed to compile. The compile error is
+            //             already in diagnostics. Skip termination checks to avoid misleading
+            //             follow-on errors (e.g. "add a where clause" when one was already written).
+            // - None:     the user wrote no guard at all. Emit the "add a where clause" error.
+            // - Compiled: proceed with the guard expression for further analysis.
+            let guard = match &sub.guard_state {
+                GuardState::Broken => continue,
+                GuardState::None => {
                     diagnostics.push(
                         Diagnostic::error(
                             "recursive sub has no termination condition: add a where clause (e.g., `where n > 0`)",
@@ -51,7 +49,7 @@ pub(crate) fn check_recursive_termination(
                     );
                     continue;
                 }
-                Some(g) => g,
+                GuardState::Compiled(g) => g,
             };
 
             // Step 8: guard must reference at least one Int or Bool param
