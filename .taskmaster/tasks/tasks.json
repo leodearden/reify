@@ -49329,7 +49329,19 @@
           "modules": [
             "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "walk_param_against_arg",
+              "TypeNotConformingToTrait",
+              "DiagnosticCode"
+            ],
+            "queries": [
+              "wrapper leaf shape mismatch diagnostic conformance Option List silent swallow",
+              "conformance fallback arm walk_param_against_arg shape mismatch suppressed diagnostic"
+            ]
+          },
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
         }
       },
       {
