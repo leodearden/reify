@@ -49811,6 +49811,19 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2300",
+        "title": "Pragma #solver: store solver back-end + options on CompiledModule and integrate with reify-eval dispatch",
+        "description": "Implement the v0.1 #solver pragma: parse #solver(libslvs) or #solver(argmin, key=value, ...) at module level, store back-end name and options on CompiledModule.solver_pragma, and integrate with the reify-eval solver dispatch so the named back-end is used (falling back to the current default if not registered). Unknown back-end names: warning, fall through to default — must NOT error (spec §12.2 invariant: pragmas don't change meaning). PRD: docs/prds/pragmas.md item 3.",
+        "details": "Add SolverPragma { name: String, options: BTreeMap<String, PragmaValue> } and CompiledModule.solver_pragma: Option<SolverPragma> in crates/reify-compiler/src/types.rs. Extend apply_module_pragmas (introduced by the #precision task or this one — coordinate via dependency) to populate it.\n\nValidation:\n- Multiple #solver at module level: warning, first wins.\n- Block-level #solver: \"ignored in v0.1; deferred to v0.2\" warning (KNOWN_BLOCK_PRAGMAS already includes it).\n- Unknown back-end name: warning, default fallback.\n\nIntegration: reify-eval reads compiled_module.solver_pragma when constructing the solver dispatch; back-end registration happens at runtime startup. Unknown options keys forwarded to back-end which may emit a runtime warning.\n\nTests in crates/reify-compiler/tests/pragma_compile_tests.rs covering each diagnostic path; reify-eval integration test verifying the named back-end is selected.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "278"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49823,7 +49836,7 @@
       ],
       "created": "2026-04-26T19:44:54.225Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:44:54.520Z"
+      "updated": "2026-04-26T19:44:54.903Z"
     }
   }
 }
