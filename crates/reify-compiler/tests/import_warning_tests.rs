@@ -7,6 +7,49 @@ use std::fs;
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_types::Severity;
 
+/// Assert that compiling `b.ri` (with content `b_source`) alongside a canonical
+/// `a.ri` via `compile_project` produces no Warning diagnostic whose message
+/// contains `import "<expected_path_substr>"`.
+///
+/// Creates a temporary directory, writes the canonical `a.ri` (`pub structure Foo`),
+/// writes `b.ri` with the caller-supplied source, runs `compile_project`, and
+/// asserts the resulting entry module has no matching import warning.
+fn assert_no_import_warning_for(b_source: &str, expected_path_substr: &str) {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    fs::write(dir.join("b.ri"), b_source).unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let modules = compile_project(&dir.join("b.ri"), &resolver)
+        .expect("compile_project should succeed");
+
+    let b_module = modules.last().expect("expected at least one module in result");
+
+    let needle = format!("import \"{}\"", expected_path_substr);
+    let import_warnings: Vec<_> = b_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains(&needle))
+        .collect();
+
+    assert!(
+        import_warnings.is_empty(),
+        "expected no import-warning for path '{}', but got: {:?}",
+        expected_path_substr,
+        import_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// ModuleDag-resolved user import: no warning diagnostic on the entry module.
 ///
 /// Module `a.ri` defines `pub structure Foo`. Module `b.ri` imports `a` and
@@ -14,44 +57,9 @@ use reify_types::Severity;
 /// compile `a`, seed it into `b`'s prelude, and suppress the import warning.
 #[test]
 fn module_dag_resolved_user_import_emits_no_warning() {
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // Module a: leaf, no imports
-    fs::write(
-        dir.join("a.ri"),
-        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
-    )
-    .unwrap();
-
-    // Module b: imports a
-    fs::write(
-        dir.join("b.ri"),
+    assert_no_import_warning_for(
         "import a\nstructure Bar {\n    param y: Scalar = 2mm\n}",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let modules = compile_project(&dir.join("b.ri"), &resolver)
-        .expect("compile_project should succeed for valid two-module project");
-
-    // The entry module (b) is last in topological order.
-    let b_module = modules.last().expect("expected at least one module in result");
-
-    // No Warning diagnostic should mention import "a".
-    let import_warnings: Vec<_> = b_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"a\""))
-        .collect();
-
-    assert!(
-        import_warnings.is_empty(),
-        "expected no import-warning for resolved module 'a', but got: {:?}",
-        import_warnings
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        "a",
     );
 }
 
@@ -177,44 +185,8 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
 /// (`import a`) but also Destructured-kind (`import a.{Foo}`).
 #[test]
 fn module_dag_resolved_destructured_import_emits_no_warning() {
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // a.ri: defines pub structure Foo
-    fs::write(
-        dir.join("a.ri"),
-        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
-    )
-    .unwrap();
-
-    // b.ri: destructured import of Foo from module a; Bar uses Foo as a
-    // sub-component so a regression in name binding also fails the test.
-    fs::write(
-        dir.join("b.ri"),
+    assert_no_import_warning_for(
         "import a.{Foo}\nstructure Bar {\n    param y: Scalar = 2mm\n    sub f = Foo(x: 3mm)\n}",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let modules = compile_project(&dir.join("b.ri"), &resolver)
-        .expect("compile_project should succeed with destructured import");
-
-    // The entry module (b) is last in topological order.
-    let b_module = modules.last().expect("expected at least one module in result");
-
-    // No Warning diagnostic should mention import "a" (destructured path).
-    let import_warnings: Vec<_> = b_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"a\""))
-        .collect();
-
-    assert!(
-        import_warnings.is_empty(),
-        "expected no import-warning for resolved destructured import 'a.{{Foo}}', but got: {:?}",
-        import_warnings
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        "a",
     );
 }
