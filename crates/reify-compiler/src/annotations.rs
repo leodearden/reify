@@ -328,7 +328,7 @@ pub(crate) fn extract_solver_hints(
                 other => {
                     diagnostics.push(
                         Diagnostic::warning(format!(
-                            "unknown solver hint kind '{other}'; expected 'discrete_set' or 'prefer_stock'"
+                            "unknown solver hint kind '{other}'; expected 'discrete_set', 'prefer_stock', or 'preferred_strategy'"
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "unknown kind")),
                     );
