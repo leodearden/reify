@@ -346,7 +346,10 @@ fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
 
 /// Calling eval_cached multiple times on a param cell with a type-kind-mismatched
 /// override must continue to surface the warning on EVERY call — including a
-/// same-version fast-path hit and a bumped-version repeat.
+/// same-version fast-path hit and a bumped-version repeat. Also locks the
+/// cached-value invariant: the rejected Bool override must NOT corrupt the cached
+/// value; the fallback must be the default-expression result (mm(1.0)), not
+/// Value::Bool(true).
 ///
 /// Fails today because the Param branch emits the warning only in the cache-miss
 /// path; after the first call caches the result, a same-version repeat hits the
@@ -383,6 +386,12 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
         "first eval_cached call must emit exactly one type-kind mismatch warning; got: {:?}",
         result1.eval_result.diagnostics,
     );
+    assert_eq!(
+        result1.eval_result.values.get(&x_id),
+        Some(&mm(1.0)),
+        "rejected Bool override must NOT corrupt cached value; expected fallback mm(1.0); got: {:?}",
+        result1.eval_result.values.get(&x_id),
+    );
 
     // Second call — same version (fast-path hit). Must still surface the warning.
     // FAILS today because the fast-path returns the cached fallback without re-running
@@ -397,6 +406,12 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
          type-kind mismatch warning (must not drop or duplicate on cache hit); got: {:?}",
         result2.eval_result.diagnostics,
     );
+    assert_eq!(
+        result2.eval_result.values.get(&x_id),
+        Some(&mm(1.0)),
+        "rejected Bool override must NOT corrupt cached value; expected fallback mm(1.0); got: {:?}",
+        result2.eval_result.values.get(&x_id),
+    );
 
     // Third call — bumped version. Must still surface the warning.
     let result3 = engine.eval_cached(&module, VersionId(2));
@@ -409,11 +424,20 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
          warning; got: {:?}",
         result3.eval_result.diagnostics,
     );
+    assert_eq!(
+        result3.eval_result.values.get(&x_id),
+        Some(&mm(1.0)),
+        "rejected Bool override must NOT corrupt cached value; expected fallback mm(1.0); got: {:?}",
+        result3.eval_result.values.get(&x_id),
+    );
 }
 
 /// Calling eval_cached multiple times on a param cell with a dimension-mismatched
 /// override must continue to surface the warning on EVERY call — including a
-/// same-version fast-path hit and a bumped-version repeat.
+/// same-version fast-path hit and a bumped-version repeat. Also locks the
+/// cached-value invariant: the rejected MASS-dimensioned override must NOT corrupt
+/// the cached value; the fallback must be the default-expression result (mm(1.0)),
+/// not the rejected MASS scalar.
 ///
 /// Locks the ScalarDimensionMismatch rejection variant independently — preventing
 /// a future regression where someone accidentally narrows the unconditional pre-check
@@ -456,6 +480,12 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
         "first eval_cached call must emit exactly one dimension mismatch warning; got: {:?}",
         result1.eval_result.diagnostics,
     );
+    assert_eq!(
+        result1.eval_result.values.get(&x_id),
+        Some(&mm(1.0)),
+        "rejected MASS-dimensioned override must NOT corrupt cached value; expected fallback mm(1.0); got: {:?}",
+        result1.eval_result.values.get(&x_id),
+    );
 
     // Second call — same version (fast-path hit). Must still surface the warning.
     let result2 = engine.eval_cached(&module, VersionId(1));
@@ -468,6 +498,12 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
          dimension mismatch warning (must not drop or duplicate on cache hit); got: {:?}",
         result2.eval_result.diagnostics,
     );
+    assert_eq!(
+        result2.eval_result.values.get(&x_id),
+        Some(&mm(1.0)),
+        "rejected MASS-dimensioned override must NOT corrupt cached value; expected fallback mm(1.0); got: {:?}",
+        result2.eval_result.values.get(&x_id),
+    );
 
     // Third call — bumped version. Must still surface the warning.
     let result3 = engine.eval_cached(&module, VersionId(2));
@@ -479,6 +515,12 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
         "third eval_cached call (bumped version) must emit exactly one dimension mismatch \
          warning; got: {:?}",
         result3.eval_result.diagnostics,
+    );
+    assert_eq!(
+        result3.eval_result.values.get(&x_id),
+        Some(&mm(1.0)),
+        "rejected MASS-dimensioned override must NOT corrupt cached value; expected fallback mm(1.0); got: {:?}",
+        result3.eval_result.values.get(&x_id),
     );
 }
 
@@ -639,6 +681,61 @@ fn eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic() 
         }),
         "second eval_cached call must also emit circular diagnostic (must not drop on cache hit); \
          got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+}
+
+// ── task-2269: sub-component repeat-call regression lock ──────────────────────
+
+/// Calling eval_cached twice on a module whose template has a sub_component
+/// referencing a non-existent structure must continue to surface the
+/// "references unknown structure" diagnostic on BOTH calls.
+///
+/// This locks the LSP requirement that sub-component validation surfaces on every
+/// keystroke. Without this lock, a future change that gates the validation pass at
+/// `engine_eval.rs:1696-1703` on `any_auto_miss` or similar cache-coherence flag
+/// would silently drop the diagnostic on the second call (bumped version / cache-hit
+/// path), breaking the LSP's real-time error reporting.
+///
+/// Should pass immediately because the sub-component validation pass already
+/// iterates `template.sub_components` unconditionally inside the per-template loop.
+#[test]
+fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic() {
+    let template = TopologyTemplateBuilder::new("Parent")
+        .sub_component("rib", "DoesNotExist", vec![])
+        .build();
+
+    // Module only contains Parent — no DoesNotExist template
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+
+    // First call — cold start
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("sub-component")
+                && d.message.contains("references unknown structure")
+                && d.message.contains("DoesNotExist")
+        }),
+        "first eval_cached call must emit unknown-structure diagnostic; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — bumped version (models LSP keystroke: each keypress increments
+    // the version). The sub-component validation pass must run unconditionally and
+    // must NOT be gated on cache state or any_auto_miss.
+    let result2 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result2.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("sub-component")
+                && d.message.contains("references unknown structure")
+                && d.message.contains("DoesNotExist")
+        }),
+        "second eval_cached call must also emit unknown-structure diagnostic \
+         (must not drop on cache hit); got: {:?}",
         result2.eval_result.diagnostics,
     );
 }
