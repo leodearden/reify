@@ -1524,16 +1524,14 @@ impl Engine {
                     // returns the cached fallback, and the validation warning is silently dropped.
                     // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
                     // (task-2267 step-1 / step-3).
-                    if let Some((ref override_val, ref rejection)) = override_check {
-                        if let Err(rej) = rejection {
-                            emit_param_override_rejection_warning(
-                                &mut diagnostics,
-                                &cell.id,
-                                &cell.cell_type,
-                                override_val,
-                                rej,
-                            );
-                        }
+                    if let Some((ref override_val, Err(ref rej))) = override_check {
+                        emit_param_override_rejection_warning(
+                            &mut diagnostics,
+                            &cell.id,
+                            &cell.cell_type,
+                            override_val,
+                            rej,
+                        );
                     }
 
                     // Check version fast path
@@ -1794,7 +1792,7 @@ impl Engine {
                 // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
                 // keystroke. See step-10/step-11 regression tests.
                 if let Some(problem) =
-                    build_solver_problem(template, &values, &*self.functions)
+                    build_solver_problem(template, &values, &self.functions)
                 {
                     let solve_result = solver.solve(&problem);
 
