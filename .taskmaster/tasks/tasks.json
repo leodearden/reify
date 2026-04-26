@@ -49119,15 +49119,16 @@
         "description": "In `crates/reify-lsp/src/diagnostics.rs` `eval_diagnostics_regression_lock_cluster` (the cluster added by task 2248), each fixture's `sanity_check` substring-matches functional diagnostic wording from the eval crate:\n- `\"type-kind mismatch\"`\n- `\"dimension mismatch\"`\n- `\"sub-component\"` + `\"references unknown structure\"`\n- `\"made no progress\"`\n- `\"infeasible: x has no satisfying assignment\"`\n\nAny future rewording — even punctuation — will break the regression-lock cluster despite the actual invariant being intact. A maintainer's first instinct will be to update the substring rather than to question whether the emitter still fires.\n\nThe cluster's real invariant is the *negative* check (no `constraint ... violated` format); the sanity_check exists only to prove non-vacuity. Make the sanity check less wording-coupled:\n\n- Assert `!diagnostics.is_empty()` and (where applicable) `severity == Error/Warning`.\n- For stronger evidence the right path fired, prefer structural signals — the solver `counter_handle` pattern is a good model. Consider extending it to the param_override / sub-component paths via a sentinel/inspectable engine state (e.g. a counter on a wrapped Engine, or an event hook) rather than substring-matching prose.\n- For the solver fixtures the `counter > 0` check is sufficient on its own; the message substring is redundant and can be dropped.\n\nSource: post-merge `reviewer_comprehensive` suggestion on task 2248.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T12:36:40.848Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T12:36:36.147Z",
+      "lastModified": "2026-04-26T12:36:40.852Z",
       "taskCount": 2265,
       "completedCount": 2032,
       "tags": [
