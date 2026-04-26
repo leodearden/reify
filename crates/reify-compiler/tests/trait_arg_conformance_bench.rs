@@ -27,6 +27,7 @@
 
 use std::time::Instant;
 
+use reify_compiler::CompiledModule;
 use reify_test_support::compile_source_with_stdlib;
 use reify_types::Severity;
 
@@ -49,6 +50,20 @@ fn make_source(n: usize) -> String {
     )
 }
 
+/// Asserts that `module` contains no `Error`-severity diagnostics.
+/// The `n` parameter provides context for the panic message.
+fn assert_no_errors(module: &CompiledModule, n: usize) {
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error-severity diagnostics for N={n} some(Steel()) elements, got: {errors:#?}",
+    );
+}
+
 /// Confirms that `make_source(0)` panics rather than silently producing a
 /// zero-element list literal that compiles but tests nothing.
 #[test]
@@ -68,15 +83,7 @@ fn make_source_panics_on_zero() {
 fn trait_arg_conformance_correctness_small() {
     const N: usize = 4;
     let module = compile_source_with_stdlib(&make_source(N));
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error-severity diagnostics for N={N} some(Steel()) elements, got: {errors:#?}",
-    );
+    assert_no_errors(&module, N);
 }
 
 /// Timing bench: compiles at N=20 and N=200 and prints both elapsed durations,
@@ -97,14 +104,6 @@ fn compile_large_literal_trait_arg_conformance_timing() {
         let elapsed = t.elapsed();
         eprintln!("[task-2280] compiled N={n} List<Option<MaterialSpec>> in {elapsed:?}");
         // Verify correctness at each size so a walker regression surfaces here too.
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "expected no Error-severity diagnostics for N={n} some(Steel()) elements, got: {errors:#?}",
-        );
+        assert_no_errors(&module, n);
     }
 }
