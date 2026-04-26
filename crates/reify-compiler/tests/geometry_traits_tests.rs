@@ -43,3 +43,41 @@ fn stdlib_file_parses_and_compiles_without_errors() {
         "expected at least one trait def, got zero"
     );
 }
+
+// ─── step-3: all 7 trait names present ───────────────────────────────────────
+
+/// Step 3: All 7 geometry conformance trait names are present in the compiled
+/// module: Bounded, Closed, Manifold, Orientable, Convex, Connected, Watertight.
+#[test]
+fn all_seven_traits_present() {
+    let module = load_stdlib_module();
+
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
+
+    let expected = [
+        "Bounded",
+        "Closed",
+        "Manifold",
+        "Orientable",
+        "Convex",
+        "Connected",
+        "Watertight",
+    ];
+
+    assert_eq!(
+        module.trait_defs.len(),
+        expected.len(),
+        "expected exactly {} traits, got: {:?}",
+        expected.len(),
+        trait_names
+    );
+
+    for name in &expected {
+        assert!(
+            trait_names.contains(name),
+            "expected trait '{}' in compiled module, found: {:?}",
+            name,
+            trait_names
+        );
+    }
+}
