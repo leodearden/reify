@@ -188,6 +188,58 @@ structure def Vehicle : HasEngine {
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
+/// A structure passed as a trait-typed param argument that does not declare the
+/// required trait should produce "does not conform to trait" diagnostic.
+///
+/// Exercises conformance/mod.rs check_trait_arg_conformance StructureRef arm.
+#[test]
+fn type_does_not_conform_to_trait() {
+    // Plain does not declare `: Material`, so passing Plain() where Material
+    // is required triggers the StructureRef arm at conformance/mod.rs:189.
+    let source = r#"
+trait Material {}
+structure def Plain { param density : Real = 1.0 }
+structure def Host { param m : Material }
+structure def Top { sub h = Host(m: Plain()) }
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for non-conforming trait arg, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_msg = errors.iter().any(|d| {
+        d.message.contains("does not conform to trait") && d.message.contains("Material")
+    });
+    assert!(
+        has_msg,
+        "expected 'does not conform to trait' mentioning 'Material', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let has_code = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+            && d.message.contains("does not conform to trait")
+            && d.message.contains("Material")
+    });
+    assert!(
+        has_code,
+        "expected DiagnosticCode::TypeNotConformingToTrait mentioning 'Material', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let first = errors[0];
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
 // ── Step 3: Unresolved trait error test ──────────────────────────────────────
 
 /// A structure declaring a trait bound that does not exist in the module
