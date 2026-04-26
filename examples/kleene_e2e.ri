@@ -11,4 +11,5 @@ structure def Foo {
     param b : Bool = false
 
     let p1 = a && b         // Kleene AND absorption: undef && false = false
+    let p2 = a || true      // Kleene OR absorption: undef || true = true
 }
