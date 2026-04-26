@@ -570,9 +570,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     let mut pred_clone = predicate.as_ref().clone();
                     pred_clone.remap_cell(variable_id, cell_id);
 
-                    // Make the iterated cell's value visible under the
-                    // synthetic loop-var name too, so non-determinacy uses
-                    // of the bound variable continue to resolve.
+                    // Defense-in-depth: bind the iterated cell's value under
+                    // the synthetic loop-var name. After `remap_cell` above,
+                    // every cell-bearing reference to `variable_id` (ValueRef,
+                    // DeterminacyPredicate.cell, nested Quantifier.variable_id,
+                    // Lambda.captures/param_ids) has been rewritten to
+                    // `cell_id`, so this insert is effectively dead for
+                    // present node kinds. We keep it so that any future
+                    // expression variant that references the loop variable
+                    // by name without going through `remap_cell` still sees
+                    // a live binding instead of `Value::Undef`. Cost is one
+                    // map insert per iteration.
                     let mut scope = ctx.values.clone();
                     let cell_value = ctx.values.get_or_undef(cell_id);
                     scope.insert(variable_id.clone(), cell_value);

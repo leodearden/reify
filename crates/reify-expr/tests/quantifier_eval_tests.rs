@@ -595,3 +595,101 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
          (NOT panic on the loop-var debug_assert)"
     );
 }
+
+/// task-2289 amendment: pin the cell-iteration heuristic for a *user-written*
+/// `forall p in [E.x, E.y]: p > 0`-style expression that happens to share
+/// the post-activation shape (`ListLiteral` of pure `ValueRef`s).
+///
+/// The cell-iteration branch keys off the structural shape, not a marker —
+/// so user-written code matching the same shape also routes through
+/// `remap_cell` rewriting + scope-binding instead of the value-iteration
+/// fallback. For arithmetic predicates this is observationally equivalent
+/// to value-iteration: the rewrite turns `ValueRef($loop)` into
+/// `ValueRef(E.x)`, and `eval_expr` on the rewritten ValueRef looks the
+/// value up in `ctx.values` — same lookup the value-iteration path would
+/// have done after binding `$loop -> values.get(E.x)`. This test locks
+/// that semantics in: a user-written quantifier over a list of
+/// ValueRefs returns the same boolean result it would under
+/// value-iteration, with no panics from the cell-iteration codepath.
+#[test]
+fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
+    let cell_x = ValueCellId::new("E", "x");
+    let cell_y = ValueCellId::new("E", "y");
+    let loop_var = ValueCellId::new("$quant0.S", "p");
+
+    // Collection: `[E.x, E.y]` — a user could legally write this.
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(cell_x.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+        ],
+        Type::List(Box::new(Type::Real)),
+    );
+
+    // Predicate: `p > 0` — references the loop var via ValueRef, which
+    // `remap_cell` rewrites to `ValueRef(E.x)` / `ValueRef(E.y)` per
+    // iteration. Both cells hold positive values, so forall must be true.
+    let predicate = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(loop_var.clone(), Type::Real),
+        CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        Type::Bool,
+    );
+
+    let expr = make_quantifier(
+        QuantifierKind::ForAll,
+        "p",
+        loop_var,
+        collection,
+        predicate,
+    );
+
+    let mut values = ValueMap::new();
+    values.insert(cell_x.clone(), Value::Real(1.5));
+    values.insert(cell_y.clone(), Value::Real(2.5));
+
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Bool(true),
+        "user-written `forall p in [E.x, E.y]: p > 0` with positive values \
+         in both cells must evaluate to Bool(true) under cell-iteration; \
+         the remap_cell rewrite of ValueRef($loop) → ValueRef(E.x)/E.y is \
+         observationally equivalent to value-iteration's $loop->value bind"
+    );
+
+    // Counterpart: flip one cell negative, expect Bool(false).
+    let mut values_neg = ValueMap::new();
+    values_neg.insert(cell_x.clone(), Value::Real(1.5));
+    values_neg.insert(cell_y.clone(), Value::Real(-0.5));
+
+    let predicate2 = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(
+            ValueCellId::new("$quant0.S", "p"),
+            Type::Real,
+        ),
+        CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        Type::Bool,
+    );
+    let collection2 = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(cell_x.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+        ],
+        Type::List(Box::new(Type::Real)),
+    );
+    let expr2 = make_quantifier(
+        QuantifierKind::ForAll,
+        "p",
+        ValueCellId::new("$quant0.S", "p"),
+        collection2,
+        predicate2,
+    );
+    let result2 = eval_expr(&expr2, &EvalContext::simple(&values_neg));
+    assert_eq!(
+        result2,
+        Value::Bool(false),
+        "user-written forall with one negative cell must evaluate to Bool(false)"
+    );
+}
