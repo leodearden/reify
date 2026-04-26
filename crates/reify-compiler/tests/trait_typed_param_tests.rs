@@ -1145,3 +1145,94 @@ fn nested_wrapper_list_option_accepts_all_conforming_inner_elements() {
         errors
     );
 }
+
+// ─── Nested wrapper type-level walker tests (task 2279) ─────────────────────────────
+//
+// These tests exercise `walk_param_against_arg_type` recursing through depth-2 wrappers
+// (e.g. `List<Option<T>>`).  The literal-walker tests above (task 2227) cover literal
+// expansion; these tests cover the type-level fallback path used when the argument is a
+// ValueRef (a param reference) rather than a list or option literal.  They pin the
+// nested-wrapper recursion path that the existing depth-1 ValueRef tests do not reach.
+
+/// Negative test: a param `p : List<Option<Inert>>` where `Inert` does NOT refine
+/// `Carrier` passed to a slot `ms : List<Option<Carrier>>` must produce a
+/// "does not conform to trait 'Carrier'" error.
+///
+/// Walk sequence (type-level walker):
+/// 1. `walk_param_against_arg(List<Option<Carrier>>, ValueRef(p))` → non-literal →
+///    falls through to
+/// 2. `walk_param_against_arg_type(List<Option<Carrier>>, List<Option<Inert>>)` →
+///    `(List, List)` arm → recurse to
+/// 3. `walk_param_against_arg_type(Option<Carrier>, Option<Inert>)` →
+///    `(Option, Option)` arm → recurse to
+/// 4. `emit_leaf_conformance_for_arg_type(Inert, Carrier)` →
+///    `trait_satisfies("Inert", "Carrier")` → false → emits diagnostic.
+///
+/// Uses `compile_source` (no stdlib) to avoid name conflicts with stdlib structures.
+#[test]
+fn nested_wrapper_type_level_list_option_rejects_valueref_of_non_conforming_trait() {
+    let source = r#"
+        trait Carrier {}
+        trait Inert {}
+        structure def Host { param ms : List<Option<Carrier>> }
+        structure def Top {
+            param p : List<Option<Inert>>
+            sub h = Host(ms: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("Carrier")),
+        "expected a 'does not conform to trait Carrier' error for List<Option<Inert>> ValueRef passed to List<Option<Carrier>> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: a param `p : List<Option<Rigid>>` where `Rigid : Carrier`
+/// passed to a slot `ms : List<Option<Carrier>>` should compile without errors.
+///
+/// Walk sequence (type-level walker):
+/// 1. `walk_param_against_arg(List<Option<Carrier>>, ValueRef(p))` → non-literal →
+///    falls through to
+/// 2. `walk_param_against_arg_type(List<Option<Carrier>>, List<Option<Rigid>>)` →
+///    `(List, List)` arm → recurse to
+/// 3. `walk_param_against_arg_type(Option<Carrier>, Option<Rigid>)` →
+///    `(Option, Option)` arm → recurse to
+/// 4. `emit_leaf_conformance_for_arg_type(Rigid, Carrier)` →
+///    `trait_satisfies("Rigid", "Carrier")` → true → passes.
+///
+/// Uses `compile_source` (no stdlib) to avoid name conflicts with stdlib structures.
+#[test]
+fn nested_wrapper_type_level_list_option_accepts_valueref_of_conforming_subtrait() {
+    let source = r#"
+        trait Carrier {}
+        trait Rigid : Carrier {}
+        structure def Host { param ms : List<Option<Carrier>> }
+        structure def Top {
+            param p : List<Option<Rigid>>
+            sub h = Host(ms: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: passing List<Option<Rigid>> (Rigid : Carrier) for List<Option<Carrier>> param, got: {:?}",
+        errors
+    );
+}
