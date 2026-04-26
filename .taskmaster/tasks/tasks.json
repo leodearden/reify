@@ -49291,6 +49291,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T13:58:47.025Z"
+      },
+      {
+        "id": "2282",
+        "title": "Conformance tests: add Map-key non-conformance and Option&lt;List&lt;T&gt;&gt; / Map&lt;Option&lt;...&gt;,...&gt; coverage",
+        "description": "Two coverage gaps in the new wrapper conformance test block (crates/reify-compiler/tests/trait_typed_param_tests.rs:633-1147):\n(1) No negative test for a non-conforming MAP KEY — only the value position is exercised. The walker recurses into `key_p`, so a regression there would slip past.\n(2) Only `List<Option<T>>` is exercised; not `Option<List<MaterialSpec>>` or `Map<Option<...>, ...>`.",
+        "details": "Add two short tests that mirror the existing list-of-option pattern:\n- `map_trait_typed_param_rejects_non_conforming_key`: use a custom enum/struct as map key trait; pass a non-conforming value at the key position; assert `TypeNotConformingToTrait` diagnostic fires for `arg_name` matching the param.\n- `option_list_trait_typed_param_rejects_non_conforming_inner_element`: outer `Option<List<MaterialSpec>>`; assert non-conforming inner element triggers diagnostic; positive case should still pass.\n\nThese guard against arm-ordering regressions in the recursive walker cheaply.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49300,7 +49311,10 @@
       "completedCount": 2038,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T13:59:28.496Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T13:59:28.521Z"
     }
   }
 }
