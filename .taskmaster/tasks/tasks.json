@@ -48723,23 +48723,21 @@
         "description": "Follow-up to task 2260. Eight primitive ops in crates/reify-compiler/src/geometry.rs (box, cylinder, sphere, tube, linear_pattern, circular_pattern, mirror, linear_pattern_2d) still use hand-rolled `Diagnostic::error(format!(\"X() expects N arguments, got {}\", ...))` blocks at lines 358, 379, 399, 418, 441, 470, 502, 531. Migrate each to `check_arg_count_exact(\"X\", compiled_args.len(), N, expr.span, diagnostics)` from `crates/reify-compiler/src/arg_check.rs`. The rename from `geometry_arg_check` -> `arg_check` in task 2260 was made because the helper is used outside geometry; centralising these in-crate sites is the natural next step. Existing tests must continue to pass; messages should remain semantically equivalent under the canonical \"{name}() expects {expected} arguments, got {got}\" format.\n\nmemory_hints:\n- search: \"check_arg_count_exact arg_check.rs\"\n- search: \"geometry.rs primitive arg validation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T10:10:57.924Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T10:01:52.670Z",
-      "taskCount": 2252,
+      "lastModified": "2026-04-26T10:10:57.935Z",
+      "taskCount": 2253,
       "completedCount": 2015,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T10:10:41.307Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T10:10:41.332Z"
+      ]
     }
   }
 }
