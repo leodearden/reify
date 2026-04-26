@@ -49198,7 +49198,17 @@
           "modules": [
             "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/import_warning_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "ModuleDag"
+            ],
+            "queries": [
+              "import-warning cleanup task 2226 compile_with_stdlib unresolved import DiagnosticLabel",
+              "ModuleDag cross-file import warning tests deduplicate helper setup"
+            ]
+          },
+          "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0"
         }
       }
     ],
