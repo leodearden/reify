@@ -938,9 +938,22 @@ impl OcctKernel {
                 Ok(Value::Real(moi))
             }
             GeometryQuery::AdjacentFaces { shape, face_index } => {
-                let _ = (shape, face_index);
-                Err(QueryError::QueryFailed(
-                    "topology selector not yet implemented".into(),
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let idx_u32: u32 = (*face_index).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "adjacent_faces: face_index {} exceeds u32::MAX",
+                        face_index
+                    ))
+                })?;
+                let neighbors = ffi::ffi::adjacent_faces(s, idx_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    neighbors
+                        .into_iter()
+                        .map(|i| Value::Int(i as i64))
+                        .collect(),
                 ))
             }
             GeometryQuery::SharedEdges {

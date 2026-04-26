@@ -199,6 +199,12 @@ BBox query_bbox(const OcctShape& shape);
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
+/// Return the 0-based global indices (TopExp_Explorer/TopAbs_FACE order) of
+/// faces sharing at least one edge with `faces[face_index]`. Excludes the
+/// queried face itself; deduplicated; returned in ascending order. Throws
+/// std::runtime_error if `face_index` is out of range.
+rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

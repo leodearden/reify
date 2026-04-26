@@ -5,6 +5,11 @@
 // namespace occt { constexpr double CPP_LINE_WIRE_MIN_LENGTH_SQ = ...; }
 #include "line_wire_floors.h"
 
+// stdlib
+#include <set>
+#include <string>
+#include <vector>
+
 // OCCT primitives
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -18,7 +23,10 @@
 // OCCT fillet / chamfer
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_ListIteratorOfListOfShape.hxx>
 #include <TopoDS.hxx>
 
 // OCCT draft
@@ -1491,6 +1499,62 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
         throw std::runtime_error(std::string("OCCT query_moment_of_inertia: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT query_moment_of_inertia: unknown C++ exception");
+    }
+}
+
+rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) {
+    try {
+        // Materialize a stable 0-based face index via TopExp_Explorer order.
+        std::vector<TopoDS_Face> faces;
+        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            faces.push_back(TopoDS::Face(ex.Current()));
+        }
+        if (face_index >= faces.size()) {
+            std::string msg = "adjacent_faces: face index "
+                + std::to_string(face_index)
+                + " out of range; shape has "
+                + std::to_string(faces.size())
+                + " faces";
+            throw std::runtime_error(msg);
+        }
+
+        // Build the edge -> faces incidence map for this shape.
+        TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+        TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+
+        // For each edge of the queried face, look up its parent faces and
+        // recover the global face index by IsSame against `faces[]`.
+        std::set<uint32_t> result;
+        const TopoDS_Face& target = faces[face_index];
+        for (TopExp_Explorer ex(target, TopAbs_EDGE); ex.More(); ex.Next()) {
+            const TopoDS_Shape& edge = ex.Current();
+            if (!edge_face_map.Contains(edge)) {
+                continue;
+            }
+            const TopTools_ListOfShape& parents = edge_face_map.FindFromKey(edge);
+            for (TopTools_ListIteratorOfListOfShape it(parents); it.More(); it.Next()) {
+                const TopoDS_Shape& parent_face = it.Value();
+                for (size_t i = 0; i < faces.size(); ++i) {
+                    if (i == face_index) continue;
+                    if (parent_face.IsSame(faces[i])) {
+                        result.insert(static_cast<uint32_t>(i));
+                        break;
+                    }
+                }
+            }
+        }
+
+        rust::Vec<uint32_t> out;
+        for (uint32_t i : result) {
+            out.push_back(i);
+        }
+        return out;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT adjacent_faces: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT adjacent_faces: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT adjacent_faces: unknown C++ exception");
     }
 }
 

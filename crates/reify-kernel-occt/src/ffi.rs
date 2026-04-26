@@ -255,6 +255,10 @@ pub mod ffi {
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
+        /// Faces sharing at least one edge with `face_index` (0-based, TopExp order).
+        /// Excludes the queried face; deduplicated; returned ascending.
+        fn adjacent_faces(shape: &OcctShape, face_index: u32) -> Result<Vec<u32>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 
