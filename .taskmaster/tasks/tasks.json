@@ -50758,13 +50758,13 @@
         "description": "Implement crates/reify-doc/src/fmt_markdown.rs rendering DocModel as GitHub-flavored Markdown. Default: single file. With MarkdownOptions::split=true: one file per item plus index.md. Per-item layout: H2 with anchor (`<a id=\"…\">`), doc paragraphs, \"Parameters\" GFM table (Name | Type | Dimension | Default | Description), \"Ports\" GFM table (Name | Kind | Role | Type | Description), \"Constraints\" bullet list with line-numbers (rendered from source spans), \"Meta\" bullet list (alphabetical key order), \"Conforms to\" / \"Used by\" cross-ref bullets. TOC at the top groups by kind (Traits/Structures/Occurrences/Enums/Functions/Constants). @deprecated → callout; @test → grouped at the bottom under \"Tests\" subsection; @optimized → italic note; @solver_hint → italic suffix on the param Description cell. Snapshot test against examples/integration_full_v01.ri. PRD: docs/prds/reify-doc-tool.md slice 4.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2342"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:14:09.863Z"
+        "updatedAt": "2026-04-26T20:16:45.485Z"
       },
       {
         "id": "2358",
@@ -50821,14 +50821,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:16:24.132Z",
+      "lastModified": "2026-04-26T20:16:45.486Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:16:26.334Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
