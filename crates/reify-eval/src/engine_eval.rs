@@ -442,12 +442,13 @@ impl Engine {
         self.next_snapshot_id += 1;
         let version_id = self.next_version_id;
         self.next_version_id += 1;
+        let version = VersionId(version_id);
 
         let mut snapshot = Snapshot::from_compiled_module(module);
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
         snapshot.id = SnapshotId(snapshot_id);
-        snapshot.version = VersionId(version_id);
+        snapshot.version = version;
         snapshot.provenance = SnapshotProvenance::Initial;
 
         // Purge orphaned param_overrides entries BEFORE the per-cell Param
@@ -527,7 +528,7 @@ impl Engine {
                         timestamp: start,
                         node_id: node_id.clone(),
                         kind: EventKind::Started,
-                        version: VersionId(version_id),
+                        version,
                         payload: None,
                     });
 
@@ -544,7 +545,7 @@ impl Engine {
                     let outcome = self.cache.record_evaluation(
                         node_id.clone(),
                         cached_result,
-                        VersionId(version_id),
+                        version,
                         trace,
                     );
 
@@ -552,7 +553,7 @@ impl Engine {
                         timestamp: Instant::now(),
                         node_id,
                         kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
+                        version,
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
                 } else if cell.kind == ValueCellKind::Param {
@@ -646,7 +647,7 @@ impl Engine {
                         timestamp: start,
                         node_id: node_id.clone(),
                         kind: EventKind::Started,
-                        version: VersionId(version_id),
+                        version,
                         payload: None,
                     });
 
@@ -705,7 +706,7 @@ impl Engine {
                             &mut self.cache,
                             node_id,
                             CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-                            VersionId(version_id),
+                            version,
                             start,
                         );
                         continue;
@@ -722,7 +723,7 @@ impl Engine {
                         &mut self.cache,
                         node_id,
                         CachedResult::Value(val, DeterminacyState::Determined),
-                        VersionId(version_id),
+                        version,
                         start,
                     );
                 }
@@ -774,7 +775,7 @@ impl Engine {
                     cache: &mut self.cache,
                     functions: &functions,
                     meta_map: &self.meta_map,
-                    version: VersionId(version_id),
+                    version,
                 };
                 for cell in &group.members {
                     if guard_is_true {
@@ -830,7 +831,7 @@ impl Engine {
                     cache: &mut self.cache,
                     functions: &functions,
                     meta_map: &self.meta_map,
-                    version: VersionId(version_id),
+                    version,
                 };
                 for cell in &group.else_members {
                     if guard_is_false {
