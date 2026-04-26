@@ -49581,7 +49581,21 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-eval/src/engine_purposes.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/tests/purpose_activation.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
       }
     ],
     "metadata": {
