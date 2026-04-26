@@ -439,17 +439,22 @@ structure def S : TraitAlpha + TraitBeta {
     );
 
     let has_msg = errors.iter().any(|d| {
-        d.message.contains("conflicting trait let bindings") && d.message.contains("area")
+        d.code == Some(DiagnosticCode::ConflictingTraitLetBindings)
+            // Keep the 'area' name-token check: it carries semantic content beyond wording.
+            && d.message.contains("area")
     });
     assert!(
         has_msg,
-        "expected 'conflicting trait let bindings' mentioning 'area', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "expected DiagnosticCode::ConflictingTraitLetBindings mentioning 'area', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("conflicting trait let bindings"))
+        .find(|d| d.code == Some(DiagnosticCode::ConflictingTraitLetBindings))
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");

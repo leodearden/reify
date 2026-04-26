@@ -752,7 +752,8 @@ mod tests {
         trait_registry.insert("TraitB".to_string(), &trait_b);
         trait_registry.insert("Top".to_string(), &top);
 
-        // Case 1: No structure override — exactly one conflict diagnostic.
+        // Case 1: No structure override — exactly one conflict diagnostic with
+        // the typed `ConflictingTraitLetBindings` code.
         {
             let mut ctx = MergeContext::new();
             let mut diags: Vec<Diagnostic> = vec![];
@@ -770,6 +771,12 @@ mod tests {
                 1,
                 "Expected exactly one let-conflict diagnostic, got: {:?}",
                 diags
+            );
+            assert_eq!(
+                diags[0].code,
+                Some(DiagnosticCode::ConflictingTraitLetBindings),
+                "Expected DiagnosticCode::ConflictingTraitLetBindings, got: {:?}",
+                diags[0].code
             );
         }
 
