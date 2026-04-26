@@ -50039,15 +50039,20 @@
       {
         "id": "2312",
         "title": "Geometry-traits inference: per-op trait propagation table",
-        "description": "Build per-op trait inference for Bounded/Connected/Convex on CompiledGeometryOp variants, new module geometry_traits_inference.rs. PRD task 2 of docs/prds/geometry-traits.md. Primitives produce Bounded+Connected+Convex; half_space/extrude_infinite produce Unbounded; Booleans/transforms/sweeps/modifiers propagate per the rules in the PRD.",
-        "details": "",
-        "testStrategy": "",
+        "description": "Implement the geometry-traits validation pipeline from docs/prds/geometry-traits.md tasks 2 and 3: build per-op trait inference for Bounded/Connected/Convex on CompiledGeometryOp variants (new module geometry_traits_inference.rs), then emit E_GEOMETRY_UNBOUNDED at call sites where an arg lacking Bounded is passed to a Bounded-typed parameter.",
         "status": "pending",
         "dependencies": [
           "2297"
         ],
         "priority": "high",
-        "subtasks": []
+        "details": "**Per-op inference (PRD task 2):**\n- New module: `geometry_traits_inference.rs` in `crates/reify-compiler`\n- Primitives (box, cylinder, sphere, etc.) produce Bounded+Connected+Convex\n- `half_space` / `extrude_infinite` produce Unbounded (lack Bounded)\n- Booleans/transforms/sweeps/modifiers propagate per the rules in docs/prds/geometry-traits.md\n- Each `CompiledGeometryOp` variant maps to an `InferredTraits` set\n\n**Call-site diagnostic (PRD task 3):**\n- Using the `inferred_traits` set from the inference step, emit `E_GEOMETRY_UNBOUNDED` when a call site binds a `Bounded` trait parameter to an arg whose inferred traits lack `Bounded`\n- Reuse existing trait-bound mismatch diagnostic path\n- Tests: `volume(half_space(...))` errors with `E_GEOMETRY_UNBOUNDED`; `volume(intersection(half_space, box))` does not error (intersection of unbounded + bounded is bounded per propagation rules)\n\nPRD: docs/prds/geometry-traits.md tasks 2 and 3",
+        "testStrategy": null,
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Candidate (PRD task 3: E_GEOMETRY_UNBOUNDED diagnostic) is tightly coupled to Task 2312 (PRD task 2: per-op inference table) — the diagnostic literally cannot fire without the inferred_traits set produced by the inference step. Both touch crates/reify-compiler geometry_traits module (no new module-lock keys). Combined into one coherent pipeline: inference feeds diagnostic. Planning budget well within limits (2 concerns, both files_to_modify lists were empty). Neither task is useful without the o",
+          "combined_at": "2026-04-26T19:54:44.630296+00:00"
+        }
       },
       {
         "id": "2313",
@@ -50055,23 +50060,21 @@
         "description": "v0.1 #kernel pragma: accept #kernel(occt); reject other kernel names with ERROR \"kernel '<other>' is deferred to v0.2; v0.1 supports only #kernel(occt)\" — makes the v0.1 limitation discoverable. Record on CompiledModule.kernel_pragma: Option<String> for round-trip and doc-tool consumption. Block-level: ignored-with-warning (already in KNOWN_BLOCK_PRAGMAS). PRD: docs/prds/pragmas.md item 4. Architecture ref: reify-implementation-architecture.md §10.3.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:55:00.971Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:54:05.582Z",
-      "taskCount": 2301,
+      "lastModified": "2026-04-26T19:55:00.972Z",
+      "taskCount": 2302,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:54:06.522Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:54:44.181Z"
+      ]
     }
   }
 }
