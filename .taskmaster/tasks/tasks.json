@@ -51307,6 +51307,20 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2386",
+        "title": "auto type-param: strict-vs-free selection + lexicographic tiebreak + diagnostic codes",
+        "description": "Implement selection logic for auto type parameters with strict and free candidates, including lexicographic tiebreaking and diagnostic code generation.",
+        "details": "This task involves implementing the selection logic for auto type parameters when resolving candidates. If no feasible candidates are found, generate the `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error, listing rejections. If exactly one candidate is feasible, use it directly. For two or more strict candidates, generate the `E_AUTO_TYPE_PARAM_AMBIGUOUS` error. If there are two or more candidates with `auto(free)`, select the lexicographically first by fully qualified name (FQN) and issue a `W_AUTO_TYPE_PARAM_NON_UNIQUE` warning. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 3. Ensure integration with the feasibility filter and candidate enumeration logic from previous tasks.",
+        "testStrategy": "1. Develop unit tests to verify correct error and warning generation for each scenario (0, 1, ≥2 strict, ≥2 with free candidates). 2. Test lexicographic selection by FQN when multiple free candidates exist. 3. Ensure integration with the feasibility filter and candidate enumeration logic, verifying that the correct candidates are processed. 4. Simulate scenarios with varying numbers of candidates to confirm correct diagnostic code generation and selection logic.",
+        "status": "pending",
+        "dependencies": [
+          "2385",
+          "2384"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51319,7 +51333,7 @@
       ],
       "created": "2026-04-26T20:24:55.735Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:25:04.186Z"
+      "updated": "2026-04-26T20:25:08.648Z"
     }
   }
 }
