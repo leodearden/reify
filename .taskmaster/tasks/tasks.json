@@ -49605,7 +49605,20 @@
             "crates/reify-compiler/src",
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "CompiledPurpose",
+              "activate_purpose",
+              "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS"
+            ],
+            "queries": [
+              "purpose reflective aggregation subject.params geometric_params material_params runtime expansion",
+              "activate_purpose populate ListLiteral empty placeholder expr.rs task 2181 2289",
+              "forall determined predicate quantifier variable_id cell identity DeterminacyPredicate",
+              "purpose_activation trap test manufacturing_ready silently_passes vacuously"
+            ]
+          }
         },
         "updatedAt": "2026-04-26T18:23:36.877Z"
       }
@@ -49617,7 +49630,9 @@
       "completedCount": 2053,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T18:52:26.278Z",
+      "description": "Tasks for master context"
     }
   }
 }
