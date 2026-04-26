@@ -50237,6 +50237,19 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2325",
+        "title": "Implement OCCT FFI for center_of_mass and moment_of_inertia with density",
+        "description": "Develop foreign function interface (FFI) bindings for calculating center of mass and moment of inertia using OCCT, incorporating density.",
+        "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.",
+        "testStrategy": "Verify the implementation by comparing the results against analytical formulas for a box shape. Specifically, check that the moment of inertia calculations match the formula `I_xx = (1/12)*m*(W^2+H^2)` and similar for other axes. Conduct unit tests using a variety of solid shapes and densities to ensure accuracy and robustness. Use `cargo test -p reify-eval -- occt_ffi` to run the test suite.",
+        "status": "pending",
+        "dependencies": [
+          "329"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50249,7 +50262,7 @@
       ],
       "created": "2026-04-26T19:59:53.613Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:59:59.402Z"
+      "updated": "2026-04-26T20:00:07.693Z"
     }
   }
 }
