@@ -159,6 +159,8 @@ impl CompilationCtx {
             type_aliases,
             constraint_defs: self.constraint_defs,
             pragmas: parsed.pragmas.clone(),
+            // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
+            default_tolerance: None,
             diagnostics: self.diagnostics,
             content_hash,
         }

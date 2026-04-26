@@ -1980,6 +1980,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         type_aliases: vec![],
         constraint_defs: vec![],
         pragmas: vec![],
+        default_tolerance: None,
         diagnostics: vec![],
         content_hash: ContentHash::of_str(""),
     };

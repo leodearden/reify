@@ -289,6 +289,7 @@ mod tests {
             type_aliases: vec![],
             constraint_defs: cds,
             pragmas: vec![],
+            default_tolerance: None,
             diagnostics: vec![],
             content_hash: ContentHash::of_str(""),
         }
