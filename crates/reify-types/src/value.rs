@@ -2039,9 +2039,10 @@ impl ResultRef {
         ResultRef(Some(hash))
     }
 
-    /// Returns `true` when no prior substantive result is available.
-    pub fn is_none(&self) -> bool {
-        self.0.is_none()
+    /// Returns `true` when a prior substantive result is available (identified
+    /// by a content hash).  Returns `false` when no prior result exists.
+    pub fn has_hash(&self) -> bool {
+        self.0.is_some()
     }
 
     /// Returns the content hash of the last substantive result, if any.
@@ -2050,13 +2051,12 @@ impl ResultRef {
     }
 }
 
-/// Opaque carrier for an evaluation failure stored in [`Freshness::Failed`].
+/// Opaque nominal wrapper for an evaluation failure stored in [`Freshness::Failed`].
 ///
-/// Wraps the existing [`EvalError`] with a private inner field so callers
-/// cannot access the raw string directly, satisfying the "opaque type"
-/// requirement.  `Display` is delegated to the inner `EvalError`, and
-/// `From<EvalError>` provides ergonomic conversion from any site that
-/// already holds an `EvalError`.
+/// Wraps the existing [`EvalError`] with a private inner field.  The only
+/// public accessor is `message() -> &str`; `Display` is delegated to the
+/// inner `EvalError`.  Use `ErrorRef::from(eval_error)` or `.into()` for
+/// ergonomic conversion from any site that already holds an `EvalError`.
 ///
 /// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2068,19 +2068,9 @@ impl ErrorRef {
         ErrorRef(EvalError(message.into()))
     }
 
-    /// Construct an `ErrorRef` from an existing [`EvalError`].
-    pub fn from_eval_error(error: EvalError) -> Self {
-        ErrorRef(error)
-    }
-
     /// Returns the error message string.
     pub fn message(&self) -> &str {
         &self.0.0
-    }
-
-    /// Returns a reference to the inner [`EvalError`].
-    pub fn as_eval_error(&self) -> &EvalError {
-        &self.0
     }
 }
 
@@ -2635,7 +2625,7 @@ mod tests {
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
-            Freshness::Pending { last_substantive } => assert!(last_substantive.is_none()),
+            Freshness::Pending { last_substantive } => assert!(!last_substantive.has_hash()),
             _ => panic!("expected Pending"),
         }
     }
@@ -2674,7 +2664,7 @@ mod tests {
     #[test]
     fn test_result_ref_none() {
         let r = ResultRef::none();
-        assert!(r.is_none());
+        assert!(!r.has_hash());
         assert_eq!(r.content_hash(), None);
     }
 
@@ -2682,7 +2672,7 @@ mod tests {
     fn test_result_ref_of_hash() {
         let hash = ContentHash::of(b"x");
         let r = ResultRef::of_hash(hash);
-        assert!(!r.is_none());
+        assert!(r.has_hash());
         assert_eq!(r.content_hash(), Some(hash));
     }
 
@@ -2692,7 +2682,8 @@ mod tests {
         let r = ResultRef::of_hash(hash);
         let r2 = r.clone();
         assert_eq!(r, r2);
-        assert!(!format!("{:?}", r).is_empty());
+        // Debug output must include the type name and the hash content
+        assert!(format!("{:?}", r).contains("ResultRef"));
     }
 
     // ── ErrorRef tests (step-3) ──────────────────────────────────────────────
@@ -2706,10 +2697,10 @@ mod tests {
     #[test]
     fn test_error_ref_from_eval_error() {
         let e = EvalError("boom".to_string());
-        let via_method = ErrorRef::from_eval_error(e.clone());
-        let via_from = ErrorRef::from(e);
-        assert_eq!(via_method, via_from);
-        assert_eq!(via_method.message(), "boom");
+        let via_from: ErrorRef = e.clone().into();
+        assert_eq!(via_from.message(), "boom");
+        // From and Into agree
+        assert_eq!(ErrorRef::from(e), via_from);
     }
 
     #[test]
@@ -2718,7 +2709,8 @@ mod tests {
         assert_eq!(format!("{}", err), "boom");
         let err2 = err.clone();
         assert_eq!(err, err2);
-        assert!(!format!("{:?}", err).is_empty());
+        // Debug output must include the message content
+        assert!(format!("{:?}", err).contains("boom"));
     }
 
     #[test]
