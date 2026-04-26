@@ -50076,6 +50076,19 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:55:00.971Z"
+      },
+      {
+        "id": "2314",
+        "title": "Add exhaustive Kleene truth-table tests for logical operators",
+        "description": "Implement exhaustive tests for Kleene logic operators and/or/not/implies based on spec §9.2.3.",
+        "details": "Implement exhaustive truth-table tests for the Kleene logic operators `and`, `or`, `not`, and `implies` in `crates/reify-expr/tests/kleene_logic_tests.rs`. Cover all nine input pairs for `and`, `or`, and `implies`, and three inputs for `not`. Ensure commutativity for `and` and `or`, and pin asymmetric rows for `implies`. Reference spec §9.2.3 lines 1662-1680 for expected outcomes. Use the shared Kleene helper extracted in Task 2294. Document the test cases in `docs/prds/kleene-logic.md`.",
+        "testStrategy": "Verify that all test cases pass by running `cargo test` in the `crates/reify-expr` directory. Ensure that the tests cover all specified input combinations and edge cases, including commutativity and asymmetry. Cross-reference results with spec §9.2.3 to confirm accuracy.",
+        "status": "pending",
+        "dependencies": [
+          "2294"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50087,7 +50100,8 @@
         "master"
       ],
       "created": "2026-04-26T19:55:29.913Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:56:02.609Z"
     }
   }
 }
