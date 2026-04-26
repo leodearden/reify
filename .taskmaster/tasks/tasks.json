@@ -49661,23 +49661,21 @@
         "description": "Strip refactor-narration sentences from the doc comments on the three helpers introduced by task 2268. Keep what each helper does and any caller contract that isn't obvious from the signature; let git blame describe the history.",
         "details": "In `crates/reify-eval/src/engine_eval.rs`, three helpers introduced by task 2268 carry doc comments that describe refactor history rather than current behaviour:\n\n- `detect_let_cycle` (lines ~283-294): \"Centralises the let-cycle logic so that a future fix to the error message…\", \"removing the stale unconditional allocation that existed in the `eval_cached()` path before this refactor\", \"mirroring the pattern in `evaluate_let_bindings`\".\n- `build_solver_problem` (lines ~346-355): \"Centralises the problem-construction logic…\", \"pinned by `eval_cached_solver_solved_arm_is_intentional_noop`\".\n- `emit_param_override_rejection_warning` (lines ~405-412): \"Replaces the three former inline match-arm blocks in `eval()`, `eval_cached()`'s unconditional pre-check, and `eval_guarded_group_param_cell`.\"\n\nThese sentences age poorly — six months from now the call-site count and the \"before this refactor\" framing will be drift bait. Rewrite each doc comment as 1–2 lines of present-tense behaviour plus any non-obvious caller contract.\n\nExamples of contract worth keeping:\n- `detect_let_cycle` returns the topo-sorted prefix even when a cycle exists; callers can iterate `sorted_lets` to evaluate the cycle-free portion.\n- `build_solver_problem` returns `None` when there are no auto cells (signal to skip solver invocation).\n- `emit_param_override_rejection_warning` is called when `validate_param_override` returns `Err`.\n\nDone means: doc comments are tighter, present-tense, behavioural; no \"former\", \"before this refactor\", \"pinned by\" phrases remain. Existing tests still pass. Spawned from review of task 2268 (esc-2268-4, suggestion 3).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:18:57.341Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:18:22.180Z",
-      "taskCount": 2280,
+      "lastModified": "2026-04-26T19:18:57.342Z",
+      "taskCount": 2281,
       "completedCount": 2054,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:18:52.694Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:18:52.798Z"
+      ]
     }
   }
 }
