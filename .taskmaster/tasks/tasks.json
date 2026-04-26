@@ -50739,23 +50739,21 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.5 lines 773-781 and §7.3: tagged nodes are never committed (commitment thresholds from §7.3 do not apply) and are always cancelled when in the dirty cone. Override the dual-threshold commit-if-slow policy. Integration test: tag a synthetic long-running node with AlwaysCancelWhenStale, fire a dirty-cone event, assert cancellation regardless of elapsed time.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:14:47.342Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:14:09.864Z",
-      "taskCount": 2346,
+      "lastModified": "2026-04-26T20:14:47.347Z",
+      "taskCount": 2347,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:14:37.651Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:14:37.715Z"
+      ]
     }
   }
 }
