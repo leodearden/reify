@@ -188,6 +188,32 @@ struct WalkCtx<'a> {
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
+/// Promote a `Real`/`Int`-typed `FunctionCall` whose callee is a known structure
+/// template into a `Type::StructureRef(callee_name)`.
+///
+/// Returns `None` when the arg is not a numeric-typed FunctionCall, or when the
+/// callee name is not registered in the template map (external/forward-ref miss).
+///
+/// Used by both `walk_param_against_arg`'s fallback arm and
+/// `check_leaf_trait_conformance` so future wrapper kinds (e.g. `Tuple<T,U>`)
+/// stay in sync — both call sites must promote identically to avoid drift in
+/// diagnostic wording or trait-bound walks.
+fn promote_function_call_to_structure_ref(
+    arg: &CompiledExpr,
+    templates: &HashMap<String, &TopologyTemplate>,
+) -> Option<Type> {
+    if !matches!(arg.result_type, Type::Real | Type::Int) {
+        return None;
+    }
+    let CompiledExprKind::FunctionCall { function, .. } = &arg.kind else {
+        return None;
+    };
+    if !templates.contains_key(function.name.as_str()) {
+        return None;
+    }
+    Some(Type::StructureRef(function.name.clone()))
+}
+
 /// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
 /// recursing into Option/List/Set/Map wrapper pairs and delegating `TraitObject`
 /// to the leaf helper.
@@ -239,20 +265,7 @@ fn walk_param_against_arg(
         // 'Real') instead of the structure name (e.g. 'Steel') for cases like
         // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
         _ => {
-            let promoted: Option<Type> =
-                if matches!(compiled_arg.result_type, Type::Real | Type::Int) {
-                    if let CompiledExprKind::FunctionCall { function, .. } = &compiled_arg.kind {
-                        if ctx.templates.contains_key(function.name.as_str()) {
-                            Some(Type::StructureRef(function.name.clone()))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+            let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
             let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
             walk_param_against_arg_type(param_type, effective_type, ctx);
         }
@@ -426,13 +439,7 @@ fn check_leaf_trait_conformance(
     // structure's trait bounds. Int appears when the callee's first arg is a
     // whole-number literal (e.g. `Steel(density: 1000.0)` — the literal 1000.0
     // is canonicalized to Int by the expression compiler).
-    let promoted: Option<Type> = if matches!(arg_type, Type::Real | Type::Int) {
-        arg_call_name
-            .filter(|call_name| ctx.templates.contains_key(*call_name))
-            .map(|call_name| Type::StructureRef(call_name.to_string()))
-    } else {
-        None
-    };
+    let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
     let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
 
     // Check conformance based on effective_arg_type.
