@@ -50250,7 +50250,17 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:59:08.924Z"
+        "updatedAt": "2026-04-26T19:59:08.924Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/stdlib/analysis.ri",
+            "crates/reify-compiler/stdlib/materials_mechanical.ri",
+            "crates/reify-compiler/stdlib/tolerancing.ri",
+            "crates/reify-compiler/stdlib/units.ri",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-compiler/tests/stdlib_loader_tests.rs"
+          ]
+        }
       },
       {
         "id": "2323",
@@ -50287,7 +50297,15 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:17:21.929Z"
+        "updatedAt": "2026-04-26T20:17:21.929Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Implement OCCT FFI for Geometry Operations"
+            ]
+          }
+        }
       },
       {
         "id": "2325",
@@ -50882,7 +50900,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:17:23.325Z",
+      "description": "Tasks for master context"
     }
   }
 }
