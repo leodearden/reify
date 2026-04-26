@@ -9,7 +9,7 @@
 //! ([`crate::compile_builder::pre_pass`]) only warns on UNKNOWN module-pragma names;
 //! the two passes run at different phases and emit non-overlapping diagnostic sets.
 
-use reify_syntax::{ParsedModule, PragmaArg, PragmaValue};
+use reify_syntax::{ParsedModule, Pragma, PragmaArg, PragmaValue};
 use reify_types::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan, Value};
 
 use crate::types::CompiledModule;
@@ -22,6 +22,15 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     warn_block_level_precision(module);
 }
 
+/// Append the spans of every `#precision` pragma in `pragmas` to `out`.
+fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
+    for pragma in pragmas {
+        if pragma.name == "precision" {
+            out.push(pragma.span);
+        }
+    }
+}
+
 /// Walk every block-level pragma container on the assembled module and emit
 /// one "ignored in v0.1; per-block tolerance deferred to v0.2" warning per
 /// `#precision` pragma found.
@@ -30,39 +39,20 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 /// `validate_pragmas` pre-pass deliberately does NOT warn on `#precision` (it
 /// is in `KNOWN_BLOCK_PRAGMAS`), so this is the single site that flags
 /// block-level usage.
-///
-/// The walk collects spans first to avoid borrow conflicts between iterating
-/// the `&module` slices and pushing into `module.diagnostics`.
 fn warn_block_level_precision(module: &mut CompiledModule) {
     let mut spans: Vec<SourceSpan> = Vec::new();
 
-    for i in 0..module.templates.len() {
-        for pragma in &module.templates[i].pragmas {
-            if pragma.name == "precision" {
-                spans.push(pragma.span);
-            }
-        }
+    for tmpl in &module.templates {
+        collect_precision_spans(&tmpl.pragmas, &mut spans);
     }
-    for i in 0..module.trait_defs.len() {
-        for pragma in &module.trait_defs[i].pragmas {
-            if pragma.name == "precision" {
-                spans.push(pragma.span);
-            }
-        }
+    for trait_def in &module.trait_defs {
+        collect_precision_spans(&trait_def.pragmas, &mut spans);
     }
-    for i in 0..module.compiled_purposes.len() {
-        for pragma in &module.compiled_purposes[i].pragmas {
-            if pragma.name == "precision" {
-                spans.push(pragma.span);
-            }
-        }
+    for purpose in &module.compiled_purposes {
+        collect_precision_spans(&purpose.pragmas, &mut spans);
     }
-    for i in 0..module.constraint_defs.len() {
-        for pragma in &module.constraint_defs[i].pragmas {
-            if pragma.name == "precision" {
-                spans.push(pragma.span);
-            }
-        }
+    for constraint_def in &module.constraint_defs {
+        collect_precision_spans(&constraint_def.pragmas, &mut spans);
     }
 
     for span in spans {
@@ -106,11 +96,15 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         // Defensive sanity check: the grammar's `number_literal`
                         // regex (`\d+(\.\d+)?`) currently produces only non-negative
                         // finite f64 values, so this branch is unreachable from
-                        // source today. Kept so a future grammar relaxation cannot
-                        // silently push garbage tolerance into the kernel.
-                        if si_value.is_finite() && si_value >= 0.0 {
-                            module.default_tolerance = Some(si_value);
-                        }
+                        // source today. `debug_assert!` keeps the safety net active
+                        // in dev/test builds without silently dropping the value (and
+                        // its diagnostic) in release if a future grammar relaxation
+                        // ever produces a negative or non-finite quantity.
+                        debug_assert!(
+                            si_value.is_finite() && si_value >= 0.0,
+                            "#precision: tolerance must be finite and non-negative, got {si_value}"
+                        );
+                        module.default_tolerance = Some(si_value);
                     }
                     Some(_) => {
                         // unit_to_scalar matched, but the dimension is not LENGTH
