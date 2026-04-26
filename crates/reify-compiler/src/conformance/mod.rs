@@ -231,8 +231,30 @@ fn walk_param_against_arg(
         // cases like passing `param p : Option<Physical>` to a slot of `Option<Material>`
         // where `Physical : Material`. Non-wrapper and non-trait params fall through
         // silently inside walk_param_against_arg_type.
+        //
+        // Apply StructureRef promotion when the compiled arg is a FunctionCall whose
+        // result_type defaulted to Real/Int (the expression compiler's numeric fallback
+        // for structure calls) and the callee is a known structure template. Without this,
+        // wrapper-shape diagnostics would show the misleading numeric fallback type (e.g.
+        // 'Real') instead of the structure name (e.g. 'Steel') for cases like
+        // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
         _ => {
-            walk_param_against_arg_type(param_type, &compiled_arg.result_type, ctx);
+            let promoted: Option<Type> =
+                if matches!(compiled_arg.result_type, Type::Real | Type::Int) {
+                    if let CompiledExprKind::FunctionCall { function, .. } = &compiled_arg.kind {
+                        if ctx.templates.contains_key(function.name.as_str()) {
+                            Some(Type::StructureRef(function.name.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
+            walk_param_against_arg_type(param_type, effective_type, ctx);
         }
     }
 }
@@ -309,8 +331,11 @@ fn emit_leaf_conformance_for_arg_type(
 ///
 /// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
 /// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
-/// `Option/List/Set/Map`. The emission is suppressed when either type is `Type::Error`
-/// (anti-cascade guard). Non-wrapper, non-trait param types (e.g. `Real`, `Int`) fall
+/// `Option/List/Set/Map`. The emission is suppressed when either the top-level
+/// `param_type` or `arg_type` is `Type::Error` (anti-cascade guard). Note: this guard
+/// is top-level only — an `Error` nested inside a wrapper (e.g. `Option<Error>`) is
+/// not detected and may produce a secondary wrapper-shape diagnostic on top of the
+/// root-cause error. Non-wrapper, non-trait param types (e.g. `Real`, `Int`) fall
 /// through silently — a fully general arg-shape pass is tracked as future work.
 fn walk_param_against_arg_type(
     param_type: &Type,

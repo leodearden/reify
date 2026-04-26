@@ -9,7 +9,7 @@
 
 use reify_compiler::RequirementKind;
 use reify_test_support::{compile_source, compile_source_with_stdlib};
-use reify_types::{Severity, Type};
+use reify_types::{DiagnosticCode, Severity, Type};
 
 /// Structure member: `param m : MaterialSpec` should resolve to `Type::TraitObject("MaterialSpec")`.
 #[test]
@@ -1273,10 +1273,13 @@ fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
         .collect();
 
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("does not match") && d.message.contains("Option")),
-        "expected a wrapper-shape-mismatch error for Steel() passed to Option<MaterialSpec> param, got: {:?}",
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not match")
+                && d.message.contains("Option")
+                && d.message.contains("Steel")
+        }),
+        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Steel' and 'Option' for Steel() passed to Option<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -1310,10 +1313,13 @@ fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
         .collect();
 
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("does not match") && d.message.contains("Option")),
-        "expected a wrapper-shape-mismatch error for [Steel()] passed to Option<MaterialSpec> param, got: {:?}",
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not match")
+                && d.message.contains("Option")
+                && d.message.contains("List")
+        }),
+        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'List' and 'Option' for [Steel()] passed to Option<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -1347,10 +1353,13 @@ fn map_literal_passed_to_list_trait_param_emits_shape_mismatch() {
         .collect();
 
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("does not match") && d.message.contains("List")),
-        "expected a wrapper-shape-mismatch error for map{{...}} passed to List<MaterialSpec> param, got: {:?}",
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not match")
+                && d.message.contains("List")
+                && d.message.contains("Map")
+        }),
+        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Map' and 'List' for map{{...}} passed to List<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -1384,10 +1393,92 @@ fn valueref_of_list_passed_to_option_slot_emits_shape_mismatch() {
         .collect();
 
     assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not match")
+                && d.message.contains("Option")
+                && d.message.contains("List<Material>")
+        }),
+        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'List<Material>' and 'Option' for List<Material> ValueRef passed to Option<Material> param, got: {:?}",
         errors
-            .iter()
-            .any(|d| d.message.contains("does not match") && d.message.contains("Option")),
-        "expected a wrapper-shape-mismatch error for List<Material> ValueRef passed to Option<Material> param, got: {:?}",
+    );
+}
+
+/// Negative test: a `param p : List<M>` ValueRef passed to a `Set<M>` slot must
+/// produce a wrapper-shape-mismatch error. Exercises the `Type::Set(_)` arm of
+/// the wrapper-match guard in `walk_param_against_arg_type`'s fallback.
+///
+/// Walk sequence:
+/// 1. `walk_param_against_arg(Set<M>, ValueRef(p))` →
+///    `(Type::Set, ValueRef)` — no literal-walker match → fallback →
+/// 2. `walk_param_against_arg_type(Set<M>, List<M>)` →
+///    `(Set, List)` — no match → fallback `_` → emits.
+#[test]
+fn valueref_of_list_passed_to_set_trait_param_emits_shape_mismatch() {
+    let source = r#"
+        trait M {}
+        structure def Host { param ms : Set<M> }
+        structure def Top {
+            param p : List<M>
+            sub h = Host(ms: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not match")
+                && d.message.contains("Set")
+                && d.message.contains("List<M>")
+        }),
+        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Set' and 'List<M>' for List<M> ValueRef passed to Set<M> param, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test: a `param p : List<M>` ValueRef passed to a `Map<String, M>`
+/// slot must produce a wrapper-shape-mismatch error. Exercises the
+/// `Type::Map(_, _)` arm of the wrapper-match guard in
+/// `walk_param_against_arg_type`'s fallback.
+///
+/// Walk sequence:
+/// 1. `walk_param_against_arg(Map<String, M>, ValueRef(p))` →
+///    `(Type::Map, ValueRef)` — no literal-walker match → fallback →
+/// 2. `walk_param_against_arg_type(Map<String, M>, List<M>)` →
+///    `(Map, List)` — no match → fallback `_` → emits.
+#[test]
+fn valueref_of_list_passed_to_map_trait_param_emits_shape_mismatch() {
+    let source = r#"
+        trait M {}
+        structure def Host { param ms : Map<String, M> }
+        structure def Top {
+            param p : List<M>
+            sub h = Host(ms: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not match")
+                && d.message.contains("Map<")
+                && d.message.contains("List<M>")
+        }),
+        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Map<' and 'List<M>' for List<M> ValueRef passed to Map<String, M> param, got: {:?}",
         errors
     );
 }
