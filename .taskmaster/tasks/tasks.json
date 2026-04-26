@@ -49298,7 +49298,21 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T13:58:47.792Z"
+        "updatedAt": "2026-04-26T13:58:47.792Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "CompiledExpr",
+              "PendingBoundCheck",
+              "Engine::eval_cached"
+            ],
+            "queries": [
+              "compiled_arg clone cost PendingBoundCheck TraitArgConformance Rc Arc performance",
+              "conformance entity.rs compiled_arg clone allocation large literal tree"
+            ]
+          },
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
+        }
       },
       {
         "id": "2281",
