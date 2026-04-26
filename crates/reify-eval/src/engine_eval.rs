@@ -280,6 +280,69 @@ fn record_eval_completed(
     });
 }
 
+/// Builds and topologically sorts the let-cell dependency graph for `template`,
+/// pushes a `Diagnostic::error` if a cycle is detected, and returns the three
+/// artefacts both call sites need.
+///
+/// Centralises the let-cycle logic so that a future fix to the error message or
+/// the cycle-detection algorithm propagates to both `evaluate_let_bindings` (the
+/// `eval()` path) and the `eval_cached()` second-pass setup simultaneously.
+///
+/// The `sorted_set` for cycle filtering is allocated **lazily** inside the
+/// `if sorted_lets.len() < let_node_ids.len()` block — mirroring the pattern in
+/// `evaluate_let_bindings` and removing the stale unconditional allocation that
+/// existed in the `eval_cached()` path before this refactor.
+fn detect_let_cycle<'a>(
+    template: &'a reify_compiler::TopologyTemplate,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (
+    HashMap<NodeId, &'a reify_types::CompiledExpr>,
+    HashMap<NodeId, DependencyTrace>,
+    Vec<NodeId>,
+) {
+    let let_cells: HashMap<NodeId, &'a reify_types::CompiledExpr> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.kind == ValueCellKind::Let)
+        .filter_map(|c| {
+            c.default_expr
+                .as_ref()
+                .map(|expr| (NodeId::Value(c.id.clone()), expr))
+        })
+        .collect();
+
+    let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+    let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+        .iter()
+        .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+        .collect();
+
+    let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+
+    // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
+    // (Kahn's algorithm silently omits nodes in cycles), report them.
+    if sorted_lets.len() < let_node_ids.len() {
+        // Build the set lazily here — sorted_lets is still iterable below.
+        let sorted_set: HashSet<&NodeId> = sorted_lets.iter().collect();
+        let mut cyclic_members: Vec<&str> = let_node_ids
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                _ => None,
+            })
+            .collect();
+        cyclic_members.sort();
+        diagnostics.push(Diagnostic::error(format!(
+            "circular let-binding dependency in template {}: [{}]",
+            template.name,
+            cyclic_members.join(", "),
+        )));
+    }
+
+    (let_cells, let_traces, sorted_lets)
+}
+
 /// Centralises the rejection-warning vocabulary for param_override validation
 /// so that adding a future `ParamOverrideRejection` variant only requires
 /// updating this one function.
@@ -1566,52 +1629,19 @@ impl Engine {
             }
 
             // Cycle detection + topological ordering for the second (Let) pass.
-            // Building sorted_lets here and threading it into the second pass mirrors
-            // evaluate_let_bindings() ordering, fixing forward-reference resolution in
+            // `detect_let_cycle` builds let_cells, let_traces, and sorted_lets, emitting
+            // the circular-dependency diagnostic if any cycle is found.  Mirroring
+            // evaluate_let_bindings() ordering fixes forward-reference resolution in
             // eval_cached (previously let cells evaluated in declaration order only).
-            let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-                .value_cells
-                .iter()
-                .filter(|c| c.kind == ValueCellKind::Let)
-                .filter_map(|c| {
-                    c.default_expr
-                        .as_ref()
-                        .map(|expr| (NodeId::Value(c.id.clone()), expr))
-                })
-                .collect();
-
-            let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-            let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
-                .iter()
-                .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-                .collect();
-
-            let sorted_lets = topological_sort(&let_node_ids, &let_traces);
-            // Owned set so sorted_lets is still iterable for second-pass ordering below
-            let sorted_set: HashSet<NodeId> = sorted_lets.iter().cloned().collect();
-
-            if sorted_lets.len() < let_node_ids.len() {
-                let mut cyclic_members: Vec<&str> = let_node_ids
-                    .iter()
-                    .filter(|nid| !sorted_set.contains(nid))
-                    .filter_map(|nid| match nid {
-                        NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                cyclic_members.sort();
-                diagnostics.push(Diagnostic::error(format!(
-                    "circular let-binding dependency in template {}: [{}]",
-                    template.name,
-                    cyclic_members.join(", "),
-                )));
-            }
+            // `_let_traces` is ignored here — eval_cached recomputes per-cell traces in
+            // the cache-miss arm via `extract_dependency_trace(expr)`.
+            let (_let_cells, _let_traces, sorted_lets) =
+                detect_let_cycle(template, &mut diagnostics);
 
             // Second pass: evaluate Let bindings in topological order.
-            // Mirrors evaluate_let_bindings(): iterate sorted_lets only.
-            // Cyclic cells (not in sorted_set) are intentionally skipped — the
-            // diagnostic emitted above is the only effect of cycle detection.
-            // Forward-reference lookups for cyclic cells would produce
+            // Cyclic cells (absent from sorted_lets) are intentionally skipped — the
+            // diagnostic emitted by detect_let_cycle is the only effect of cycle
+            // detection. Forward-reference lookups for cyclic cells would produce
             // Undef-derived garbage that, if persisted, would corrupt the cache
             // fast-path on subsequent calls and diverge eval_result.values from
             // eval()'s shape.
@@ -1837,44 +1867,8 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-            .value_cells
-            .iter()
-            .filter(|c| c.kind == ValueCellKind::Let)
-            .filter_map(|c| {
-                c.default_expr
-                    .as_ref()
-                    .map(|expr| (NodeId::Value(c.id.clone()), expr))
-            })
-            .collect();
-
-        let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-        let mut let_traces: HashMap<NodeId, DependencyTrace> = let_cells
-            .iter()
-            .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-            .collect();
-
-        let sorted_lets = topological_sort(&let_node_ids, &let_traces);
-
-        // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
-        // (Kahn's algorithm silently omits nodes in cycles), report them.
-        if sorted_lets.len() < let_node_ids.len() {
-            let sorted_set: HashSet<&NodeId> = sorted_lets.iter().collect();
-            let mut cyclic_members: Vec<&str> = let_node_ids
-                .iter()
-                .filter(|nid| !sorted_set.contains(nid))
-                .filter_map(|nid| match nid {
-                    NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                    _ => None,
-                })
-                .collect();
-            cyclic_members.sort();
-            diagnostics.push(Diagnostic::error(format!(
-                "circular let-binding dependency in template {}: [{}]",
-                template.name,
-                cyclic_members.join(", "),
-            )));
-        }
+        let (let_cells, mut let_traces, sorted_lets) =
+            detect_let_cycle(template, diagnostics);
 
         for node_id in sorted_lets {
             let expr = let_cells[&node_id];
