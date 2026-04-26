@@ -594,3 +594,21 @@ fn no_prelude_is_stored_on_compiled_module_pragmas() {
         module.pragmas
     );
 }
+
+// ── Task 2296: #precision pragma — default_tolerance plumbing ────────────────
+
+/// Without any `#precision` pragma, `module.default_tolerance` is `None`.
+#[test]
+fn default_tolerance_none_when_no_precision_pragma() {
+    let module = compile_source("structure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None when no #precision pragma, got {:?}",
+        module.default_tolerance
+    );
+}
