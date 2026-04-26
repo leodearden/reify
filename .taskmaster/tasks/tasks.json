@@ -49745,11 +49745,11 @@
         "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/multi-kernel.md. Covers multi-kernel implicit dispatch (arch §10.3, §10.5–§10.8): Manifold for mesh Booleans, Truck B-rep alternative, Fidget for SDFs, OpenVDB voxels. Geometry-as-orchestrator pattern, per-rep stack/patchwork patterns. Tracker only; do not start in v0.1 phase.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:40:42.825Z"
+        "updatedAt": "2026-04-26T19:42:08.437Z"
       },
       {
         "id": "2296",
@@ -49780,7 +49780,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:40:42.825Z",
+      "lastModified": "2026-04-26T19:42:08.438Z",
       "taskCount": 2286,
       "completedCount": 2058,
       "tags": [
