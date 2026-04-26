@@ -61,11 +61,21 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     Some(_) => {
                         // unit_to_scalar matched, but the dimension is not LENGTH
                         // (e.g. `0.001s`).
-                        // Diagnostic emitted in step-10.
+                        module.diagnostics.push(
+                            Diagnostic::warning(
+                                "#precision: expected a Length quantity (e.g. 0.001m); ignored",
+                            )
+                            .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                        );
                     }
                     None => {
                         // Unrecognised unit (e.g. `1foo`).
-                        // Diagnostic emitted in step-10.
+                        module.diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "#precision: unrecognised unit '{unit}'; v0.1 supports m/mm/cm/in"
+                            ))
+                            .with_label(DiagnosticLabel::new(pragma.span, "unrecognised unit")),
+                        );
                     }
                 }
             }
