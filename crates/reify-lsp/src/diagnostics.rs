@@ -189,11 +189,10 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Merge eval-time diagnostics. The regression-lock cluster
-    // (eval_diagnostics_never_use_constraint_violation_format and
-    // eval_diagnostics_regression_lock_cluster) enforces the invariant that
-    // eval() never emits the `constraint <entity>#constraint[<index>] violated`
-    // format, covering every known eval-time emitter:
+    // Merge eval-time diagnostics. The `eval_diagnostics_never_use_constraint_violation_format`
+    // and `eval_diag_format_*` tests enforce the invariant that eval() never emits the
+    // `constraint <entity>#constraint[<index>] violated` format, covering every known
+    // eval-time emitter:
     //   - circular let-binding (unfold.rs / engine_eval.rs)
     //   - param_override type-kind / dimension mismatch (engine_eval.rs)
     //   - sub-component lookup failure (engine_eval.rs)
@@ -817,7 +816,7 @@ mod tests {
     #[test]
     fn eval_diagnostics_never_use_constraint_violation_format() {
         // Use circular-let-binding source: a known eval-time diagnostic emitter
-        // (engine_eval.rs:1545, 1819 and unfold.rs:518).
+        // (the unfold.rs / engine_eval.rs circular let-binding paths).
         let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
