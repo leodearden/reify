@@ -109,3 +109,20 @@ fn kleene_e2e_implies_vacuous_true() {
         "!b || a with b=false should be Bool(true) (vacuous implication via de-Morgan)"
     );
 }
+
+/// Spec §9.2.6 forall: no `false` element but at least one `undef` → `Undef`.
+///
+/// `xs = [true, a, true]` where `a` is `Value::Undef`. The `forall` quantifier
+/// must scan the whole collection: it sees `true` (continue), `Undef` (flag),
+/// `true` (continue), exits with `has_undef = true` and returns `Value::Undef`.
+/// This confirms the quantifier does NOT short-circuit on `true` the way OR does.
+#[test]
+fn kleene_e2e_forall_undef_propagates() {
+    let result = eval_kleene();
+    let id = ValueCellId::new("Foo", "p4");
+    assert_eq!(
+        result.values.get(&id).expect("Foo.p4 not found"),
+        &Value::Undef,
+        "forall over [true, undef, true] should be Undef (spec §9.2.6)"
+    );
+}
