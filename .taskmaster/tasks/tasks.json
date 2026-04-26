@@ -49272,7 +49272,21 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T13:58:00.210Z"
+        "updatedAt": "2026-04-26T13:58:00.210Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "walk_param_against_arg",
+              "walk_param_against_arg_type",
+              "WalkCtx"
+            ],
+            "queries": [
+              "conformance walker duplication WalkCtx extraction shared context args",
+              "trait typed param tests conformance wrapper types walk_param_against_arg"
+            ]
+          },
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
+        }
       },
       {
         "id": "2280",
