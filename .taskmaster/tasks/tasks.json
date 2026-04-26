@@ -50324,6 +50324,15 @@
             "dependencies": [],
             "parentTaskId": 2324,
             "parentId": "undefined"
+          },
+          {
+            "id": "3",
+            "title": "FFI: surface_angle dihedral",
+            "description": "[Sibling of 2324.1] OCCT FFI primitive only — dihedral angle (radians) between two faces from face normals. Stdlib wiring stays at parent 2324.",
+            "details": "Scope: ONE FFI primitive only. NO stdlib registration, NO eval-pipeline wiring — parent 2324 retains those.\n\nAlgorithm: angle = acos(clamp(dot(n1, n2), -1, 1)). Sample face normals via BRep_Tool::Surface + GeomLProp_SLProps; respect TopAbs_REVERSED orientation.\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp}\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs\n- crates/reify-kernel-occt/src/stubs.rs\n- crates/reify-kernel-occt/tests/ — box adjacent faces → π/2; coplanar → 0; opposing → π.\n\nCONTEXT: Task 319 is marked done but its FFI is not in the codebase. docs/prds/topology-selectors.md does not exist. Implement from scratch.\n\nOpen question: surface_normal_at primitive (also nominally from 319) is missing. Either inline normal-sampling here or escalate for a separate subtask.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 2324
           }
         ],
         "updatedAt": "2026-04-26T20:17:21.929Z",
@@ -51104,7 +51113,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:23:53.945Z",
+      "description": "Tasks for master context"
     }
   }
 }
