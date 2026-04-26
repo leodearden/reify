@@ -25,17 +25,17 @@
 //! cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture
 //! ```
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use reify_compiler::CompiledModule;
 use reify_test_support::compile_source_with_stdlib;
 use reify_types::Severity;
 
 /// Builds the Reify source for a design that embeds `n` `some(Steel())` elements
 /// in a `List<Option<MaterialSpec>>` arg.
 fn make_source(n: usize) -> String {
-    let list_elements = "some(Steel()), ".repeat(n);
-    // `trim_end_matches` removes the trailing ", " for clean syntax.
-    let list_body = list_elements.trim_end_matches(", ");
+    assert!(n > 0, "make_source requires n >= 1");
+    let list_body = (0..n).map(|_| "some(Steel())").collect::<Vec<_>>().join(", ");
     format!(
         r#"
         structure def Steel : MaterialSpec {{
@@ -50,6 +50,20 @@ fn make_source(n: usize) -> String {
     )
 }
 
+/// Asserts that `module` contains no `Error`-severity diagnostics.
+/// The `n` parameter provides context for the panic message.
+fn assert_no_errors(module: &CompiledModule, n: usize) {
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error-severity diagnostics for N={n} some(Steel()) elements, got: {errors:#?}",
+    );
+}
+
 /// Correctness regression guard for the recursive `walk_param_against_arg`
 /// dispatcher introduced in task 2227.  Runs on every `cargo test` invocation
 /// (not `#[ignore]`'d).
@@ -61,15 +75,7 @@ fn make_source(n: usize) -> String {
 fn trait_arg_conformance_correctness_small() {
     const N: usize = 4;
     let module = compile_source_with_stdlib(&make_source(N));
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error-severity diagnostics for N={N} some(Steel()) elements, got: {errors:#?}",
-    );
+    assert_no_errors(&module, N);
 }
 
 /// Timing bench: compiles at N=20 and N=200 and prints both elapsed durations,
@@ -90,14 +96,18 @@ fn compile_large_literal_trait_arg_conformance_timing() {
         let elapsed = t.elapsed();
         eprintln!("[task-2280] compiled N={n} List<Option<MaterialSpec>> in {elapsed:?}");
         // Verify correctness at each size so a walker regression surfaces here too.
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "expected no Error-severity diagnostics for N={n} some(Steel()) elements, got: {errors:#?}",
-        );
+        assert_no_errors(&module, n);
+        // Loose sanity assertion for the N=200 leg only: fire if compile time exceeds 30 s.
+        // This is categorical — it only fires on a catastrophic (~100×) regression, not a
+        // small ratio slowdown.  No ratio is pinned because exact timing varies by machine;
+        // 30 s is generous enough for shared CI runners but catches anything truly broken.
+        // Mirrors the pattern at crates/reify-lsp/tests/incremental_eval_benchmark.rs:124-132.
+        if n == 200 {
+            assert!(
+                elapsed < Duration::from_secs(30),
+                "[task-2293] catastrophic regression: N=200 trait_arg_conformance compile took \
+                 {elapsed:?}, expected < 30 s",
+            );
+        }
     }
 }

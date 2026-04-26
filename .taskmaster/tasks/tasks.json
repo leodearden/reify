@@ -50183,16 +50183,164 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2321",
+        "title": "Implement Specialization Escape Hatch and W_TRAIT_USER_ASSERTED Warning",
+        "description": "Implement a mechanism to treat explicit geometry trait declarations as user assertions, bypassing runtime checks and emitting a specific warning.",
+        "details": "When a structure explicitly declares a geometry trait such as `: Watertight`, it should be treated as a user assertion. This means the runtime conformance check should be skipped, and a warning `W_TRAIT_USER_ASSERTED` should be emitted once per structure determination. This involves modifying the trait checking logic to recognize explicit declarations and adjust the conformance checking process accordingly. Update the documentation in `docs/prds/geometry-traits.md` to reflect this behavior and ensure the warning is logged appropriately.",
+        "testStrategy": "1. Create a test structure that explicitly declares a geometry trait.\n2. Run the conformance check multiple times on the same structure.\n3. Verify that the warning `W_TRAIT_USER_ASSERTED` is emitted exactly once per structure determination.\n4. Ensure no runtime conformance checks are performed for explicitly declared traits.\n5. Validate that the documentation updates are correct and comprehensive.",
+        "status": "pending",
+        "dependencies": [
+          "2297",
+          "2312"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2322",
+        "title": "#no_prelude polish: make stdlib bootstrap explicit, add prelude regression test",
+        "description": "Two small follow-ups on the already-wired #no_prelude pragma. (1) Audit that each prelude .ri file under crates/reify-compiler/stdlib/ carries #no_prelude at the top — the current pre-pass-list-based bootstrap works but making the source explicit makes the convention self-documenting and removes the implicit special case. (2) Add a positive regression test in pragma_compile_tests.rs verifying that compiling a non-prelude module WITHOUT #no_prelude correctly imports the prelude — currently only the negative case (no_prelude_simple_structure_compiles_clean) is pinned. Bootstrap-critical because the prelude itself uses #no_prelude to avoid self-import. PRD: docs/prds/pragmas.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:59:08.924Z"
+      },
+      {
+        "id": "2323",
+        "title": "Implement Feature-tag IR and Runtime Metadata Table for Persistent Topology Naming",
+        "description": "Extend CompiledGeometryOp to attach metadata tags and integrate with runtime shape tagging for persistent topology naming.",
+        "details": "This task involves extending the `CompiledGeometryOp` to attach metadata tags such as `(source_line, step_kind, sub_index)` as the OCCT shape is realized. Additionally, a per-ShapeId tag table should be added on the runtime shape to support persistent topology naming. The task requires wiring one already-shipped selector, `edges_at_height` from Task #318, through the new path as a proof-of-concept. This involves ensuring that the existing tests for Task #318 still pass after integration. Reference the `CompiledAdHocPort` from Task #249 for the plumbing pattern to ensure consistency and reliability in the implementation.",
+        "testStrategy": "1. Verify that the `CompiledGeometryOp` correctly attaches the metadata tags during shape realization.\n2. Ensure that the per-ShapeId tag table is correctly populated and accessible at runtime.\n3. Integrate the `edges_at_height` selector and verify its functionality through the new path.\n4. Run existing tests from Task #318 to confirm they pass without modifications.\n5. Conduct additional tests to validate the persistence and accuracy of topology naming under various scenarios.",
+        "status": "in-progress",
+        "dependencies": [
+          "318",
+          "249"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:59:05.333Z"
+      },
+      {
+        "id": "2324",
+        "title": "Implement OCCT FFI for Geometry Operations",
+        "description": "Develop FFI bindings for closest_point, on(point, geometry), and angle_between_surfaces using the OCCT library.",
+        "details": "Follow the FFI pattern established in Task #319 for closest_point_on_shape. Implement the following functions:\n\n1. **closest_point_on_shape**: Re-export from Task #319, ensuring it integrates with the OCCT library to find the closest point on a given shape.\n\n2. **point_on_shape**: Implement membership checking to determine if a point lies on a specified geometry. Use OCCT's geometric evaluation capabilities.\n\n3. **surface_angle**: Calculate the dihedral angle between two surfaces using the dot product of their face normals. Leverage OCCT's surface analysis tools.\n\nUpdate the stdlib bindings to register these functions and ensure they are correctly wired through the eval pipeline. Refer to `docs/prds/topology-selectors.md` task 2 for detailed requirements.",
+        "testStrategy": "Conduct happy-path tests using box and sphere fixtures to verify each function:\n\n1. **closest_point_on_shape**: Test with various points and shapes to ensure the closest point is accurately calculated.\n\n2. **point_on_shape**: Verify membership results for points on and off the geometry.\n\n3. **surface_angle**: Test angle calculations between known surfaces to ensure accuracy.\n\nEnsure all tests pass using the `cargo test` framework, focusing on edge cases and typical use scenarios.",
+        "status": "pending",
+        "dependencies": [
+          "319"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2325",
+        "title": "Implement OCCT FFI for center_of_mass and moment_of_inertia with density",
+        "description": "Develop foreign function interface (FFI) bindings for calculating center of mass and moment of inertia using OCCT, incorporating density.",
+        "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.",
+        "testStrategy": "Verify the implementation by comparing the results against analytical formulas for a box shape. Specifically, check that the moment of inertia calculations match the formula `I_xx = (1/12)*m*(W^2+H^2)` and similar for other axes. Conduct unit tests using a variety of solid shapes and densities to ensure accuracy and robustness. Use `cargo test -p reify-eval -- occt_ffi` to run the test suite.",
+        "status": "in-progress",
+        "dependencies": [
+          "329"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:00:26.011Z"
+      },
+      {
+        "id": "2326",
+        "title": "Freshness: extend NodeCache to carry freshness field with single-API read/write",
+        "description": "PRD docs/prds/freshness-4-variant.md. Extend NodeCache (or equivalent cache entry struct) per arch §4.3 lines 524-532 to include freshness: Freshness. Default to Final on existing reads; existing tests must stay green. Provide single API surface for reading/writing freshness. Memory hint: 7ac9d86f notes EvalState is public and last_content_hash is decoupled — that's the integration point.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:15.829Z"
+      },
+      {
+        "id": "2327",
+        "title": "Implement OCCT FFI for Topology-Relational Selectors",
+        "description": "Develop FFI bindings for adjacent_faces and shared_edges topology selectors, enabling topology iteration and evaluation.",
+        "details": "Implement the OCCT FFI for topology-relational selectors as specified in the PRD document. For adjacent_faces, iterate over a face's edge loop, collecting faces that share each edge. For shared_edges, intersect the edge lists of two faces to find shared edges. Integrate these functionalities into the standard library bindings and ensure they are correctly wired for evaluation. Consider edge cases such as non-manifold edges and ensure robust error handling. Use the OCCT API to access and manipulate the topology data efficiently.",
+        "testStrategy": "Create tests using a box geometry to verify that each face has exactly four adjacent faces and that each adjacent pair shares exactly one edge. Validate the correct operation of both adjacent_faces and shared_edges selectors. Include tests for edge cases such as non-manifold edges and ensure that the system handles these gracefully without errors.",
+        "status": "in-progress",
+        "dependencies": [
+          "249",
+          "250"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:16.139Z"
+      },
+      {
+        "id": "2328",
+        "title": "Freshness: wire propagation rule (input freshness → output freshness) in evaluator",
+        "description": "PRD docs/prds/freshness-4-variant.md. Wire arch §7.2 (lines 730-749) propagation rule into the recursive evaluator: output.freshness = if self.still_refining { Intermediate } else if any input != Final { Intermediate } else { Final }. Add unit tests for each row of the §7.2 truth table over a small synthetic graph in crates/reify-eval. Builds on the NodeCache freshness-field task.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:16.847Z"
+      },
+      {
+        "id": "2329",
+        "title": "Re-route Filtered Selectors through Feature-Tag Resolution",
+        "description": "Update the routing of filtered selectors to use feature-tag resolution, replacing raw re-iteration methods.",
+        "details": "Modify the selector routing logic to utilize feature-tag resolution as described in the PRD document (prds/topology-selectors.md, task 5). Specifically, transition the handling of `edges_at_height`, `edges_parallel_to`, `edges_by_length`, and `faces_by_area` from raw re-iteration to a feature-tag-based approach. Implement a behavior change where stale tags return `undef` and emit a `W_TOPOLOGY_TAG_STALE` warning instead of returning stale results. Ensure that the existing tests (#318) continue to pass with the new implementation path. This will involve updating the logic in the relevant modules to check for tag staleness and handle it appropriately, as well as ensuring that the feature-tag resolution is integrated seamlessly into the existing selector framework.",
+        "testStrategy": "Run the pre-existing test suite (#318) to verify that all tests pass with the new feature-tag resolution path. Additionally, create new tests to specifically verify that stale tags return `undef` and emit the `W_TOPOLOGY_TAG_STALE` warning. These tests should cover scenarios where tags are fresh, stale, and missing, ensuring that the correct behavior is exhibited in each case.",
+        "status": "in-progress",
+        "dependencies": [
+          "248",
+          "249",
+          "250"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:17.420Z"
+      },
+      {
+        "id": "2330",
+        "title": "Freshness: implement Failed failure path with error realization event",
+        "description": "PRD docs/prds/freshness-4-variant.md. Implement the Failed { error: ErrorRef } path per arch §9.1-§9.2 (lines 868-890): catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed. Emit EventKind::error realization event. Add failure-injection tests asserting forced panic in a leaf node ⇒ leaf Failed + exactly one error event emitted. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test. Should reference structured DiagnosticCode variants from #2253 once available.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2331",
+        "title": "Stdlib std.stock: standard_bolt_lengths and standard_sheet_thicknesses collections",
+        "description": "Add a new prelude file crates/reify-compiler/stdlib/standard_stock.ri exposing two Length collections that @solver_hint references can point at. (1) standard_bolt_lengths: ISO 4014/4017 length series 8-100mm at the standard increments (8, 10, 12, 14, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100 mm). (2) standard_sheet_thicknesses: common metal stock gauges in mm (0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0). Both must satisfy whatever collection trait the constraint-solver discrete_set/prefer_stock integration consumes (confirm during architect — do NOT invent a new trait). Wire into crates/reify-compiler/src/stdlib_loader.rs alongside std.units, std.materials_mechanical etc., recommended module path: std.stock. Doc comments mandatory on both — they surface in LSP hover and the doc generator. Tasks #275 (compiler) and #276 (solver integration) are done; this provides the payload data they reference. PRD: docs/prds/solver-hint-payloads.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">275, 276",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:57:55.709Z",
-      "taskCount": 2309,
+      "lastModified": "2026-04-26T20:01:17.421Z",
+      "taskCount": 2318,
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:01:55.024Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:01:55.316Z"
     }
   }
 }
