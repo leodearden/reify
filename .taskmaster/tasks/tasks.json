@@ -50011,14 +50011,14 @@
         "description": "Declare Bounded, Watertight, Closed, Manifold, Orientable, Convex, Connected as marker traits in the geometry_traits.ri file.",
         "details": "Implement the marker traits Bounded, Watertight, Closed, Manifold, Orientable, Convex, and Connected in the `crates/reify-compiler/stdlib/geometry_traits.ri` file. These traits should be defined as empty traits to serve as markers for geometric properties. Follow the specifications outlined in the PRD document `docs/prds/geometry-traits.md`, specifically task 1. Ensure that the traits are correctly documented and integrated into the existing stdlib structure. Consider how these traits might interact with existing geometry-related traits and structures.",
         "testStrategy": "1. Verify that the `geometry_traits.ri` file compiles without errors.\n2. Ensure each marker trait is correctly declared and accessible.\n3. Write unit tests to check that objects can implement these traits without additional requirements.\n4. Confirm that the traits are documented and appear in generated documentation.\n5. Run `cargo test -p reify-compiler -- geometry_traits` to ensure all tests pass.",
-        "status": "blocked",
+        "status": "cancelled",
         "dependencies": [
           "326",
           "329"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:52:29.740Z",
+        "updatedAt": "2026-04-26T20:25:39.682Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -51398,19 +51398,30 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2392",
+        "title": "[v0.2] imported field source (OpenVDB / CSV / HDF5) — tracker",
+        "description": "Implement the `imported` source kind for `field def` declarations to read field data from external files.",
+        "details": "This task involves adding support for a new `imported` source kind in the field definition declarations. This source kind will allow the system to read field data from external file formats such as OpenVDB, CSV, and HDF5. The implementation should adhere to the specifications outlined in the PRD located at docs/prds/v0_2/imported-field-source.md. Key considerations include ensuring compatibility with existing field source kinds (`analytical`, `sampled`, `composed`) and integrating with the multi-kernel dispatch system described in task #2295. Additionally, ensure that the implementation aligns with user needs and diagnostic requirements as documented.",
+        "testStrategy": "1. Verify that fields can be successfully imported from OpenVDB, CSV, and HDF5 files by creating test cases that load sample data from each format.\n2. Ensure that the imported data is correctly integrated with existing field operations and can be used interchangeably with other source kinds.\n3. Conduct performance testing to ensure that importing large datasets does not degrade system performance.\n4. Validate error handling by testing with corrupted or unsupported file formats to ensure graceful failure and informative error messages.",
+        "status": "pending",
+        "dependencies": [
+          "2295",
+          "2344"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:25:17.941Z",
-      "taskCount": 2377,
+      "lastModified": "2026-04-26T20:25:39.682Z",
+      "taskCount": 2381,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:25:18.029Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:25:34.720Z"
+      ]
     }
   }
 }
