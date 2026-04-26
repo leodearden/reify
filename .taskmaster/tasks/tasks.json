@@ -50328,6 +50328,19 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2332",
+        "title": "Implement Stale-tag Diagnostic W_TOPOLOGY_TAG_STALE",
+        "description": "Emit a warning when a feature-tag selector matches zero or multiple sub-shapes after a topology change, referencing the original source span.",
+        "details": "Implement the diagnostic W_TOPOLOGY_TAG_STALE in the topology module. When a feature-tag selector is evaluated and matches zero or multiple sub-shapes due to a topology change, emit a warning. This warning should include the original source span of the selector call. Modify the selector evaluation logic to check the number of matches and trigger the diagnostic if the count is not exactly one. Ensure the diagnostic message is clear and includes the selector's source span. Update the PRD documentation at docs/prds/topology-selectors.md task 6 for additional context.",
+        "testStrategy": "Create tests to simulate a topology change where a tagged feature disappears or results in multiple matches. Verify that the selector returns 'undef' and that exactly one warning is emitted. Ensure the warning references the correct original source span of the selector call. Run the full test suite to confirm no regressions in existing functionality.",
+        "status": "pending",
+        "dependencies": [
+          "2317"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50340,7 +50353,7 @@
       ],
       "created": "2026-04-26T20:01:55.024Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:01:55.316Z"
+      "updated": "2026-04-26T20:02:00.147Z"
     }
   }
 }
