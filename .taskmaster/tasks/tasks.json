@@ -51383,6 +51383,21 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2391",
+        "title": "auto type-param: spec / stdlib doc updates with v0.1 algorithm + v0.2 deferral note",
+        "description": "Update the language specification and standard library documentation to include cross-references and a detailed explanation of the auto type-param resolution algorithm.",
+        "details": "This task involves updating the language specification and standard library documentation to reflect the current state of the auto type-param resolution algorithm. Specifically, add cross-references to relevant sections and include a new document titled 'How `auto` type-param resolution works'. This document should cover the per-parameter BFS algorithm, the cap-of-10 candidate limit, lexicographic tiebreaking by fully qualified name (FQN), and the cross-parameter backtracking deferral introduced in version 0.2. Ensure that the documentation is clear and accessible, providing examples where necessary to illustrate complex concepts. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 8.",
+        "testStrategy": "1. Review the updated documentation to ensure all new sections and cross-references are correctly linked and formatted. 2. Verify that the new document accurately describes the BFS algorithm, candidate cap, lexicographic tiebreaking, and backtracking deferral. 3. Conduct a peer review with team members to ensure clarity and completeness. 4. Validate examples in the documentation by running them in a test environment to confirm they produce the expected results.",
+        "status": "pending",
+        "dependencies": [
+          "2384",
+          "2386",
+          "2387"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51395,7 +51410,7 @@
       ],
       "created": "2026-04-26T20:25:18.029Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:25:28.125Z"
+      "updated": "2026-04-26T20:25:34.720Z"
     }
   }
 }
