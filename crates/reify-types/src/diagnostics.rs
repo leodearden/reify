@@ -215,6 +215,16 @@ pub enum DiagnosticCode {
     /// - `"constraints could not be satisfied (max absolute residual: …)"` (solver.rs, Severity::Error)
     /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
     ConstraintUnsatisfiable,
+    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`
+    ///          (strict-auto uniqueness verification path, `verify_uniqueness`).
+    /// Replaces canonical message:
+    /// `"strict auto parameter resolution is not uniquely determined — consider using auto(free) for exploration"`.
+    ///
+    /// Semantically distinct from [`ConstraintUnsatisfiable`]: non-uniqueness means *multiple*
+    /// valid solutions exist (the system is underdetermined), not zero. A strictly-auto
+    /// parameter requires a unique solution; this code is emitted when perturbation-based
+    /// uniqueness checking finds a second distinct solution.
+    ConstraintNonUnique,
 }
 
 /// A diagnostic message with location and optional labels.
