@@ -48514,6 +48514,17 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2256",
+        "title": "post-commit: extend done-task regex to match dotted subtask IDs (e.g. NNN.M=done)",
+        "description": "Step (3.5) of hooks/post-commit gates the briefing-refresh script on `^chore(tasks): auto-commit after set_task_status([0-9]+=done)$`, which only matches numeric (top-level) task IDs. Real auto-commit messages in `git log` use dotted subtask form too (e.g. `set_task_status(2106.1=done)`, `set_task_status(1612.2=done)`), so subtask completions never trigger the briefing script even though scripts/refresh_briefing_known_gaps.py explicitly indexes subtasks as `{parent}.{sub}` and tests/infra/test_refresh_briefing_known_gaps.sh Check 14 verifies that capability. A reviewer adding a subtask-level `tracking: \"1612.1\"` known_gap will never see a stale-gap warning when that subtask closes.</description>\n<parameter name=\"details\">1. Update the regex in hooks/post-commit step (3.5) (line ~80) from `^chore\\(tasks\\): auto-commit after set_task_status\\([0-9]+=done\\)$` to `^chore\\(tasks\\): auto-commit after set_task_status\\([0-9]+(\\.[0-9]+)?=done\\)$`.\n2. Add a Check-9-style integration test in tests/infra/test_post_commit_hook.sh that asserts a `chore(tasks): auto-commit after set_task_status(NNN.M=done)` commit message triggers the briefing-refresh script (mirroring the existing top-level-id check).\n3. Verify against the existing test_refresh_briefing_known_gaps.sh Check 14 path so dotted subtask tracking IDs are exercised end-to-end through the hook.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48526,7 +48537,7 @@
       ],
       "created": "2026-04-26T09:07:10.234Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T09:07:10.384Z"
+      "updated": "2026-04-26T09:07:36.992Z"
     }
   }
 }
