@@ -48172,16 +48172,16 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "compute_diagnostics_with_state",
-              "EvalState",
+              "diagnostics.rs",
               "eval_cached"
             ],
             "queries": [
-              "LSP diagnostics eval_cached incremental eval compute_diagnostics_with_state engine-init invariant",
-              "violated_messages filter eval diagnostics no-op constraint violation format",
-              "task 2236 eval_cached diagnostics capture LSP completed"
+              "eval_cached limitation diagnostics immutable let bug engine_eval Task 2236",
+              "LSP compute_diagnostics_with_state eval eval_cached surface path diagnostics",
+              "engine-init invariant diagnostics.rs LSP"
             ]
-          }
+          },
+          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351"
         }
       },
       {
