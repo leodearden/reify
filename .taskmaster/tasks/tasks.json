@@ -48426,7 +48426,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T08:32:16.085Z"
+        "updatedAt": "2026-04-26T08:32:16.085Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DiagnosticCode",
+              "ConstraintChecker"
+            ],
+            "queries": [
+              "DiagnosticCode variants constraint solver reify-constraints",
+              "reify-eval reify-constraints crate dependency boundary DiagnosticCode",
+              "constraint violation unsatisfiable divergence diagnostic code variants reify-constraints lib.rs solver.rs solvespace.rs"
+            ]
+          }
+        }
       },
       {
         "id": "2254",
@@ -48456,7 +48469,9 @@
       "completedCount": 2007,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T08:39:35.927Z",
+      "description": "Tasks for master context"
     }
   }
 }
