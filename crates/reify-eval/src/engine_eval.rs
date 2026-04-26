@@ -21,7 +21,7 @@ use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
 
 /// Sentinel substring included in every panic raised by
@@ -349,47 +349,10 @@ impl Engine {
     /// dependency structures. Subsequent calls to edit_param() can perform
     /// incremental re-evaluation using these structures.
     pub fn eval(&mut self, module: &CompiledModule) -> EvalResult {
-        // Store functions and purposes for this module (used by edit_param and purpose activation).
-        //
-        // SHADOWING INVARIANT: module (user) functions are stored FIRST, then prelude functions
-        // are appended after. `reify_expr::eval_user_function_call` resolves calls via
-        // `ctx.functions.iter().find(...)` — a first-match-wins linear scan on (name, arity,
-        // param types). Therefore, any user function whose signature matches a prelude function
-        // takes precedence and shadows the prelude implementation. The compiler's
-        // duplicate-function check only compares user functions against each other, not against
-        // the prelude, so user code may freely redefine prelude signatures without diagnostics.
-        //
-        // COEXISTENCE COROLLARY: a user function whose (name, arity, param types) triple
-        // differs from all prelude functions does NOT shadow those prelude functions — both
-        // remain independently callable. The compiler includes non-shadowed prelude functions
-        // in its overload resolution so each call site is resolved to whichever signature
-        // matches the arguments, regardless of whether the user also defines a same-named
-        // function with a different arity or param types.
-        // Build the merged function table once into a local Vec (user functions
-        // first, then prelude — SHADOWING INVARIANT), then seal it in an Arc so
-        // subsequent clones (prepare_concurrent_edit, etc.) are O(1) refcount bumps.
-        //
-        // Unfiltered append: intentionally adds ALL prelude functions without
-        // filtering out entries whose (name, arity, param_types) triple matches a
-        // user function. Correctness is preserved because
-        // `reify_expr::eval_user_function_call` resolves via first-match-wins linear
-        // scan, and user functions are stored FIRST (see SHADOWING INVARIANT above) —
-        // shadowed prelude entries can never be the first match, so they are
-        // permanently unreachable at dispatch time.
-        //
-        // This diverges from the compiler's `resolution_functions` build in
-        // compile_with_prelude_refs, which applies an explicit shadow filter via
-        // `reify_compiler::merge_prelude_functions`. That filter is a compile-time
-        // concern (it avoids ambiguous-overload errors in the resolution table); the
-        // eval dispatch table does not need it — unfiltered ≡ filtered under
-        // first-match-wins semantics. The shadow predicate itself is canonical in
-        // `merge_prelude_functions`; if the filtering rule changes, update that
-        // function and verify the dispatch-time equivalence still holds.
-        self.functions = Arc::new({
-            let mut v = module.functions.clone();
-            v.extend(self.prelude_functions.iter().cloned());
-            v
-        });
+        // Build the merged function table (user functions first, then prelude —
+        // SHADOWING INVARIANT) and seal it in an Arc so clones are O(1).
+        // See `merge_functions` in lib.rs for the full contract.
+        self.functions = merge_functions(module, &self.prelude_functions);
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
         // snapshot discards all purpose-injected constraints/objectives.
@@ -406,7 +369,7 @@ impl Engine {
         // (name, arity, param types) triples remain callable.
         //
         // Arc::clone is O(1) — a single refcount increment. The merged table was
-        // built once into a local Vec above and sealed by Arc::new at assignment;
+        // built and sealed by `merge_functions` (see lib.rs) at the assignment above;
         // this local binding lets `evaluate_let_bindings` borrow `self` mutably
         // (it takes &mut self) without conflicting with any immutable borrow of
         // `self.functions`. The Arc keeps the table alive for the lifetime of this

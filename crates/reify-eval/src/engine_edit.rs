@@ -42,7 +42,7 @@ use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
-    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -1509,11 +1509,7 @@ impl Engine {
         //      none are captured by the per-cell content_hash diff, so
         //      relying on cell-level diffing alone would silently serve
         //      stale tables (see eval() for the same refresh rationale).
-        self.functions = Arc::new({
-            let mut v = module.functions.clone();
-            v.extend(self.prelude_functions.iter().cloned());
-            v
-        });
+        self.functions = merge_functions(module, &self.prelude_functions);
         self.compiled_purposes = module.compiled_purposes.clone();
         self.meta_map = build_meta_map(module);
         self.objectives.clear();
@@ -1524,10 +1520,10 @@ impl Engine {
             }
         }
 
-        // Arc::clone is O(1) — a refcount bump. The merged table was sealed by
-        // Arc::new above (same pattern as Engine::eval). Arc<Vec<CompiledFunction>>
-        // is task #1997's design; the local binding satisfies the borrow checker
-        // the same way as edit_param() above.
+        // Arc::clone is O(1) — a refcount bump. The merged table was built and
+        // sealed by `merge_functions` (see lib.rs) at the assignment above
+        // (same pattern as Engine::eval). The local binding satisfies the borrow
+        // checker the same way as edit_param() above.
         let functions = Arc::clone(&self.functions);
 
         // (12) Per-cell eval loop (shape mirrors edit_param's). Transitions
