@@ -50434,23 +50434,21 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Thread Freshness through diagnostic / outline / parameters panels (gui/) and LSP-served diagnostics so UI shows distinct badges for Final (no badge), Intermediate (spinner / progress), Pending (warning), Failed (error). Constraint-violation rendering stays on the existing `violated` channel, NOT the Failed channel. Smoke-test by opening an example with intermediate / failed nodes and confirming visual distinction.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:04:48.784Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:04:15.355Z",
-      "taskCount": 2325,
+      "lastModified": "2026-04-26T20:04:48.784Z",
+      "taskCount": 2326,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:04:30.805Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:04:35.726Z"
+      ]
     }
   }
 }
