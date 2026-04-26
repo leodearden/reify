@@ -49305,7 +49305,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T13:59:35.281Z"
+        "updatedAt": "2026-04-26T13:59:35.281Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/trait_typed_param_tests.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -49315,7 +49320,9 @@
       "completedCount": 2039,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T14:06:20.363Z",
+      "description": "Tasks for master context"
     }
   }
 }
