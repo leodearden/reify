@@ -940,13 +940,18 @@ pub(crate) fn compile_entity(
                 // The full CompiledExpr is stored so the conformance walker can
                 // recurse into nested OptionSome / ListLiteral / SetLiteral /
                 // MapLiteral nodes.
+                //
+                // Cost note (task 2280): `compiled_arg.clone()` below is O(literal-tree-size)
+                // per arg.  See the `PendingBoundCheck::TraitArgConformance` doc-comment below
+                // for the Rc/arena trade-off analysis, and `tests/trait_arg_conformance_bench.rs`
+                // for the timing bench (run with `-- --ignored --nocapture`).
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {
                     pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
                         target_name: sub.structure_name.clone(),
                         arg_name: arg_name.clone(),
-                        compiled_arg: compiled_arg.clone(),
+                        compiled_arg: compiled_arg.clone(), // O(tree-size) — see cost note above
                         span: arg_expr.span,
                     });
                 }
@@ -1841,6 +1846,22 @@ pub(crate) enum PendingBoundCheck {
     /// into nested `OptionSome` / `ListLiteral` / `SetLiteral` / `MapLiteral`
     /// nodes and derive `arg_call_name` from any nested `FunctionCall` for the
     /// existing `Real|Int → StructureRef` promotion.
+    ///
+    /// **Why owned, not `Rc`/borrowed (task 2280):** storing an `Rc<CompiledExpr>`
+    /// here instead of an owned value yields no benefit in practice: the
+    /// `compiled_args` local that produces this field is subsequently moved into
+    /// `SubComponentDecl.args: Vec<(String, CompiledExpr)>` (see the clone site at
+    /// `entity.rs` in the `MemberDecl::Sub` arm, ~30 lines above the
+    /// `PendingBoundCheck` push).  If the pending check holds an `Rc`, converting
+    /// back to the owned vec requires `Rc::try_unwrap`, which fails (refcount > 1)
+    /// and falls back to `(*rc).clone()` — still one full deep clone per arg.
+    /// A real win needs a broader refactor: either switch `SubComponentDecl.args`
+    /// globally to `Vec<(String, Rc<CompiledExpr>)>` (~15 touch-sites across four
+    /// crates) or introduce a `CompilationCtx`-owned arena (see
+    /// `compile_builder/ctx.rs`).  Both are out of scope for this observational
+    /// task.  Timing bench:
+    ///   `crates/reify-compiler/tests/trait_arg_conformance_bench.rs`
+    ///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
     TraitArgConformance {
         target_name: String,
         arg_name: String,
