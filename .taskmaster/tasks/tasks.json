@@ -48368,6 +48368,17 @@
             ]
           }
         }
+      },
+      {
+        "id": "2251",
+        "title": "engine_eval: tighten eval_guarded_group_param_cell signature (context struct + VersionId type)",
+        "description": "Reduce parameter count and remove `u64`→`VersionId` impedance mismatch in `eval_guarded_group_param_cell` and its companion `record_eval_completed` (both in `crates/reify-eval/src/engine_eval.rs`).",
+        "details": "Two related cleanups surfaced by review of task-2195:\n\n1. **Parameter explosion (engine_eval.rs:215-226).** `eval_guarded_group_param_cell` now takes 10 parameters and is silenced with `#[allow(clippy::too_many_arguments)]`. Five of them (`journal`, `cache`, `version_id`, `meta_map`, `functions`) are engine-scoped state and the helper is only called from `Engine::eval`. Introduce a small bundle (e.g. `struct GuardedParamCtx<'a> { journal: &'a mut EventJournal, cache: &'a mut CacheStore, functions: &'a [CompiledFunction], meta_map: &'a HashMap<String, HashMap<String, String>>, version: VersionId }`) and pass it as a single argument. Remove the `clippy::too_many_arguments` suppression.\n\n2. **Type strength (engine_eval.rs:178).** `record_eval_completed` and `eval_guarded_group_param_cell` accept `version_id: u64` and immediately wrap it as `VersionId(version_id)` at every use site (twice in the helper). Other engine code wraps once at the call boundary. Change `version_id: u64` → `version: VersionId` in both helpers; update the four `Engine::eval` call sites to wrap once at the boundary.\n\nCombine both because they touch the same signatures — doing them in one PR avoids a second churn of `engine_eval.rs`. Lock with the existing journal+cache regression tests in `crates/reify-eval/tests/eval_param_overrides.rs` (no behaviour change expected).\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48379,7 +48390,8 @@
         "master"
       ],
       "created": "2026-04-26T08:04:53.475Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T08:07:11.751Z"
     }
   }
 }
