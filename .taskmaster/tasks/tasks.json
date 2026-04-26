@@ -49990,23 +49990,21 @@
         "description": "PRD: docs/prds/shadowing-warning.md. Implement single-pass scope-walk detector emitting W_SHADOW when a child decl name shadows a visible parent-scope name. Diagnostic with both spans. Excludes imported-name (§8.11), trait-merge (§8.8), and match-arm same-name decls (§6.4).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:51:30.767Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:50:57.323Z",
-      "taskCount": 2297,
+      "lastModified": "2026-04-26T19:51:30.767Z",
+      "taskCount": 2299,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:50:59.383Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:51:18.162Z"
+      ]
     }
   }
 }
