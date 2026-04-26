@@ -49409,7 +49409,18 @@
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/tests/value_cell_type_invariants.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "is_representable_cell_type",
+              "Engine"
+            ],
+            "queries": [
+              "is_representable_cell_type predicate value cell type invariant TypeParam Geometry",
+              "assert_value_cell_types_representable engine_eval.rs invariant",
+              "value_cell_type_invariants test file reify-eval"
+            ]
+          }
         }
       },
       {
