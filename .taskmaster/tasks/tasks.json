@@ -50070,7 +50070,15 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:51:30.767Z"
+        "updatedAt": "2026-04-26T19:51:30.767Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/shadowing_warning_tests.rs",
+            "crates/reify-types/src/diagnostics.rs"
+          ]
+        }
       },
       {
         "id": "2311",
