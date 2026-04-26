@@ -48669,11 +48669,11 @@
         "description": "After the geometry-arg-check extraction landed three days ago (commits 60824b8275, c7c9ac7924, 7f3be81dd3), `crates/reify-compiler/src/geometry_arg_check.rs` exposes three pub(crate) helpers — `check_arg_count_exact`, `check_arg_count_at_least`, `push_labeled_arg_count_error` — that centralise both the message format (\"{name}() expects {expected} arguments, got {got}\") and the label text (\"wrong number of arguments\"). The same crate's `expr.rs` still contains four ad-hoc arg-count-validation sites that diverge on both axes:\n\n- `expr.rs:617` (`some()` constructor): \"some() requires exactly 1 argument, got {}\" / label \"wrong number of arguments\"\n- `expr.rs:761` (`determinacy()`/`partially_determined()`): \"{name}() requires exactly 1 argument, got {}\" / label \"wrong number of arguments\"\n- `expr.rs:1848` (`@face`/`@edge` selector): \"@{selector} expects exactly 1 argument (a string name), got {}\" / label **\"wrong argument count\"** ← divergent label text\n- `expr.rs:1877` (`@point` selector): \"@point expects exactly 3 coordinate arguments, got {}\" / label **\"wrong argument count\"** ← divergent label text\n\nTwo distinct issues:\n\n1. **Inconsistent message text** — three of the four sites use the verb \"requires\"/\"expects\" with phrasing different from the helpers' canonical \"{name}() expects {expected} arguments, got {got}\". A future reword in one place (helper or call-site) won't propagate.\n\n2. **Divergent label text** — the helpers use \"wrong number of arguments\" but `expr.rs:1857` and `:1885` use \"wrong argument count\". The geometry_arg_check.rs docstring on `push_labeled_arg_count_error` (line 49–56) explicitly says: *\"the 'wrong number of arguments' label text is centralised here so all arg-count diagnostics use exactly the same wording regardless of which helper emitted them\"*. The expr.rs sites violate that intended invariant.\n\nDone means: each of the four sites is migrated to call `check_arg_count_exact`/`check_arg_count_at_least` from `geometry_arg_check.rs` (rename the module to `arg_check.rs` if the geometry-only naming bothers you, since two of these sites are non-geometry). Customised messages such as `\"@point expects exactly 3 coordinate arguments\"` use `push_labeled_arg_count_error` so the label text remains centralised. Existing tests in expr.rs / qualified_access_compile_tests.rs / m9_error_cases.rs / pragma_compile_tests.rs continue to pass; one regression test asserts the unified label text on a representative `expr.rs` site.\n\nWhy this matters at the integration boundary: the just-extracted helpers were the de-facto standardisation point for arg-count diagnostics across the compiler. Leaving four sites unmigrated guarantees the standardisation drifts at the next reword. The convention \"Quality is king — deal with real technical debt ruthlessly\" applies.\n\nmemory_hints:\n- search: \"geometry_arg_check check_arg_count_exact\"\n- search: \"wrong number of arguments label text\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T09:33:57.890Z",
+        "updatedAt": "2026-04-26T10:29:23.027Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -48685,6 +48685,9 @@
               "wrong number of arguments label text centralized geometry_arg_check.rs",
               "expr.rs ad-hoc arg count validation sites migration"
             ]
+          },
+          "done_provenance": {
+            "commit": "140142eaa5cfb2f39dd03eef0528549fa49cda89"
           }
         }
       },
@@ -48766,9 +48769,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T10:25:57.606Z",
+      "lastModified": "2026-04-26T10:29:23.028Z",
       "taskCount": 2253,
-      "completedCount": 2017,
+      "completedCount": 2018,
       "tags": [
         "master"
       ]
