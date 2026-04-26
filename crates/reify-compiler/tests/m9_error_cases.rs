@@ -311,13 +311,18 @@ structure def S : ProvidesLength + ProvidesMass {
         module.diagnostics
     );
 
-    let has_msg = errors
-        .iter()
-        .any(|d| d.message.contains("conflicting trait") && d.message.contains("size"));
+    let has_msg = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::ConflictingTraitDefaults)
+            // Keep the 'size' name-token check: it carries semantic content beyond wording.
+            && d.message.contains("size")
+    });
     assert!(
         has_msg,
-        "expected 'conflicting trait' error mentioning 'size', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "expected DiagnosticCode::ConflictingTraitDefaults mentioning 'size', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 
     let first = errors[0];
