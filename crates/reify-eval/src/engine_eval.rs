@@ -1271,6 +1271,11 @@ impl Engine {
         );
 
         for template in &module.templates {
+            // Track whether any auto cell missed the cache this template this call.
+            // Used to gate the solver pass: if all auto inputs hit the cache, the
+            // constraint problem inputs are unchanged and we can skip the solve.
+            let mut any_auto_miss = false;
+
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
                 if cell.kind.is_auto() {
@@ -1316,6 +1321,7 @@ impl Engine {
                     }
 
                     stats.cache_misses += 1;
+                    any_auto_miss = true;
 
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
@@ -1412,22 +1418,24 @@ impl Engine {
 
                     // Use override if available (with validation), otherwise evaluate default.
                     // Mirrors eval() lines 603-622: on mismatch emit a warning and fall back.
-                    let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
+                    // Returns (Value, DeterminacyState): rejected-override-with-no-default
+                    // yields (Undef, Undetermined) matching eval()'s DeterminacyState path.
+                    let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id) {
                         match validate_param_override(override_val, &cell.cell_type) {
-                            Ok(()) => override_val.clone(),
+                            Ok(()) => (override_val.clone(), DeterminacyState::Determined),
                             Err(ParamOverrideRejection::TypeKindMismatch) => {
                                 diagnostics.push(Diagnostic::warning(format!(
                                     "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
                                     cell.id, cell.cell_type, override_val
                                 )));
-                                // fall back to default
+                                // fall back to default; Undetermined if no default (mirrors eval())
                                 if let Some(ref expr) = cell.default_expr {
-                                    reify_expr::eval_expr(
+                                    (reify_expr::eval_expr(
                                         expr,
                                         &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                    )
+                                    ), DeterminacyState::Determined)
                                 } else {
-                                    reify_types::Value::Undef
+                                    (reify_types::Value::Undef, DeterminacyState::Undetermined)
                                 }
                             }
                             Err(ParamOverrideRejection::ScalarDimensionMismatch {
@@ -1438,31 +1446,31 @@ impl Engine {
                                     "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
                                     cell.id, expected, got
                                 )));
-                                // fall back to default
+                                // fall back to default; Undetermined if no default (mirrors eval())
                                 if let Some(ref expr) = cell.default_expr {
-                                    reify_expr::eval_expr(
+                                    (reify_expr::eval_expr(
                                         expr,
                                         &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                    )
+                                    ), DeterminacyState::Determined)
                                 } else {
-                                    reify_types::Value::Undef
+                                    (reify_types::Value::Undef, DeterminacyState::Undetermined)
                                 }
                             }
                         }
                     } else if let Some(ref expr) = cell.default_expr {
-                        reify_expr::eval_expr(
+                        (reify_expr::eval_expr(
                             expr,
                             &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                        )
+                        ), DeterminacyState::Determined)
                     } else {
-                        reify_types::Value::Undef
+                        (reify_types::Value::Undef, DeterminacyState::Determined)
                     };
 
                     // Build dependency trace (params have no reads - they are roots)
                     let trace = DependencyTrace::default();
 
                     let cached_result =
-                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                        CachedResult::Value(val.clone(), det);
                     let outcome = self.cache.record_evaluation(
                         node_id.clone(),
                         cached_result,
@@ -1486,58 +1494,77 @@ impl Engine {
                 }
             }
 
-            // Cycle detection: mirror evaluate_let_bindings:1595-1613.
-            // Build a dependency trace for every let cell and run topological_sort
-            // (Kahn's algorithm). If the sorted length is less than the total, some
-            // nodes were dropped — they form a cycle. Emit the same format string as
-            // evaluate_let_bindings so callers see an identical message on both paths.
-            {
-                use std::collections::HashSet;
-                let let_cells: std::collections::HashMap<NodeId, &reify_types::CompiledExpr> =
-                    template
-                        .value_cells
-                        .iter()
-                        .filter(|c| c.kind == ValueCellKind::Let)
-                        .filter_map(|c| {
-                            c.default_expr
-                                .as_ref()
-                                .map(|expr| (NodeId::Value(c.id.clone()), expr))
-                        })
-                        .collect();
+            // Cycle detection + topological ordering for the second (Let) pass.
+            // Building sorted_lets here and threading it into the second pass mirrors
+            // evaluate_let_bindings() ordering, fixing forward-reference resolution in
+            // eval_cached (previously let cells evaluated in declaration order only).
+            let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
+                .value_cells
+                .iter()
+                .filter(|c| c.kind == ValueCellKind::Let)
+                .filter_map(|c| {
+                    c.default_expr
+                        .as_ref()
+                        .map(|expr| (NodeId::Value(c.id.clone()), expr))
+                })
+                .collect();
 
-                let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-                let let_traces: std::collections::HashMap<NodeId, DependencyTrace> = let_cells
+            let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+            let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+                .iter()
+                .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+                .collect();
+
+            let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+            // Owned set so sorted_lets is still iterable for second-pass ordering below
+            let sorted_set: HashSet<NodeId> = sorted_lets.iter().cloned().collect();
+
+            if sorted_lets.len() < let_node_ids.len() {
+                let mut cyclic_members: Vec<&str> = let_node_ids
                     .iter()
-                    .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+                    .filter(|nid| !sorted_set.contains(nid))
+                    .filter_map(|nid| match nid {
+                        NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                        _ => None,
+                    })
                     .collect();
-
-                let sorted_lets = topological_sort(&let_node_ids, &let_traces);
-
-                if sorted_lets.len() < let_node_ids.len() {
-                    let sorted_set: std::collections::HashSet<&NodeId> =
-                        sorted_lets.iter().collect();
-                    let mut cyclic_members: Vec<&str> = let_node_ids
-                        .iter()
-                        .filter(|nid| !sorted_set.contains(nid))
-                        .filter_map(|nid| match nid {
-                            NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    cyclic_members.sort();
-                    diagnostics.push(Diagnostic::error(format!(
-                        "circular let-binding dependency in template {}: [{}]",
-                        template.name,
-                        cyclic_members.join(", "),
-                    )));
-                }
+                cyclic_members.sort();
+                diagnostics.push(Diagnostic::error(format!(
+                    "circular let-binding dependency in template {}: [{}]",
+                    template.name,
+                    cyclic_members.join(", "),
+                )));
             }
 
-            // Second pass: evaluate Let bindings
-            for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Let
-                    && let Some(ref expr) = cell.default_expr
-                {
+            // Second pass: evaluate Let bindings in topological order.
+            // sorted_lets (non-cyclic, dependency-ordered) drives the pass; cyclic cells
+            // (not in sorted_set) are appended in declaration order — they get garbage
+            // values from forward refs but the diagnostic was already emitted above.
+            // This mirrors evaluate_let_bindings() ordering.
+            let ordered_let_cells: Vec<&ValueCellDecl> = {
+                let mut cells: Vec<&ValueCellDecl> = sorted_lets
+                    .iter()
+                    .filter_map(|nid| match nid {
+                        NodeId::Value(vcid) => {
+                            template.value_cells.iter().find(|c| &c.id == vcid)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                // Append cyclic cells in declaration order
+                for cell in &template.value_cells {
+                    if cell.kind == ValueCellKind::Let
+                        && cell.default_expr.is_some()
+                        && !sorted_set.contains(&NodeId::Value(cell.id.clone()))
+                    {
+                        cells.push(cell);
+                    }
+                }
+                cells
+            };
+
+            for cell in ordered_let_cells {
+                if let Some(ref expr) = cell.default_expr {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path
@@ -1654,7 +1681,12 @@ impl Engine {
                     .map(|cell| cell.id.clone())
                     .collect();
 
-                if !auto_ids.is_empty() {
+                // Only invoke the solver if at least one auto cell missed the cache this
+                // call. When all auto inputs hit the version fast-path or cache-reuse path
+                // their values are unchanged, so the constraint problem is identical to the
+                // last invocation — skipping the solve avoids duplicate work on the LSP hot
+                // path (eval_cached is called on every keystroke).
+                if !auto_ids.is_empty() && any_auto_miss {
                     let filtered_constraints: Vec<_> = template
                         .constraints
                         .iter()

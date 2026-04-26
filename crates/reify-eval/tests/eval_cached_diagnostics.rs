@@ -242,6 +242,106 @@ fn eval_cached_emits_solver_no_progress_warning() {
     );
 }
 
+// ── amendment: solver Solved arm noop pin ────────────────────────────────────
+
+/// Pin the design decision that the Solved arm in eval_cached is intentionally a no-op.
+///
+/// eval_cached invokes the solver for diagnostic purposes only (Infeasible/NoProgress).
+/// The Solved arm deliberately does NOT update `eval_result.values` — that would require
+/// ~90 lines of snapshot/cache/journal work from eval() which is out of scope for this task
+/// (see plan design decision: "Solver Solved arm in eval_cached is intentionally empty").
+///
+/// This test ensures a future engineer who wires up the Solved arm gets a failing test,
+/// prompting them to verify the downstream consequences before landing the change.
+#[test]
+fn eval_cached_solver_solved_arm_is_intentional_noop() {
+    let x_id = ValueCellId::new("S", "x");
+
+    // Solver returns Solved with a concrete value for x (5 mm in SI)
+    let solved_value = Value::Scalar {
+        si_value: 0.005,
+        dimension: DimensionVector::LENGTH,
+    };
+    let solved_values: std::collections::HashMap<ValueCellId, Value> =
+        [(x_id.clone(), solved_value)].into_iter().collect();
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    // Auto cell must remain Undef — the Solved arm is intentionally a no-op.
+    // If this assertion fails, someone wired up value updates in the Solved arm without
+    // updating this test and reading the plan design decision first.
+    assert_eq!(
+        result.eval_result.values.get(&x_id),
+        Some(&Value::Undef),
+        "eval_cached Solved arm must be a no-op: auto cell '{}' must remain Undef, \
+         not be updated to the solver-bound value; got: {:?}",
+        x_id,
+        result.eval_result.values.get(&x_id),
+    );
+    assert!(
+        result.eval_result.diagnostics.is_empty(),
+        "Solved result must not produce diagnostics in eval_cached; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
+// ── amendment: collection sub-component unknown structure ─────────────────────
+
+/// eval_cached must emit "sub-component references unknown structure" for collection
+/// sub-components (is_collection=true), not just scalar sub-components.
+///
+/// The eval_cached sub-component validation pass (added in step-6) iterates
+/// template.sub_components unconditionally. This test pins that both collection and
+/// non-collection subs are covered — preventing a regression where someone adds an
+/// `if !sub.is_collection` guard and silently drops the collection case.
+#[test]
+fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
+    let count_id = ValueCellId::new("Parent", "count");
+
+    // collection sub-component: `sub ribs : List<DoesNotExist>`
+    let template = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "count",
+            Type::Real,
+            Some(literal(Value::Real(3.0))),
+        )
+        .collection_sub_component("ribs", "DoesNotExist", count_id)
+        .build();
+
+    // Module only contains Parent — no DoesNotExist template
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert!(
+        result.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("sub-component")
+                && d.message.contains("references unknown structure")
+                && d.message.contains("DoesNotExist")
+        }),
+        "eval_cached must emit unknown-structure diagnostic for missing collection \
+         sub-component; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
 // ── step-9: repeat-call regression lock ──────────────────────────────────────
 
 /// Calling eval_cached twice on the same (unchanged) module must continue to
