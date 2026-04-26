@@ -234,7 +234,7 @@ structure S { let broken = some() + 5.0 }
         expr.result_type,
     );
 
-    assert_no_type_cascade(&module.diagnostics, &["some() requires exactly 1 argument"]);
+    assert_no_type_cascade(&module.diagnostics, &["some() expects 1 argument"]);
 }
 
 // ── step-7: enum / selector / qualified-access failures ───────────────────────

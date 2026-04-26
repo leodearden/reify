@@ -100,8 +100,8 @@ structure S {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("requires exactly 1 argument")),
-        "expected 'requires exactly 1 argument' error, got: {:?}",
+            .any(|d| d.message.contains("expects 1 argument")),
+        "expected 'expects 1 argument' error, got: {:?}",
         errors
     );
 }
@@ -136,8 +136,8 @@ structure S {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("requires exactly 1 argument, got 2")),
-        "expected 'requires exactly 1 argument, got 2' error, got: {:?}",
+            .any(|d| d.message.contains("expects 1 arguments, got 2")),
+        "expected 'expects 1 arguments, got 2' error, got: {:?}",
         errors
     );
 }
