@@ -16,6 +16,30 @@ pub struct DocModel {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModuleDoc {}
 
+/// Documentation for a single `@annotation(...)` attached to a declaration.
+///
+/// Arguments are stored as rendered/printable strings — not typed AST values —
+/// so `reify-doc` remains free of any dependency on `reify-syntax` or `reify-types`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AnnotationDoc {
+    /// The annotation name (e.g. `"deprecated"`, `"units"`).
+    pub name: String,
+    /// Rendered argument values (e.g. `["\"use foo instead\"", "since = \"1.0\""]`).
+    pub args: Vec<String>,
+}
+
+/// Documentation for a single `#pragma(...)` attached to a declaration.
+///
+/// Like `AnnotationDoc`, arguments are rendered strings to avoid
+/// coupling to `reify-syntax`'s `PragmaArg`/`PragmaValue` types.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PragmaDoc {
+    /// The pragma name (e.g. `"inline"`, `"layout"`).
+    pub name: String,
+    /// Rendered argument values (e.g. `["always"]`, `["row", "3"]`).
+    pub args: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
