@@ -454,5 +454,84 @@ assert "Check 14: stderr contains WARN" \
 assert "Check 14: stderr contains dotted subtask id '42.1'" \
     grep -q "42.1" "$_stderr14"
 
+# ==============================================================================
+# Check 15: non-master tag containing a done task referenced from briefing.yaml
+# — the script must detect the done task and report it (exit 1 + WARN on stderr)
+# ==============================================================================
+echo ""
+echo "--- Check 15: done task in non-master tag is detected ---"
+
+_brief15="$_tmpdir/briefing15.yaml"
+_tasks15="$_tmpdir/tasks15.json"
+
+cat > "$_brief15" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "feature gap"
+        tracking: "200"
+YAML
+
+cat > "$_tasks15" <<'JSON'
+{"master":{"tasks":[]},"feature-branch":{"tasks":[{"id":"200","title":"Fix feature gap","status":"done"}]}}
+JSON
+
+_stderr15="$_tmpdir/stderr15.txt"
+_exit15=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief15" --tasks "$_tasks15" 2>"$_stderr15" || _exit15=$?
+
+assert "Check 15: exit code is 1 (mismatch found — done task in non-master tag)" \
+    test "$_exit15" -eq 1
+
+assert "Check 15: stderr contains WARN" \
+    grep -q "WARN" "$_stderr15"
+
+assert "Check 15: stderr contains task id 200" \
+    grep -q "200" "$_stderr15"
+
+assert "Check 15: stderr contains gap text 'feature gap'" \
+    grep -q "feature gap" "$_stderr15"
+
+# ==============================================================================
+# Check 16: cross-tag collision — done-wins semantics
+# task 300 is done in feature-branch; any done occurrence must trigger WARN
+# master entry (in-progress) must not suppress detection of the done occurrence
+# ==============================================================================
+echo ""
+echo "--- Check 16: cross-tag collision — done wins ---"
+
+_brief16="$_tmpdir/briefing16.yaml"
+_tasks16="$_tmpdir/tasks16.json"
+
+cat > "$_brief16" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "collision gap"
+        tracking: "300"
+YAML
+
+# feature-branch has status done; master has the same task as in-progress.
+# done-wins semantics: the done occurrence must be detected regardless of order.
+cat > "$_tasks16" <<'JSON'
+{"feature-branch":{"tasks":[{"id":"300","title":"Branch version","status":"done"}]},"master":{"tasks":[{"id":"300","title":"Master version","status":"in-progress"}]}}
+JSON
+
+_stderr16="$_tmpdir/stderr16.txt"
+_exit16=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief16" --tasks "$_tasks16" 2>"$_stderr16" || _exit16=$?
+
+assert "Check 16: exit code is 1 (done in any tag → mismatch)" \
+    test "$_exit16" -eq 1
+
+assert "Check 16: stderr contains WARN" \
+    grep -q "WARN" "$_stderr16"
+
+assert "Check 16: stderr contains task id 300" \
+    grep -q "300" "$_stderr16"
+
+assert "Check 16: stderr contains feature-branch task title 'Branch version'" \
+    grep -q "Branch version" "$_stderr16"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
