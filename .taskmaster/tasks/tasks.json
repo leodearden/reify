@@ -48973,6 +48973,17 @@
             ]
           }
         }
+      },
+      {
+        "id": "2271",
+        "title": "Refactor SubComponentDecl guard fields into single GuardState enum",
+        "description": "Replace `guard_expr: Option<CompiledExpr>` + `guard_compile_failed: bool` on `SubComponentDecl` (crates/reify-compiler/src/types.rs:367-374) with a single enum to make the invariant unrepresentable.\n\nCurrently the two fields encode three valid states (valid/broken/absent) but one combination — `Some(_)` + `guard_compile_failed=true` — is invalid and only documented via a doc-comment.\n\nProposed:\n```rust\nenum GuardState {\n    None,            // user wrote no guard\n    Broken,          // user wrote a guard but it failed to compile\n    Compiled(CompiledExpr),\n}\n```\n\nThe termination-check switch becomes a `match` over three arms with no need to skip-and-then-check.\n\nNot blocking — current encoding is correct. Source: post-merge review suggestion S1 from esc-1296-114 on task 1296.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48982,7 +48993,10 @@
       "completedCount": 2024,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T11:43:45.311Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T11:43:45.400Z"
     }
   }
 }
