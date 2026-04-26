@@ -48078,23 +48078,21 @@
         "description": "Task 2177 (Route Engine::edit_param through validate_param_override) was fully merged into main (commits 2343823b1, 971c9f109, bd5aa6a58, 9ac80393f, 85efea053, f38a990dd) yet the architect observed an `auto-commit after set_task_status(2177=pending)` landing two minutes before the architect re-picked the task — suggesting something beyond the one-shot startup reconcile re-flipped 2177 back to pending. The startup reconcile runs once to reset in-progress tasks whose worktrees are absent; a periodic or event-triggered variant could affect already-completed tasks whose worktrees have been cleaned up.",
         "details": "## What to investigate\n\n1. Audit all reconcile-loop entry points in the orchestrator (dark-factory) for any non-startup periodic stranded-task check that could query task status and reset it when the worktree lock is absent.\n2. Specifically look for: cron/timer-driven reconcile cycles, event-driven reconcile triggered by steward state changes, any status-flip pathway that runs outside the initial startup sweep.\n3. Check if the status flip from done→pending on task 2177 happened via the normal reconcile path or a different code path.\n4. If a periodic re-flip pathway exists: either add a guard to skip tasks whose commits are already on main, or add a done-status check before any status reset.\n\n## Evidence\n- Mem0 memory 05bfdcba-4ac9-41a1-9435-f8db35c1f350 captures the original observation.\n- Task 2177 commit: f38a990ddcf24d1168d5957a996c99e92b252f47 (already on main).\n\n## Memory hints\n- search: \"orchestrator startup reconcile stranded task status flip in-progress pending\"\n- search: \"reconcile loop periodic task status reset worktree lock absent\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T06:44:40.209Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:43:52.870Z",
-      "taskCount": 2228,
+      "lastModified": "2026-04-26T06:44:40.212Z",
+      "taskCount": 2229,
       "completedCount": 1986,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T06:43:54.474Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T06:44:25.568Z"
+      ]
     }
   }
 }
