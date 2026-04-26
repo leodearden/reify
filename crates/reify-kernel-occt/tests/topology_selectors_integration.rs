@@ -224,3 +224,50 @@ fn box_two_adjacent_faces_share_exactly_one_edge() {
         }
     }
 }
+
+#[test]
+fn box_opposite_faces_share_no_edges() {
+    let (kernel, box_id) = box_kernel();
+
+    // For each face, find its opposite: the unique face index that is
+    // neither itself nor in its adjacency set.
+    let neighbors: Vec<std::collections::HashSet<i64>> =
+        (0..6).map(|i| neighbors_of(&kernel, box_id, i)).collect();
+
+    for face in 0..6usize {
+        // The opposite face is the one in 0..6 that is not `face` and not a neighbor.
+        let opposite_candidates: Vec<usize> = (0..6usize)
+            .filter(|&i| i != face && !neighbors[face].contains(&(i as i64)))
+            .collect();
+        assert_eq!(
+            opposite_candidates.len(),
+            1,
+            "expected exactly 1 opposite face for face {}, got {:?} (neighbors={:?})",
+            face,
+            opposite_candidates,
+            neighbors[face]
+        );
+        let opposite = opposite_candidates[0];
+
+        let edges = shared_edges_of(&kernel, box_id, face, opposite);
+        assert!(
+            edges.is_empty(),
+            "opposite faces ({}, {}) should share no edges, got {:?}",
+            face,
+            opposite,
+            edges
+        );
+    }
+}
+
+#[test]
+fn shared_edges_same_face_returns_empty_list() {
+    let (kernel, box_id) = box_kernel();
+
+    let edges = shared_edges_of(&kernel, box_id, 0, 0);
+    assert!(
+        edges.is_empty(),
+        "shared_edges(f, f) should return an empty list, got {:?}",
+        edges
+    );
+}
