@@ -1283,6 +1283,11 @@ impl Engine {
             &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
+        // (4a) Snapshot the diff for test-instrumentation — premise lock for T3 et al.
+        // Disjoint-field borrow: `eval_state` is borrowed read-only above; this
+        // assignment touches only the sibling field `last_diff_value_cells` — NLL
+        // allows it (see the borrow safety note at the top of this function).
+        self.last_diff_value_cells = Some((changed.clone(), added.clone(), removed.clone()));
         let changed_set: HashSet<ValueCellId> =
             changed.iter().chain(added.iter()).cloned().collect();
 
