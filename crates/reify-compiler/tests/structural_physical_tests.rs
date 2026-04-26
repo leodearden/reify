@@ -422,11 +422,92 @@ fn electrically_conductive_refines_physical() {
     );
 }
 
-/// Same-module conformance: a structure conforming to ElasticallyDeformable
-/// must provide Flexible's members (stiffness, max_deflection) plus
-/// max_elastic_strain — all via prelude.
+/// Conformance test: a structure conforming to ThermallyConductive must satisfy
+/// Physical's requirements (volume, centroid_*, density, name) plus its own
+/// (thermal_conductivity, max_service_temp). Physical's `volume > 0` constraint
+/// must be injected via inheritance. Exercises the two-level TC→Physical chain.
 #[test]
-fn structure_conforms_to_elastically_deformable_via_prelude() {
+fn structure_conforms_to_thermally_conductive_with_inherited_physical_constraints() {
+    let compiled = compile_structure(
+        r#"
+structure def HeatSink : ThermallyConductive {
+    param density : Real = 2700.0
+    param name : String = "aluminum heat sink"
+    param volume : Real = 0.005
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+    param thermal_conductivity : Real = 205.0
+    param max_service_temp : Real = 573.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    assert!(
+        template
+            .trait_bounds
+            .contains(&"ThermallyConductive".to_string()),
+        "HeatSink should have 'ThermallyConductive' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // Physical's `volume > 0` must be injected via inheritance.
+    assert_constraint_op(template, "volume", BinOp::Gt);
+    // ThermallyConductive's own `thermal_conductivity > 0`.
+    assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
+}
+
+/// Conformance test: a structure conforming to ElectricallyConductive must
+/// satisfy Physical's requirements (volume, centroid_*, density, name) plus its
+/// own (electrical_conductivity, resistivity). Physical's `volume > 0` constraint
+/// must be injected via inheritance. Exercises the two-level EC→Physical chain.
+#[test]
+fn structure_conforms_to_electrically_conductive_with_inherited_physical_constraints() {
+    let compiled = compile_structure(
+        r#"
+structure def Wire : ElectricallyConductive {
+    param density : Real = 8960.0
+    param name : String = "copper wire"
+    param volume : Real = 0.001
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+    param electrical_conductivity : Real = 1000.0
+    param resistivity : Real = 0.001
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    assert!(
+        template
+            .trait_bounds
+            .contains(&"ElectricallyConductive".to_string()),
+        "Wire should have 'ElectricallyConductive' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // Physical's `volume > 0` must be injected via inheritance.
+    assert_constraint_op(template, "volume", BinOp::Gt);
+    // ElectricallyConductive's own `electrical_conductivity > 0`.
+    assert_constraint_op(template, "electrical_conductivity", BinOp::Gt);
+}
+
+/// Same-module conformance: a structure conforming to ElasticallyDeformable
+/// must provide Flexible's inherited members (stiffness, max_deflection) plus
+/// ElasticallyDeformable's own max_elastic_strain. Exercises the same-module
+/// inheritance path (both traits in std/structural/physical).
+#[test]
+fn structure_conforms_to_elastically_deformable_with_inherited_flexible_members() {
     let source = r#"
 structure def Rubber : ElasticallyDeformable {
     param stiffness : Real = 1000.0
@@ -688,6 +769,12 @@ structure def PlasticBody : Plastic {
         "expected BinOp(Ge, plastic_strain, 0), found_pairs: {:?}",
         found_pairs
     );
+
+    // Verify Flexible's inherited constraints also use strictly-greater-than so
+    // a future regression (e.g. Gt→Ge for stiffness) is caught here, not just
+    // by the len()==4 check above.
+    assert_constraint_op(template, "stiffness", BinOp::Gt);
+    assert_constraint_op(template, "max_deflection", BinOp::Gt);
 }
 
 // ─── task-558 step-5: plastic_strain=0.0 boundary value compiles ─────────────
