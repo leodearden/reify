@@ -48931,7 +48931,7 @@
         "id": "2269",
         "title": "eval_cached tests: add repeat-call regression locks for param-override and sub-component diagnostics",
         "description": "Extend repeat-call coverage in `crates/reify-eval/tests/eval_cached_diagnostics.rs` for param_override mismatch warnings and sub-component unknown-structure errors, and strengthen the param_override tests with fallback Value assertions to prevent regressions that corrupt cached values while correctly re-emitting the warning.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "details": "In `crates/reify-eval/tests/eval_cached_diagnostics.rs`, repeat-call regression locks exist for solver Infeasible/NoProgress (steps 10/11) and circular-let (step 9), but NOT for:\n- param_override type/dimension mismatch warnings\n- sub-component \"unknown structure\" errors\n\nBoth diagnostics are expected to surface on every eval_cached invocation per the LSP requirement and task 2259's stated goal. Without a repeat-call test, a future change that gates either pass on `any_auto_miss` or similar cache-coherence guard will silently drop the diagnostic on second call.\n\nAdd repeat-call regression tests (or augment task-2267-added tests at lines 344-485) covering:\n1. `eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning` — second call must re-emit the warning\n2. `eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning` — second call must re-emit the warning\n3. Sub-component \"unknown structure\" error — repeat-call must re-emit\n\nFor the param_override repeat-call tests (items 1 and 2 above), each assertion block must also assert `result.eval_result.values[x_id]` equals the default-expression fallback value, NOT the rejected override Value. This locks the invariant that a correctly-rejected override does not corrupt the cached value — a regression that re-emits the warning while caching the rejected Value would otherwise pass the diagnostic-count assertion silently.",
@@ -48956,7 +48956,8 @@
           "curator_action": "combine",
           "curator_justification": "The candidate adds Value assertions to the param_override repeat-call regression tests in eval_cached_diagnostics.rs. Task 2269 is a pending, combine_eligible task that adds those very repeat-call regression tests (or supplements ones added by task 2267) in the same single file. Both tasks share the same module lock (eval_cached_diagnostics.rs only), the same root concept (strengthen repeat-call regression coverage for param_override in eval_cached), and both are individually tiny. Combining mea",
           "combined_at": "2026-04-26T11:55:58.117960+00:00"
-        }
+        },
+        "updatedAt": "2026-04-26T11:56:44.478Z"
       },
       {
         "id": "2270",
@@ -49043,7 +49044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:56:43.283Z",
+      "lastModified": "2026-04-26T11:56:44.478Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
