@@ -189,22 +189,21 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Merge eval-time diagnostics. The regression-lock cluster in diagnostics.rs tests
-    // enforces the invariant that eval() never emits the
-    // `constraint <entity>#constraint[<index>] violated` format, covering:
+    // Merge eval-time diagnostics. The regression-lock cluster
+    // (eval_diagnostics_never_use_constraint_violation_format and
+    // eval_diagnostics_regression_lock_cluster) enforces the invariant that
+    // eval() never emits the `constraint <entity>#constraint[<index>] violated`
+    // format, covering every known eval-time emitter:
     //   - circular let-binding (unfold.rs / engine_eval.rs)
     //   - param_override type-kind / dimension mismatch (engine_eval.rs)
     //   - sub-component lookup failure (engine_eval.rs)
     //   - solver Infeasible / NoProgress (engine_eval.rs)
-    // Defense-in-depth: the same violated_messages filter already applied to
-    // check_result.diagnostics above is reused here. With the invariant holding,
-    // this filter is a no-op at runtime, but it prevents any future eval-time
-    // emitter that accidentally collides with the constraint-violation format from
-    // causing double-emission before the regression-lock cluster is updated.
+    // No filter is applied here: if the invariant ever breaks, the cluster fails
+    // loudly in CI and a maintainer must add a filter or update the merge loop.
+    // Keeping a silent defensive filter would hide the very regression the cluster
+    // is designed to detect.
     for diag in &eval_diagnostics {
-        if !violated_messages.contains(&diag.message) {
-            diagnostics.push(convert::convert_diagnostic(diag, source, uri));
-        }
+        diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 
     // Generate explicit diagnostics for constraint violations with source spans
@@ -284,39 +283,6 @@ mod tests {
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
-    }
-
-    /// Returns `true` iff `msg` matches `format!("constraint {} violated", entry.id)` where
-    /// `entry.id: ConstraintNodeId` has Display `"<entity>#constraint[<index>]"`.
-    ///
-    /// Structural requirements:
-    /// - Prefix: `"constraint "` (with trailing space)
-    /// - Suffix: `" violated"` (with leading space)
-    /// - Middle token: `<entity>#constraint[<index>]` where
-    ///   - `entity` is non-empty and whitespace-free
-    ///   - `index` is a non-empty `u32`-parseable decimal string
-    ///
-    /// Uses `rsplit_once` on `"#constraint["` so entities that hypothetically
-    /// contain that literal (none do in practice) still bind the suffix correctly.
-    ///
-    /// Shared by the six-test regression-lock cluster in this module.
-    fn matches_constraint_violation_format(msg: &str) -> bool {
-        let Some(rest) = msg.strip_prefix("constraint ") else {
-            return false;
-        };
-        let Some(id_str) = rest.strip_suffix(" violated") else {
-            return false;
-        };
-        let Some((entity, after)) = id_str.rsplit_once("#constraint[") else {
-            return false;
-        };
-        if entity.is_empty() || entity.chars().any(char::is_whitespace) {
-            return false;
-        }
-        let Some(index_str) = after.strip_suffix(']') else {
-            return false;
-        };
-        !index_str.is_empty() && index_str.parse::<u32>().is_ok()
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
@@ -837,95 +803,17 @@ mod tests {
 
     // --- step-5 regression lock: eval diagnostics never use constraint-violation format ---
 
-    /// Pins the contract of the `matches_constraint_violation_format` helper.
-    ///
-    /// The helper mirrors `format!("constraint {} violated", entry.id)` where
-    /// `entry.id: ConstraintNodeId` has Display `<entity>#constraint[<index>]`.
-    ///
-    /// POSITIVES — formats the production builder can produce — must return `true`.
-    /// NEGATIVES — must return `false`, including the previously-loose "no-spaces"
-    /// heuristic which would accept "constraint foo violated" (no `#constraint[N]`
-    /// shape). Shared by the six-test regression-lock cluster that follows.
-    #[test]
-    fn matches_constraint_violation_format_helper_is_precise() {
-        // POSITIVES: must return true
-        assert!(
-            matches_constraint_violation_format("constraint S#constraint[0] violated"),
-            "canonical single-token entity should match"
-        );
-        assert!(
-            matches_constraint_violation_format("constraint Bracket#constraint[7] violated"),
-            "multi-character entity, non-zero index should match"
-        );
-        assert!(
-            matches_constraint_violation_format("constraint S.sub#constraint[2] violated"),
-            "dotted entity (sub-component) should match"
-        );
-        assert!(
-            matches_constraint_violation_format("constraint S.sub[0]#constraint[2] violated"),
-            "collection-sub entity with bracket suffix should match"
-        );
-        // Anchor to the production Display impl so format drift in ConstraintNodeId trips
-        // this test: ConstraintNodeId::new("S", 0) formats as "S#constraint[0]".
-        {
-            let real_id = ConstraintNodeId::new("S", 0u32);
-            let real_msg = format!("constraint {} violated", real_id);
-            assert!(
-                matches_constraint_violation_format(&real_msg),
-                "real ConstraintNodeId Display format must satisfy the helper; \
-                 if ConstraintNodeId's Display changed, update the helper to match: {real_msg:?}"
-            );
-        }
-
-        // NEGATIVES: must return false
-        assert!(
-            !matches_constraint_violation_format("constraint foo violated"),
-            "single-token middle without #constraint[N] shape must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format("constraint #constraint[0] violated"),
-            "empty entity must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format("constraint S #constraint[0] violated"),
-            "whitespace before marker (entity contains space) must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format("constraint S#constraint[abc] violated"),
-            "non-numeric index must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format("constraint S#constraint[] violated"),
-            "empty index must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format(
-                "constraint inference failed because X was violated"
-            ),
-            "extra prose between prefix and trailing ' violated' must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format("some random message"),
-            "no prefix must not match"
-        );
-        assert!(
-            !matches_constraint_violation_format(""),
-            "empty string must not match"
-        );
-    }
-
     /// Regression lock — circular let-binding emitter: `eval()` must never emit diagnostics
-    /// in the `"constraint <entity>#constraint[<index>] violated"` format.
+    /// in the `"constraint ... violated"` format checked by the inline `strip_prefix /
+    /// strip_suffix / !contains(' ')` filter used throughout this cluster.
     ///
     /// This is the first of a six-test cluster (one per known eval-time emitter) that
-    /// locks the invariant enabling the no-filter merge of `eval_diagnostics` in
-    /// `compute_diagnostics_with_state`. The invariant check uses
-    /// `matches_constraint_violation_format` (defined above), which precisely mirrors
-    /// `format!("constraint {} violated", entry.id)` over `ConstraintNodeId`'s Display.
+    /// locks the invariant enabling the unfiltered merge of `eval_diagnostics` in
+    /// `compute_diagnostics_with_state`.
     ///
     /// If this test fails, `eval()` has started emitting the constraint-violation format
-    /// from the circular-let-binding path (`unfold.rs` / `engine_eval.rs`) — re-introduce
-    /// the `violated_messages` filter or update the merge loop.
+    /// from the circular-let-binding path (`unfold.rs` / `engine_eval.rs`) — add a
+    /// filter on the eval merge in `compute_diagnostics_with_state` or update the merge loop.
     #[test]
     fn eval_diagnostics_never_use_constraint_violation_format() {
         // Use circular-let-binding source: a known eval-time diagnostic emitter
@@ -947,20 +835,24 @@ mod tests {
         );
 
         for diag in &result.diagnostics {
+            let is_violation_format = diag
+                .message
+                .strip_prefix("constraint ")
+                .and_then(|s| s.strip_suffix(" violated"))
+                .map_or(false, |id| !id.is_empty() && !id.contains(' '));
             assert!(
-                !matches_constraint_violation_format(&diag.message),
-                "eval() emitted a 'constraint <entity>#constraint[<index>] violated' \
-                 format message: {:?}. The compute_diagnostics_with_state merge loop \
-                 relies on eval diagnostics never using this format — re-introduce the \
-                 violated_messages filter or update the merge loop.",
+                !is_violation_format,
+                "eval() emitted a 'constraint ... violated' format message: {:?}. \
+                 The compute_diagnostics_with_state merge loop relies on eval diagnostics \
+                 never using this format — add a filter on the eval merge or update the loop.",
                 diag.message
             );
         }
     }
 
-    /// Regression-lock cluster: `eval()` must never emit the
-    /// `"constraint <entity>#constraint[<index>] violated"` format from any of the
-    /// known eval-time diagnostic emitters.
+    /// Regression-lock cluster: `eval()` must never emit the `"constraint ... violated"`
+    /// format (checked by inline `strip_prefix / strip_suffix / !contains(' ')`) from any
+    /// of the known eval-time diagnostic emitters.
     ///
     /// Covers five emitters (circular let-binding is locked separately by
     /// `eval_diagnostics_never_use_constraint_violation_format`; this cluster handles
@@ -972,14 +864,32 @@ mod tests {
     ///   - solver NoProgress pass-through (engine_eval.rs:1170-1175 / 1748-1751)
     ///
     /// Each fixture: (a) sanity-asserts the expected diagnostic was emitted so the
-    /// format check cannot pass vacuously, and (b) asserts none match
-    /// `matches_constraint_violation_format`. Solver fixtures additionally verify via
-    /// `MockConstraintSolver::counter_handle()` that the injected solver was actually
-    /// dispatched — the sanity assertion alone cannot prove that when the solver
-    /// message happens to contain the expected substring for another reason.
+    /// format check cannot pass vacuously, and (b) asserts none match the inline check.
+    /// Solver fixtures additionally verify via `MockConstraintSolver::counter_handle()`
+    /// that the injected solver was actually dispatched — the sanity assertion alone cannot
+    /// prove that when the solver message happens to contain the expected substring for
+    /// another reason.
     #[test]
     fn eval_diagnostics_regression_lock_cluster() {
         use std::sync::atomic::Ordering;
+
+        // Anchor: the production format `format!("constraint {} violated", ConstraintNodeId::new("S", 0))`
+        // must satisfy the inline check used throughout this cluster so that format drift in
+        // ConstraintNodeId's Display trips this assertion before the negative checks below.
+        {
+            let real_id = ConstraintNodeId::new("S", 0u32);
+            let anchor = format!("constraint {} violated", real_id);
+            assert!(
+                anchor
+                    .strip_prefix("constraint ")
+                    .and_then(|s| s.strip_suffix(" violated"))
+                    .map_or(false, |id| !id.is_empty() && !id.contains(' ')),
+                "anchor: ConstraintNodeId::new(\"S\", 0) formats as {real_id:?} which does not \
+                 match the inline constraint-violation check; if ConstraintNodeId Display changed, \
+                 update the inline check in this cluster and in \
+                 eval_diagnostics_never_use_constraint_violation_format."
+            );
+        }
 
         struct Fixture {
             name: &'static str,
@@ -1119,11 +1029,16 @@ mod tests {
                 diagnostics
             );
             for diag in &diagnostics {
+                let is_violation_format = diag
+                    .message
+                    .strip_prefix("constraint ")
+                    .and_then(|s| s.strip_suffix(" violated"))
+                    .map_or(false, |id| !id.is_empty() && !id.contains(' '));
                 assert!(
-                    !matches_constraint_violation_format(&diag.message),
-                    "[{}] eval() emitted a 'constraint <entity>#constraint[<index>] violated' \
-                     format message: {:?}. Re-introduce the violated_messages filter on the \
-                     eval merge in compute_diagnostics_with_state or update the merge loop.",
+                    !is_violation_format,
+                    "[{}] eval() emitted a 'constraint ... violated' format message: {:?}. \
+                     Add a filter on the eval merge in compute_diagnostics_with_state or \
+                     update the merge loop.",
                     fixture.name,
                     diag.message
                 );
