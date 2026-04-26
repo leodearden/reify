@@ -280,6 +280,37 @@ fn record_eval_completed(
     });
 }
 
+/// Centralises the rejection-warning vocabulary for param_override validation
+/// so that adding a future `ParamOverrideRejection` variant only requires
+/// updating this one function.
+///
+/// Call whenever `validate_param_override` returns `Err(rejection)` to push
+/// the appropriate `Diagnostic::warning` onto the accumulated diagnostics list.
+/// Replaces the three former inline match-arm blocks in `eval()`,
+/// `eval_cached()`'s unconditional pre-check, and `eval_guarded_group_param_cell`.
+fn emit_param_override_rejection_warning(
+    diagnostics: &mut Vec<Diagnostic>,
+    cell_id: &ValueCellId,
+    cell_type: &reify_types::Type,
+    override_val: &Value,
+    rejection: &ParamOverrideRejection,
+) {
+    match rejection {
+        ParamOverrideRejection::TypeKindMismatch => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                cell_id, cell_type, override_val
+            )));
+        }
+        ParamOverrideRejection::ScalarDimensionMismatch { expected, got } => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                cell_id, expected, got
+            )));
+        }
+    }
+}
+
 /// Resolve and write the effective value for a guarded-group Param cell,
 /// consulting `param_overrides`, validating any stored override, falling back
 /// to `cell.default_expr`, and handling the no-override / rejected-override
@@ -350,18 +381,14 @@ fn eval_guarded_group_param_cell(
         }
         Some(v) => match validate_param_override(v, &cell.cell_type) {
             Ok(()) => Some(v.clone()),
-            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                    cell.id, cell.cell_type, v
-                )));
-                None
-            }
-            Err(ParamOverrideRejection::ScalarDimensionMismatch { expected, got }) => {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                    cell.id, expected, got
-                )));
+            Err(ref rejection) => {
+                emit_param_override_rejection_warning(
+                    diagnostics,
+                    &cell.id,
+                    &cell.cell_type,
+                    v,
+                    rejection,
+                );
                 None
             }
         },
@@ -636,21 +663,14 @@ impl Engine {
                         }
                         Some(v) => match validate_param_override(v, &cell.cell_type) {
                             Ok(()) => Some(v.clone()),
-                            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                    cell.id, cell.cell_type, v
-                                )));
-                                None
-                            }
-                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                expected,
-                                got,
-                            }) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                    cell.id, expected, got
-                                )));
+                            Err(ref rejection) => {
+                                emit_param_override_rejection_warning(
+                                    &mut diagnostics,
+                                    &cell.id,
+                                    &cell.cell_type,
+                                    v,
+                                    rejection,
+                                );
                                 None
                             }
                         },
@@ -1422,23 +1442,14 @@ impl Engine {
                     // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
                     // (task-2267 step-1 / step-3).
                     if let Some((ref override_val, ref rejection)) = override_check {
-                        match rejection {
-                            Ok(()) => {}
-                            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                    cell.id, cell.cell_type, override_val
-                                )));
-                            }
-                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                expected,
-                                got,
-                            }) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                    cell.id, expected, got
-                                )));
-                            }
+                        if let Err(rej) = rejection {
+                            emit_param_override_rejection_warning(
+                                &mut diagnostics,
+                                &cell.id,
+                                &cell.cell_type,
+                                override_val,
+                                rej,
+                            );
                         }
                     }
 
