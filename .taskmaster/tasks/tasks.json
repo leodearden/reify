@@ -48765,6 +48765,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T10:10:57.924Z"
+      },
+      {
+        "id": "2265",
+        "title": "Tighten last_diff_value_cells docs and edit_param reset behavior",
+        "description": "Two minor cleanups to the `last_diff_value_cells` instrumentation shipped under task 2170:\n\n(1) **Doc inconsistency in `crates/reify-eval/src/lib.rs:254-255`** — The field-level doc claims \"the writer site in `engine_edit.rs` needs no cfg-gating\" (text copied from the `usize` instrumentation fields). That contradicts the actual writer at `engine_edit.rs:1294-1302`, which IS gated under `#[cfg(any(test, feature = \"test-instrumentation\"))]` to skip the three `HashSet` clones in production. Lines 262-264 then assert the opposite (\"written via plain assignment and read only through the cfg-gated accessor\"), making the doc internally contradictory. Reword to e.g. \"The field itself is always present (module-private, no `pub`) so that the struct layout is identical in test and non-test builds; the writer site is cfg-gated to skip the HashSet clones in production.\" This both removes the contradiction and explains why `#[allow(dead_code)]` is needed.\n\n(2) **Asymmetric reset in `crates/reify-eval/src/engine_edit.rs:1294-1302`** — `last_diff_value_cells` is only written inside `edit_source` and is never reset elsewhere, unlike sibling counters (`last_guard_phase_group_evals`, etc.) which are zeroed at the top of each `edit_source` / `edit_param` call. After a sequence of `edit_source(A)` then `edit_param(B)`, `last_diff_value_cells()` returns the diff from edit_source(A) — supported by current docs (\"most recent edit_source call\") but easy to misread when adding new tests. Either: (a) clear `self.last_diff_value_cells = None;` at the start of `edit_param` (also cfg-gated) so the \"most recent edit_source\" invariant is enforced rather than documented, or (b) tighten the doc on the field and on `Engine::last_diff_value_cells()` to explicitly call out the asymmetry vs. the sibling counters. Option (a) preferred for ergonomics.\n\nSource: post-merge review on task 2170 (esc-2170-69).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48774,7 +48785,10 @@
       "completedCount": 2018,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T10:36:56.268Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T10:36:56.322Z"
     }
   }
 }
