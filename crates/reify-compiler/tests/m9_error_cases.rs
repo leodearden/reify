@@ -112,6 +112,20 @@ structure def S : Shaped {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
+    let has_code = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::TypeMismatchForTraitMember)
+            && d.message.contains("type mismatch for trait member")
+            && d.message.contains("count")
+    });
+    assert!(
+        has_code,
+        "expected DiagnosticCode::TypeMismatchForTraitMember mentioning 'count', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
     let first = errors[0];
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
