@@ -999,3 +999,92 @@ purpose check(subject : Structure) {
         element_cells
     );
 }
+
+/// Companion test for `activate_expands_subject_params_placeholder_to_populated_list`:
+/// `subject.geometric_params` has no compile-time `ResolvedSchemaQuery` entry
+/// (only `params` is populated by `compile_purpose` in `traits.rs`) and no
+/// activation-time fallback heuristic (task-1904 territory). The expansion
+/// helper's no-resolved-query branch must therefore replace the placeholder
+/// with an empty `ListLiteral`, preserving today's vacuous-true semantics
+/// for `forall p in subject.geometric_params: ...`.
+///
+/// Acceptance criteria (task-2289 step-12):
+///   (a) collection.kind is `CompiledExprKind::ListLiteral` (no longer the
+///       `PurposeReflectiveAggregation` placeholder).
+///   (b) the ListLiteral is empty.
+///
+/// Should PASS immediately given step-11's no-matching-query branch.
+#[test]
+fn activate_expands_geometric_params_placeholder_to_empty_list() {
+    let source = r#"
+structure Bracket {
+    param x : Real
+}
+
+purpose check(subject : Structure) {
+    constraint forall p in subject.geometric_params: determined(p)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "fixture failed to compile cleanly"
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture produced unexpected error diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("check", "Bracket");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
+
+    let injected = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:check@Bracket"))
+        .map(|(_, data)| data.clone())
+        .expect(
+            "expected at least one constraint with entity prefix 'purpose:check@Bracket' \
+             after activation",
+        );
+
+    let collection = match &injected.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => collection,
+        other => panic!(
+            "expected Quantifier in injected constraint expr, got {:?}",
+            other
+        ),
+    };
+
+    // (a) collection.kind is ListLiteral (not the placeholder).
+    let elements = match &collection.kind {
+        CompiledExprKind::ListLiteral(elements) => elements,
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
+            "post-activation: collection is still the PurposeReflectiveAggregation \
+             placeholder; activate_purpose must expand the geometric_params \
+             placeholder into an empty ListLiteral"
+        ),
+        other => panic!(
+            "post-activation: expected ListLiteral in Quantifier collection, got {:?}",
+            other
+        ),
+    };
+
+    // (b) the ListLiteral is empty.
+    assert!(
+        elements.is_empty(),
+        "expected expanded geometric_params ListLiteral to be empty (no resolved \
+         query and no fallback heuristic for geometric_params yet — task-1904), \
+         got {} elements",
+        elements.len()
+    );
+}
