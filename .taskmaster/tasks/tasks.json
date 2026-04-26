@@ -45898,7 +45898,8 @@
             "queries": [
               "cross-phase dedup wave2 guard flip edit_source edit_param",
               "guard flip dedup phase handling wave2",
-              "edit_param edit_source guard state deduplication"
+              "edit_param edit_source guard state deduplication",
+              "task 2250 phase3_skip_group group_needs_phase3 consolidation engine_edit.rs single helper"
             ]
           },
           "files": [
@@ -49411,7 +49412,9 @@
       "completedCount": 2042,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T14:29:55.888Z",
+      "description": "Tasks for master context"
     }
   }
 }
