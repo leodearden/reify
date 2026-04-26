@@ -81,3 +81,36 @@ fn all_seven_traits_present() {
         );
     }
 }
+
+// ─── step-5: Watertight refines Closed + Manifold ────────────────────────────
+
+/// Step 5: Watertight is the only multi-refinement trait in this set. Its
+/// refinements list must contain exactly Closed and Manifold (containment +
+/// length, not exact ordering).
+#[test]
+fn watertight_refines_closed_and_manifold() {
+    let module = load_stdlib_module();
+
+    let watertight = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Watertight")
+        .expect("expected 'Watertight' trait in compiled module");
+
+    assert_eq!(
+        watertight.refinements.len(),
+        2,
+        "Watertight should refine exactly 2 traits, got refinements: {:?}",
+        watertight.refinements
+    );
+    assert!(
+        watertight.refinements.contains(&"Closed".to_string()),
+        "Watertight should refine Closed, got refinements: {:?}",
+        watertight.refinements
+    );
+    assert!(
+        watertight.refinements.contains(&"Manifold".to_string()),
+        "Watertight should refine Manifold, got refinements: {:?}",
+        watertight.refinements
+    );
+}
