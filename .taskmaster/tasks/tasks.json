@@ -48635,7 +48635,7 @@
         "description": "`crates/reify-eval/src/engine_eval.rs:1258` (`pub fn eval_cached`) declares `let diagnostics = Vec::new();` and then **never appends to it** for the rest of the ~500-line function body — confirmed by reading the body and by the LSP-side canary test `eval_cached_path_surfaces_circular_let_binding_when_fixed` at `crates/reify-lsp/src/diagnostics.rs:683-721`, which asserts the empty-diagnostics behavior precisely so the assertion will fail loudly the day eval_cached starts emitting.\n\nConcrete user-visible consequence (already documented in the LSP comment block at diagnostics.rs:117-127):\n\n> eval_cached() today constructs an immutable `let diagnostics = Vec::new()` (engine_eval.rs:1179) and never appends to it — a known limitation meaning eval_time errors disappear on repeat calls with unchanged content.\n\nSpecifically, an eval-time error such as a circular let-binding, a sub-component lookup failure, a param_override type/dimension mismatch, or a solver Infeasible/NoProgress is emitted by the cold-start `eval()` path (engine_eval.rs:Engine::eval) but **silently disappears** on the second LSP didChange when `content_unchanged` is true and `eval_cached` is taken instead. The LSP layer was forward-defended in task 2236 (capture wired up), but the engine side was not fixed and no tracking task remains.\n\nSearched tasks.json: no open or pending follow-up exists for \"eval_cached … emit diagnostics\". Tasks 2225 and 2236 closed the LSP side; the underlying engine fix has no owner.\n\nDone means: `engine_eval.rs::eval_cached` mutates a `Vec<Diagnostic>` and returns the same diagnostic kinds the cold-start `eval()` would have emitted for the same module (circular let-binding, sub-component lookup failure, param_override mismatch, solver Infeasible/NoProgress). The LSP-side canary test (`eval_cached_path_surfaces_circular_let_binding_when_fixed`) is updated from `assert!(...is_empty())` to `assert!(!is_empty())` per its own follow-the-canary instructions. A new positive integration test in reify-eval exercises a circular-let-binding source through `eval_cached` and asserts the diagnostic surfaces.\n\nWhy this matters at the integration boundary:\n- The LSP layer claims (briefing \"what_working_means\") that \"edit_param triggers re-evaluation of only the dirty-demand intersection\". Today it does, but the diagnostic surface lies — repeat keystrokes on a broken-source file silently drop the error after the first call.\n- The convention \"Errors must be noisy — never silently swallow logic errors\" applies here: `let diagnostics = Vec::new()` followed by no append is exactly that pattern, just spelled differently.\n\nmemory_hints:\n- search: \"eval_cached diagnostics Vec::new circular let binding\"\n- entity: \"Engine\"\n- entity: \"EvalState\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -48662,9 +48662,12 @@
               "LSP incremental eval eval_cached diagnostic surface engine_eval.rs",
               "eval_cached content_unchanged diagnostics disappear LSP didChange repeat call"
             ]
+          },
+          "done_provenance": {
+            "commit": "3f8fad56b902af5dd2076141253d59356a71afc9"
           }
         },
-        "updatedAt": "2026-04-26T09:24:47.355Z"
+        "updatedAt": "2026-04-26T10:46:53.783Z"
       },
       {
         "id": "2260",
@@ -48837,9 +48840,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T10:46:36.472Z",
+      "lastModified": "2026-04-26T10:46:53.783Z",
       "taskCount": 2258,
-      "completedCount": 2020,
+      "completedCount": 2021,
       "tags": [
         "master"
       ]
