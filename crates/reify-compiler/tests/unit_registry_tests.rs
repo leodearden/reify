@@ -2079,30 +2079,71 @@ fn from_compiled_for_prelude_populates_shared_fields_and_prelude_defaults() {
     assert_eq!(entry.source_module, Some("test/module".to_string()));
 }
 
+/// Pipeline integration: `from_compiled_for_prelude` correctly wires `span`
+/// and `source_module` through the full `units_phase → seed_prelude_unit →
+/// registry` path so later compilation stages can use those values.
+///
+/// Observable signal: when a user module shadows a prelude unit the collision
+/// diagnostic reveals what was stored in the registry.  If `span` were
+/// `SourceSpan::empty(0)` the prelude label's `is_prelude()` check would
+/// fail; if `source_module` were `None` the originating module path would be
+/// absent from the diagnostic message.
 #[test]
-fn from_compiled_for_prelude_mirrors_units_phase_call_pattern() {
-    use reify_compiler::CompiledUnit;
-    use reify_types::ContentHash;
+fn seeded_prelude_unit_carries_prelude_span_and_module_through_registry() {
+    // Build a named prelude module that exports `pub unit foo`.
+    let prelude_parsed = reify_syntax::parse(
+        "pub unit foo : Length = 1.0",
+        ModulePath::single("test_prelude"),
+    );
+    assert!(
+        prelude_parsed.errors.is_empty(),
+        "parse errors in prelude: {:?}",
+        prelude_parsed.errors
+    );
+    let prelude_module = compile(&prelude_parsed);
+    assert!(
+        errors_only(&prelude_module).is_empty(),
+        "compile errors in prelude: {:?}",
+        errors_only(&prelude_module)
+    );
 
-    let hash = ContentHash::of_str("metre");
-    let cu = CompiledUnit {
-        name: "metre".to_string(),
-        is_pub: true,
-        dimension: DimensionVector::LENGTH,
-        factor: 1.0,
-        offset: None,
-        content_hash: hash,
-    };
+    // User module re-declares `foo`, triggering a registry collision.
+    let user_parsed = reify_syntax::parse(
+        "unit foo : Length = 2.0",
+        ModulePath::single("user"),
+    );
+    assert!(
+        user_parsed.errors.is_empty(),
+        "parse errors in user: {:?}",
+        user_parsed.errors
+    );
+    let user_module = compile_with_prelude(&user_parsed, &[prelude_module]);
+    let errors = errors_only(&user_module);
 
-    // Mirror the production call site shape: module_display is derived from a
-    // prelude module path (e.g. via prelude_module.path.to_string()).
-    let module_display = "std/units".to_string();
-    let entry = UnitEntry::from_compiled_for_prelude(&cu, module_display.clone());
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("foo"))
+        .expect("expected a 'duplicate' error mentioning 'foo'");
 
-    assert!(entry.span.is_prelude(), "prelude seeding must use SourceSpan::prelude()");
+    // span was set correctly by from_compiled_for_prelude: prelude label must
+    // carry SourceSpan::prelude(), not SourceSpan::empty(0).
     assert_eq!(
-        entry.source_module,
-        Some("std/units".to_string()),
-        "source_module must record the originating prelude module"
+        dup_diag.labels.len(),
+        2,
+        "expected two labels (user decl + prelude sentinel), got {:?}",
+        dup_diag.labels
+    );
+    assert!(
+        dup_diag.labels[1].span.is_prelude(),
+        "prelude label must use SourceSpan::prelude(), got {:?}",
+        dup_diag.labels[1].span
+    );
+
+    // source_module was set correctly: the originating module path surfaces in
+    // the diagnostic message so the user knows where the prelude unit came from.
+    assert!(
+        dup_diag.message.contains("test_prelude"),
+        "diagnostic must mention originating module 'test_prelude', got: {:?}",
+        dup_diag.message
     );
 }
