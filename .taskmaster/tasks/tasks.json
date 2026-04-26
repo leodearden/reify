@@ -51079,6 +51079,20 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2371",
+        "title": "specialization-scope: LSP diagnostics integration",
+        "description": "Integrate LSP diagnostics to surface E_SPECIALIZATION_FORBIDDEN_DECL via the standard diagnostics channel.",
+        "details": "Implement the integration of the Language Server Protocol (LSP) to handle specialization-scope diagnostics, specifically ensuring that the error E_SPECIALIZATION_FORBIDDEN_DECL is correctly surfaced through the standard diagnostics channel. This involves updating the LSP server to recognize and process this specific error code, ensuring it is reported to the client with appropriate context and severity. Reference the PRD document 'specialization-scope.md' task 4 for detailed requirements and expected behavior. Update the LSP server's diagnostic handling logic to include this error, and ensure it is tested across various scenarios where specialization is forbidden.",
+        "testStrategy": "Develop automated tests to verify that E_SPECIALIZATION_FORBIDDEN_DECL is correctly reported by the LSP server. Use a set of test cases that trigger this error in different contexts, ensuring the diagnostics are accurately surfaced to the client. Validate that the error includes correct location, message, and severity. Run these tests as part of the LSP integration test suite to ensure consistent behavior across updates.",
+        "status": "pending",
+        "dependencies": [
+          "298",
+          "294"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51091,7 +51105,7 @@
       ],
       "created": "2026-04-26T20:23:03.361Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:23:17.583Z"
+      "updated": "2026-04-26T20:23:22.484Z"
     }
   }
 }
