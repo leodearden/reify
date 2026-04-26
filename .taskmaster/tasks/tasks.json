@@ -49924,11 +49924,11 @@
         "description": "Tracker task for v0.2+ deferred work. PRD at docs/prds/v0_2/migration-toolchain.md. Activates `#version(...)` pragma for version-gated parsing and ships `reify migrate --from <ver> --to <ver>` rewriter (spec §14). Triggered by the first breaking change between v0.1 and v0.2. Tracker only; do not start in v0.1 phase.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:48:20.844Z"
+        "updatedAt": "2026-04-26T19:50:15.111Z"
       },
       {
         "id": "2307",
@@ -49960,7 +49960,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:50:02.365Z",
+      "lastModified": "2026-04-26T19:50:15.111Z",
       "taskCount": 2297,
       "completedCount": 2058,
       "tags": [
