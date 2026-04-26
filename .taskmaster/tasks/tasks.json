@@ -48822,7 +48822,19 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_cached_diagnostics.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached",
+              "Engine::eval"
+            ],
+            "queries": [
+              "eval_cached param_override validation warning fast-path cache-hit",
+              "eval_cached diagnostics repeat-call emission engine_eval.rs",
+              "Engine::eval_cached silently drops eval-time diagnostics fix task 2259"
+            ]
+          },
+          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4"
         }
       },
       {
