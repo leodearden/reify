@@ -130,6 +130,7 @@ pub(crate) fn collect_all_requirements(
                     expected_type,
                     trait_name,
                     span,
+                    DiagnosticCode::ConflictingTraitRequirements,
                     |name, existing, existing_trait, new, new_trait| {
                         format!(
                             "conflicting trait requirements for '{}': \
@@ -158,6 +159,7 @@ pub(crate) fn collect_all_requirements(
                     structure_name,
                     trait_name,
                     span,
+                    DiagnosticCode::ConflictingTraitSubRequirements,
                     |name, existing, existing_trait, new, new_trait| {
                         format!(
                             "conflicting trait sub requirements for '{}': \
@@ -308,6 +310,7 @@ fn try_dedup_or_conflict<V, F>(
     value: &V,
     trait_name: &str,
     span: SourceSpan,
+    code: DiagnosticCode,
     conflict_msg_builder: F,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> ControlFlow<()>
@@ -320,7 +323,9 @@ where
             let msg = conflict_msg_builder(name, existing_value, existing_trait, value, trait_name);
             let label = format!("conflict between '{}' and '{}'", existing_trait, trait_name);
             diagnostics.push(
-                Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, label)),
+                Diagnostic::error(msg)
+                    .with_code(code)
+                    .with_label(DiagnosticLabel::new(span, label)),
             );
         }
         return ControlFlow::Break(());
@@ -852,6 +857,10 @@ mod tests {
             &7_i32, // same value as already present
             "TraitB",
             SourceSpan::empty(0),
+            // Placeholder code: this path emits no diagnostic, so the value is
+            // never observed. Pass `ConflictingTraitRequirements` for parity
+            // with the production Param/Let call site.
+            DiagnosticCode::ConflictingTraitRequirements,
             |_, _, _, _, _| -> String { unreachable!("no closure on equal-value dedup") },
             &mut diags,
         );
@@ -875,6 +884,8 @@ mod tests {
             &7_i32,
             "TraitA",
             SourceSpan::empty(0),
+            // Placeholder code: cache-miss path emits no diagnostic.
+            DiagnosticCode::ConflictingTraitRequirements,
             |_, _, _, _, _| -> String { unreachable!("not on cache miss") },
             &mut diags,
         );
