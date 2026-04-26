@@ -50300,9 +50300,10 @@
         "description": "Develop FFI bindings for closest_point, on(point, geometry), and angle_between_surfaces using the OCCT library.",
         "details": "Follow the FFI pattern established in Task #319 for closest_point_on_shape. Implement the following functions:\n\n1. **closest_point_on_shape**: Re-export from Task #319, ensuring it integrates with the OCCT library to find the closest point on a given shape.\n\n2. **point_on_shape**: Implement membership checking to determine if a point lies on a specified geometry. Use OCCT's geometric evaluation capabilities.\n\n3. **surface_angle**: Calculate the dihedral angle between two surfaces using the dot product of their face normals. Leverage OCCT's surface analysis tools.\n\nUpdate the stdlib bindings to register these functions and ensure they are correctly wired through the eval pipeline. Refer to `docs/prds/topology-selectors.md` task 2 for detailed requirements.\n<info added on 2026-04-26T20:21:31.861Z>\nThe task scope has been narrowed to focus solely on stdlib registration and eval-pipeline wiring, which will be addressed after the completion of the three subtasks (2324.1, 2324.2, 2324.3). Each subtask will independently implement one of the FFI primitives from scratch, as Task 319's deliverables are not present in the codebase. Ignore references to `docs/prds/topology-selectors.md` as it does not exist.\n</info added on 2026-04-26T20:21:31.861Z>",
         "testStrategy": "Conduct happy-path tests using box and sphere fixtures to verify each function:\n\n1. **closest_point_on_shape**: Test with various points and shapes to ensure the closest point is accurately calculated.\n\n2. **point_on_shape**: Verify membership results for points on and off the geometry.\n\n3. **surface_angle**: Test angle calculations between known surfaces to ensure accuracy.\n\nEnsure all tests pass using the `cargo test` framework, focusing on edge cases and typical use scenarios.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
-          "319"
+          "319",
+          "2324.3"
         ],
         "priority": "high",
         "subtasks": [
@@ -50337,7 +50338,7 @@
             "parentId": "undefined"
           }
         ],
-        "updatedAt": "2026-04-26T20:24:45.978Z",
+        "updatedAt": "2026-04-26T20:27:49.159Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -51446,14 +51447,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:26:39.074Z",
+      "lastModified": "2026-04-26T20:27:49.159Z",
       "taskCount": 2381,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:26:43.941Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
