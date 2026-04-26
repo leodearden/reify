@@ -48851,7 +48851,20 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached",
+              "Engine::eval",
+              "Engine::edit_param"
+            ],
+            "queries": [
+              "eval_cached cycle detection solver invocation code duplication engine_eval.rs",
+              "evaluate_let_bindings cycle detection helper extraction refactor",
+              "eval_cached diagnostics repeat-call emission engine_eval.rs"
+            ]
+          },
+          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4"
         }
       },
       {
