@@ -1941,4 +1941,42 @@ mod invariant_tests {
         }
         super::assert_value_cell_types_representable(&graph);
     }
+
+    /// Verify `is_representable_cell_type` classifies every known variant
+    /// correctly.  Unrepresentable variants return `false`; representable ones
+    /// return `true`.  StructureRef is intentionally representable (task 1876).
+    #[test]
+    fn is_representable_cell_type_classifies_known_variants() {
+        // Unrepresentable variants → false
+        assert!(
+            !super::is_representable_cell_type(&Type::TypeParam("T".into())),
+            "Type::TypeParam must be unrepresentable",
+        );
+        assert!(
+            !super::is_representable_cell_type(&Type::Geometry),
+            "Type::Geometry must be unrepresentable",
+        );
+        // Representable variants → true
+        assert!(
+            super::is_representable_cell_type(&Type::Int),
+            "Type::Int must be representable",
+        );
+        assert!(
+            super::is_representable_cell_type(&Type::Real),
+            "Type::Real must be representable",
+        );
+        assert!(
+            super::is_representable_cell_type(&Type::Bool),
+            "Type::Bool must be representable",
+        );
+        assert!(
+            super::is_representable_cell_type(&Type::List(Box::new(Type::Int))),
+            "Type::List must be representable",
+        );
+        // StructureRef is permitted (task 1876)
+        assert!(
+            super::is_representable_cell_type(&Type::StructureRef("Material".into())),
+            "Type::StructureRef must be representable (task 1876)",
+        );
+    }
 }
