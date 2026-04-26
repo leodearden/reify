@@ -271,3 +271,50 @@ fn shared_edges_same_face_returns_empty_list() {
         edges
     );
 }
+
+#[test]
+fn shared_edges_with_out_of_range_face_index_returns_query_failed() {
+    let (kernel, box_id) = box_kernel();
+
+    // Sub-assert (a): face_a out of range.
+    let result_a = kernel.query(&GeometryQuery::SharedEdges {
+        shape: box_id,
+        face_a: 99,
+        face_b: 0,
+    });
+    match result_a {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("out of range"),
+                "expected error containing 'out of range' (face_a=99), got: {msg}"
+            );
+            assert!(
+                msg.contains("99"),
+                "expected error containing the offending index '99' (face_a=99), got: {msg}"
+            );
+        }
+        Ok(v) => panic!("expected Err(QueryFailed) for face_a=99, got Ok({:?})", v),
+        Err(other) => panic!("expected QueryFailed for face_a=99, got {:?}", other),
+    }
+
+    // Sub-assert (b): face_b out of range.
+    let result_b = kernel.query(&GeometryQuery::SharedEdges {
+        shape: box_id,
+        face_a: 0,
+        face_b: 99,
+    });
+    match result_b {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("out of range"),
+                "expected error containing 'out of range' (face_b=99), got: {msg}"
+            );
+            assert!(
+                msg.contains("99"),
+                "expected error containing the offending index '99' (face_b=99), got: {msg}"
+            );
+        }
+        Ok(v) => panic!("expected Err(QueryFailed) for face_b=99, got Ok({:?})", v),
+        Err(other) => panic!("expected QueryFailed for face_b=99, got {:?}", other),
+    }
+}
