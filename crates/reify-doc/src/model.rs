@@ -12,9 +12,20 @@ pub struct DocModel {
     pub modules: Vec<ModuleDoc>,
 }
 
-/// Documentation for a single compiled Reify module (fields expanded in later cycles).
+/// Documentation for a single compiled Reify module.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ModuleDoc {}
+pub struct ModuleDoc {
+    /// Fully-qualified module path (e.g. `"electronics.board"`).
+    pub path: String,
+    /// Optional top-level doc-comment for the module.
+    pub doc: Option<String>,
+    /// Top-level declared items, in source declaration order.
+    pub items: Vec<ItemDoc>,
+    /// Module-level annotations.
+    pub annotations: Vec<AnnotationDoc>,
+    /// Module-level pragmas.
+    pub pragmas: Vec<PragmaDoc>,
+}
 
 /// Documentation for a single `@annotation(...)` attached to a declaration.
 ///
@@ -107,6 +118,131 @@ pub struct RealizationDoc {
     pub name: String,
     /// Rendered summaries of each operation in the realization body.
     pub op_summaries: Vec<String>,
+}
+
+/// A single top-level declaration documented in a module.
+///
+/// Uses a `"kind"` tag in JSON so downstream consumers can discriminate on
+/// declaration type without manual field inspection.  The variant names map
+/// directly to the declaration kinds in `reify_syntax::Declaration`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ItemDoc {
+    /// A `structure` declaration — topology template with optional children.
+    Structure {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        params: Vec<ParamDoc>,
+        ports: Vec<PortDoc>,
+        constraints: Vec<ConstraintDoc>,
+        sub_components: Vec<SubComponentDoc>,
+        realizations: Vec<RealizationDoc>,
+        /// Arbitrary key-value metadata (e.g. compiler-generated tags).
+        meta: Vec<(String, String)>,
+    },
+    /// An `occurrence` declaration — like a structure but for occurrence-mode topologies.
+    Occurrence {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        params: Vec<ParamDoc>,
+        ports: Vec<PortDoc>,
+        constraints: Vec<ConstraintDoc>,
+        sub_components: Vec<SubComponentDoc>,
+        realizations: Vec<RealizationDoc>,
+        meta: Vec<(String, String)>,
+    },
+    /// A `trait` declaration — interface definition.
+    Trait {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Rendered member signatures (e.g. `["voltage: Voltage", "current: Current"]`).
+        members: Vec<String>,
+    },
+    /// A `fn` declaration.
+    Function {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Full rendered signature (e.g. `"fn compute(x: f64) -> f64"`).
+        signature: String,
+    },
+    /// A `let` (field) declaration at module scope.
+    Field {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Rendered field type (e.g. `"Voltage"`).
+        type_repr: String,
+        /// Rendered default value expression, if any.
+        default_repr: Option<String>,
+    },
+    /// A `purpose` (objective/optimization) declaration.
+    Purpose {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Rendered objective expression.
+        expr_repr: String,
+        /// Optimization direction, e.g. `"minimize"` or `"maximize"`.
+        direction: String,
+    },
+    /// An `enum` declaration.
+    Enum {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Rendered variant names.
+        variants: Vec<String>,
+    },
+    /// A `unit` declaration.
+    Unit {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Name of the base SI unit (e.g. `"Ampere"`).
+        base_unit: String,
+        /// Rendered scale factor relative to the base (e.g. `"0.001"`).
+        scale: String,
+    },
+    /// A `type` alias declaration.
+    TypeAlias {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Rendered right-hand-side type (e.g. `"f64"`).
+        type_repr: String,
+    },
+    /// A named constraint definition.
+    ConstraintDef {
+        name: String,
+        doc: Option<String>,
+        is_pub: bool,
+        annotations: Vec<AnnotationDoc>,
+        pragmas: Vec<PragmaDoc>,
+        /// Rendered constraint expression.
+        expr_repr: String,
+    },
 }
 
 #[cfg(test)]
