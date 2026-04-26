@@ -49722,6 +49722,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:24:03.889Z"
+      },
+      {
+        "id": "2294",
+        "title": "Kleene logic: extract shared truth-table helper, route and/or/not/implies through it",
+        "description": "Per PRD docs/prds/kleene-logic.md, audit the existing `and`/`or`/`not`/`implies` evaluator paths in `crates/reify-expr` (and any duplicates in `crates/reify-eval`) and route them through a single shared `kleene` helper module that implements the spec §9.2.3 truth table. Pure refactor — pin behaviour with existing tests. Existing tasks #155 (implies) and #63 (forall/exists) introduced fragmented eval paths; this consolidates them.</description>\n<parameter name=\"details\">Source: docs/prds/kleene-logic.md (§9.2.3 truth table, lines 1662-1680 of docs/reify-language-spec.md).\n\nSteps:\n1. Locate every match arm or function evaluating `BinOp::And | BinOp::Or | BinOp::Implies | UnaryOp::Not` (or equivalent) across `reify-expr` and `reify-eval`. Memory hint queries: \"BinOp And Or eval reify-expr\", \"Implies Kleene truth table\".\n2. Introduce a `kleene` module (likely under `reify-expr/src/kleene.rs`) exporting `kleene_and(a: KBool, b: KBool) -> KBool` and friends, where `KBool` represents `True | False | Undef`. Single source of truth for the truth-table values from spec §9.2.3.\n3. Rewrite the eval call sites to delegate to the helpers. No behaviour change yet — existing tests must remain green.\n4. Document the helper module with rustdoc citing `docs/reify-language-spec.md` §9.2.3 lines 1662-1680.\n\nmemory_hints:\n- entities: BinOp, Value, EvalContext, Implies\n- queries: \"and or implies eval reify-expr Kleene\", \"BinOp Implies Kleene truth table eval\", \"logical operators undef propagation reify-expr\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49731,7 +49742,10 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:35:13.229Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:35:13.261Z"
     }
   }
 }
