@@ -626,5 +626,51 @@ assert "Check 18: stderr contains dotted subtask id '100.1'" \
 assert "Check 18: stderr contains done subtask title 'Subtask one done in B'" \
     grep -q "Subtask one done in B" "$_stderr18"
 
+# ==============================================================================
+# Check 19: divergent subtask done-wins (reverse tag order)
+# Mirrors Check 18 with tag order reversed: subtask 100.1 is done in tag A
+# (listed first) and in-progress in tag B (listed second).  The done-wins merge
+# must retain the first-seen done entry — no second occurrence should overwrite
+# it.  This was already working on unpatched code by accident (first-occurrence
+# wins when the first occurrence is done), but now explicitly locked in as a
+# named regression test alongside Check 18.
+# ==============================================================================
+echo ""
+echo "--- Check 19: divergent subtask done-wins (reverse tag order) ---"
+
+_brief19="$_tmpdir/briefing19.yaml"
+_tasks19="$_tmpdir/tasks19.json"
+
+cat > "$_brief19" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "subtask divergence gap"
+        tracking: "100.1"
+YAML
+
+# tag_a listed FIRST: parent 100 in-progress, subtask 1 done.
+# tag_b listed SECOND: parent 100 in-progress, subtask 1 in-progress.
+# Done-wins must retain the tag_a done entry for subtask 100.1.
+cat > "$_tasks19" <<'JSON'
+{"tag_a":{"tasks":[{"id":"100","title":"Parent task","status":"in-progress","subtasks":[{"id":"1","title":"Subtask one done in A","status":"done"}]}]},"tag_b":{"tasks":[{"id":"100","title":"Parent task","status":"in-progress","subtasks":[{"id":"1","title":"Subtask one ip in B","status":"in-progress"}]}]}}
+JSON
+
+_stderr19="$_tmpdir/stderr19.txt"
+_exit19=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief19" --tasks "$_tasks19" 2>"$_stderr19" || _exit19=$?
+
+assert "Check 19: exit code is 1 (done subtask in tag_a must trigger mismatch)" \
+    test "$_exit19" -eq 1
+
+assert "Check 19: stderr contains WARN" \
+    grep -q "WARN" "$_stderr19"
+
+assert "Check 19: stderr contains dotted subtask id '100.1'" \
+    grep -q "100.1" "$_stderr19"
+
+assert "Check 19: stderr contains done subtask title 'Subtask one done in A'" \
+    grep -q "Subtask one done in A" "$_stderr19"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
