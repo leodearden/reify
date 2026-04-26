@@ -49148,7 +49148,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T12:36:40.848Z"
+        "updatedAt": "2026-04-26T12:36:40.848Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/eval_instrumentation_counters.rs",
+            "crates/reify-lsp/Cargo.toml",
+            "crates/reify-lsp/src/diagnostics.rs"
+          ]
+        }
       },
       {
         "id": "2277",
