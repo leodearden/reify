@@ -49092,23 +49092,21 @@
         "description": "In `crates/reify-eval/tests/eval_cached_diagnostics.rs::eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic` (lines 706-758, added in task 2269), tighten the test to lock both directions of the cache-hit invariant (must not drop AND must not duplicate), matching the pattern already used by the param_override repeat-call tests (lines 359-525).\n\nThe doc comment for the test mentions \"must not drop or duplicate on cache hit\", but the assertions use `iter().any(...)` which only locks \"must not drop\". A future bug that runs the validation pass twice per eval_cached call (e.g. double-iteration over `template.sub_components`) would still pass.\n\nWhile editing, also hoist the triplicated diagnostic-matching closure (`|d| d.message.contains(\"sub-component\") && d.message.contains(\"references unknown structure\") && d.message.contains(\"DoesNotExist\")`) to a single `let matches = |diag: &Diagnostic| ...;` binding at the top of the test so any future message-shape change is a one-line edit. Same triplication exists in the param_override repeat-call tests at lines 359-525 — consider applying the same hoist there for consistency.",
         "details": "Concrete changes:\n1. Replace the three `assert!(... .iter().any(...))` calls in `eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic` with `assert_eq!(... .iter().filter(matches).count(), 1, ...)` — matches the param_override repeat-call test pattern at lines 380-432 and 474-524.\n2. Hoist the matching closure to a `let matches = |d: &Diagnostic| { ... };` local at the top of the test, then reuse it across all three calls.\n3. (Optional) Apply the same closure-hoist refactor to the two param_override repeat-call tests for consistency, since they each triplicate their own diagnostic matcher.\n4. (Optional) Add a comment near the param_override fallback-Value asserts (lines 389-394, 409-414, 427-432, 483-488, etc.) clarifying that the assertion locks the materialized value shape, not provenance — distinguishing fresh-evaluation from carried-over cached entries is out of scope (per task 2269 review suggestion 3, deemed acceptable as-is by the reviewer; this is purely a doc clarity nit).\n\nModules: crates/reify-eval/tests/eval_cached_diagnostics.rs\n\nSpawned from task 2269 review (esc-2269-4, suggestions 1 + 2). Suggestion 3 (provenance comment) was dismissed by the reviewer as acceptable-as-is but is captured here as an optional secondary item if the same author touches the file.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T12:35:46.139Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T12:35:08.532Z",
-      "taskCount": 2262,
+      "lastModified": "2026-04-26T12:35:46.139Z",
+      "taskCount": 2263,
       "completedCount": 2031,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T12:35:44.645Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T12:35:44.669Z"
+      ]
     }
   }
 }
