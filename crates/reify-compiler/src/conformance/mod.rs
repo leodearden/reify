@@ -344,17 +344,27 @@ fn emit_leaf_conformance_for_arg_type(
 ///
 /// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
 /// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
-/// `Option/List/Set/Map`. The emission is suppressed when either the top-level
-/// `param_type` or `arg_type` is `Type::Error` (anti-cascade guard). Note: this guard
-/// is top-level only — an `Error` nested inside a wrapper (e.g. `Option<Error>`) is
-/// not detected and may produce a secondary wrapper-shape diagnostic on top of the
-/// root-cause error. Non-wrapper, non-trait param types (e.g. `Real`, `Int`) fall
-/// through silently — a fully general arg-shape pass is tracked as future work.
+/// `Option/List/Set/Map`. A top-level `Type::Error` in either `param_type` or `arg_type`
+/// short-circuits the whole walk via an early return, so no diagnostic — wrapper-shape,
+/// leaf-conformance, or future-arm — is emitted on top of an already-reported upstream
+/// error. The guard runs before the match, making the anti-cascade contract uniform
+/// across all arms (current and future). Note: this guard is top-level only — an `Error`
+/// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
+/// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
+/// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
+/// arg-shape pass is tracked as future work.
 fn walk_param_against_arg_type(
     param_type: &Type,
     arg_type: &Type,
     ctx: &mut WalkCtx<'_>,
 ) {
+    // Anti-cascade: skip when either type carries the poison sentinel so no
+    // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
+    // of an already-reported upstream error. Hoisted above the match so the
+    // contract is explicit and uniform across all current and future arms.
+    if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
+        return;
+    }
     match (param_type, arg_type) {
         // Wrapper pairs: recurse into inner types lockstep.
         (Type::Option(inner_p), Type::Option(inner_a)) => {
@@ -381,11 +391,6 @@ fn walk_param_against_arg_type(
         // or List<T> passed to Option<T>. Non-wrapper non-trait params (Real, Int,
         // etc.) fall through silently; a fully general arg-shape pass is future work.
         _ => {
-            // Anti-cascade: skip when either type carries the poison sentinel so we
-            // don't pile diagnostics on top of an already-reported upstream error.
-            if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
-                return;
-            }
             if matches!(
                 param_type,
                 Type::Option(_) | Type::List(_) | Type::Set(_) | Type::Map(_, _)
