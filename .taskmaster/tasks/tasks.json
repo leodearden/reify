@@ -47945,11 +47945,11 @@
               "eval_guarded_group_param_cell"
             ],
             "queries": [
-              "eval_guarded_group_param_cell numeric line references stable anchors",
-              "replace fragile line-number references centralized constant",
-              "guarded group param cell override resolution helper"
+              "eval_guarded_group_param_cell doc-comments numeric line references stable anchors",
+              "guarded group param cell eval line refs refactoring"
             ]
-          }
+          },
+          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351"
         }
       },
       {
