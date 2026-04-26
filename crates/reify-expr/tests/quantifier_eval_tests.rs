@@ -2,7 +2,8 @@
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, QuantifierKind, Type, Value, ValueCellId, ValueMap,
+    BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, DeterminacyState,
+    PersistentMap, QuantifierKind, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Helper: create a quantifier CompiledExpr.
@@ -446,4 +447,151 @@ structure S {
     values.insert(scores_cell.id.clone(), scores_value);
     let result = eval_expr(found_expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Bool(false), "no score > 10, should be false");
+}
+
+// ── task-2289 step-8: cell-iteration mode for quantifier evaluation ───────────
+//
+// When a Quantifier's collection is a `ListLiteral` whose elements are all
+// `ValueRef`s (the post-activation shape produced by `activate_purpose`'s
+// expansion of `PurposeReflectiveAggregation`), the Quantifier evaluator
+// must iterate over the *cell IDs* and rewrite the synthetic loop-var inside
+// `DeterminacyPredicate { cell }` to the iterated cell's id. The current
+// value-iteration path binds `variable_id → element_value`; that's not enough
+// because `DeterminacyPredicate` reads a cell ID, not a value, and the
+// synthetic loop-var has no entry in the determinacy snapshot.
+//
+// These tests exercise the cell-iteration path for both `ForAll` and
+// `Exists`, asserting that:
+//   (a) the determinacy snapshot is consulted for the iterated cells'
+//       actual states (not the synthetic loop-var id);
+//   (b) the Kleene short-circuit semantics are preserved (forall: false
+//       short-circuits; exists: true short-circuits);
+//   (c) NO `debug_assert!` panic fires (i.e. the current "wiring bug" trip
+//       in `DeterminacyPredicate` is no longer hit).
+//
+// RED before step-9 impl: today's quantifier eval falls through to value
+// iteration, binds the synthetic loop-var to each `ValueRef`'s cached value,
+// then evaluates `DeterminacyPredicate { cell: $loop_var }` — the loop-var
+// cell is missing from the determinacy snapshot, so `debug_assert!` fires
+// and `Value::Undef` is returned. These tests fail/panic.
+
+/// Build a determinacy snapshot from `(cell, value, state)` triples.
+fn make_determinacy_snapshot(
+    entries: &[(ValueCellId, Value, DeterminacyState)],
+) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
+    let mut map: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+    for (id, val, state) in entries {
+        map.insert(id.clone(), (val.clone(), *state));
+    }
+    map
+}
+
+/// task-2289 step-8: forall over `[ValueRef(E,a), ValueRef(E,b)]` with
+/// `determined($loop_var)` and `(E,a)=Determined`, `(E,b)=Undetermined`
+/// → `Bool(false)` (and NO debug_assert panic).
+#[test]
+fn forall_cell_iteration_with_determinacy_predicate_returns_false_when_one_undetermined() {
+    let cell_a = ValueCellId::new("Bracket", "a");
+    let cell_b = ValueCellId::new("Bracket", "b");
+
+    // Synthetic loop-var cell — what the quantifier currently binds.
+    let loop_var = ValueCellId::new("$quant0.S", "p");
+
+    // Collection: ListLiteral of two ValueRefs (post-activation shape).
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(cell_a.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+        ],
+        Type::List(Box::new(Type::Real)),
+    );
+
+    // Predicate: determined($loop_var)
+    let predicate = CompiledExpr::determinacy_predicate(
+        DeterminacyPredicateKind::Determined,
+        loop_var.clone(),
+    );
+
+    let expr =
+        make_quantifier(QuantifierKind::ForAll, "p", loop_var, collection, predicate);
+
+    // Determinacy snapshot: (E,a) determined, (E,b) undetermined.
+    let snapshot = make_determinacy_snapshot(&[
+        (cell_a.clone(), Value::Real(1.0), DeterminacyState::Determined),
+        (
+            cell_b.clone(),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        ),
+    ]);
+
+    // Provide the same values in the value map so that any value-iteration
+    // fallback can still observe a value (we still want to verify the
+    // cell-iteration path is the one that fires).
+    let mut values = ValueMap::new();
+    values.insert(cell_a.clone(), Value::Real(1.0));
+    values.insert(cell_b.clone(), Value::Undef);
+
+    let functions: Vec<reify_types::CompiledFunction> = Vec::new();
+    let ctx = EvalContext::new(&values, &functions).with_determinacy(&snapshot);
+
+    let result = eval_expr(&expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Bool(false),
+        "forall over [ValueRef(E,a), ValueRef(E,b)] with one Undetermined cell \
+         must return Bool(false) under cell-iteration mode (NOT panic on the \
+         loop-var debug_assert)"
+    );
+}
+
+/// task-2289 step-8: exists over `[ValueRef(E,a), ValueRef(E,b)]` with
+/// `determined($loop_var)` and `(E,a)=Determined`, `(E,b)=Undetermined`
+/// → `Bool(true)` (the Determined element short-circuits the exists).
+#[test]
+fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determined() {
+    let cell_a = ValueCellId::new("Bracket", "a");
+    let cell_b = ValueCellId::new("Bracket", "b");
+    let loop_var = ValueCellId::new("$quant0.S", "p");
+
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(cell_a.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+        ],
+        Type::List(Box::new(Type::Real)),
+    );
+
+    let predicate = CompiledExpr::determinacy_predicate(
+        DeterminacyPredicateKind::Determined,
+        loop_var.clone(),
+    );
+
+    let expr =
+        make_quantifier(QuantifierKind::Exists, "p", loop_var, collection, predicate);
+
+    let snapshot = make_determinacy_snapshot(&[
+        (cell_a.clone(), Value::Real(1.0), DeterminacyState::Determined),
+        (
+            cell_b.clone(),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        ),
+    ]);
+
+    let mut values = ValueMap::new();
+    values.insert(cell_a.clone(), Value::Real(1.0));
+    values.insert(cell_b.clone(), Value::Undef);
+
+    let functions: Vec<reify_types::CompiledFunction> = Vec::new();
+    let ctx = EvalContext::new(&values, &functions).with_determinacy(&snapshot);
+
+    let result = eval_expr(&expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Bool(true),
+        "exists over [ValueRef(E,a), ValueRef(E,b)] with at least one \
+         Determined cell must return Bool(true) under cell-iteration mode \
+         (NOT panic on the loop-var debug_assert)"
+    );
 }
