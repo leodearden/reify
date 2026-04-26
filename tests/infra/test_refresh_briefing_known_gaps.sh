@@ -299,5 +299,74 @@ assert "Check 9: JSON contains subproject 'subproject_a'" \
 assert "Check 9: JSON contains subproject 'subproject_b'" \
     bash -c "jq -e '[.[].subproject] | contains([\"subproject_b\"])' '$_stdout9' >/dev/null"
 
+# ==============================================================================
+# Check 10: missing --briefing path → non-zero exit, ERROR on stderr, no Traceback
+# ==============================================================================
+echo ""
+echo "--- Check 10: missing briefing.yaml path ---"
+
+_tasks_valid="$_tmpdir/tasks_valid.json"
+printf '{"master":{"tasks":[]}}\n' > "$_tasks_valid"
+
+_stderr10="$_tmpdir/stderr10.txt"
+_exit10=0
+python3 "$REFRESH_SCRIPT" --briefing /no/such/briefing.yaml --tasks "$_tasks_valid" \
+    2>"$_stderr10" || _exit10=$?
+
+assert "Check 10: exit code is non-zero (missing briefing)" \
+    test "$_exit10" -ne 0
+
+assert "Check 10: stderr contains ERROR" \
+    grep -qi "ERROR" "$_stderr10"
+
+assert "Check 10: stderr does NOT contain 'Traceback'" \
+    bash -c "! grep -q 'Traceback' '$_stderr10'"
+
+# ==============================================================================
+# Check 11: malformed YAML briefing → non-zero exit, ERROR on stderr, no Traceback
+# ==============================================================================
+echo ""
+echo "--- Check 11: malformed YAML in briefing ---"
+
+_brief11="$_tmpdir/briefing11_bad.yaml"
+printf '{:\n' > "$_brief11"  # intentionally malformed YAML
+
+_stderr11="$_tmpdir/stderr11.txt"
+_exit11=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief11" --tasks "$_tasks_valid" \
+    2>"$_stderr11" || _exit11=$?
+
+assert "Check 11: exit code is non-zero (malformed YAML)" \
+    test "$_exit11" -ne 0
+
+assert "Check 11: stderr contains ERROR" \
+    grep -qi "ERROR" "$_stderr11"
+
+assert "Check 11: stderr does NOT contain 'Traceback'" \
+    bash -c "! grep -q 'Traceback' '$_stderr11'"
+
+# ==============================================================================
+# Check 12: missing tasks.json path → non-zero exit, ERROR on stderr, no Traceback
+# ==============================================================================
+echo ""
+echo "--- Check 12: missing tasks.json path ---"
+
+_brief_valid="$_tmpdir/briefing_valid.yaml"
+printf 'subprojects: {}\n' > "$_brief_valid"
+
+_stderr12="$_tmpdir/stderr12.txt"
+_exit12=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief_valid" --tasks /no/such/tasks.json \
+    2>"$_stderr12" || _exit12=$?
+
+assert "Check 12: exit code is non-zero (missing tasks.json)" \
+    test "$_exit12" -ne 0
+
+assert "Check 12: stderr contains ERROR" \
+    grep -qi "ERROR" "$_stderr12"
+
+assert "Check 12: stderr does NOT contain 'Traceback'" \
+    bash -c "! grep -q 'Traceback' '$_stderr12'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
