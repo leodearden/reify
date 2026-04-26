@@ -50931,6 +50931,20 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:18:27.592Z"
+      },
+      {
+        "id": "2362",
+        "title": "forall statement-form: tree-sitter grammar + disambiguation on token after `:`",
+        "description": "Extend the tree-sitter grammar for the `forall` statement to support `connect` and `constraint` alternatives, ensuring correct token disambiguation.",
+        "details": "Update the tree-sitter grammar to handle `forall` statements with new alternatives. Modify the rule to dispatch based on the token following `:`. Specifically, add support for `forall ... : connect <connect-stmt>` and `forall ... : constraint <constraint-body>`. Ensure that the existing expression form remains the default when the token is neither `connect` nor `constraint`. Update the grammar file (tree-sitter-reify/grammar.js) to include these new alternatives and adjust the parser logic to correctly identify and parse these forms.",
+        "testStrategy": "1. Write unit tests to parse `forall ... : <expr>` and ensure it remains the default form.\n2. Add tests for `forall ... : connect <connect-stmt>` to verify correct parsing and AST node creation.\n3. Add tests for `forall ... : constraint <constraint-body>` to ensure proper parsing and AST node creation.\n4. Run all existing tests to confirm no regressions in the `forall` expression parsing.",
+        "status": "pending",
+        "dependencies": [
+          "1",
+          "63"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50942,7 +50956,8 @@
         "master"
       ],
       "created": "2026-04-26T20:19:47.633Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:21:27.654Z"
     }
   }
 }
