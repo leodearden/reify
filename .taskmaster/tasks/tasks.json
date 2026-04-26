@@ -50152,7 +50152,13 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:57:07.204Z"
+        "updatedAt": "2026-04-26T19:57:07.204Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/quantifier_eval_tests.rs"
+          ]
+        }
       },
       {
         "id": "2317",
