@@ -49495,6 +49495,17 @@
             "crates/reify-types/tests/exports.rs"
           ]
         }
+      },
+      {
+        "id": "2287",
+        "title": "reify-eval: extend is_representable_cell_type doc to acknowledge TraitObject (Undef-only safety)",
+        "description": "Update the rustdoc on `is_representable_cell_type`/`assert_value_cell_types_representable` in `crates/reify-eval/src/engine_eval.rs` (~lines 38-46) so it does not claim that `Type::TypeParam(_)` and `Type::Geometry` are the only `Type` variants without a corresponding `Value`. `Type::TraitObject(_)` also lacks a `Value` arm in `value_type_kind_matches` (lib.rs ~L116-179) and is currently safe only because trait-typed params land on `Value::Undef` defaults — the same Undef-only safety reasoning explicitly called out for `Type::StructureRef` (task 1876). A future debugger investigating an `EngineError::TypeKindMismatch` for a `TraitObject` cell could be misled by the current rationale. The predicate's verdict (TraitObject permitted) is intentional and stays unchanged; only the comment text needs to be tightened, e.g. \"TraitObject and StructureRef are intentionally permitted even though no Value variant currently maps to them — defaults for these cells evaluate to Value::Undef, which passes the kind-match for any type. If a Value variant is ever added for either, add a matching arm in value_type_kind_matches.\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49506,7 +49517,8 @@
         "master"
       ],
       "created": "2026-04-26T15:50:53.539Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T16:10:22.170Z"
     }
   }
 }
