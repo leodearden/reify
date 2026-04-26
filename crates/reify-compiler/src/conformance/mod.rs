@@ -188,6 +188,44 @@ struct WalkCtx<'a> {
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
+/// Extract the callee function name from a compiled expression if it is a
+/// `FunctionCall`. Returns `None` for any other expression kind.
+///
+/// Shared by `promote_function_call_to_structure_ref` (promotion check) and
+/// `check_leaf_trait_conformance` (suppression guard) so both decisions use
+/// the same pattern — any future extension of `FunctionCall` matching applies
+/// consistently to both sites.
+fn extract_function_call_name(arg: &CompiledExpr) -> Option<&str> {
+    match &arg.kind {
+        CompiledExprKind::FunctionCall { function, .. } => Some(function.name.as_str()),
+        _ => None,
+    }
+}
+
+/// Promote a `Real`/`Int`-typed `FunctionCall` whose callee is a known structure
+/// template into a `Type::StructureRef(callee_name)`.
+///
+/// Returns `None` when the arg is not a numeric-typed FunctionCall, or when the
+/// callee name is not registered in the template map (external/forward-ref miss).
+///
+/// Used by both `walk_param_against_arg`'s fallback arm and
+/// `check_leaf_trait_conformance` so future wrapper kinds (e.g. `Tuple<T,U>`)
+/// stay in sync — both call sites must promote identically to avoid drift in
+/// diagnostic wording or trait-bound walks.
+fn promote_function_call_to_structure_ref(
+    arg: &CompiledExpr,
+    templates: &HashMap<String, &TopologyTemplate>,
+) -> Option<Type> {
+    if !matches!(arg.result_type, Type::Real | Type::Int) {
+        return None;
+    }
+    let name = extract_function_call_name(arg)?;
+    if !templates.contains_key(name) {
+        return None;
+    }
+    Some(Type::StructureRef(name.to_owned()))
+}
+
 /// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
 /// recursing into Option/List/Set/Map wrapper pairs and delegating `TraitObject`
 /// to the leaf helper.
@@ -239,20 +277,7 @@ fn walk_param_against_arg(
         // 'Real') instead of the structure name (e.g. 'Steel') for cases like
         // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
         _ => {
-            let promoted: Option<Type> =
-                if matches!(compiled_arg.result_type, Type::Real | Type::Int) {
-                    if let CompiledExprKind::FunctionCall { function, .. } = &compiled_arg.kind {
-                        if ctx.templates.contains_key(function.name.as_str()) {
-                            Some(Type::StructureRef(function.name.clone()))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+            let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
             let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
             walk_param_against_arg_type(param_type, effective_type, ctx);
         }
@@ -331,17 +356,27 @@ fn emit_leaf_conformance_for_arg_type(
 ///
 /// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
 /// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
-/// `Option/List/Set/Map`. The emission is suppressed when either the top-level
-/// `param_type` or `arg_type` is `Type::Error` (anti-cascade guard). Note: this guard
-/// is top-level only — an `Error` nested inside a wrapper (e.g. `Option<Error>`) is
-/// not detected and may produce a secondary wrapper-shape diagnostic on top of the
-/// root-cause error. Non-wrapper, non-trait param types (e.g. `Real`, `Int`) fall
-/// through silently — a fully general arg-shape pass is tracked as future work.
+/// `Option/List/Set/Map`. A top-level `Type::Error` in either `param_type` or `arg_type`
+/// short-circuits the whole walk via an early return, so no diagnostic — wrapper-shape,
+/// leaf-conformance, or future-arm — is emitted on top of an already-reported upstream
+/// error. The guard runs before the match, making the anti-cascade contract uniform
+/// across all arms (current and future). Note: this guard is top-level only — an `Error`
+/// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
+/// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
+/// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
+/// arg-shape pass is tracked as future work.
 fn walk_param_against_arg_type(
     param_type: &Type,
     arg_type: &Type,
     ctx: &mut WalkCtx<'_>,
 ) {
+    // Anti-cascade: skip when either type carries the poison sentinel so no
+    // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
+    // of an already-reported upstream error. Hoisted above the match so the
+    // contract is explicit and uniform across all current and future arms.
+    if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
+        return;
+    }
     match (param_type, arg_type) {
         // Wrapper pairs: recurse into inner types lockstep.
         (Type::Option(inner_p), Type::Option(inner_a)) => {
@@ -368,11 +403,6 @@ fn walk_param_against_arg_type(
         // or List<T> passed to Option<T>. Non-wrapper non-trait params (Real, Int,
         // etc.) fall through silently; a fully general arg-shape pass is future work.
         _ => {
-            // Anti-cascade: skip when either type carries the poison sentinel so we
-            // don't pile diagnostics on top of an already-reported upstream error.
-            if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
-                return;
-            }
             if matches!(
                 param_type,
                 Type::Option(_) | Type::List(_) | Type::Set(_) | Type::Map(_, _)
@@ -414,11 +444,10 @@ fn check_leaf_trait_conformance(
 ) {
     let arg_type = &compiled_arg.result_type;
 
-    // Derive arg_call_name from the compiled expression kind.
-    let arg_call_name: Option<&str> = match &compiled_arg.kind {
-        CompiledExprKind::FunctionCall { function, .. } => Some(function.name.as_str()),
-        _ => None,
-    };
+    // Derive arg_call_name using the shared helper so both the promotion check
+    // (promote_function_call_to_structure_ref) and this suppression guard use the
+    // same source of truth for "is this arg a function call?".
+    let arg_call_name = extract_function_call_name(compiled_arg);
 
     // When the compiled arg_type defaulted to a numeric fallback (Real or Int)
     // from a FunctionCall expression and the callee is a known structure
@@ -426,13 +455,7 @@ fn check_leaf_trait_conformance(
     // structure's trait bounds. Int appears when the callee's first arg is a
     // whole-number literal (e.g. `Steel(density: 1000.0)` — the literal 1000.0
     // is canonicalized to Int by the expression compiler).
-    let promoted: Option<Type> = if matches!(arg_type, Type::Real | Type::Int) {
-        arg_call_name
-            .filter(|call_name| ctx.templates.contains_key(*call_name))
-            .map(|call_name| Type::StructureRef(call_name.to_string()))
-    } else {
-        None
-    };
+    let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
     let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
 
     // Check conformance based on effective_arg_type.

@@ -45890,11 +45890,11 @@
         "description": "The `phase1_reelaborated` HashSet in both edit_param (task 2140) and edit_source (task 2142) dedup assumes Phase 1's re-elaboration is idempotent *for a given guard value*. If the guard cell itself reads a resolved auto param, wave2 can flip the guard between Phase 1 and Phase 3. `reapply_phase1_deactivations` uses the *current* guard_val to deactivate newly-inactive members (correct), but never evaluates the default_expr of newly-active else_members whose default_expr does not read a resolved auto param. Phase 3 then skips the group via `phase1_reelaborated`, leaving those cells Undef when they should be Determined.\n\nScope: crates/reify-eval/src/engine_edit.rs — applies symmetrically to both edit_source (lines ~1860-1868, ~1583-1590) and edit_param (task 2140 path, comment at 1442-1445).\n\nSuggested fix options:\n(a) Track guard value at insert time: replace `HashSet<ValueCellId>` with `HashMap<ValueCellId, Value>` and in Phase 3 don't dedup when the current guard value differs from the recorded one (fall through to full re-elaboration, including active-branch default_expr evaluation).\n(b) Have `reapply_phase1_deactivations` detect a guard flip versus Phase 1's recorded value and, on flip, fall through to full re-elaboration rather than only re-deactivating.\n\nAdd a targeted regression test: source edit that changes a non-guard constraint input, guard reads a resolved auto param, guard flips because of the resolver, else_members' default_exprs are literals (not reading auto params). Verify the newly-active else_members transition from Undef to Determined and match cold-eval results.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive). Inherited from task 2140 — predates this diff.",
         "details": "<info added on 2026-04-26T06:55:42.125Z>\nReconciliation stage 2 (2026-04-26) verified the following:\n\n1. WORKTREE STATUS: `.worktrees/2146` still exists on disk as a valid git worktree. It contains the original implementation with `group_needs_phase3()` defined (10 references in engine_edit.rs). Before starting fresh, the implementer should remove this stale worktree: `git worktree remove --force /home/leo/src/reify/.worktrees/2146` (or equivalently from repo root: `git worktree remove --force .worktrees/2146`).\n\n2. group_needs_phase3 ON MAIN: `group_needs_phase3()` is NOT present on main. The function exists only in the abandoned worktree branch. The previous attempt (the branch in .worktrees/2146) was abandoned due to merge conflicts. The implementer must implement this function fresh.\n\n3. CORRECT FILE PATH: The relevant file is `crates/reify-eval/src/engine_edit.rs` (not `reify-core` — that crate does not exist). The engine_edit.rs lines referenced in the description are correct for this file.\n</info added on 2026-04-26T06:55:42.125Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:05:34.044Z",
+        "updatedAt": "2026-04-26T20:11:22.002Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49603,8 +49603,10 @@
         "description": "The placeholder at crates/reify-compiler/src/expr.rs:1151 still emits an empty `ListLiteral` (Type::Real) for `subject.params`, `subject.geometric_params`, and `subject.material_params` in purpose bodies. Constraints like `forall p in subject.params: determined(p)` therefore evaluate vacuously true — a silent trap-pass per the §8 characterization test `manufacturing_ready_silently_passes_for_undetermined_params_trap` in `crates/reify-eval/tests/purpose_activation.rs`.\n\nThe original tracking task #2199 was closed by adding only the trap test, not by fixing the runtime expansion. Per the team norm \"No gaps should exist without tasks to fill them\" (briefing conventions), this gap needs a tracking task. The closed task 1904 also tracked this from a different angle and is also done.\n\nDesign context is fully documented in `docs/notes/purpose-reflective-aggregation.md`. Three coordinated blockers must land together (partial progress will hit a runtime debug_assert wiring-bug panic):\n\n- Blocker 1: At `activate_purpose`, replace the empty-list placeholder with `ListLiteral([ValueRef(entity_ref, member), ...])` for each param of the bound entity. Cell IDs are already in `CompiledPurpose.resolved_queries` (see `compile_purpose` in `traits.rs`); only the activation-path wiring is missing.\n- Blocker 2: Quantifier variable identity carry-through. Today `forall p in [Bracket.x]: determined(p)` compiles with the synthetic `variable_id` as the predicate cell, but the determinacy snapshot has no entry for it — `eval_expr` panics on `DeterminacyPredicate`. The quantifier must carry the actual `ValueCellId` of each iterated element into the predicate, not the synthetic loop var.\n- Blocker 3: Element-type lockstep (cf. task 1904). `Type::Real` is a placeholder element type; the populator must emit the correct per-param declared type or forall typechecks against the wrong type.\n\nAcceptance: when expansion lands, flip the §8 trap-test assertion from Satisfied to Violated (test name above) to confirm the constraint actually fires.\n\nFiles touched (estimate): crates/reify-compiler/src/expr.rs (remove placeholder branch), activate_purpose in reify-types/src/expr.rs (populate list), eval_expr DeterminacyPredicate handling in reify-eval, and the §8 trap test assertion in reify-eval/tests/purpose_activation.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
+        "status": "deferred",
+        "dependencies": [
+          "2308"
+        ],
         "priority": "high",
         "subtasks": [],
         "metadata": {
@@ -49621,20 +49623,13 @@
             "crates/reify-eval/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "CompiledPurpose",
-              "activate_purpose",
-              "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS"
-            ],
+            "entities": [],
             "queries": [
-              "purpose reflective aggregation subject.params geometric_params material_params runtime expansion",
-              "activate_purpose populate ListLiteral empty placeholder expr.rs task 2181 2289",
-              "forall determined predicate quantifier variable_id cell identity DeterminacyPredicate",
-              "purpose_activation trap test manufacturing_ready silently_passes vacuously"
+              "resolution for: Implement runtime expansion for purpose reflective aggregation (subject.params / .geometric_params / .material_params)"
             ]
           }
         },
-        "updatedAt": "2026-04-26T18:23:36.877Z"
+        "updatedAt": "2026-04-26T19:52:53.156Z"
       },
       {
         "id": "2290",
@@ -49642,11 +49637,11 @@
         "description": "Three small post-merge polish items from the task 2281 review on crates/reify-compiler/src/conformance/mod.rs and trait_typed_param_tests.rs.",
         "details": "Source: review suggestions on task 2281 (esc-2281-2).\n\n1. **Extract StructureRef-promotion helper (code_reuse)** — `walk_param_against_arg`'s fallback arm (mod.rs:241-258) duplicates the `Real|Int FunctionCall → StructureRef` promotion logic that `check_leaf_trait_conformance` performs at mod.rs:~423-440. Extract a small helper:\n\n```rust\nfn promote_function_call_to_structure_ref(\n    arg: &CompiledExpr,\n    templates: &HashMap<...>,\n) -> Option<Type>\n```\n\nand call it from both sites so future wrapper kinds stay in sync.\n\n2. **Hoist Type::Error anti-cascade guard (robustness)** — In `walk_param_against_arg_type` (mod.rs:340-394), the `if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) { return; }` guard sits inside the `_` fallback arm (mod.rs:373). The `(Type::TraitObject, arg_ty)` arm above relies on `emit_leaf_conformance_for_arg_type` silently skipping non-struct/non-trait arg types — correct today, but the safety contract is implicit. Hoist the guard above the entire `match` so the anti-cascade behavior is explicit and uniform across all match arms. Update the docstring at mod.rs:325-339 accordingly.\n\n3. **Tighten wrapper-shape test assertions (test_quality)** — The six new tests in trait_typed_param_tests.rs at lines 1255-1268, 1289-1302, 1323-1336, 1356-1369, 1393-1406, 1430-1443 use `errors.iter().any(|d| ...)` substring matches. Replace with:\n\n```rust\nlet matching: Vec<_> = errors.iter().filter(...).collect();\nassert_eq!(matching.len(), 1, \"expected exactly one wrapper-shape diagnostic, got {:?}\", matching);\n```\n\nso accidental duplicate emissions in future refactors are caught.\n\nAcceptance:\n- Helper extracted; both call sites use it.\n- Type::Error guard at top of `walk_param_against_arg_type` match.\n- Six tests assert `len() == 1` for the matching diagnostic.\n- `cargo test -p reify-compiler --test trait_typed_param_tests` still green.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:34:11.000Z",
+        "updatedAt": "2026-04-26T20:15:34.941Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance",
@@ -49663,6 +49658,9 @@
               "conformance StructureRef promotion check_leaf_trait_conformance",
               "conformance test infrastructure non-conformance wrapper shape tests"
             ]
+          },
+          "done_provenance": {
+            "commit": "8999a96afbd3f3c55adb353d6d8479e0c85464c4"
           }
         }
       },
@@ -49717,11 +49715,16 @@
         "description": "Apply three reviewer-suggested polish items to crates/reify-compiler/tests/trait_arg_conformance_bench.rs introduced in task 2280.",
         "details": "Source: review suggestions on task 2280 (esc-2280-3, items 1-3).\n\n1. **Dedupe error-assertion block (lines 60-101).** The `Severity::Error`-filter-and-assert-empty block is duplicated between `trait_arg_conformance_correctness_small` and `compile_large_literal_trait_arg_conformance_timing` (textually identical apart from N). Extract a private helper:\n   ```rust\n   fn assert_no_errors(module: &CompiledModule, n: usize) { ... }\n   ```\n   and call from both tests.\n\n2. **Add wall-clock ceiling assertion (lines 79-101).** The timing test prints elapsed times but has no automated regression signal — a 100x slowdown would still pass silently. Mirror the precedent at `crates/reify-lsp/tests/incremental_eval_benchmark.rs:124-132` (\"Loose sanity assertion\") and add e.g. `assert!(elapsed < Duration::from_secs(30))` for N=200 so a catastrophic regression surfaces even when --nocapture is forgotten.\n\n3. **Defensive `n > 0` assert in `make_source` (lines 35-49).** Currently `make_source(0)` would yield `[ ]` — vacuous but syntactically valid. Add `debug_assert!(n > 0, \"make_source requires n >= 1\");` at the top, or rewrite using `(0..n).map(|_| \"some(Steel())\").collect::<Vec<_>>().join(\", \")` to avoid the trailing-separator dance.\n\nAll three are small, file-local, test-only changes; can be completed in one PR.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:24:03.889Z"
+        "updatedAt": "2026-04-26T20:02:03.324Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "c0e0f704c80043b8b7cdcbf9ea26014d237357bc"
+          }
+        }
       },
       {
         "id": "2294",
@@ -49748,7 +49751,7 @@
         "id": "2295",
         "title": "[v0.2] Multi-kernel geometry dispatch (Manifold/Truck/Fidget/OpenVDB)",
         "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/multi-kernel.md. Covers multi-kernel implicit dispatch (arch §10.3, §10.5–§10.8): Manifold for mesh Booleans, Truck B-rep alternative, Fidget for SDFs, OpenVDB voxels. Geometry-as-orchestrator pattern, per-rep stack/patchwork patterns. Tracker only; do not start in v0.1 phase.",
-        "details": "",
+        "details": "<info added on 2026-04-26T19:54:11.286Z>\nBlocking reason: This task is explicitly marked as \"Tracker only; do not start in v0.1 phase,\" reflecting intentional deferral to the v0.2 phase. The block status was set shortly after being briefly in-progress to ensure alignment with project timelines. Unblock only when the project transitions to the v0.2 phase. No changes to dependencies are required at this time.\n</info added on 2026-04-26T19:54:11.286Z>",
         "testStrategy": "",
         "status": "blocked",
         "dependencies": [],
@@ -49824,11 +49827,19 @@
         "description": "Test suite for the shadowing warning (PRD: docs/prds/shadowing-warning.md). Positive cases: param-shadows-param across one scope, let-shadows-param, multi-hop shadow (grandparent), shadow inside specialization scope. Negative cases: match-arm same-name guarded decls (no warn), trait-merge of identical members (no warn), sibling scopes with same name (no warn).\n\nGoldens for diagnostic message format. LSP diagnostic-channel snapshot test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:44:57.555Z"
+        "updatedAt": "2026-04-26T19:50:57.323Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Shadowing warning: positive + negative test coverage"
+            ]
+          }
+        }
       },
       {
         "id": "2300",
@@ -49842,7 +49853,34 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:44:58.146Z"
+        "updatedAt": "2026-04-26T19:44:58.146Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "CompiledModule",
+              "SolverPragma",
+              "DispatchPlanner",
+              "apply_module_pragmas"
+            ],
+            "queries": [
+              "apply_module_pragmas precision pragma CompiledModule implementation precedent",
+              "#solver pragma dispatch back-end registration reify-eval",
+              "KNOWN_BLOCK_PRAGMAS is_known_module_pragma pragma validation design",
+              "Block-valid pragmas accept #solver at module scope"
+            ]
+          },
+          "modules": [
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/solver_pragma_dispatch.rs"
+          ]
+        }
       },
       {
         "id": "2301",
@@ -49851,10 +49889,18 @@
         "details": "Source: docs/prds/kleene-logic.md.\n\n§9.2.6 exists rows:\n- Any true ⇒ true (short-circuit OK here)\n- All false ⇒ false\n- No true, some undef ⇒ undef\n- Empty ⇒ false\n\nMirror the test matrix from the forall task. Watch for premature `false` short-circuit when an `undef` element exists — `exists` must scan the whole collection if it sees `undef`s but no `true` yet.\n\nDepends on the truth-table-helper extraction.\n\nmemory_hints:\n- entities: Quantifier, Exists\n- queries: \"exists evaluator reify-expr Kleene undef\", \"exists quantifier vacuous falsity empty collection\"",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "2294"
+        ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:44:58.703Z"
+        "updatedAt": "2026-04-26T19:44:58.703Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/quantifier_eval_tests.rs"
+          ]
+        }
       },
       {
         "id": "2302",
@@ -49880,7 +49926,7 @@
         "id": "2303",
         "title": "Deep dot-chain warning: AST walker with depth threshold = 4",
         "description": "Implement spec §5.7 deep-dot-chain lint and its full test suite. Walk MemberAccess AST nodes in left-to-right chains; when chain length > 4, emit warning W_DEEP_DOT_CHAIN with full chain text + span. v0.1 default threshold = 4 (`a.b.c.d` OK; `a.b.c.d.e` warns). Method-call chains and indexing-mid-chain are out-of-scope for v0.1 — count `.field` hops only and treat indexed expressions as fresh chain roots. PRD: docs/prds/deep-dot-chain.md.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "details": "## Implementation\nSpec §5.7 lines 1077-1087. Threshold configurable but v0.1 ships 4 hardcoded; config knob can come post-v0.1.\n\nSingle-pass syntactic check on AST (no semantic info needed). Wire diagnostic correctly into the existing diagnostic pipeline.\n\nMemory hints: search \"AST walker\", \"MemberAccess\", \"diagnostic\" in reify-compiler.\n\n## Tests\nTest the dot-chain lint per PRD docs/prds/deep-dot-chain.md:\n\n- **At-threshold**: `a.b.c.d` (4 hops) — no warning emitted\n- **One-over threshold**: `a.b.c.d.e` (5 hops) — W_DEEP_DOT_CHAIN warning emitted with correct span\n- **Method-call mid-chain**: `a.b.foo().c.d` — no warn (method calls are out of scope for v0.1; treat as chain break)\n- **Indexed mid-chain**: `a.b[0].c.d.e` — treats `a.b[0]` as chain root; counts 3 hops from `[0]`, no warning at that depth\n- **Multi-chain expressions in same line**: multiple independent deep chains on one line, each evaluated independently\n- **Deep chains in let bodies**: chain as let initializer triggers warning when depth > 4\n- **Deep chains in constraint bodies**: chain in constraint predicate triggers warning when depth > 4",
@@ -49889,8 +49935,16 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Task 2303 (pending, combine_eligible) is the matching implementation task for the same spec §5.7 deep-dot-chain lint. The candidate supplies the test plan that the implementation task needs; both share the same PRD, threshold semantics, and reify-compiler module lock. Combining loads context once and avoids a race where tests land before or after implementation in separate cycles. All four combine rules hold: coherent in one sentence, same 1-module lock, well under budget, both high-priority.",
-          "combined_at": "2026-04-26T19:47:52.989674+00:00"
-        }
+          "combined_at": "2026-04-26T19:47:52.989674+00:00",
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/deep_dot_chain_tests.rs",
+            "crates/reify-lsp/src/diagnostics.rs",
+            "crates/reify-types/src/diagnostics.rs"
+          ]
+        },
+        "updatedAt": "2026-04-26T20:02:44.863Z"
       },
       {
         "id": "2304",
@@ -49899,7 +49953,10 @@
         "details": "Source: docs/prds/kleene-logic.md.\n\nAdd a `.ri` test fixture (under `crates/reify-compiler/tests/` or `examples/` smoke set) such as:\n\n```reify\nstructure Foo {\n    param a : Bool = undef\n    param b : Bool = false\n    let p1 = a and b           // expect: false (absorption)\n    let p2 = a or true         // expect: true (absorption)\n    let p3 = b implies a       // expect: true (vacuously true premise)\n    let xs : List<Bool> = [true, undef, true]\n    let p4 = forall x in xs: x // expect: undef\n}\n```\n\nCompile, eval, assert each `let` resolves to the expected `Value`. Integration vector through compile_with_stdlib catches regressions where the operator works in isolation but breaks in a real compiled module (e.g., type inference flipping `Bool` to something the kleene helper doesn't recognize).\n\nDepends on the truth-table-helper extraction and forall/exists audit tasks.\n\nmemory_hints:\n- entities: compile_with_stdlib, EvalContext\n- queries: \"compile_with_stdlib integration test undef and or implies\", \"constraint Kleene end-to-end .ri test\"",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "2301",
+          "2316"
+        ],
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:46:23.437Z"
@@ -49916,7 +49973,17 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:48:20.045Z"
+        "updatedAt": "2026-04-26T19:48:20.045Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": "2306",
@@ -49924,11 +49991,19 @@
         "description": "Tracker task for v0.2+ deferred work. PRD at docs/prds/v0_2/migration-toolchain.md. Activates `#version(...)` pragma for version-gated parsing and ships `reify migrate --from <ver> --to <ver>` rewriter (spec §14). Triggered by the first breaking change between v0.1 and v0.2. Tracker only; do not start in v0.1 phase.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:48:20.844Z"
+        "updatedAt": "2026-04-26T19:50:15.111Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: [v0.2] `reify migrate` + `#version` migration toolchain"
+            ]
+          }
+        }
       },
       {
         "id": "2307",
@@ -49936,14 +50011,22 @@
         "description": "Declare Bounded, Watertight, Closed, Manifold, Orientable, Convex, Connected as marker traits in the geometry_traits.ri file.",
         "details": "Implement the marker traits Bounded, Watertight, Closed, Manifold, Orientable, Convex, and Connected in the `crates/reify-compiler/stdlib/geometry_traits.ri` file. These traits should be defined as empty traits to serve as markers for geometric properties. Follow the specifications outlined in the PRD document `docs/prds/geometry-traits.md`, specifically task 1. Ensure that the traits are correctly documented and integrated into the existing stdlib structure. Consider how these traits might interact with existing geometry-related traits and structures.",
         "testStrategy": "1. Verify that the `geometry_traits.ri` file compiles without errors.\n2. Ensure each marker trait is correctly declared and accessible.\n3. Write unit tests to check that objects can implement these traits without additional requirements.\n4. Confirm that the traits are documented and appear in generated documentation.\n5. Run `cargo test -p reify-compiler -- geometry_traits` to ensure all tests pass.",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "326",
           "329"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:50:02.093Z"
+        "updatedAt": "2026-04-26T20:25:39.682Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib Geometry Traits: Declare Marker Traits"
+            ]
+          }
+        }
       },
       {
         "id": "2308",
@@ -49956,13 +50039,1420 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:50:02.365Z"
+      },
+      {
+        "id": "2309",
+        "title": "[v0.2] Combinatorial `auto` type-param resolution backtracking",
+        "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/auto-resolution-backtracking.md. Lifts v0.1 per-param BFS-no-backtracking restriction; adds bounded-depth cross-param feasibility search with backjumping (spec §3.9, arch §6.2). Tracker only; do not start in v0.1 phase.",
+        "details": "",
+        "testStrategy": "",
+        "status": "blocked",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:53:05.605Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: [v0.2] Combinatorial `auto` type-param resolution backtracking"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2310",
+        "title": "Shadowing warning: scope-walk detector (spec §8.5)",
+        "description": "PRD: docs/prds/shadowing-warning.md. Implement single-pass scope-walk detector emitting W_SHADOW when a child decl name shadows a visible parent-scope name. Diagnostic with both spans. Excludes imported-name (§8.11), trait-merge (§8.8), and match-arm same-name decls (§6.4).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:51:30.767Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/shadowing_warning_tests.rs",
+            "crates/reify-types/src/diagnostics.rs"
+          ]
+        }
+      },
+      {
+        "id": "2311",
+        "title": "[v0.2] Per-purpose representation-tolerance contract",
+        "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/per-purpose-tolerance.md. Covers tolerance-keyed RealizationNodes (entity, repr_kind, tolerance), per-purpose tolerance scoping, conversion-chain budget allocation, imported-geometry tolerance promise (arch §10.4, §14.4, open question §16 #1). Tracker only; do not start in v0.1 phase.",
+        "details": "",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:25:40.714Z"
+      },
+      {
+        "id": "2312",
+        "title": "Geometry-traits inference: per-op trait propagation table",
+        "description": "Implement the geometry-traits validation pipeline from docs/prds/geometry-traits.md tasks 2 and 3: build per-op trait inference for Bounded/Connected/Convex on CompiledGeometryOp variants (new module geometry_traits_inference.rs), then emit E_GEOMETRY_UNBOUNDED at call sites where an arg lacking Bounded is passed to a Bounded-typed parameter.",
+        "status": "pending",
+        "dependencies": [
+          "2297"
+        ],
+        "priority": "high",
+        "details": "**Per-op inference (PRD task 2):**\n- New module: `geometry_traits_inference.rs` in `crates/reify-compiler`\n- Primitives (box, cylinder, sphere, etc.) produce Bounded+Connected+Convex\n- `half_space` / `extrude_infinite` produce Unbounded (lack Bounded)\n- Booleans/transforms/sweeps/modifiers propagate per the rules in docs/prds/geometry-traits.md\n- Each `CompiledGeometryOp` variant maps to an `InferredTraits` set\n\n**Call-site diagnostic (PRD task 3):**\n- Using the `inferred_traits` set from the inference step, emit `E_GEOMETRY_UNBOUNDED` when a call site binds a `Bounded` trait parameter to an arg whose inferred traits lack `Bounded`\n- Reuse existing trait-bound mismatch diagnostic path\n- Tests: `volume(half_space(...))` errors with `E_GEOMETRY_UNBOUNDED`; `volume(intersection(half_space, box))` does not error (intersection of unbounded + bounded is bounded per propagation rules)\n\nPRD: docs/prds/geometry-traits.md tasks 2 and 3",
+        "testStrategy": null,
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Candidate (PRD task 3: E_GEOMETRY_UNBOUNDED diagnostic) is tightly coupled to Task 2312 (PRD task 2: per-op inference table) — the diagnostic literally cannot fire without the inferred_traits set produced by the inference step. Both touch crates/reify-compiler geometry_traits module (no new module-lock keys). Combined into one coherent pipeline: inference feeds diagnostic. Planning budget well within limits (2 concerns, both files_to_modify lists were empty). Neither task is useful without the o",
+          "combined_at": "2026-04-26T19:54:44.630296+00:00"
+        }
+      },
+      {
+        "id": "2313",
+        "title": "Pragma #kernel: validate occt and reject other kernels with explicit v0.2-deferred error",
+        "description": "v0.1 #kernel pragma: accept #kernel(occt); reject other kernel names with ERROR \"kernel '<other>' is deferred to v0.2; v0.1 supports only #kernel(occt)\" — makes the v0.1 limitation discoverable. Record on CompiledModule.kernel_pragma: Option<String> for round-trip and doc-tool consumption. Block-level: ignored-with-warning (already in KNOWN_BLOCK_PRAGMAS). PRD: docs/prds/pragmas.md item 4. Architecture ref: reify-implementation-architecture.md §10.3.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "278"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:55:00.971Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
+      },
+      {
+        "id": "2314",
+        "title": "Add exhaustive Kleene truth-table tests for logical operators",
+        "description": "Implement exhaustive tests for Kleene logic operators and/or/not/implies based on spec §9.2.3.",
+        "details": "Implement exhaustive truth-table tests for the Kleene logic operators `and`, `or`, `not`, and `implies` in `crates/reify-expr/tests/kleene_logic_tests.rs`. Cover all nine input pairs for `and`, `or`, and `implies`, and three inputs for `not`. Ensure commutativity for `and` and `or`, and pin asymmetric rows for `implies`. Reference spec §9.2.3 lines 1662-1680 for expected outcomes. Use the shared Kleene helper extracted in Task 2294. Document the test cases in `docs/prds/kleene-logic.md`.",
+        "testStrategy": "Verify that all test cases pass by running `cargo test` in the `crates/reify-expr` directory. Ensure that the tests cover all specified input combinations and edge cases, including commutativity and asymmetry. Cross-reference results with spec §9.2.3 to confirm accuracy.",
+        "status": "pending",
+        "dependencies": [
+          "2294"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2315",
+        "title": "Implement Geometry Traits Inference Table",
+        "description": "Build per-op trait inference for Bounded/Connected/Convex over CompiledGeometryOp variants.",
+        "details": "Create a new module `geometry_traits_inference.rs` in `crates/reify-compiler/src/`. Add an `inferred_traits` field of type `TraitSet` to `CompiledGeometryOp`. Implement a lookup table where primitives like Box, Cylinder, Sphere, and Tube produce Bounded, Connected, and Convex traits. Operations like `half_space` and `extrude_infinite` should produce Unbounded traits. Ensure Boolean operations, transforms, sweeps, and modify operations propagate traits according to the rules specified in `docs/prds/geometry-traits.md`.",
+        "testStrategy": "Develop unit tests to verify that each `CompiledGeometryOp` variant correctly maps to its expected `InferredTraits` set. Create tests for each primitive and operation type to ensure the correct traits are inferred. Validate the propagation rules for Boolean operations, transforms, sweeps, and modify operations. Use mock data to simulate various geometry operations and assert that the inferred traits match expected outcomes.",
+        "status": "pending",
+        "dependencies": [
+          "2312",
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2316",
+        "title": "Kleene logic: audit and fix forall evaluator for §9.2.6 quantifier truth table",
+        "description": "PRD docs/prds/kleene-logic.md. Audit the forall evaluator in crates/reify-expr against §9.2.6 (lines 1718-1731). Verify \"no false, some undef ⇒ undef\" and \"empty ⇒ true (vacuous truth)\". Add 4 truth-table rows × {List, Set} test matrix. Watch for incorrect short-circuit on undef when a later false would force determined. Depends on #2294.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2294"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:57:07.204Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/quantifier_eval_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "2317",
+        "title": "Implement Diagnostic for E_GEOMETRY_UNBOUNDED Trait Binding",
+        "description": "Add a diagnostic to check for the presence of inferred_traits when resolving calls binding a Bounded trait parameter.",
+        "details": "In the geometry-traits module, modify the call resolution logic to check if the inferred_traits on an argument includes the Bounded trait. If it does not, emit the error E_GEOMETRY_UNBOUNDED. Reuse the existing trait-bound mismatch diagnostic path to ensure consistency. Refer to the PRD documentation at docs/prds/geometry-traits.md task 3 for additional context and requirements.",
+        "testStrategy": "Create tests to verify the new diagnostic: 1) Ensure that calling volume(half_space(plane_xy(0mm))) results in an error E_GEOMETRY_UNBOUNDED. 2) Verify that volume(intersection(half_space, box(10mm,10mm,10mm))) does not trigger the error. Run the full test suite to confirm no regressions in existing functionality.",
+        "status": "cancelled",
+        "dependencies": [
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:25:40.137Z"
+      },
+      {
+        "id": "2318",
+        "title": "Implement OCCT FFI for Geometry Conformance Queries",
+        "description": "Add FFI functions for is_watertight, is_manifold, and is_orientable using OCCT's BRepCheck_Analyzer and ShapeAnalysis tools.",
+        "details": "Implement new FFI functions in the crates/reify-kernel-occt module to support runtime conformance queries for geometric properties: is_watertight, is_manifold, and is_orientable. Use OCCT's BRepCheck_Analyzer for watertight checks, ShapeAnalysis_Shell for manifold checks, and ShapeAnalysis_Wire for orientable checks. Follow the existing FFI pattern established in Task #319 for point_in_solid and shapes_intersect. Ensure the functions are exposed correctly in the FFI interface and documented in the geometry-traits.md as per task 4 of the PRD.",
+        "testStrategy": "Create fixture-based tests to verify the new FFI functions. Use a known-good box shape that should return true for all three queries and a known-bad disconnected union shape that should return false for is_watertight. Ensure tests cover edge cases and are integrated into the existing test suite.",
+        "status": "pending",
+        "dependencies": [
+          "319",
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2319",
+        "title": "Freshness: define Freshness enum (Final/Intermediate/Pending/Failed) + ResultRef/ErrorRef opaque types",
+        "description": "PRD docs/prds/freshness-4-variant.md. Define `Freshness` in reify-types (or reify-eval if it lives closer to the cache) per arch §7.1 lines 716-728 and §9.2 lines 880-890. Variants: Final; Intermediate { generation: u64 }; Pending { last_substantive: ResultRef }; Failed { error: ErrorRef }. Doc-comment cites spec §9.6 + arch §7.1 with line numbers. No-op landing — type exists, nothing yet uses it. Existing tests must stay green.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:57:55.708Z"
+      },
+      {
+        "id": "2320",
+        "title": "Implement Stdlib `conforms` Function and Per-Trait Helpers",
+        "description": "Develop the `conforms` function for geometry traits and implement helper functions for specific traits like watertight, manifold, and orientable.",
+        "details": "Implement the `conforms<T: Geometry, R: Trait>(g: T, _: Type<R>) -> Bool` function to check if a geometry conforms to a specified trait. Integrate OCCT runtime queries from the FFI task into the evaluation process. Develop helper functions such as `is_watertight(g)`, `is_manifold(g)`, and `is_orientable(g)` for ease of use. Ensure these functions leverage the traits defined in `geometry_traits.ri`. Update the stdlib to include these functions and ensure they are accessible via the prelude.",
+        "testStrategy": "Conduct end-to-end tests using known-good and known-bad shapes to verify the `conforms` function and trait helpers. Ensure that each helper function correctly identifies the trait conformance of various geometries. Use a combination of unit tests and integration tests to validate functionality. Execute tests using `cargo test -p reify-eval -- geometry_traits` to ensure comprehensive coverage.",
+        "status": "pending",
+        "dependencies": [
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2321",
+        "title": "Implement Specialization Escape Hatch and W_TRAIT_USER_ASSERTED Warning",
+        "description": "Implement a mechanism to treat explicit geometry trait declarations as user assertions, bypassing runtime checks and emitting a specific warning.",
+        "details": "When a structure explicitly declares a geometry trait such as `: Watertight`, it should be treated as a user assertion. This means the runtime conformance check should be skipped, and a warning `W_TRAIT_USER_ASSERTED` should be emitted once per structure determination. This involves modifying the trait checking logic to recognize explicit declarations and adjust the conformance checking process accordingly. Update the documentation in `docs/prds/geometry-traits.md` to reflect this behavior and ensure the warning is logged appropriately.",
+        "testStrategy": "1. Create a test structure that explicitly declares a geometry trait.\n2. Run the conformance check multiple times on the same structure.\n3. Verify that the warning `W_TRAIT_USER_ASSERTED` is emitted exactly once per structure determination.\n4. Ensure no runtime conformance checks are performed for explicitly declared traits.\n5. Validate that the documentation updates are correct and comprehensive.",
+        "status": "pending",
+        "dependencies": [
+          "2297",
+          "2312"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2322",
+        "title": "#no_prelude polish: make stdlib bootstrap explicit, add prelude regression test",
+        "description": "Two small follow-ups on the already-wired #no_prelude pragma. (1) Audit that each prelude .ri file under crates/reify-compiler/stdlib/ carries #no_prelude at the top — the current pre-pass-list-based bootstrap works but making the source explicit makes the convention self-documenting and removes the implicit special case. (2) Add a positive regression test in pragma_compile_tests.rs verifying that compiling a non-prelude module WITHOUT #no_prelude correctly imports the prelude — currently only the negative case (no_prelude_simple_structure_compiles_clean) is pinned. Bootstrap-critical because the prelude itself uses #no_prelude to avoid self-import. PRD: docs/prds/pragmas.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "278"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:59:08.924Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/stdlib/analysis.ri",
+            "crates/reify-compiler/stdlib/materials_mechanical.ri",
+            "crates/reify-compiler/stdlib/tolerancing.ri",
+            "crates/reify-compiler/stdlib/units.ri",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-compiler/tests/stdlib_loader_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "2323",
+        "title": "Implement Feature-tag IR and Runtime Metadata Table for Persistent Topology Naming",
+        "description": "Extend CompiledGeometryOp to attach metadata tags and integrate with runtime shape tagging for persistent topology naming.",
+        "details": "This task involves extending the `CompiledGeometryOp` to attach metadata tags such as `(source_line, step_kind, sub_index)` as the OCCT shape is realized. Additionally, a per-ShapeId tag table should be added on the runtime shape to support persistent topology naming. The task requires wiring one already-shipped selector, `edges_at_height` from Task #318, through the new path as a proof-of-concept. This involves ensuring that the existing tests for Task #318 still pass after integration. Reference the `CompiledAdHocPort` from Task #249 for the plumbing pattern to ensure consistency and reliability in the implementation.",
+        "testStrategy": "1. Verify that the `CompiledGeometryOp` correctly attaches the metadata tags during shape realization.\n2. Ensure that the per-ShapeId tag table is correctly populated and accessible at runtime.\n3. Integrate the `edges_at_height` selector and verify its functionality through the new path.\n4. Run existing tests from Task #318 to confirm they pass without modifications.\n5. Conduct additional tests to validate the persistence and accuracy of topology naming under various scenarios.",
+        "status": "blocked",
+        "dependencies": [
+          "318",
+          "249"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:12:31.630Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Implement Feature-tag IR and Runtime Metadata Table for Persistent Topology Naming"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2324",
+        "title": "Implement OCCT FFI for Geometry Operations",
+        "description": "Develop FFI bindings for closest_point, on(point, geometry), and angle_between_surfaces using the OCCT library.",
+        "details": "Follow the FFI pattern established in Task #319 for closest_point_on_shape. Implement the following functions:\n\n1. **closest_point_on_shape**: Re-export from Task #319, ensuring it integrates with the OCCT library to find the closest point on a given shape.\n\n2. **point_on_shape**: Implement membership checking to determine if a point lies on a specified geometry. Use OCCT's geometric evaluation capabilities.\n\n3. **surface_angle**: Calculate the dihedral angle between two surfaces using the dot product of their face normals. Leverage OCCT's surface analysis tools.\n\nUpdate the stdlib bindings to register these functions and ensure they are correctly wired through the eval pipeline. Refer to `docs/prds/topology-selectors.md` task 2 for detailed requirements.\n<info added on 2026-04-26T20:21:31.861Z>\nThe task scope has been narrowed to focus solely on stdlib registration and eval-pipeline wiring, which will be addressed after the completion of the three subtasks (2324.1, 2324.2, 2324.3). Each subtask will independently implement one of the FFI primitives from scratch, as Task 319's deliverables are not present in the codebase. Ignore references to `docs/prds/topology-selectors.md` as it does not exist.\n</info added on 2026-04-26T20:21:31.861Z>",
+        "testStrategy": "Conduct happy-path tests using box and sphere fixtures to verify each function:\n\n1. **closest_point_on_shape**: Test with various points and shapes to ensure the closest point is accurately calculated.\n\n2. **point_on_shape**: Verify membership results for points on and off the geometry.\n\n3. **surface_angle**: Test angle calculations between known surfaces to ensure accuracy.\n\nEnsure all tests pass using the `cargo test` framework, focusing on edge cases and typical use scenarios.",
+        "status": "pending",
+        "dependencies": [
+          "319",
+          "2324.3"
+        ],
+        "priority": "high",
+        "subtasks": [
+          {
+            "id": "1",
+            "title": "FFI: closest_point_on_shape",
+            "description": "Add OCCT FFI primitive that returns the closest point on a shape to a given input point.",
+            "details": "Scope: ONE FFI primitive only. No stdlib registration, no eval-pipeline wiring (parent 2324 owns that).\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp} — add C wrapper using BRepExtrema_DistShapeShape (or similar) for point-to-shape distance\n- crates/reify-kernel-occt/src/ffi.rs — extern \"C\" declaration\n- crates/reify-kernel-occt/src/lib.rs — safe Rust wrapper returning the closest Point3\n- crates/reify-kernel-occt/src/stubs.rs — non-OCCT fallback\n- crates/reify-kernel-occt/tests/ — integration test using a box fixture, verify against analytic answer\n\nCONTEXT WARNING: Task 319 is marked `done` and was supposed to ship this primitive, but a grep over crates/reify-kernel-occt finds NO references to closest_point_on_shape, point_in_solid, or surface_normal_at. Treat 319 as un-landed and implement from scratch. Do not waste turns hunting for prior work.\n\nPRD `docs/prds/topology-selectors.md` referenced in the original task description does NOT exist — ignore that pointer.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 2324,
+            "parentId": "undefined"
+          },
+          {
+            "id": "2",
+            "title": "FFI: point_on_shape membership",
+            "description": "[Sibling of 2324.1] OCCT FFI primitive only — tests whether a point lies on a face/edge/vertex within tolerance. Stdlib wiring stays at parent 2324.",
+            "details": "Scope: ONE FFI primitive only. NO stdlib registration, NO eval-pipeline wiring — parent 2324 retains those after all three FFI subtasks land.\n\nApproach: distance-based test using BRepExtrema_DistShapeShape — point_on_shape(P, S) ≡ distance(P, S) ≤ tol. Or use BRepClass_FaceClassifier directly. Pick one and document.\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp}\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs\n- crates/reify-kernel-occt/src/stubs.rs\n- crates/reify-kernel-occt/tests/\n\nTolerance: parameter, default Precision::Confusion().\n\nCONTEXT: Task 319 is marked done but its FFI is not in the codebase (grep confirmed). docs/prds/topology-selectors.md does not exist. Implement from scratch.\n\nMay share C wrapper with 2324.1 if distance-based.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 2324,
+            "parentId": "undefined"
+          },
+          {
+            "id": "3",
+            "title": "FFI: surface_angle dihedral",
+            "description": "[Sibling of 2324.1] OCCT FFI primitive only — dihedral angle (radians) between two faces from face normals. Stdlib wiring stays at parent 2324.",
+            "details": "Scope: ONE FFI primitive only. NO stdlib registration, NO eval-pipeline wiring — parent 2324 retains those.\n\nAlgorithm: angle = acos(clamp(dot(n1, n2), -1, 1)). Sample face normals via BRep_Tool::Surface + GeomLProp_SLProps; respect TopAbs_REVERSED orientation.\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp}\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs\n- crates/reify-kernel-occt/src/stubs.rs\n- crates/reify-kernel-occt/tests/ — box adjacent faces → π/2; coplanar → 0; opposing → π.\n\nCONTEXT: Task 319 is marked done but its FFI is not in the codebase. docs/prds/topology-selectors.md does not exist. Implement from scratch.\n\nOpen question: surface_normal_at primitive (also nominally from 319) is missing. Either inline normal-sampling here or escalate for a separate subtask.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 2324,
+            "parentId": "undefined"
+          }
+        ],
+        "updatedAt": "2026-04-26T20:27:49.159Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Implement OCCT FFI for Geometry Operations"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2325",
+        "title": "Implement OCCT FFI for center_of_mass and moment_of_inertia with density",
+        "description": "Develop foreign function interface (FFI) bindings for calculating center of mass and moment of inertia using OCCT, incorporating density.",
+        "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.\n<info added on 2026-04-26T20:21:53.590Z>\nTriage note (esc-2325-47, 2026-04-26): Original PRD reference `docs/prds/topology-selectors.md` does not exist. Typed signatures `Point3<Length>` and `Tensor<2,3,MomentOfInertia>` cannot be implemented today: stdlib lacks `Tensor` parametric type and `MomentOfInertia` unit. Sibling task 329 used `Real` placeholders. \n\nRecommended split:\n- (a) stdlib type-system: add `MomentOfInertia` unit + parametric `Tensor<rank, dim, unit>` (prerequisite)\n- (b) FFI-only: `query_inertia_tensor(shape, density) -> [9 doubles]` using `GProp_GProps::MatrixOfInertia()` scaled by density, exposed via cxx as `[[Real; 3]; 3]`\n- (c) stdlib wiring once (a) lands — original 2325 scope\n\nExisting surface to extend:\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:1435` — `query_centroid` (Point3, no density)\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:1482` — `query_moment_of_inertia(shape, ax, ay, az)` returning scalar about a single axis\n</info added on 2026-04-26T20:21:53.590Z>",
+        "testStrategy": "Verify the implementation by comparing the results against analytical formulas for a box shape. Specifically, check that the moment of inertia calculations match the formula `I_xx = (1/12)*m*(W^2+H^2)` and similar for other axes. Conduct unit tests using a variety of solid shapes and densities to ensure accuracy and robustness. Use `cargo test -p reify-eval -- occt_ffi` to run the test suite.",
+        "status": "in-progress",
+        "dependencies": [
+          "329"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:22:43.739Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Implement OCCT FFI for center_of_mass and moment_of_inertia with density"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2326",
+        "title": "Freshness: extend NodeCache to carry freshness field with single-API read/write",
+        "description": "PRD docs/prds/freshness-4-variant.md. Extend NodeCache (or equivalent cache entry struct) per arch §4.3 lines 524-532 to include freshness: Freshness. Default to Final on existing reads; existing tests must stay green. Provide single API surface for reading/writing freshness. Memory hint: 7ac9d86f notes EvalState is public and last_content_hash is decoupled — that's the integration point.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2319"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:15.829Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/cache.rs",
+            "crates/reify-types/src/value.rs"
+          ]
+        }
+      },
+      {
+        "id": "2327",
+        "title": "Implement OCCT FFI for Topology-Relational Selectors",
+        "description": "Develop FFI bindings for adjacent_faces and shared_edges topology selectors, enabling topology iteration and evaluation.",
+        "details": "Implement the OCCT FFI for topology-relational selectors as specified in the PRD document. For adjacent_faces, iterate over a face's edge loop, collecting faces that share each edge. For shared_edges, intersect the edge lists of two faces to find shared edges. Integrate these functionalities into the standard library bindings and ensure they are correctly wired for evaluation. Consider edge cases such as non-manifold edges and ensure robust error handling. Use the OCCT API to access and manipulate the topology data efficiently.",
+        "testStrategy": "Create tests using a box geometry to verify that each face has exactly four adjacent faces and that each adjacent pair shares exactly one edge. Validate the correct operation of both adjacent_faces and shared_edges selectors. Include tests for edge cases such as non-manifold edges and ensure that the system handles these gracefully without errors.",
+        "status": "in-progress",
+        "dependencies": [
+          "249",
+          "250"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:16.139Z"
+      },
+      {
+        "id": "2328",
+        "title": "Freshness: wire propagation rule (input freshness → output freshness) in evaluator",
+        "description": "PRD docs/prds/freshness-4-variant.md. Wire arch §7.2 (lines 730-749) propagation rule into the recursive evaluator: output.freshness = if self.still_refining { Intermediate } else if any input != Final { Intermediate } else { Final }. Add unit tests for each row of the §7.2 truth table over a small synthetic graph in crates/reify-eval. Builds on the NodeCache freshness-field task.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2326"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:16:48.867Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/cache.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/freshness_propagation.rs"
+          ]
+        }
+      },
+      {
+        "id": "2329",
+        "title": "Re-route Filtered Selectors through Feature-Tag Resolution",
+        "description": "Update the routing of filtered selectors to use feature-tag resolution, replacing raw re-iteration methods.",
+        "details": "Modify the selector routing logic to utilize feature-tag resolution as described in the PRD document (prds/topology-selectors.md, task 5). Specifically, transition the handling of `edges_at_height`, `edges_parallel_to`, `edges_by_length`, and `faces_by_area` from raw re-iteration to a feature-tag-based approach. Implement a behavior change where stale tags return `undef` and emit a `W_TOPOLOGY_TAG_STALE` warning instead of returning stale results. Ensure that the existing tests (#318) continue to pass with the new implementation path. This will involve updating the logic in the relevant modules to check for tag staleness and handle it appropriately, as well as ensuring that the feature-tag resolution is integrated seamlessly into the existing selector framework.",
+        "testStrategy": "Run the pre-existing test suite (#318) to verify that all tests pass with the new feature-tag resolution path. Additionally, create new tests to specifically verify that stale tags return `undef` and emit the `W_TOPOLOGY_TAG_STALE` warning. These tests should cover scenarios where tags are fresh, stale, and missing, ensuring that the correct behavior is exhibited in each case.",
+        "status": "pending",
+        "dependencies": [
+          "248",
+          "249",
+          "250",
+          "2323"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:09:51.183Z"
+      },
+      {
+        "id": "2330",
+        "title": "Freshness: implement Failed production and Pending propagation with diagnostic chain",
+        "description": "PRD docs/prds/freshness-4-variant.md. Implement the complete Failed-state handling per arch §9.1-§9.2 (lines 868-890): (1) catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed { error: ErrorRef }; emit EventKind::error realization event exactly once per failure; (2) per arch §7.2 line 748 (\"Pending as propagation gate\") and §9.2 line 890, when a node consumes a Failed input produce Pending { last_substantive } with a diagnostic chain referencing the original failure node — Pending must NOT trigger downstream re-evaluation, naturally quieting the downstream subtree. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test.",
+        "status": "pending",
+        "dependencies": [
+          "2253",
+          "2328"
+        ],
+        "priority": "high",
+        "details": "- Produce `Failed { error: ErrorRef }` at all error sites: panic boundary, kernel error, out-of-bounds, missing-key map lookup (arch §9.1)\n- Emit `EventKind::error` realization event exactly once per failure (arch §9.2 lines 868-890)\n- When any input to a node is `Failed`, produce `Pending { last_substantive }` with a diagnostic chain referencing the original failure node (arch §7.2 line 748, §9.2 line 890)\n- `Pending` arising from Failed-input propagation must NOT trigger downstream re-evaluation — it naturally quiets the downstream subtree\n- Constraint violations (§9.3) must produce cached `violated`, NOT `Failed`; add a regression test pinning this distinction\n- Tests:\n  - Forced panic in a leaf node ⇒ leaf `Failed` + exactly one error event emitted\n  - Forced panic in leaf ⇒ mid node `Pending` with diagnostic chain pointing to the leaf\n  - Downstream of mid stays at last-substantive value without re-evaluating",
+        "testStrategy": "",
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "The candidate and Task 2330 are tightly coupled halves of the same Failed-state concern: 2330 produces Failed at error sites; the candidate propagates Failed-inputs as Pending downstream. Both reference the same PRD section (§9.1-§9.2), touch the same reify-eval/reify-types module lock, and the candidate's own test (\"forced panic in leaf ⇒ leaf Failed … mid node Pending\") directly depends on 2330's output. Loading context once for the end-to-end path is strictly better; the union stays within ≤5",
+          "combined_at": "2026-04-26T20:02:50.958567+00:00",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Freshness: implement Failed production and Pending propagation with diagnostic chain"
+            ]
+          }
+        },
+        "updatedAt": "2026-04-26T20:19:41.098Z"
+      },
+      {
+        "id": "2331",
+        "title": "Stdlib std.stock: standard_bolt_lengths and standard_sheet_thicknesses collections",
+        "description": "Add a new prelude file crates/reify-compiler/stdlib/standard_stock.ri exposing two Length collections that @solver_hint references can point at. (1) standard_bolt_lengths: ISO 4014/4017 length series 8-100mm at the standard increments (8, 10, 12, 14, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100 mm). (2) standard_sheet_thicknesses: common metal stock gauges in mm (0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0). Both must satisfy whatever collection trait the constraint-solver discrete_set/prefer_stock integration consumes (confirm during architect — do NOT invent a new trait). Wire into crates/reify-compiler/src/stdlib_loader.rs alongside std.units, std.materials_mechanical etc., recommended module path: std.stock. Doc comments mandatory on both — they surface in LSP hover and the doc generator. Tasks #275 (compiler) and #276 (solver integration) are done; this provides the payload data they reference. PRD: docs/prds/solver-hint-payloads.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">275, 276",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "275",
+          "276"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:02:06.084Z"
+      },
+      {
+        "id": "2332",
+        "title": "Implement Stale-tag Diagnostic W_TOPOLOGY_TAG_STALE",
+        "description": "Emit a warning when a feature-tag selector matches zero or multiple sub-shapes after a topology change, referencing the original source span.",
+        "details": "Implement the diagnostic W_TOPOLOGY_TAG_STALE in the topology module. When a feature-tag selector is evaluated and matches zero or multiple sub-shapes due to a topology change, emit a warning. This warning should include the original source span of the selector call. Modify the selector evaluation logic to check the number of matches and trigger the diagnostic if the count is not exactly one. Ensure the diagnostic message is clear and includes the selector's source span. Update the PRD documentation at docs/prds/topology-selectors.md task 6 for additional context.",
+        "testStrategy": "Create tests to simulate a topology change where a tagged feature disappears or results in multiple matches. Verify that the selector returns 'undef' and that exactly one warning is emitted. Ensure the warning references the correct original source span of the selector call. Run the full test suite to confirm no regressions in existing functionality.",
+        "status": "in-progress",
+        "dependencies": [
+          "2317"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:25:51.499Z"
+      },
+      {
+        "id": "2333",
+        "title": "Implement Worked-Example Smoke Tests for Topology Selectors",
+        "description": "Create and ship example .ri files for topology selectors, specifically block_inertia and fillet_top_edges, and integrate them with the eval test harness.",
+        "details": "1. Review the PRD document at docs/prds/topology-selectors.md, focusing on task 7.\n2. Develop two .ri example files: \n   - **block_inertia.ri**: Calculate the moment_of_inertia for a steel box.\n   - **fillet_top_edges.ri**: Select the top face using faces_by_normal, then walk adjacent_faces and shared_edges to fillet only those edges.\n3. Place these files under examples/topology_selectors/.\n4. Ensure these examples are exercised by the eval test harness, verifying their correctness and integration.\n5. Update documentation and comments within the code to reflect the purpose and usage of these examples.",
+        "testStrategy": "1. Run the eval test harness to ensure both block_inertia.ri and fillet_top_edges.ri execute without errors.\n2. Verify that block_inertia correctly computes the moment_of_inertia for a steel box.\n3. Confirm that fillet_top_edges correctly identifies and fillets the appropriate edges.\n4. Check that the examples are correctly located in the examples/topology_selectors/ directory and are accessible by the test harness.",
+        "status": "pending",
+        "dependencies": [
+          "2329",
+          "239"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2334",
+        "title": "@solver_hint payload wire-up: end-to-end test against std.stock collections",
+        "description": "Integration test that pins the @solver_hint payload-resolution path end-to-end against the new std.stock collections. Add crates/reify-compiler/tests/solver_hint_payload_tests.rs (or fold into solver_hint_tests.rs) covering: (1) compile_with_stdlib of '@solver_hint(\"discrete_set\", standard_bolt_lengths) param length : Length = auto' succeeds with no warnings, the resulting ValueCellDecl.solver_hints carries the right collection name, and the looked-up collection resolves to the expected Vec<Length>. (2) Same for prefer_stock + standard_sheet_thicknesses. (3) Negative case: '@solver_hint(\"discrete_set\", standard_doesnotexist)' produces an unresolved-identifier error at the use site (validates that hint payload references go through normal name resolution, not a special-cased lookup). PRD: docs/prds/solver-hint-payloads.md item 2.</description>\n<parameter name=\"priority\">high</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "275",
+          "276",
+          "2331"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:08:23.214Z"
+      },
+      {
+        "id": "2335",
+        "title": "Freshness: implement freshness-only propagation walk for value-unchanged transitions",
+        "description": "PRD docs/prds/freshness-4-variant.md. Per arch §3.5 lines 432-436: when a node's value is unchanged but its freshness transitions (e.g. Intermediate → Final via upstream cutoff), propagate freshness downstream without value recomputation. Lightweight mode within dirty-cone walk; freshness early cutoff stops walk when freshness doesn't change at a node. Test: synthetic graph where upstream Intermediate→Final transition with no value change correctly updates downstream freshness metadata, no value evaluator calls fired.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2328"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:04:13.069Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/cache.rs",
+            "crates/reify-eval/src/freshness_walk.rs",
+            "crates/reify-eval/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "2336",
+        "title": "Harden Analytical Field Source Kind Type-Checking",
+        "description": "Implement type-checking for the lambda body in analytical field sources against declared Domain -> Codomain signatures.",
+        "details": "Enhance the analytical field source kind by implementing type-checking for the lambda body within `field def F { source = analytical { |p| ... } }`. Ensure the lambda's codomain matches the declared field's codomain. If a mismatch occurs, such as the lambda returning `Scalar<Length>` while the field declares `Scalar<Temperature>`, emit an error `E_FIELD_CODOMAIN_MISMATCH`. Modify the evaluation logic so that `sample(field, point)` invokes the compiled lambda with the given point and propagates undefined values according to Kleene's three-valued logic rules. Update the documentation in `docs/prds/field-source-kinds.md` to reflect these changes.",
+        "testStrategy": "Create tests to verify that codomain mismatches are correctly diagnosed with `E_FIELD_CODOMAIN_MISMATCH`. Additionally, implement tests for scenarios where the codomain matches, ensuring the lambda executes correctly. Use sample inputs to test the `sample(field, point)` function, confirming it handles undefined values as expected.",
+        "status": "in-progress",
+        "dependencies": [
+          "1"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:04:15.355Z"
+      },
+      {
+        "id": "2337",
+        "title": "Freshness: surface 4-variant Freshness to GUI and LSP for distinct badge rendering",
+        "description": "PRD docs/prds/freshness-4-variant.md. Thread Freshness through diagnostic / outline / parameters panels (gui/) and LSP-served diagnostics so UI shows distinct badges for Final (no badge), Intermediate (spinner / progress), Pending (warning), Failed (error). Constraint-violation rendering stays on the existing `violated` channel, NOT the Failed channel. Smoke-test by opening an example with intermediate / failed nodes and confirming visual distinction.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2330"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:17:15.595Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/src/diagnostics.rs",
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src-tauri/src/types.rs",
+            "gui/src/__tests__/DesignTree.test.tsx",
+            "gui/src/__tests__/PropertyEditor.test.tsx",
+            "gui/src/__tests__/engineStore.test.ts",
+            "gui/src/__tests__/types.typecheck.ts",
+            "gui/src/panels/DesignTree.module.css",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/panels/PropertyEditor.module.css",
+            "gui/src/panels/PropertyEditor.tsx",
+            "gui/src/types.ts"
+          ]
+        }
+      },
+      {
+        "id": "2338",
+        "title": "Implement InterpolationMethod Module for v0.1 Sampled Fields",
+        "description": "Develop the interpolation module with Linear, NearestNeighbor, and Cubic methods, deferring RBF and Kriging.",
+        "details": "Create a new module `crates/reify-expr/src/interp.rs` implementing the interpolation methods: Linear (n-linear over grid dimensions), NearestNeighbor, and Cubic (Catmull-Rom for 1D, bicubic for 2D, tricubic for 3D). Define an enum for interpolation methods, including RBF and Kriging, which should emit a `W_INTERPOLATION_DEFERRED` warning and fall back to Linear when used. Ensure the module is well-documented and adheres to existing coding standards.",
+        "testStrategy": "Develop pure-function tests comparing the implemented methods against analytic interpolation references. Ensure tests cover edge cases and typical use cases for each interpolation method. Use cargo test to verify the module's correctness and performance.",
+        "status": "pending",
+        "dependencies": [
+          "5"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:16:18.756Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src/interp.rs",
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/interpolation_tests.rs",
+            "crates/reify-types/src/diagnostics.rs"
+          ]
+        }
+      },
+      {
+        "id": "2339",
+        "title": "@solver_hint preferred_strategy kind: extend SolverHintKind with strategy-name forwarding",
+        "description": "Optional third @solver_hint payload kind. Add PreferredStrategy variant to SolverHintKind in crates/reify-compiler/src/types.rs. Extend extract_solver_hints in crates/reify-compiler/src/annotations.rs to recognise '@solver_hint(\"preferred_strategy\", <ident>)' and store the identifier as a strategy name (any ident accepted; the back-end emits a runtime warning for unknown names — no compile error so the spec §12.2 invariant 'pragmas/hints are advisory' is preserved). Initial recognised names: argmin_default, slvs_default. Forward through to the solver back-end alongside DiscreteSet/PreferStock. PRD: docs/prds/solver-hint-payloads.md item 3. Drop if scope-tight.</description>\n<parameter name=\"priority\">medium</parameter>\n<parameter name=\"dependencies\">275, 276",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "275"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:11:55.722Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/solver_hint_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "2340",
+        "title": "Warm-state eviction: add budget config, per-state metadata, and cost-per-byte LRU eviction loop to WarmStatePool",
+        "description": "PRD docs/prds/warm-state-eviction.md. Implement the complete warm-state eviction feature in WarmStatePool per arch §4.3 lines 524-540: (1) add memory_budget_bytes (configurable, project-level; plumb from project config or env var; default to a documented sensible cap e.g. 2 GB; no-op when None/unlimited), and per-pooled-state metadata size_bytes, last_accessed: Instant, cost_per_byte: f64 (estimated_cold_compute_time / state_size_bytes); (2) when an insertion or return-to-pool would push aggregate warm-state usage above the configured budget, evict states in cost_per_byte ascending order until aggregate usage drops below the threshold, with LRU recency (last_accessed) as tiebreak among equal cost_per_byte values. Existing tests must stay green. Unit test: synthetic states {500 MB / 1 s, 10 MB / 30 s, 100 MB / 5 s} with budget 200 MB asserts the 500 MB/1 s state (lowest cost_per_byte = 1/500M) evicts first. Builds on #27.",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "details": "- Add `memory_budget_bytes: Option<u64>` to WarmStatePool; plumb from project config or env var; document default (e.g. 2 GB); treat None as unlimited (no eviction)\n- Add per-pooled-state metadata struct fields: `size_bytes: u64`, `last_accessed: Instant`, `cost_per_byte: f64` (= estimated_cold_compute_time_secs / size_bytes)\n- On every insertion into the pool and every return-to-pool, compute aggregate usage; if it exceeds `memory_budget_bytes`, run the eviction loop:\n  - Sort pooled states by `cost_per_byte` ascending; tiebreak by `last_accessed` ascending (least recently used first)\n  - Evict states one by one until aggregate usage falls below the budget\n- No-op path: if `memory_budget_bytes` is None, skip all eviction logic; all existing tests must stay green\n- Unit test with synthetic states {500 MB / 1 s, 10 MB / 30 s, 100 MB / 5 s} and budget 200 MB: assert the 500 MB / 1 s state is evicted first (cost_per_byte = 1s / 500MB ≈ 2e-9, lowest of the three)\n- cost_per_byte for the three states: 500MB/1s → 1/500e6; 10MB/30s → 30/10e6 = 3e-6; 100MB/5s → 5/100e6 = 5e-8; ascending order = 500MB/1s, 100MB/5s, 10MB/30s",
+        "testStrategy": "",
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Task 2340 is pending, combine_eligible, high-priority, and is precisely the metadata foundation the candidate explicitly declares it builds on (cost_per_byte, last_accessed, size_bytes, memory_budget_bytes). Both tasks touch the same WarmStatePool subsystem, will serialize on the same module lock, and together form a single coherent deliverable — the complete warm-state eviction feature. Combining loses zero parallelism and means context is loaded once. Both tasks list no specific files_to_modif",
+          "combined_at": "2026-04-26T20:06:53.293036+00:00"
+        }
+      },
+      {
+        "id": "2341",
+        "title": "Implement Sampled Field Source Kind Parsing and Runtime Value Construction",
+        "description": "Parse configuration key-value pairs for grid, interpolation, and data to build SampledField runtime values.",
+        "details": "Implement parsing logic for configuration strings such as `grid = ...`, `interpolation = ...`, and `data = ...`. Support grid types RegularGrid1, RegularGrid2, and RegularGrid3, each with specific spacing and bounds attributes. Use the BoundingBox for bounds and Length for spacing. Construct the SampledField runtime value using these parsed configurations. Ensure that the sample lookup utilizes the interpolation module developed in task 2. Handle out-of-bounds scenarios by returning an undefined value and emitting a W_FIELD_OUT_OF_BOUNDS warning once per field per session.",
+        "testStrategy": "1. Create unit tests to verify correct parsing of `grid`, `interpolation`, and `data` configurations.\n2. Test the construction of SampledField runtime values with various grid types and configurations.\n3. Validate that the interpolation module is correctly integrated by comparing expected and actual sample lookup results.\n4. Simulate out-of-bounds scenarios to ensure the correct warning is emitted and undefined values are returned.\n5. Conduct integration tests to ensure the overall functionality aligns with the specifications in the PRD document.",
+        "status": "pending",
+        "dependencies": [
+          "2",
+          "2338"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:15:48.955Z"
+      },
+      {
+        "id": "2342",
+        "title": "reify-doc crate scaffold + DocModel types",
+        "description": "Add the reify-doc crate to the workspace as the foundation for the `reify doc` documentation generator, define DocModel and child types in src/model.rs, and implement reify_doc::build_doc_model(&CompiledModule, source: &str) -> DocModel in src/lib.rs with span-based constraint rendering.",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "details": "- Add `crates/reify-doc` to `Cargo.toml` workspace.members and workspace.dependencies\n- Define `DocModel` and child types (`ModuleDoc`, `ItemDoc`, `ParamDoc`, `PortDoc`, `ConstraintDoc`, `SubComponentDoc`, `RealizationDoc`, `AnnotationDoc`, `PragmaDoc`, `CrossRefs`) in `src/model.rs` as pure data with serde derives. No formatters yet.\n- Implement `reify_doc::build_doc_model(module: &CompiledModule, source: &str) -> DocModel` in `src/lib.rs`:\n  - Read `TopologyTemplate` fields: `value_cells`, `ports`, `constraints`, `meta`, `annotations`, `sub_components`, `realizations`, `trait_bounds`, `type_params`, `doc`\n  - Read `CompiledFunction`, `TraitDef`, `EnumDef`, and module-level pragmas: `declared_version`, `default_tolerance`, `solver_pragma`, `kernel_pragma`\n  - Render constraint expressions by re-slicing `source` via the span attached to each compiled constraint node\n- Empty `cargo test -p reify-doc` must pass green",
+        "testStrategy": "",
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Task 2342 scaffolds the reify-doc crate and DocModel types — the candidate's build_doc_model function is the immediate next step that consumes those types. Both touch only crates/reify-doc/, they serialize on the same module lock, and neither can ship usefully without the other. An implementer loads context once. Combined task stays under 3 files and a single coherent concern. 2342 is pending and combine_eligible.",
+          "combined_at": "2026-04-26T20:08:06.030485+00:00"
+        }
+      },
+      {
+        "id": "2343",
+        "title": "Implement Composed Field Source Kind with Cache Invalidation",
+        "description": "Wire composed field source kind to combinators, enabling lazy evaluation and dependency tracking for cache invalidation.",
+        "details": "Implement the composed field source kind by integrating it with existing combinators as referenced in task #342. Modify the compiler to track dependencies by capturing field references within the lambda body of `composed { |p| ... }`. Ensure that the lambda is evaluated lazily at each `sample(other_field, p)` call. Update the cache invalidation mechanism to invalidate the composed field's cache when any of its referenced fields are edited. This requires extending the dependency tracking system to include these dynamic dependencies.",
+        "testStrategy": "Create tests to verify that editing a field referenced by a composed field invalidates its cache. Ensure that the composed field is re-evaluated correctly upon subsequent accesses. Use existing test frameworks to simulate field edits and check cache states before and after edits.",
+        "status": "in-progress",
+        "dependencies": [
+          "11",
+          "342"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:08:16.947Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/functions.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/field_compile_tests.rs",
+            "crates/reify-eval/src/deps.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/field_eval_tests.rs",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
+      },
+      {
+        "id": "2344",
+        "title": "Implement v0.2 Deferral Diagnostic for Imported Field Source",
+        "description": "Add error[E_FIELD_IMPORTED_V02] for the `imported { ... }` form, ensuring it references the v0.2 deferral.",
+        "details": "Update the compiler to emit a specific error code, error[E_FIELD_IMPORTED_V02], when the `imported { ... }` form is used. This error should reference the v0.2 deferral as outlined in the PRD documentation (docs/prds/field-source-kinds.md). Ensure that the parsing logic for this form is already handled as per task #79, which accepts this syntax. Modify the compile path to trigger the new diagnostic instead of a generic compile error.",
+        "testStrategy": "Create a test case that verifies the `imported { ... }` form is parsed correctly and that the error[E_FIELD_IMPORTED_V02] is emitted. Ensure the test checks for the specific error message related to the v0.2 deferral. Use existing test frameworks to validate both parsing and diagnostic emission.",
+        "status": "in-progress",
+        "dependencies": [
+          "79"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:08:25.328Z"
+      },
+      {
+        "id": "2345",
+        "title": "Warm-state eviction: wire pool.checkout None-return into compute_cold fallback",
+        "description": "PRD docs/prds/warm-state-eviction.md. Wire both ends of the WarmStatePool eviction contract per arch §4.3 lines 539-540 and §6.4: (1) when a node is removed by a topology update, donate its warm state to the pool keyed by node type + path-based identity; subsequent reappearance with the same key reuses donated state; donated state counts against the memory budget and is subject to the same eviction policy per §6.4 cancellation; (2) pool.checkout(node_id) returns None when state has been evicted; the recursive evaluator's existing Option<State> handling falls back to compute_cold transparently per the WarmStartable protocol (arch §4.1); confirm all warm-startable node types (RealizationNode, ResolutionNode, ComputeNode) handle the None case correctly.",
+        "status": "blocked",
+        "dependencies": [
+          "2340"
+        ],
+        "priority": "high",
+        "details": "- On topology removal, call pool.donate(key, state) with key = (node_type, path-based identity); map to the existing pool insert/storage mechanism\n- Donated state counts against memory_budget_bytes and triggers eviction if over budget (arch §6.4 cancellation)\n- pool.checkout(node_id) returns None when state has been evicted; evaluator falls back to compute_cold transparently (per arch §4.3 line 539 and WarmStartable protocol §4.1)\n- Confirm RealizationNode, ResolutionNode, and ComputeNode all handle the checkout→None case correctly\n- Integration test (donation reuse): remove-then-reappear scenario — assert donated state is reused via a counter on compute_cold calls (compute_cold NOT called on reappearance when state was donated with matching key)\n- Integration test (eviction fallback): force-eviction scenario — assert identical results between warm-fallback (checkout returns None → compute_cold) and cold-only runs",
+        "testStrategy": "",
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Both tasks are tiny, high-priority, and wire opposite ends of the same WarmStatePool eviction contract from the same PRD section (arch §4.3). The candidate adds donation-on-removal (write path) while Task 2345 adds checkout→None→compute_cold fallback (read path). They will serialize on the same module lock, and combining loads WarmStatePool context once. Task 2345 is pending and combine_eligible. Coherence: 'Wire both ends of the WarmStatePool eviction interface — topology-removal state donation",
+          "combined_at": "2026-04-26T20:09:40.315367+00:00",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Warm-state eviction: wire pool.checkout None-return into compute_cold fallback"
+            ]
+          }
+        },
+        "updatedAt": "2026-04-26T20:25:47.838Z"
+      },
+      {
+        "id": "2346",
+        "title": "Implement Worked-Example Smoke Test for Field Source Kinds",
+        "description": "Create a smoke test for field source kinds using examples/fields/composed_stiffness.ri, covering analytical, sampled, and composed types.",
+        "details": "Develop a smoke test script that exercises all three field source kinds (analytical, sampled, composed) as specified in the PRD document (docs/prds/field-source-kinds.md). Use the file examples/fields/composed_stiffness.ri to ship these examples in a single file. Ensure the implementation aligns with the specification outlined in §4.1.4 of the documentation. The test should be integrated into the eval test harness to verify the correct functionality of each field source kind.",
+        "testStrategy": "Run the eval test harness to ensure that all three field source kinds are correctly exercised and validated. Verify that the output matches expected results as per the specification in §4.1.4. Check for any discrepancies or errors in the handling of each field source kind and ensure they are resolved.",
+        "status": "in-progress",
+        "dependencies": [
+          "792"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:09:50.982Z"
+      },
+      {
+        "id": "2347",
+        "title": "Stdlib Trait Breadth Audit and Gap-Fill Report",
+        "description": "Conduct an audit of stdlib traits against existing specifications and produce a comprehensive report on gaps and inheritance.",
+        "details": "Review the stdlib reference sections 4 and 6, comparing them with the current implementations in crates/reify-compiler/stdlib/structural_physical.ri and materials_mechanical.ri. Create a table detailing each trait's name, specification section, current declaration status, specified and current parents, fields, and any gaps. Document findings in a header comment block at the top of each .ri file or in a single consolidated notes file. This task is focused on analysis and documentation, with no code changes required at this stage.",
+        "testStrategy": "Verify the completeness of the audit by ensuring all traits in the specified sections are accounted for in the report. Check that the inheritance-and-presence table accurately reflects the current state of the codebase and aligns with the specifications. Ensure the output documentation is clear and accessible, either as header comments or a separate notes file.",
+        "status": "in-progress",
+        "dependencies": [
+          "328",
+          "329"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:10:40.778Z"
+      },
+      {
+        "id": "2348",
+        "title": "Warm-state eviction: realization-event telemetry for evicted/donated transitions",
+        "description": "PRD docs/prds/warm-state-eviction.md. Add EventKind::evicted and EventKind::donated realization events firing on the appropriate transitions. Surface counts in the diagnostic journal / GUI debug panel for observability — helps debug performance regressions when eviction pressure is high. Uses the existing event-emission surface; independent of the freshness-PRD event-journal machinery.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2340"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:10:39.536Z"
+      },
+      {
+        "id": "2349",
+        "title": "Reconcile Inheritance for Structural Physical Traits",
+        "description": "Adjust inheritance edges for structural_physical.ri to align with specification section 4.",
+        "details": "Update the inheritance structure in the `structural_physical.ri` file to match the specification. Specifically, change `ElasticallyDeformable` to inherit from `Flexible` instead of `Elastic`, make `Plastic` inherit from `Flexible`, and ensure `ThermallyConductive` and `ElectricallyConductive` inherit from `Physical`. Review the specification document (PRD docs/prds/stdlib-trait-breadth.md task 2) for detailed guidance. Ensure that no parameter changes are made, and existing tests must still pass after these changes.",
+        "testStrategy": "Run existing tests in `structural_physical.ri` to ensure they pass without modifications. Use `cargo test -p reify-compiler -- structural` to verify that the inheritance changes do not affect the current functionality. Check that the new inheritance hierarchy aligns with the specification by reviewing the generated documentation and any relevant output logs.",
+        "status": "pending",
+        "dependencies": [
+          "329",
+          "2347"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2350",
+        "title": "Node-trait composition: declare NodeTraits type and assign defaults to each node kind",
+        "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6 lines 803-816 declare NodeTraits as a first-class type (bitflags or enum-set): IMMEDIATE, WARM_STARTABLE, PROGRESSIVE, COMMITTABLE. Assign defaults per node kind: ValueCell scalar = IMMEDIATE; SchemaNode = IMMEDIATE; SourceNode = IMMEDIATE; ResolutionNode = WARM_STARTABLE | COMMITTABLE; RealizationNode = WARM_STARTABLE | COMMITTABLE; ComputeNode = WARM_STARTABLE | COMMITTABLE; ConstraintNode = (typically nothing). Doc-comment cites arch §7.6 with line numbers. Land as no-op data — nothing yet consumes the traits.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:18:30.629Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-types/src/node_traits.rs",
+            "crates/reify-types/tests/exports.rs"
+          ]
+        }
+      },
+      {
+        "id": "2351",
+        "title": "reify-doc model_tests.rs: integration coverage for build_doc_model output shape",
+        "description": "Snapshot/assertion tests for the DocModel shape produced by reify_doc::build_doc_model. Distinct from the scaffolding/builder task (#2342): this is purely test coverage. Verify against a small fixture module containing one trait, one structure conforming to it with @test annotation, one enum with doc comments, one function with @deprecated, a meta block, and an @solver_hint(\"discrete_set\", standard_bolt_lengths) on a param. Assert: doc strings flow into ItemDoc.doc; trait_bounds populated; meta entries copied verbatim; sort order is traits→structures→occurrences→enums→functions→constants alphabetical; constraint expressions match the source byte-range; @solver_hint surfaces as an AnnotationDoc on the param. Tests in crates/reify-doc/tests/model_tests.rs. PRD: docs/prds/reify-doc-tool.md slice 2 (test column).</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2342"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:11:42.995Z"
+      },
+      {
+        "id": "2352",
+        "title": "Reconcile Inheritance for Mechanical Material Traits",
+        "description": "Declare shared traits in materials_mechanical.ri and document trait resolution per spec §6.2.",
+        "details": "Implement the traits FatigueRated, FractureTough, ImpactResistant, and Damping explicitly as `: MaterialSpec` in the materials_mechanical.ri file. Ensure these traits are declared only once, refining MaterialSpec, and document the resolution process in a header comment block. This documentation should explain the decision to maintain a single declaration in materials_mechanical.ri and how structures will inherit properties via the material slot rather than direct trait composition. Follow the guidelines in §4 and §6 of the specification.",
+        "testStrategy": "1. Ensure the materials_mechanical.ri file parses and compiles without errors.\n2. Verify that the traits are correctly declared as `: MaterialSpec`.\n3. Check that the header comment block accurately documents the trait resolution process.\n4. Run `cargo test -p reify-compiler -- materials_mechanical` to confirm that the traits are correctly integrated and functional.",
+        "status": "pending",
+        "dependencies": [
+          "327",
+          "2347"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2353",
+        "title": "Node-trait composition: NodePolicyOverrides struct with three policy values + precedence resolution",
+        "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.3 lines 751-767 add NodePolicyOverrides struct supporting per-instance and per-type overrides for: CommitIfSlow (default), AlwaysCancelWhenStale, OnlyRunOnFinalInputs. Override resolution order: instance > type > default. Settable from project config and/or programmatically. Unit tests for override-precedence: instance-set wins over type-set wins over default.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2350"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:12:17.077Z"
+      },
+      {
+        "id": "2354",
+        "title": "Integration Test for Composed Trait Bounds and Gap-Fill",
+        "description": "Develop an integration test for a DriveBelt-style structure using composed trait bounds and address gaps identified in sections §6.3-§6.6.",
+        "details": "Create a new .ri test source that defines a structure with composed trait bounds such as ElasticallyDeformable, ImpactResistant, and Damping. Ensure the structure integrates traits from the breadth set. Address any gaps identified in sections §6.3-§6.6, including ThermallyCharacterized, Refractory, ElectricallyCharacterized, Conductive, Insulating, OpticallyCharacterized, CorrosionResistant, Biocompatible, and enums CorrosionClass and BiocompatibilityClass. Implement compile and parameter-resolution assertions to verify the integration and functionality of these traits.",
+        "testStrategy": "Run cargo tests to ensure the new structure parses and compiles correctly. Verify that all trait bounds are correctly applied and that parameter resolutions are accurate. Ensure that all gap-fills are correctly integrated and functional within the test structure. Use assertions to confirm that the traits behave as expected when combined.",
+        "status": "pending",
+        "dependencies": [
+          "328",
+          "329",
+          "2347"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2355",
+        "title": "reify-doc cross-refs: trait→conformers and entity→containers indices",
+        "description": "Implement crates/reify-doc/src/cross_refs.rs producing CrossRefs from a slice of compiled topology templates. Two indices: (1) trait→conformers — for each TopologyTemplate, push its name onto each entry of trait_bounds; rendered under \"Implementations\" on each trait page. (2) entity→containers — for each TopologyTemplate.sub_components, record the parent's name; rendered under \"Used by\" on each structure/occurrence page. Both BTreeMap<String, Vec<String>> for deterministic ordering. Out of scope for v0.1: function call graphs, geometry op references, port-connection graphs. Tests over a synthetic module with multi-trait conformance and nested sub-components. PRD: docs/prds/reify-doc-tool.md slice 3.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2342"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:15:01.295Z"
+      },
+      {
+        "id": "2356",
+        "title": "Node-trait composition: wire OnlyRunOnFinalInputs gating into scheduler (depends on freshness PRD)",
+        "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.3 and §3.5 line 436: a node with OnlyRunOnFinalInputs policy is not scheduled while any input is Intermediate / Pending. Plugs into the freshness-propagation walk from the Freshness PRD (#2335) — when a freshness-only walk reaches a gated node and all inputs are now Final, the node enters the value dirty set. Integration test using a synthetic graph with mixed-freshness inputs. Depends on Freshness PRD tasks #2319, #2326, #2328, #2335.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2335",
+          "2353"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:17:05.026Z"
+      },
+      {
+        "id": "2357",
+        "title": "reify-doc Markdown formatter (GitHub-flavored, with --split mode)",
+        "description": "Implement crates/reify-doc/src/fmt_markdown.rs rendering DocModel as GitHub-flavored Markdown. Default: single file. With MarkdownOptions::split=true: one file per item plus index.md. Per-item layout: H2 with anchor (`<a id=\"…\">`), doc paragraphs, \"Parameters\" GFM table (Name | Type | Dimension | Default | Description), \"Ports\" GFM table (Name | Kind | Role | Type | Description), \"Constraints\" bullet list with line-numbers (rendered from source spans), \"Meta\" bullet list (alphabetical key order), \"Conforms to\" / \"Used by\" cross-ref bullets. TOC at the top groups by kind (Traits/Structures/Occurrences/Enums/Functions/Constants). @deprecated → callout; @test → grouped at the bottom under \"Tests\" subsection; @optimized → italic note; @solver_hint → italic suffix on the param Description cell. Snapshot test against examples/integration_full_v01.ri. PRD: docs/prds/reify-doc-tool.md slice 4.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2342"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:16:45.485Z"
+      },
+      {
+        "id": "2358",
+        "title": "Node-trait composition: wire AlwaysCancelWhenStale into cancellation refinement",
+        "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.5 lines 773-781 and §7.3: tagged nodes are never committed (commitment thresholds from §7.3 do not apply) and are always cancelled when in the dirty cone. Override the dual-threshold commit-if-slow policy. Integration test: tag a synthetic long-running node with AlwaysCancelWhenStale, fire a dirty-cone event, assert cancellation regardless of elapsed time.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "2353"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:14:47.342Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-runtime/src/commitment.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ]
+        }
+      },
+      {
+        "id": "2359",
+        "title": "reify-doc HTML formatter: single self-contained file with embedded stylesheet",
+        "description": "Implement crates/reify-doc/src/fmt_html.rs rendering DocModel as a single self-contained HTML file (no external CSS, no JS, no external resource references). Sections mirror the markdown formatter: TOC nav with `position: sticky; top: 0;`, per-item `<section id=\"…\">` blocks, semantic HTML (`<table>` for params/ports, `<dl>` for meta, `<p>` for doc paragraphs, `<code>` for code spans). Hand-written embedded `<style>` block ≤100 lines: monospace fallback for code, max-width 900px on body, generous line-height. No syntax highlighting in v0.1. Snapshot test against examples/integration_full_v01.ri verifying the output renders in a browser (no external requests). PRD: docs/prds/reify-doc-tool.md slice 5.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2342",
+          "2357"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:18:37.103Z"
+      },
+      {
+        "id": "2360",
+        "title": "Node-trait composition: wire PROGRESSIVE trait for intermediate emission semantics",
+        "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6: PROGRESSIVE-tagged nodes emit intermediate results over time; scheduler expects multiple cache updates per evaluation. Cross-check with freshness-propagation: each intermediate emission updates the cache and triggers a freshness-only downstream walk (#2335). Integration test with a synthetic progressive node emitting 3 intermediates then Final, assert downstream sees Intermediate then Final transitions. Depends on Freshness PRD #2319, #2326, #2328, #2335.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2335",
+          "2350"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:26:39.074Z"
+      },
+      {
+        "id": "2361",
+        "title": "reify-doc JSON formatter + `reify doc` CLI subcommand",
+        "description": "Two parts. (1) crates/reify-doc/src/fmt_json.rs: serde_json serialisation of DocModel; pretty-printed by default, --compact flag for single-line. snake_case field naming. Schema is the DocModel definition; consumers can rely on it being stable across v0.1 patch releases (no backward-compat across v0.1→v0.2 — bump #version pragma to signal). (2) crates/reify-cli/src/main.rs: new cmd_doc routing 'reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]'. Defaults: html format, stdout when -o omitted. --split markdown only (errors out for html/json). --compact json only. Exit codes: 0 ok, 1 compile errors blocked doc generation (errors printed to stderr exactly as cmd_check does), 2 CLI usage errors. Add reify-doc to reify-cli Cargo.toml. End-to-end test running 'reify doc' as subprocess via reify-test-support harness. PRD: docs/prds/reify-doc-tool.md slice 6.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2342"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:18:27.592Z"
+      },
+      {
+        "id": "2362",
+        "title": "forall statement-form: tree-sitter grammar + disambiguation on token after `:`",
+        "description": "Extend the tree-sitter grammar for the `forall` statement to support `connect` and `constraint` alternatives, ensuring correct token disambiguation.",
+        "details": "Update the tree-sitter grammar to handle `forall` statements with new alternatives. Modify the rule to dispatch based on the token following `:`. Specifically, add support for `forall ... : connect <connect-stmt>` and `forall ... : constraint <constraint-body>`. Ensure that the existing expression form remains the default when the token is neither `connect` nor `constraint`. Update the grammar file (tree-sitter-reify/grammar.js) to include these new alternatives and adjust the parser logic to correctly identify and parse these forms.",
+        "testStrategy": "1. Write unit tests to parse `forall ... : <expr>` and ensure it remains the default form.\n2. Add tests for `forall ... : connect <connect-stmt>` to verify correct parsing and AST node creation.\n3. Add tests for `forall ... : constraint <constraint-body>` to ensure proper parsing and AST node creation.\n4. Run all existing tests to confirm no regressions in the `forall` expression parsing.",
+        "status": "in-progress",
+        "dependencies": [
+          "1",
+          "63"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:21:46.091Z"
+      },
+      {
+        "id": "2363",
+        "title": "forall statement-form: AST/IR `ForallConnect` and `ForallConstraint` node kinds",
+        "description": "Introduce two new AST/IR node kinds (`ForallConnect`, `ForallConstraint`) for statement-form forall per docs/prds/forall-statement-form.md task 2 / spec §5.4. Distinguishes statement form from existing expression form.",
+        "details": "Acceptance: parser emits `ForallConnect` / `ForallConstraint` for the new alternatives; expression form remains an `Expr` AST node. Pretty-printer / span info preserved.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "63"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:22:12.511Z"
+      },
+      {
+        "id": "2364",
+        "title": "forall statement-form: elaboration emits per-element decls with element-index spans",
+        "description": "Implement the elaboration of the forall statement-form to emit per-element `connect` and `constraint` declarations with element-index span information in SchemaNode.compute().",
+        "details": "In `SchemaNode.compute()`, iterate over the bound collection when it is structurally determined. For each element, emit `connect` and `constraint` declarations into the evaluation graph. Ensure that each generated declaration carries span information back to the source `forall` statement, including the element index. This requires threading element-index span info through the elaboration process. Refer to the PRD document at `docs/prds/forall-statement-form.md` task 3 and the specification sections §5.4 and §6.2 for detailed requirements and constraints.",
+        "testStrategy": "1. Create unit tests to verify that per-element `connect` and `constraint` declarations are correctly emitted for a given collection.\n2. Ensure that each declaration includes accurate span information, linking back to the original `forall` statement and the specific element index.\n3. Test with collections of varying sizes and structures to ensure robustness.\n4. Validate against the specification in §5.4 and §6.2 to ensure compliance.",
+        "status": "pending",
+        "dependencies": [
+          "2362",
+          "2363"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2365",
+        "title": "forall statement-form: empty-collection + undef-count handling",
+        "description": "Implement handling for empty and undefined-count collections in the forall statement-form as per specification §5.4.",
+        "details": "Update the SchemaNode.compute() method to handle cases where the bound collection is empty or has an undefined count. For empty collections, ensure that no declarations are generated and no errors are thrown. For collections with an undefined count, initially emit zero declarations and re-elaborate once the count is determined, as specified in §6.2. This requires integrating with the existing SchemaNode re-elaboration logic to update the declarations when the count becomes known. Refer to docs/prds/forall-statement-form.md task 4 for additional context and requirements.",
+        "testStrategy": "1. Write unit tests to verify that no declarations are emitted for empty collections and that no errors occur.\n2. Create tests for collections with undefined counts to ensure zero declarations are initially emitted.\n3. Verify that once the count is determined, the SchemaNode correctly re-elaborates and emits the appropriate declarations.\n4. Ensure all tests cover edge cases and adhere to the specification in §5.4 and §6.2.",
+        "status": "pending",
+        "dependencies": [
+          "2363",
+          "2364"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2366",
+        "title": "forall statement-form: parser + lowering + guard-composition tests",
+        "description": "Develop tests for the forall statement-form focusing on parser disambiguation, lowering constraints, connect-form lowering, guard composition, and undef-count deferral.",
+        "details": "1. **Parser Tests**: Implement tests to ensure the parser correctly distinguishes between statement and expression forms of the forall statement. Verify that the parser emits the correct AST nodes (`ForallConnect`, `ForallConstraint`) based on the token following the `:`.\n\n2. **Lowering Tests**: Create tests to validate the lowering process for the forall statement-form, ensuring that the 3-element constraint is correctly enforced during compilation.\n\n3. **Connect-Form Lowering Test**: Develop tests to ensure that the connect-form of the forall statement is lowered correctly into the intermediate representation.\n\n4. **Guard Composition Test**: Implement tests to verify that guards within where-blocks compose conjunctively as specified in §6.3 of the specification.\n\n5. **Undef-Count Deferral Test**: Write tests to ensure that the deferral mechanism for undefined counts operates correctly, initially emitting zero declarations and re-elaborating once the count is determined.",
+        "testStrategy": "1. **Parser Disambiguation**: Write unit tests to parse `forall` statements and verify correct AST node creation for both statement and expression forms.\n\n2. **Lowering Verification**: Develop tests to check that the lowering process respects the 3-element constraint and correctly transforms the forall statement into the intermediate representation.\n\n3. **Connect-Form Lowering**: Validate that the connect-form is correctly lowered by comparing the output IR against expected results.\n\n4. **Guard Composition**: Test that guards in where-blocks are composed conjunctively by evaluating sample inputs and checking the logical conjunction of guards.\n\n5. **Undef-Count Handling**: Ensure that tests confirm zero declarations are emitted initially for undefined counts and that re-elaboration occurs correctly when counts are determined.",
+        "status": "pending",
+        "dependencies": [
+          "2362",
+          "2363",
+          "2364",
+          "2365"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2367",
+        "title": "forall statement-form: LSP diagnostic surfaces element index on per-element failure",
+        "description": "Implement an LSP diagnostic for the forall statement-form that reports the element index on constraint violation.",
+        "details": "To implement this feature, modify the LSP diagnostic logic to include the index of the element in the source iteration when a constraint violation occurs in a forall statement-form. This requires updating the diagnostic generation code to capture and report the index of the failing element. Refer to the PRD document at docs/prds/forall-statement-form.md, specifically task 6 and acceptance criterion 10, for detailed requirements. Ensure that the diagnostic message format clearly indicates the element index and the nature of the violation.",
+        "testStrategy": "Create unit tests to verify that the diagnostic correctly reports the element index for various constraint violations in forall statements. Include tests with multiple elements to ensure the index is accurately reported for each failing element. Run the full test suite to confirm no regressions and that the new diagnostics integrate smoothly with existing LSP functionality.",
+        "status": "pending",
+        "dependencies": [
+          "63",
+          "2364"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:25:17.941Z"
+      },
+      {
+        "id": "2368",
+        "title": "specialization-scope: identify scope node and add member-traversal validator",
+        "description": "Implement a validator for specialization-scope AST nodes by identifying the node and traversing its members.",
+        "details": "The task involves creating a validator for specialization-scope AST nodes, which are bodies of `sub` instantiations. First, identify the specialization-scope node or context flag in the AST. Then, implement a single-pass validator that traverses the members of this node. The validator should ensure that all members adhere to the constraints defined in the specification (spec §8.7). Refer to the PRD document located at docs/prds/specialization-scope.md for additional context and requirements.",
+        "testStrategy": "To verify the implementation, create unit tests that cover various scenarios of specialization-scope nodes, including top-level, nested, and match-arm instantiations. Ensure the validator correctly identifies and traverses each member, enforcing the constraints specified. Use mock AST nodes to simulate different specialization-scope configurations and validate the traversal logic.",
+        "status": "pending",
+        "dependencies": [
+          "143",
+          "2132"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2369",
+        "title": "specialization-scope: emit E_SPECIALIZATION_FORBIDDEN_DECL with kind-specific message",
+        "description": "Implement a rule to emit an error for forbidden declarations inside a specialization scope.",
+        "details": "Implement the `E_SPECIALIZATION_FORBIDDEN_DECL` error emission for `param`, `port`, and `sub` declarations within a specialization scope. The error message should include the specific kind name of the offending declaration. The error span should point to the keyword and name of the forbidden declaration. Refer to the PRD document at `docs/prds/specialization-scope.md` task 2 and specification section §8.7 for detailed requirements. Update the parser to identify these declarations and trigger the error appropriately.",
+        "testStrategy": "Create unit tests to verify that `E_SPECIALIZATION_FORBIDDEN_DECL` is emitted for `param`, `port`, and `sub` declarations within a specialization scope. Ensure the error message includes the correct kind name and that the span points to the keyword and name. Run the full test suite to confirm no regressions.",
+        "status": "in-progress",
+        "dependencies": [
+          "1",
+          "3",
+          "2368"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:23:24.370Z"
+      },
+      {
+        "id": "2370",
+        "title": "specialization-scope: forbidden-kind + permitted-body + nested/match-arm tests",
+        "description": "Develop tests for specialization-scope validation covering forbidden kinds, permitted bodies, and nested/match-arm scenarios.",
+        "details": "Implement a comprehensive test suite to validate specialization-scope rules as outlined in the PRD document `docs/prds/specialization-scope.md`. The tests should cover the following scenarios: (1) Each forbidden kind (`param`, `port`, `sub`) in isolation within a specialization scope, ensuring the correct error is emitted. (2) A combination of all three forbidden kinds in a single scope. (3) Negative tests for permitted-only bodies to ensure no errors are emitted when only allowed declarations are present. (4) Nested `sub` declarations where the nested body contains a forbidden declaration. (5) `match`-arm `sub` bodies that include forbidden declarations. Use mock AST nodes to simulate these scenarios and verify that the validator correctly identifies and reports violations.",
+        "testStrategy": "Create unit tests for each scenario using mock AST nodes. Verify that the `E_SPECIALIZATION_FORBIDDEN_DECL` error is emitted with the correct message and span for forbidden declarations. Ensure that permitted-only bodies do not trigger errors. For nested and match-arm scenarios, confirm that the validator correctly processes nested scopes and emits errors as expected. Run the full test suite to ensure no regressions are introduced.",
+        "status": "pending",
+        "dependencies": [
+          "2368",
+          "2369"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2371",
+        "title": "specialization-scope: LSP diagnostics integration",
+        "description": "Integrate LSP diagnostics to surface E_SPECIALIZATION_FORBIDDEN_DECL via the standard diagnostics channel.",
+        "details": "Implement the integration of the Language Server Protocol (LSP) to handle specialization-scope diagnostics, specifically ensuring that the error E_SPECIALIZATION_FORBIDDEN_DECL is correctly surfaced through the standard diagnostics channel. This involves updating the LSP server to recognize and process this specific error code, ensuring it is reported to the client with appropriate context and severity. Reference the PRD document 'specialization-scope.md' task 4 for detailed requirements and expected behavior. Update the LSP server's diagnostic handling logic to include this error, and ensure it is tested across various scenarios where specialization is forbidden.",
+        "testStrategy": "Develop automated tests to verify that E_SPECIALIZATION_FORBIDDEN_DECL is correctly reported by the LSP server. Use a set of test cases that trigger this error in different contexts, ensuring the diagnostics are accurately surfaced to the client. Validate that the error includes correct location, message, and severity. Run these tests as part of the LSP integration test suite to ensure consistent behavior across updates.",
+        "status": "in-progress",
+        "dependencies": [
+          "294",
+          "298",
+          "2369"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:23:25.866Z"
+      },
+      {
+        "id": "2372",
+        "title": "match-block decls: GuardedDeclGroup symbol-table representation",
+        "description": "Introduce `GuardedDeclGroup` for match-block declared-name groups and suppress duplicate-name errors when recognized as a match-arm group.",
+        "details": "Implement a new symbol-table representation `GuardedDeclGroup` with fields `name` and `arms: Vec<(GuardExpr, Decl)>`. This structure will encapsulate match-block declared-name groups, allowing for the suppression of duplicate-name errors when the cluster is identified as a match-arm group. Update the parser and symbol table logic to recognize and correctly handle these groups. Ensure compliance with the specification outlined in docs/prds/match-block-decls.md and spec §6.4.",
+        "testStrategy": "1. Update existing unit tests to include scenarios with match-block declared-name groups.\n2. Add new tests to verify that duplicate-name errors are suppressed when the group is recognized as a match-arm group.\n3. Ensure all tests pass by running `cargo test` in the relevant crates.\n4. Validate that the symbol table correctly represents `GuardedDeclGroup` instances and handles them as expected.",
+        "status": "pending",
+        "dependencies": [
+          "2363"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2373",
+        "title": "match-block decls: union typing + guard-narrowing on MemberAccess",
+        "description": "Implement union typing and guard-narrowing for MemberAccess when the receiver resolves to a GuardedDeclGroup.",
+        "details": "When a MemberAccess receiver resolves to a GuardedDeclGroup, modify the type resolution process to build the union of all arm-types. Utilize the existing guard implication checker to apply guard-narrowing at the reference site. This involves updating the type resolution logic to handle the union of types from different match arms and ensuring that guard conditions are correctly applied to narrow the types based on the context. Reference the specification in docs/prds/match-block-decls.md task 2 for detailed requirements.",
+        "testStrategy": "1. Create unit tests to verify that the union of arm-types is correctly formed when accessing members of a GuardedDeclGroup.\n2. Add tests to ensure guard-narrowing is applied correctly using the guard implication checker.\n3. Validate that existing tests for MemberAccess still pass, ensuring no regressions.\n4. Run `cargo test` across relevant crates to confirm all tests pass.",
+        "status": "pending",
+        "dependencies": [
+          "2372"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2374",
+        "title": "match-block decls: missing-arm-field diagnostic with arm list",
+        "description": "Implement diagnostics for GuardedDeclGroup when a narrowed type is a union and a requested field is missing in some active arms, listing the offending arms.",
+        "details": "Enhance the diagnostic system to handle cases where a field access on a union type is attempted, but the field is not present in all active arms. Update the diagnostic message to include a list of the specific arms where the field is missing. This requires modifying the GuardedDeclGroup logic to track and report these cases. Reference the PRD document at docs/prds/match-block-decls.md task 3 for detailed requirements. Ensure that the diagnostic message is clear and provides actionable information to the user.",
+        "testStrategy": "Create unit tests that simulate field access on union types with missing fields in some arms. Verify that the diagnostic message correctly lists the offending arms. Use a variety of union types and field access patterns to ensure comprehensive coverage. Additionally, run the full test suite to confirm no regressions in existing functionality.",
+        "status": "pending",
+        "dependencies": [
+          "2371"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2375",
+        "title": "match-block decls: exhaustiveness gate + outside-match collision diagnostic",
+        "description": "Implement an exhaustiveness gate for GuardedDeclGroup formation in match-blocks and ensure duplicate/shadow errors for same-name declarations outside the match.",
+        "details": "Introduce logic to ensure that a GuardedDeclGroup only forms when match arms exhaustively cover the discriminant. If not exhaustive, maintain separate declaration flows for each arm and trigger existing exhaustiveness errors. Additionally, ensure that any same-name declarations outside the match block trigger duplicate or shadow errors. Update the parser and symbol table logic to enforce these rules. Reference the specification in docs/prds/match-block-decls.md task 4 for detailed requirements.",
+        "testStrategy": "1. Create unit tests to verify that GuardedDeclGroup only forms when match arms are exhaustive.\n2. Add tests to ensure that non-exhaustive match arms trigger the correct exhaustiveness errors.\n3. Verify that same-name declarations outside the match block result in duplicate or shadow errors.\n4. Run the full test suite to ensure no regressions and that all new logic is correctly integrated.",
+        "status": "pending",
+        "dependencies": [
+          "2372",
+          "2373"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2376",
+        "title": "match-block decls: union typing + narrowing + variant-pipe + collision tests",
+        "description": "Develop tests for the GuardedDeclGroup feature focusing on union typing, narrowing under guards, variant-pipe arms, and collision diagnostics.",
+        "details": "Implement a comprehensive suite of tests for the GuardedDeclGroup feature in match-blocks. Focus on verifying union typing where types from different arms are combined. Test narrowing behavior both under individual arm guards and the outer match expression. Include tests for member-access on fields that are common across all arms versus those specific to certain arms. Ensure that the exhaustiveness of match arms is preserved and correctly diagnosed. Additionally, test variant-pipe arms to ensure they function as expected, and implement diagnostics for collisions outside the match block. Reference the PRD document at docs/prds/match-block-decls.md task 5 for detailed requirements.",
+        "testStrategy": "1. Create unit tests to verify union typing across match arms, ensuring correct type resolution.\n2. Develop tests for narrowing under arm guards and the outer match expression, confirming that types are correctly narrowed.\n3. Test member-access on fields, distinguishing between common and arm-specific fields.\n4. Ensure exhaustiveness is preserved by testing various match scenarios.\n5. Implement tests for variant-pipe arms to verify their behavior.\n6. Add diagnostic tests for outside-match collisions, ensuring correct error reporting.\n7. Run the full test suite to confirm no regressions in existing functionality.",
+        "status": "pending",
+        "dependencies": [
+          "2372",
+          "2373",
+          "2375"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2377",
+        "title": "Audit Money dimension representation in compiler/runtime",
+        "description": "Verify that slot 9 of the Money dimension is correctly populated, displayed, hashed, and serialized in both the compiler and runtime environments.",
+        "details": "Review the Money dimension representation in the compiler and runtime to ensure slot 9 is correctly handled. This involves checking the population of slot 9, its display output, hashing mechanisms, and serialization processes. Reference the PRD document at docs/prds/money-dimension.md and spec section §3.2 for detailed requirements. Identify any paths that are Money-blind and add necessary unit tests to cover these paths. Ensure that the implementation aligns with the dimensional integrity and expected behavior outlined in the specification.",
+        "testStrategy": "1. Create unit tests to verify that slot 9 is populated correctly in both the compiler and runtime.\n2. Test the display output to ensure slot 9 is represented accurately.\n3. Verify the hashing mechanism includes slot 9 correctly.\n4. Check the serialization process to confirm slot 9 is serialized as expected.\n5. Add tests for any previously uncovered paths that were Money-blind, ensuring comprehensive coverage.",
+        "status": "in-progress",
+        "dependencies": [
+          "1221",
+          "1290",
+          "38"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:27.082Z"
+      },
+      {
+        "id": "2378",
+        "title": "Money dimension: ship `unit USD : Money` in stdlib",
+        "description": "Add the `unit USD : Money` to the standard library and ensure it is registered correctly in the unit registry.",
+        "details": "Implement the `unit USD : Money` in the file `std/units/money.ri` or an equivalent path as specified in the project documentation. Ensure that the unit is correctly defined with its dimension and any necessary conversion factors. Update the unit registry to include this new unit, verifying that it is recognized during the compilation process. Follow the specifications outlined in the PRD document `docs/prds/money-dimension.md`, specifically task 2 and section §4.6. Ensure that the implementation aligns with existing unit declaration patterns and integrates seamlessly with the current system.",
+        "testStrategy": "1. Verify that the `unit USD : Money` is correctly parsed and compiled without errors. \n2. Check that the unit appears in the unit registry by inspecting the registry output or logs. \n3. Conduct tests to ensure that the unit can be used in quantity literals and that any conversion factors are applied correctly. \n4. Run `cargo test -p reify-compiler -- units_money` to execute relevant test cases.",
+        "status": "pending",
+        "dependencies": [
+          "208",
+          "209",
+          "2377"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:29:14.076Z"
+      },
+      {
+        "id": "2379",
+        "title": "Money dimension: quantity-literal + currency-mass arithmetic integration tests",
+        "description": "Develop end-to-end tests for quantity-literal and currency-mass arithmetic in the Money dimension, including user-defined unit conversions.",
+        "details": "Implement integration tests for the Money dimension in the `tests/` directory. Focus on scenarios involving quantity literals like `25USD` and `25USD/kg`, and arithmetic operations such as `25USD/kg * 2kg = 50USD`. Additionally, test user-defined unit conversions, e.g., `unit GBP : Money = 1.25USD`. Ensure the tests cover both direct arithmetic and conversion scenarios, verifying that the system correctly handles these operations as specified in the PRD (docs/prds/money-dimension.md, task 3).",
+        "testStrategy": "Run comprehensive integration tests using `cargo test --workspace`. Verify that all arithmetic operations and conversions produce the expected results. Ensure that user-defined units are correctly registered and used in calculations. Validate that the system handles both successful operations and potential errors gracefully.",
+        "status": "in-progress",
+        "dependencies": [
+          "57",
+          "208",
+          "209",
+          "2378"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:51.381Z"
+      },
+      {
+        "id": "2380",
+        "title": "Money dimension: dimension-mismatch diagnostic distinguishes Money vs Force",
+        "description": "Implement a diagnostic to clearly differentiate between Money and Force dimension mismatches.",
+        "details": "In the diagnostic system, enhance the logic to detect and report dimension mismatches specifically between Money and Force. Update the error reporting mechanism to provide distinct messages for these mismatches, ensuring clarity in the diagnostic output. Reference the PRD document at docs/prds/money-dimension.md task 4 for detailed requirements. Modify the existing dimension-checking logic to include specific checks for Money and Force, and ensure that the error messages are informative and actionable.",
+        "testStrategy": "Create unit tests that simulate operations resulting in Money vs Force mismatches, such as `25USD + 5N`. Verify that the diagnostic system correctly identifies and reports these mismatches with distinct messages. Run the full test suite to ensure no regressions occur in existing functionality. Additionally, validate that the error messages provide clear guidance on the nature of the mismatch.",
+        "status": "in-progress",
+        "dependencies": [
+          "208",
+          "209"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:55.386Z"
+      },
+      {
+        "id": "2381",
+        "title": "Money dimension: cost-aggregation stdlib idiom + canonical example",
+        "description": "Design a helper trait or pattern to iterate over `Buy` occurrences and sum `unit_cost * quantity_produced` into a `Scalar<Money>`.",
+        "details": "Implement a helper trait or pattern in the stdlib that efficiently aggregates costs by iterating over `Buy` occurrences within a given scope. This trait should compute the total cost by multiplying `unit_cost` by `quantity_produced` for each occurrence and summing the results into a `Scalar<Money>`. Ensure the implementation is efficient and integrates seamlessly with existing stdlib components. Additionally, create a canonical example in `examples/cost_aggregation.ri` to demonstrate the usage of this idiom. Reference the PRD in `docs/prds/money-dimension.md`, specifically task 5 and specification section 11, to align with the project requirements.",
+        "testStrategy": "1. Write unit tests to verify that the trait correctly aggregates costs from multiple `Buy` occurrences. \n2. Ensure the example in `examples/cost_aggregation.ri` compiles and runs, demonstrating the correct aggregation of costs. \n3. Use `cargo test -p reify-compiler -- cost_aggregation` to run all relevant tests and ensure no regressions occur in related modules.",
+        "status": "in-progress",
+        "dependencies": [
+          "339"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:55.516Z"
+      },
+      {
+        "id": "2382",
+        "title": "Money dimension: source-form unit display in errors + LSP hovers",
+        "description": "Ensure currency units render in source form (e.g., `USD/kg`) in error messages and LSP hovers.",
+        "details": "Modify the error message and LSP hover rendering logic to display currency units in their source form rather than as exponent vectors. This involves updating the formatting functions within the language server and error handling modules to recognize and correctly format units like `USD/kg`. Reference the PRD in docs/prds/money-dimension.md, specifically task 6, for detailed specifications on how units should be displayed. Ensure that the changes are consistent across all relevant parts of the application.",
+        "testStrategy": "Create unit tests to verify that currency units are displayed in the correct format in both error messages and LSP hovers. Use a variety of test cases to cover different unit combinations and ensure that no exponent vectors are displayed. Additionally, perform integration tests to confirm that the changes do not affect other parts of the system.",
+        "status": "in-progress",
+        "dependencies": [
+          "208",
+          "209"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:55.641Z"
+      },
+      {
+        "id": "2383",
+        "title": "Money dimension: full acceptance test sweep + Angle/Torque regression guard",
+        "description": "Develop comprehensive tests for the Money dimension covering acceptance criteria 1-8 and ensure Angle/Torque distinction remains unaffected.",
+        "details": "Implement a full suite of tests for the Money dimension as specified in the PRD (docs/prds/money-dimension.md, task 7). This includes verifying all acceptance criteria from 1 to 8. Additionally, include a regression test to ensure that changes to the Money dimension do not impact the Angle/Torque distinction. Use existing test patterns and frameworks to ensure consistency and reliability. Focus on edge cases and potential integration issues that could arise from recent changes in the Money dimension representation.",
+        "testStrategy": "1. Develop unit tests for each acceptance criterion (1-8) as outlined in the PRD.\n2. Implement a regression test to verify that Angle/Torque distinctions are unaffected by Money dimension changes.\n3. Run all tests using `cargo test --workspace` to ensure comprehensive coverage and correctness.\n4. Validate that all tests pass and that no unintended side effects occur in related dimensions.",
+        "status": "pending",
+        "dependencies": [
+          "2377",
+          "2379"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2384",
+        "title": "auto type-param: candidate enumeration with cap-of-10 + bound dispatch",
+        "description": "Implement candidate enumeration for auto type parameters, capping results at 10 and using trait conformance predicates.",
+        "details": "This task involves walking the in-scope type table at the use site to collect concrete types that satisfy the specified bounds (trait, kind, or composite). Utilize the trait conformance predicate from Task #66 to ensure types meet the necessary criteria. If more than 10 candidates are found, trigger the `E_AUTO_TYPE_PARAM_POOL_OVERFLOW` error, listing the first 10 candidates alphabetically. Refer to the PRD document at `docs/prds/auto-type-param-resolution.md` task 1 and specification section §3.9 for detailed requirements and constraints.",
+        "testStrategy": "1. Create unit tests to verify that candidate enumeration correctly identifies all valid types within scope.\n2. Test the integration with trait conformance predicates to ensure only compliant types are selected.\n3. Simulate scenarios with more than 10 candidates to confirm the overflow error is triggered and handled correctly.\n4. Validate that the candidates are listed alphabetically when overflow occurs.\n5. Conduct regression tests to ensure existing functionality remains unaffected.",
+        "status": "in-progress",
+        "dependencies": [
+          "66",
+          "17",
+          "21"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:25:13.163Z"
+      },
+      {
+        "id": "2385",
+        "title": "auto type-param: per-candidate feasibility filter reusing value-auto primitives",
+        "description": "Implement a feasibility filter for auto type parameters by instantiating parameterized definitions with each candidate and using value-auto solver primitives.",
+        "details": "This task involves creating a feasibility filter for auto type parameters. For each candidate, instantiate the parameterized definition and apply the value-auto solver's feasibility primitives to the resulting scope's constraints. Treat undefined constraints as feasible, ensuring monotonic behavior as per architecture section 2.5. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 2. Ensure integration with the existing candidate enumeration logic from Task #2384 and utilize the trait conformance predicates established in Task #66.",
+        "testStrategy": "1. Develop unit tests to verify that the feasibility filter correctly processes each candidate and applies the solver primitives.\n2. Ensure that undefined constraints are treated as feasible and do not block resolution.\n3. Test integration with candidate enumeration to confirm seamless operation.\n4. Simulate scenarios with various constraint configurations to validate monotonic behavior.",
+        "status": "pending",
+        "dependencies": [
+          "66",
+          "2384"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2386",
+        "title": "auto type-param: strict-vs-free selection + lexicographic tiebreak + diagnostic codes",
+        "description": "Implement selection logic for auto type parameters with strict and free candidates, including lexicographic tiebreaking and diagnostic code generation.",
+        "details": "This task involves implementing the selection logic for auto type parameters when resolving candidates. If no feasible candidates are found, generate the `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error, listing rejections. If exactly one candidate is feasible, use it directly. For two or more strict candidates, generate the `E_AUTO_TYPE_PARAM_AMBIGUOUS` error. If there are two or more candidates with `auto(free)`, select the lexicographically first by fully qualified name (FQN) and issue a `W_AUTO_TYPE_PARAM_NON_UNIQUE` warning. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 3. Ensure integration with the feasibility filter and candidate enumeration logic from previous tasks.",
+        "testStrategy": "1. Develop unit tests to verify correct error and warning generation for each scenario (0, 1, ≥2 strict, ≥2 with free candidates). 2. Test lexicographic selection by FQN when multiple free candidates exist. 3. Ensure integration with the feasibility filter and candidate enumeration logic, verifying that the correct candidates are processed. 4. Simulate scenarios with varying numbers of candidates to confirm correct diagnostic code generation and selection logic.",
+        "status": "pending",
+        "dependencies": [
+          "2385",
+          "2384"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2387",
+        "title": "auto type-param: multi-param declared-order resolution (no v0.1 backtracking)",
+        "description": "Implement resolution for multiple auto type parameters in declared order without cross-param backtracking for version 0.1.",
+        "details": "This task involves iterating over multiple auto type parameters in the order they are declared. For each parameter, resolve its substitution and thread this resolved substitution into the subsequent candidate enumerations. Ensure that there is no cross-parameter backtracking in this version. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 4 and acceptance criterion 6. This approach should maintain the integrity of the resolution process by strictly adhering to the declared order of parameters, ensuring that each parameter's resolution is influenced only by its predecessors and not by any subsequent parameters.",
+        "testStrategy": "1. Develop unit tests to verify that each auto type parameter is resolved in the declared order. 2. Ensure that resolved substitutions are correctly threaded into subsequent candidate enumerations. 3. Confirm that no cross-parameter backtracking occurs by testing scenarios with multiple parameters and verifying that changes in later parameters do not affect earlier resolutions. 4. Integrate tests with existing candidate enumeration and feasibility filter logic to ensure compatibility and correctness.",
+        "status": "pending",
+        "dependencies": [
+          "2386",
+          "2385",
+          "2384"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2388",
+        "title": "auto type-param: SchemaNode topology-trigger wiring + warm-state cache reuse",
+        "description": "Integrate resolved concrete types into SchemaNode.compute() for topology template substitution and validate warm-state pool reuse on revert.",
+        "details": "This task involves wiring the resolved concrete type into the `SchemaNode.compute()` method to ensure that the topology template substitutes correctly and re-elaboration proceeds as expected. This requires modifying the `SchemaNode` class to accept and process the resolved types, ensuring that the topology trigger is correctly activated. Additionally, validate the reuse of the warm-state pool when reverting changes, as outlined in architecture sections 6.2-6.3. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 5 and acceptance criterion 7. Ensure that the implementation aligns with the existing architecture and integrates seamlessly with the current system.",
+        "testStrategy": "1. Develop unit tests to verify that `SchemaNode.compute()` correctly processes and substitutes the resolved concrete types. 2. Simulate scenarios where the topology trigger is activated and ensure that re-elaboration proceeds without errors. 3. Test the warm-state pool reuse by reverting changes and confirming that the pool is reused correctly without data loss or corruption. 4. Conduct integration tests to ensure compatibility with existing components and that the overall system behavior remains consistent.",
+        "status": "pending",
+        "dependencies": [
+          "2385",
+          "2386",
+          "2387"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2389",
+        "title": "auto type-param: LSP diagnostic surface for all four codes",
+        "description": "Integrate LSP diagnostics to surface POOL_OVERFLOW, NO_CANDIDATE, AMBIGUOUS, and NON_UNIQUE codes with detailed candidate listings and suggestions.",
+        "details": "Implement the integration of Language Server Protocol (LSP) diagnostics to surface the four error codes: POOL_OVERFLOW, NO_CANDIDATE, AMBIGUOUS, and NON_UNIQUE. Ensure that each diagnostic includes a full listing of candidates, reasons for rejection, and explicit substitution suggestions. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 6. Utilize existing diagnostic pathways to ensure consistency and leverage the candidate enumeration logic from Task 2384. Implement detailed logging for each diagnostic type to aid in debugging and future enhancements.",
+        "testStrategy": "1. Develop unit tests to verify that each diagnostic code is correctly surfaced via the LSP. 2. Ensure that candidate listings and rejection reasons are complete and accurate. 3. Test explicit substitution suggestions for correctness and clarity. 4. Simulate scenarios for each error code to confirm proper diagnostic generation and LSP integration. 5. Run integration tests to ensure compatibility with existing diagnostic systems.",
+        "status": "pending",
+        "dependencies": [
+          "2384",
+          "2385",
+          "2386"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2390",
+        "title": "auto type-param: determinism smoke test + v0.1 example-corpus perf regression guard",
+        "description": "Add an example to test determinism of `Bearing<auto: Seal>` and verify performance on the v0.1 example corpus.",
+        "details": "Implement an end-to-end example using `Bearing<auto: Seal>` to ensure deterministic behavior. Run the example twice and assert that the resolved snapshot hash is identical both times. Additionally, execute the v0.1 example corpus to confirm there is no regression in elaboration time. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 7 and acceptance criteria 11-12. Ensure the example is comprehensive and covers edge cases that might affect determinism.",
+        "testStrategy": "1. Develop a test script to run the `Bearing<auto: Seal>` example twice and compare the snapshot hashes for consistency. 2. Execute the v0.1 example corpus and measure elaboration time, comparing it against baseline metrics to detect any regressions. 3. Validate that the test setup is repeatable and produces consistent results across different environments.",
+        "status": "pending",
+        "dependencies": [
+          "2384",
+          "2385",
+          "2386"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2391",
+        "title": "auto type-param: spec / stdlib doc updates with v0.1 algorithm + v0.2 deferral note",
+        "description": "Update the language specification and standard library documentation to include cross-references and a detailed explanation of the auto type-param resolution algorithm.",
+        "details": "This task involves updating the language specification and standard library documentation to reflect the current state of the auto type-param resolution algorithm. Specifically, add cross-references to relevant sections and include a new document titled 'How `auto` type-param resolution works'. This document should cover the per-parameter BFS algorithm, the cap-of-10 candidate limit, lexicographic tiebreaking by fully qualified name (FQN), and the cross-parameter backtracking deferral introduced in version 0.2. Ensure that the documentation is clear and accessible, providing examples where necessary to illustrate complex concepts. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 8.",
+        "testStrategy": "1. Review the updated documentation to ensure all new sections and cross-references are correctly linked and formatted. 2. Verify that the new document accurately describes the BFS algorithm, candidate cap, lexicographic tiebreaking, and backtracking deferral. 3. Conduct a peer review with team members to ensure clarity and completeness. 4. Validate examples in the documentation by running them in a test environment to confirm they produce the expected results.",
+        "status": "pending",
+        "dependencies": [
+          "2384",
+          "2386",
+          "2387"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2392",
+        "title": "[v0.2] imported field source (OpenVDB / CSV / HDF5) — tracker",
+        "description": "Implement the `imported` source kind for `field def` declarations to read field data from external files.",
+        "details": "This task involves adding support for a new `imported` source kind in the field definition declarations. This source kind will allow the system to read field data from external file formats such as OpenVDB, CSV, and HDF5. The implementation should adhere to the specifications outlined in the PRD located at docs/prds/v0_2/imported-field-source.md. Key considerations include ensuring compatibility with existing field source kinds (`analytical`, `sampled`, `composed`) and integrating with the multi-kernel dispatch system described in task #2295. Additionally, ensure that the implementation aligns with user needs and diagnostic requirements as documented.",
+        "testStrategy": "1. Verify that fields can be successfully imported from OpenVDB, CSV, and HDF5 files by creating test cases that load sample data from each format.\n2. Ensure that the imported data is correctly integrated with existing field operations and can be used interchangeably with other source kinds.\n3. Conduct performance testing to ensure that importing large datasets does not degrade system performance.\n4. Validate error handling by testing with corrupted or unsupported file formats to ensure graceful failure and informative error messages.",
+        "status": "pending",
+        "dependencies": [
+          "2295",
+          "2344"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:50:02.365Z",
-      "taskCount": 2297,
-      "completedCount": 2058,
+      "lastModified": "2026-04-26T20:29:14.081Z",
+      "taskCount": 2381,
+      "completedCount": 2060,
       "tags": [
         "master"
       ]
