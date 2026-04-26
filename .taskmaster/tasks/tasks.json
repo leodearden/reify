@@ -48667,23 +48667,21 @@
         "description": "tests/infra/test_refresh_briefing_known_gaps.sh Check 16 only exercises one ordering of the cross-tag collision (feature-branch first as done, master second as in-progress). Under that ordering the done occurrence is indexed first and the in-progress occurrence hits the early-`continue` branch — the test would still pass even if the upgrade-when-done branch (scripts/refresh_briefing_known_gaps.py:167-174) were broken. Add a Check 17 that swaps the tag order — master first containing the task as in-progress, feature-branch second as done — and asserts WARN + exit 1. This directly covers the upgrade path that the inline comment (\"Relying on insertion order would produce false negatives when the integration target (master) is listed after a feature-branch tag\") is specifically defending against.",
         "details": "Mirror Check 16's structure but flip the JSON tag order so master appears first. The expected behavior is the same (WARN + exit 1) but the code path exercised inside the script differs: the second (done) occurrence must replace the first (in-progress) occurrence via lines 167-174 rather than being skipped by the early `continue` on line 175.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T09:42:30.438Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T09:33:57.890Z",
-      "taskCount": 2249,
+      "lastModified": "2026-04-26T09:42:30.438Z",
+      "taskCount": 2250,
       "completedCount": 2011,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T09:41:16.971Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T09:42:11.378Z"
+      ]
     }
   }
 }
