@@ -50715,7 +50715,7 @@
         "id": "2345",
         "title": "Warm-state eviction: wire pool.checkout None-return into compute_cold fallback",
         "description": "PRD docs/prds/warm-state-eviction.md. Wire both ends of the WarmStatePool eviction contract per arch §4.3 lines 539-540 and §6.4: (1) when a node is removed by a topology update, donate its warm state to the pool keyed by node type + path-based identity; subsequent reappearance with the same key reuses donated state; donated state counts against the memory budget and is subject to the same eviction policy per §6.4 cancellation; (2) pool.checkout(node_id) returns None when state has been evicted; the recursive evaluator's existing Option<State> handling falls back to compute_cold transparently per the WarmStartable protocol (arch §4.1); confirm all warm-startable node types (RealizationNode, ResolutionNode, ComputeNode) handle the None case correctly.",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "2340"
         ],
@@ -50727,7 +50727,8 @@
           "curator_action": "combine",
           "curator_justification": "Both tasks are tiny, high-priority, and wire opposite ends of the same WarmStatePool eviction contract from the same PRD section (arch §4.3). The candidate adds donation-on-removal (write path) while Task 2345 adds checkout→None→compute_cold fallback (read path). They will serialize on the same module lock, and combining loads WarmStatePool context once. Task 2345 is pending and combine_eligible. Coherence: 'Wire both ends of the WarmStatePool eviction interface — topology-removal state donation",
           "combined_at": "2026-04-26T20:09:40.315367+00:00"
-        }
+        },
+        "updatedAt": "2026-04-26T20:25:47.838Z"
       },
       {
         "id": "2346",
@@ -51417,7 +51418,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:25:40.715Z",
+      "lastModified": "2026-04-26T20:25:47.854Z",
       "taskCount": 2381,
       "completedCount": 2060,
       "tags": [
