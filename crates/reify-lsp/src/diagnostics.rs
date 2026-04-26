@@ -189,11 +189,10 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Merge eval-time diagnostics. The regression-lock cluster
-    // (eval_diagnostics_never_use_constraint_violation_format and
-    // eval_diagnostics_regression_lock_cluster) enforces the invariant that
-    // eval() never emits the `constraint <entity>#constraint[<index>] violated`
-    // format, covering every known eval-time emitter:
+    // Merge eval-time diagnostics. The `eval_diagnostics_never_use_constraint_violation_format`
+    // and `eval_diag_format_*` tests enforce the invariant that eval() never emits the
+    // `constraint <entity>#constraint[<index>] violated` format, covering every known
+    // eval-time emitter:
     //   - circular let-binding (unfold.rs / engine_eval.rs)
     //   - param_override type-kind / dimension mismatch (engine_eval.rs)
     //   - sub-component lookup failure (engine_eval.rs)
@@ -280,6 +279,7 @@ mod tests {
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
     use reify_types::{DimensionVector, Value, ValueCellId};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn eval_diagnostics_never_use_constraint_violation_format() {
         // Use circular-let-binding source: a known eval-time diagnostic emitter
-        // (engine_eval.rs:1545, 1819 and unfold.rs:518).
+        // (the unfold.rs / engine_eval.rs circular let-binding paths).
         let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
@@ -839,7 +839,7 @@ mod tests {
                 .message
                 .strip_prefix("constraint ")
                 .and_then(|s| s.strip_suffix(" violated"))
-                .map_or(false, |id| !id.is_empty() && !id.contains(' '));
+                .is_some_and(|id| !id.is_empty() && !id.contains(' '));
             assert!(
                 !is_violation_format,
                 "eval() emitted a 'constraint ... violated' format message: {:?}. \
@@ -850,199 +850,196 @@ mod tests {
         }
     }
 
-    /// Regression-lock cluster: `eval()` must never emit the `"constraint ... violated"`
-    /// format (checked by inline `strip_prefix / strip_suffix / !contains(' ')`) from any
-    /// of the known eval-time diagnostic emitters.
-    ///
-    /// Covers five emitters (circular let-binding is locked separately by
-    /// `eval_diagnostics_never_use_constraint_violation_format`; this cluster handles
-    /// the remaining paths, split into five fixtures due to the param_override variants):
-    ///   - param_override type-kind mismatch (engine_eval.rs:282-287 / 619-625)
-    ///   - param_override dimension mismatch (engine_eval.rs:289-293 / 627-633)
-    ///   - sub-component lookup failure (engine_eval.rs:877-880 / 1675-1678)
-    ///   - solver Infeasible pass-through (engine_eval.rs:1165-1169 / 1743-1747)
-    ///   - solver NoProgress pass-through (engine_eval.rs:1170-1175 / 1748-1751)
-    ///
-    /// Each fixture: (a) sanity-asserts the expected diagnostic was emitted so the
-    /// format check cannot pass vacuously, and (b) asserts none match the inline check.
-    /// Solver fixtures additionally verify via `MockConstraintSolver::counter_handle()`
-    /// that the injected solver was actually dispatched — the sanity assertion alone cannot
-    /// prove that when the solver message happens to contain the expected substring for
-    /// another reason.
-    #[test]
-    fn eval_diagnostics_regression_lock_cluster() {
-        use std::sync::atomic::Ordering;
-
-        // Anchor: the production format `format!("constraint {} violated", ConstraintNodeId::new("S", 0))`
-        // must satisfy the inline check used throughout this cluster so that format drift in
-        // ConstraintNodeId's Display trips this assertion before the negative checks below.
-        {
-            let real_id = ConstraintNodeId::new("S", 0u32);
-            let anchor = format!("constraint {} violated", real_id);
+    /// Negative-assertion helper: asserts that none of `diags` match the inline
+    /// `strip_prefix("constraint ") / strip_suffix(" violated") / !contains(' ')` format
+    /// that `compute_diagnostics_with_state` relies on never appearing in eval output.
+    /// `label` is embedded in the panic message to identify which emitter path failed.
+    fn assert_no_violation_format(diags: &[Diagnostic], label: &str) {
+        for diag in diags {
+            let is_violation_format = diag
+                .message
+                .strip_prefix("constraint ")
+                .and_then(|s| s.strip_suffix(" violated"))
+                .is_some_and(|id| !id.is_empty() && !id.contains(' '));
             assert!(
-                anchor
-                    .strip_prefix("constraint ")
-                    .and_then(|s| s.strip_suffix(" violated"))
-                    .map_or(false, |id| !id.is_empty() && !id.contains(' ')),
-                "anchor: ConstraintNodeId::new(\"S\", 0) formats as {real_id:?} which does not \
-                 match the inline constraint-violation check; if ConstraintNodeId Display changed, \
-                 update the inline check in this cluster and in \
-                 eval_diagnostics_never_use_constraint_violation_format."
+                !is_violation_format,
+                "[{label}] eval() emitted a 'constraint ... violated' format message: {:?}. \
+                 The compute_diagnostics_with_state merge loop relies on eval diagnostics \
+                 never using this format — add a filter on the eval merge or update the loop.",
+                diag.message
             );
-        }
-
-        struct Fixture {
-            name: &'static str,
-            sanity_check: Box<dyn Fn(&[Diagnostic]) -> bool>,
-            sanity_desc: &'static str,
-            build: Box<dyn Fn() -> Vec<Diagnostic>>,
-        }
-
-        let fixtures: Vec<Fixture> = vec![
-            Fixture {
-                name: "param_override_type_kind_mismatch",
-                sanity_check: Box::new(|diags| {
-                    diags.iter().any(|d| d.message.contains("type-kind mismatch"))
-                }),
-                sanity_desc: "engine_eval.rs:282-287 must emit 'type-kind mismatch' warning",
-                build: Box::new(|| {
-                    let source = "structure S { param width: Scalar = 100mm }";
-                    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-                    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-                    let mut engine =
-                        reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-                    let _ = engine.eval(&compiled);
-                    engine.set_param_and_invalidate(
-                        &ValueCellId::new("S", "width"),
-                        Value::Bool(true),
-                    );
-                    engine.eval(&compiled).diagnostics
-                }),
-            },
-            Fixture {
-                name: "param_override_dimension_mismatch",
-                sanity_check: Box::new(|diags| {
-                    diags.iter().any(|d| d.message.contains("dimension mismatch"))
-                }),
-                sanity_desc: "engine_eval.rs:289-293 must emit 'dimension mismatch' warning",
-                build: Box::new(|| {
-                    let source = "structure S { param width: Scalar = 100mm }";
-                    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-                    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-                    let mut engine =
-                        reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-                    let _ = engine.eval(&compiled);
-                    engine.set_param_and_invalidate(
-                        &ValueCellId::new("S", "width"),
-                        Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
-                    );
-                    engine.eval(&compiled).diagnostics
-                }),
-            },
-            Fixture {
-                name: "sub_component_unknown_structure",
-                sanity_check: Box::new(|diags| {
-                    diags.iter().any(|d| {
-                        d.message.contains("sub-component")
-                            && d.message.contains("references unknown structure")
-                    })
-                }),
-                sanity_desc:
-                    "engine_eval.rs:877-880 must emit 'sub-component ... references unknown structure'",
-                build: Box::new(|| {
-                    let source = "structure S { sub x = Unknown() }";
-                    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-                    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-                    let mut engine =
-                        reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-                    engine.eval(&compiled).diagnostics
-                }),
-            },
-            Fixture {
-                name: "solver_infeasible",
-                sanity_check: Box::new(|diags| {
-                    diags
-                        .iter()
-                        .any(|d| d.message.contains("infeasible: x has no satisfying assignment"))
-                }),
-                sanity_desc:
-                    "engine_eval.rs:1165-1169 must forward Infeasible solver diagnostic",
-                build: Box::new(|| {
-                    let source =
-                        "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
-                    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-                    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-                    let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
-                        "infeasible: x has no satisfying assignment",
-                    )]);
-                    let counter = solver.counter_handle();
-                    let mut engine =
-                        reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
-                            .with_solver(Box::new(solver));
-                    let result = engine.eval(&compiled);
-                    // Verify solver was actually dispatched: the sanity_check substring
-                    // comes from the injected mock, so counter > 0 proves dispatch.
-                    assert!(
-                        counter.load(Ordering::Relaxed) > 0,
-                        "solver_infeasible: MockConstraintSolver.solve() was never called; \
-                         the 'auto' param + constraint source may not trigger solver dispatch"
-                    );
-                    result.diagnostics
-                }),
-            },
-            Fixture {
-                name: "solver_no_progress",
-                sanity_check: Box::new(|diags| {
-                    diags.iter().any(|d| d.message.contains("made no progress"))
-                }),
-                sanity_desc:
-                    "engine_eval.rs:1170-1175 must emit 'Constraint solver made no progress'",
-                build: Box::new(|| {
-                    let source =
-                        "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
-                    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-                    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-                    let solver =
-                        MockConstraintSolver::new_no_progress("iteration limit reached");
-                    let counter = solver.counter_handle();
-                    let mut engine =
-                        reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
-                            .with_solver(Box::new(solver));
-                    let result = engine.eval(&compiled);
-                    assert!(
-                        counter.load(Ordering::Relaxed) > 0,
-                        "solver_no_progress: MockConstraintSolver.solve() was never called; \
-                         the 'auto' param + constraint source may not trigger solver dispatch"
-                    );
-                    result.diagnostics
-                }),
-            },
-        ];
-
-        for fixture in &fixtures {
-            let diagnostics = (fixture.build)();
-            assert!(
-                (fixture.sanity_check)(&diagnostics),
-                "[{}] sanity check failed — {}; got: {:#?}",
-                fixture.name,
-                fixture.sanity_desc,
-                diagnostics
-            );
-            for diag in &diagnostics {
-                let is_violation_format = diag
-                    .message
-                    .strip_prefix("constraint ")
-                    .and_then(|s| s.strip_suffix(" violated"))
-                    .map_or(false, |id| !id.is_empty() && !id.contains(' '));
-                assert!(
-                    !is_violation_format,
-                    "[{}] eval() emitted a 'constraint ... violated' format message: {:?}. \
-                     Add a filter on the eval merge in compute_diagnostics_with_state or \
-                     update the merge loop.",
-                    fixture.name,
-                    diag.message
-                );
-            }
         }
     }
+
+    /// Shared setup for the two param-override emitter tests.
+    ///
+    /// Parses and compiles `"structure S { param width: Scalar = 100mm }"`, does an initial
+    /// eval to warm the engine state, then overrides `width` with `override_value` and returns
+    /// the diagnostics from the second eval.
+    fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
+        let source = "structure S { param width: Scalar = 100mm }";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let _ = engine.eval(&compiled);
+        engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
+        engine.eval(&compiled).diagnostics
+    }
+
+    /// Shared setup for the two solver pass-through emitter tests.
+    ///
+    /// Parses and compiles the `"auto" + constraint-on-x` source and installs `solver`.
+    /// Returns `(counter, diagnostics)` where `counter` is the live `Arc<AtomicUsize>` from
+    /// `solver.counter_handle()`, allowing callers to assert the solver was dispatched.
+    fn run_solver_on_constrained_auto_param(
+        solver: MockConstraintSolver,
+    ) -> (Arc<AtomicUsize>, Vec<Diagnostic>) {
+        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let counter = solver.counter_handle();
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(solver));
+        let diagnostics = engine.eval(&compiled).diagnostics;
+        (counter, diagnostics)
+    }
+
+    /// Locks the `ConstraintNodeId` Display invariant independently of any emitter.
+    ///
+    /// The production format `format!("constraint {} violated", ConstraintNodeId::new("S", 0))`
+    /// must satisfy the inline `strip_prefix / strip_suffix / !contains(' ')` check so that
+    /// drift in `ConstraintNodeId::Display` trips this test before the negative checks in the
+    /// per-emitter cluster.
+    #[test]
+    fn eval_diag_format_anchor() {
+        let real_id = ConstraintNodeId::new("S", 0u32);
+        let anchor = format!("constraint {} violated", real_id);
+        assert!(
+            anchor
+                .strip_prefix("constraint ")
+                .and_then(|s| s.strip_suffix(" violated"))
+                .is_some_and(|id| !id.is_empty() && !id.contains(' ')),
+            "anchor: ConstraintNodeId::new(\"S\", 0) formats as {real_id:?} which does not \
+             match the inline constraint-violation check; if ConstraintNodeId Display changed, \
+             update the inline check in this cluster and in \
+             eval_diagnostics_never_use_constraint_violation_format."
+        );
+    }
+
+    /// Per-emitter regression lock — param_override type-kind mismatch path
+    /// (engine_eval.rs param_override type-kind path).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the param_override type-kind mismatch emitter.
+    #[test]
+    fn eval_diag_format_param_override_type_kind() {
+        let diags = build_param_override_diags(Value::Bool(true));
+
+        assert!(
+            diags.iter().any(|d| d.message.contains("type-kind mismatch")),
+            "param_override_type_kind: sanity check failed — engine_eval.rs param_override \
+             type-kind path must emit 'type-kind mismatch'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "param_override_type_kind");
+    }
+
+    /// Per-emitter regression lock — param_override dimension mismatch path
+    /// (engine_eval.rs param_override dimension path).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the param_override dimension mismatch emitter.
+    #[test]
+    fn eval_diag_format_param_override_dimension() {
+        let diags = build_param_override_diags(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        });
+
+        assert!(
+            diags.iter().any(|d| d.message.contains("dimension mismatch")),
+            "param_override_dimension: sanity check failed — engine_eval.rs param_override \
+             dimension path must emit 'dimension mismatch'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "param_override_dimension");
+    }
+
+    /// Per-emitter regression lock — sub-component lookup failure path
+    /// (engine_eval.rs sub-component lookup).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the sub-component unknown-structure emitter.
+    #[test]
+    fn eval_diag_format_sub_component_unknown() {
+        let source = "structure S { sub x = Unknown() }";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let diags = engine.eval(&compiled).diagnostics;
+
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("sub-component")
+                    && d.message.contains("references unknown structure")
+            }),
+            "sub_component_unknown: sanity check failed — engine_eval.rs sub-component lookup \
+             must emit 'sub-component ... references unknown structure'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "sub_component_unknown");
+    }
+
+    /// Per-emitter regression lock — solver Infeasible pass-through path
+    /// (engine_eval.rs solver Infeasible pass-through).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the solver Infeasible emitter. Also verifies via `MockConstraintSolver::counter_handle()`
+    /// that the injected solver was actually dispatched.
+    #[test]
+    fn eval_diag_format_solver_infeasible() {
+        let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+            "infeasible: x has no satisfying assignment",
+        )]);
+        let (counter, diags) = run_solver_on_constrained_auto_param(solver);
+
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "solver_infeasible: MockConstraintSolver.solve() was never called; \
+             the 'auto' param + constraint source may not trigger solver dispatch"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+            "solver_infeasible: sanity check failed — engine_eval.rs solver Infeasible pass-through \
+             must forward the injected diagnostic; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "solver_infeasible");
+    }
+
+    /// Per-emitter regression lock — solver NoProgress pass-through path
+    /// (engine_eval.rs solver NoProgress pass-through).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the solver NoProgress emitter. Also verifies via `MockConstraintSolver::counter_handle()`
+    /// that the injected solver was actually dispatched.
+    #[test]
+    fn eval_diag_format_solver_no_progress() {
+        let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+        let (counter, diags) = run_solver_on_constrained_auto_param(solver);
+
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "solver_no_progress: MockConstraintSolver.solve() was never called; \
+             the 'auto' param + constraint source may not trigger solver dispatch"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("made no progress")),
+            "solver_no_progress: sanity check failed — engine_eval.rs solver NoProgress pass-through \
+             must emit 'made no progress'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "solver_no_progress");
+    }
+
 }
