@@ -1503,6 +1503,36 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
     }
 }
 
+// --- OcctShape lazy accessor implementations ---
+
+const TopTools_IndexedMapOfShape& OcctShape::face_map() const {
+    if (!face_map_cache_) {
+        face_map_cache_ = std::make_unique<TopTools_IndexedMapOfShape>();
+        TopExp::MapShapes(shape, TopAbs_FACE, *face_map_cache_);
+        ++face_map_builds_;
+    }
+    return *face_map_cache_;
+}
+
+const TopTools_IndexedMapOfShape& OcctShape::edge_map() const {
+    if (!edge_map_cache_) {
+        edge_map_cache_ = std::make_unique<TopTools_IndexedMapOfShape>();
+        TopExp::MapShapes(shape, TopAbs_EDGE, *edge_map_cache_);
+        ++edge_map_builds_;
+    }
+    return *edge_map_cache_;
+}
+
+const TopTools_IndexedDataMapOfShapeListOfShape& OcctShape::edge_face_map() const {
+    if (!edge_face_map_cache_) {
+        edge_face_map_cache_ =
+            std::make_unique<TopTools_IndexedDataMapOfShapeListOfShape>();
+        TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, *edge_face_map_cache_);
+        ++edge_face_map_builds_;
+    }
+    return *edge_face_map_cache_;
+}
+
 TopologyCacheBuildCounts topology_cache_build_counts(const OcctShape& shape) {
     TopologyCacheBuildCounts counts;
     counts.face_map_builds = shape.face_map_builds_;
@@ -1513,11 +1543,9 @@ TopologyCacheBuildCounts topology_cache_build_counts(const OcctShape& shape) {
 
 rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) {
     try {
-        // Build a stable 0-based face index via TopExp::MapShapes (the
-        // 1-based IndexedMap deduplicates by IsSame). Use it both as the
-        // canonical index source and for O(1) parent-face lookups.
-        TopTools_IndexedMapOfShape face_map;
-        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+        // Use the lazy cached face map (1-based IndexedMap, deduplicates by
+        // IsSame). Converts 1-based OCCT indices to 0-based for callers.
+        const TopTools_IndexedMapOfShape& face_map = shape.face_map();
 
         const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
         if (face_index >= face_count) {
@@ -1529,9 +1557,8 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) 
             throw std::runtime_error(msg);
         }
 
-        // Build the edge -> faces incidence map for this shape.
-        TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
-        TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+        // Use the lazy cached edge -> faces incidence map.
+        const TopTools_IndexedDataMapOfShapeListOfShape& edge_face_map = shape.edge_face_map();
 
         // For each edge of the queried face, look up its parent faces and
         // recover the 0-based global face index via face_map.FindIndex (O(1)

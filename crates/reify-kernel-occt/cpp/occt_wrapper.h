@@ -30,6 +30,13 @@ struct OcctShape {
     mutable uint32_t face_map_builds_ = 0;
     mutable uint32_t edge_map_builds_ = 0;
     mutable uint32_t edge_face_map_builds_ = 0;
+
+    // --- Lazy accessor methods ---
+    // Each returns a const reference to the corresponding cached map, building
+    // it (and incrementing the counter) on the first call only.
+    const TopTools_IndexedMapOfShape& face_map() const;
+    const TopTools_IndexedMapOfShape& edge_map() const;
+    const TopTools_IndexedDataMapOfShapeListOfShape& edge_face_map() const;
 };
 
 /// Opaque vector of TopoDS_Shape for passing N shapes across the CXX FFI boundary.
