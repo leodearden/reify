@@ -4,6 +4,7 @@
 //! count-based elaboration, and count re-elaboration.
 
 use reify_compiler::TopologyTemplate;
+use reify_eval::cache::NodeId;
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{Engine, EvalResult};
 use reify_test_support::builders::value_ref_typed;
@@ -764,5 +765,83 @@ fn edit_param_count_to_undef_removes_all_instances() {
         result.values.get(&count_id),
         Some(&Value::Undef),
         "count cell should be Undef after edit to Undef"
+    );
+}
+
+// ── Task 2184: Phase 4 cache invalidation for shrunk+regrown collection (mirror of task 2086) ──
+
+#[test]
+fn edit_param_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instance() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Step 1: populate cache at V_A via initial eval
+    engine.eval(&module);
+    let v_a = engine.snapshot().expect("snapshot after eval").version;
+
+    // Pre-edit assertion: all 4 bolt cache entries must be at V_A.
+    // This proves the cache was populated, so the post-edit None-or-fresh check
+    // is meaningful rather than trivially satisfied by a never-populated cache.
+    for i in 0..4_usize {
+        let bolt_node =
+            NodeId::Value(ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter"));
+        let entry = engine
+            .cache_store()
+            .get(&bolt_node)
+            .unwrap_or_else(|| {
+                panic!("Parent.bolts[{}].diameter must be in cache after eval", i)
+            });
+        assert_eq!(
+            entry.basis_version,
+            v_a,
+            "Parent.bolts[{}].diameter must be at V_A before any edits",
+            i
+        );
+    }
+
+    // Step 2: shrink count 4→2 (Phase 4 removes all 4 old instances, creates 0..1).
+    // Without the fix, cache entries for indices 0..1 survive the remove loop at V_A.
+    engine
+        .edit_param(n_id.clone(), Value::Int(2))
+        .expect("edit_param shrink 4→2 must succeed");
+
+    // Step 3: re-grow count 2→4 (Phase 4 removes indices 0..1, creates 0..3).
+    // Without the fix, the stale V_A entries for 0..1 survive both remove loops.
+    let result = engine
+        .edit_param(n_id, Value::Int(4))
+        .expect("edit_param regrow 2→4 must succeed");
+
+    let current_version = engine
+        .snapshot()
+        .expect("snapshot must be present after two edit_param calls")
+        .version;
+
+    // Post-edit assertion: each cache entry must be absent (None) or fresh at
+    // current_version.  A Some(entry) with a prior version is the stale cache
+    // artifact this test pins.  None is acceptable — Phase 4's create loop does
+    // not call cache.record_evaluation, so invalidated entries remain absent.
+    for i in 0..4_usize {
+        let bolt_node =
+            NodeId::Value(ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter"));
+        if let Some(entry) = engine.cache_store().get(&bolt_node) {
+            assert_eq!(
+                entry.basis_version,
+                current_version,
+                "Parent.bolts[{}].diameter cache entry must be fresh after shrink→regrow; \
+                 got basis_version {:?}, expected {:?}",
+                i,
+                entry.basis_version,
+                current_version
+            );
+        }
+        // None is acceptable — Phase 4's create loop does not call
+        // cache.record_evaluation, so invalidated entries remain absent.
+    }
+
+    // Sanity: the re-grown result must have exactly 4 bolt instances
+    assert_eq!(
+        count_bolt_diameter_instances(&result.values),
+        4,
+        "exactly 4 bolt instances should exist after regrow to 4"
     );
 }
