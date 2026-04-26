@@ -3006,9 +3006,9 @@ fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
         edited.values.get(&a_id),
     );
 
-    // Performance lock: Phase 1 re-elaborates Group A only (1 group).
-    // Phase 3 skips both groups (Group A via phase1_reelaborated dedup; Group B via old==new).
-    // Total = 1.
+    // Performance lock: Phase 1 re-elaborates only the group whose guard value flipped (Group A:
+    // true→false). Phase 3 skips every group — Group A via the `phase1_reelaborated` cross-phase
+    // dedup, Group B via the unchanged-guard short-circuit. The exact counter target is asserted below.
     let counter = engine.last_guard_phase_group_evals();
     assert_eq!(
         counter, 1,
