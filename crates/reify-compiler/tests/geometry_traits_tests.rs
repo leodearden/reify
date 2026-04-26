@@ -139,3 +139,53 @@ fn non_watertight_traits_have_empty_refinements() {
         );
     }
 }
+
+// ─── step-9: all seven traits are pure markers ───────────────────────────────
+
+/// Step 9: Pin the marker-trait contract — every one of the seven geometry
+/// traits must have empty `required_members` and empty `defaults`. Any future
+/// contributor accidentally adding a `param` or `constraint` to one of these
+/// traits will trip this test.
+#[test]
+fn all_seven_traits_are_pure_markers() {
+    let module = load_stdlib_module();
+
+    let names = [
+        "Bounded",
+        "Closed",
+        "Manifold",
+        "Orientable",
+        "Convex",
+        "Connected",
+        "Watertight",
+    ];
+
+    for name in &names {
+        let trait_def = module
+            .trait_defs
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' trait in compiled module", name));
+
+        assert!(
+            trait_def.required_members.is_empty(),
+            "trait '{}' should have empty required_members (pure marker), got: {:?}",
+            name,
+            trait_def
+                .required_members
+                .iter()
+                .map(|r| &r.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            trait_def.defaults.is_empty(),
+            "trait '{}' should have empty defaults (pure marker), got: {:?}",
+            name,
+            trait_def
+                .defaults
+                .iter()
+                .map(|d| &d.name)
+                .collect::<Vec<_>>()
+        );
+    }
+}
