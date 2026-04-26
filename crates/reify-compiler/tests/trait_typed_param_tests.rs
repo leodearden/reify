@@ -516,6 +516,97 @@ fn sub_component_arg_structure_instantiation_with_args_accepted() {
     );
 }
 
+// ─── Option<TraitObject> conformance tests (task 2227) ───────────────────────
+//
+// Tests for call-site conformance checking when a param is declared as
+// Option<SomeTrait>. The conformance check must recurse into the Option
+// wrapper and verify the inner value conforms to the trait.
+
+/// Negative test: passing `some(NotAMaterial())` to an `Option<MaterialSpec>` param
+/// must produce a "does not conform to trait" error.
+///
+/// This MUST fail on the post-step-2 base because the conformance dispatcher
+/// still returns silently when the param type is `Type::Option(...)` rather than
+/// exactly `Type::TraitObject(...)`.
+#[test]
+fn option_trait_typed_param_rejects_some_with_non_conforming_struct() {
+    let source = r#"
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: some(NotAMaterial()))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for some(NotAMaterial()) passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: passing `some(Steel())` (a MaterialSpec-conforming struct) to
+/// an `Option<MaterialSpec>` param must compile without errors.
+#[test]
+fn option_trait_typed_param_accepts_some_with_conforming_struct() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: some(Steel()))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for some(Steel()) passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: passing `none` to an `Option<MaterialSpec>` param must compile
+/// without errors — `none` is always valid for any Option<T> param.
+#[test]
+fn option_trait_typed_param_accepts_none() {
+    let source = r#"
+        structure def Host { param m : Option<MaterialSpec> }
+        structure def Top {
+            sub x = Host(m: none)
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for none passed to Option<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
 // ─── Wrapped-trait param resolution (task 2227) ──────────────────────────────
 //
 // Each test declares a trait and a structure whose param is wrapped in one of
