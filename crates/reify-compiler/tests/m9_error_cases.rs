@@ -15,7 +15,44 @@
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::DiagnosticCode;
+use reify_types::{Diagnostic, DiagnosticCode};
+
+/// Assert that `errors` contains at least one diagnostic whose `code` is `code`
+/// and whose message contains every string in `msg_contains`.  That same
+/// diagnostic must have at least one label with a non-empty span.
+///
+/// Combines the three-part `has_msg + has_code + label` pattern used in the
+/// conformance test cases into a single failure-reporting assertion so each
+/// test expresses its intent in one line rather than ten.
+fn assert_has_diagnostic(errors: &[&Diagnostic], code: DiagnosticCode, msg_contains: &[&str]) {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(code) && msg_contains.iter().all(|s| d.message.contains(s)))
+        .collect();
+    assert!(
+        !matching.is_empty(),
+        "expected a diagnostic with code {:?} whose message contains all of {:?}, got: {:?}",
+        code,
+        msg_contains,
+        errors
+            .iter()
+            .map(|d| (d.code, d.message.as_str()))
+            .collect::<Vec<_>>()
+    );
+    let d = matching[0];
+    assert!(
+        !d.labels.is_empty(),
+        "expected the matching {:?} diagnostic to have at least one label; message: {:?}",
+        code,
+        d.message
+    );
+    assert!(
+        !d.labels[0].span.is_empty(),
+        "expected the matching {:?} diagnostic's first label to have a non-empty span; message: {:?}",
+        code,
+        d.message
+    );
+}
 
 // ── Step 1: Trait conformance error tests ─────────────────────────────────────
 
@@ -43,36 +80,10 @@ structure def S : Shaped {
         "expected at least one error for missing required trait member, got: {:?}",
         module.diagnostics
     );
-
-    let has_msg = errors
-        .iter()
-        .any(|d| d.message.contains("missing required member") && d.message.contains("width"));
-    assert!(
-        has_msg,
-        "expected 'missing required member' mentioning 'width', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let has_code = errors
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::MissingRequiredMember));
-    assert!(
-        has_code,
-        "expected DiagnosticCode::MissingRequiredMember, got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    let first = errors[0];
-    assert!(
-        !first.labels.is_empty(),
-        "expected at least one diagnostic label"
-    );
-    assert!(
-        !first.labels[0].span.is_empty(),
-        "expected non-empty span on first label"
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::MissingRequiredMember,
+        &["missing required member", "width"],
     );
 }
 
@@ -100,31 +111,11 @@ structure def S : Shaped {
         "expected at least one error for type mismatch, got: {:?}",
         module.diagnostics
     );
-
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("type mismatch for trait member") && d.message.contains("count")
-    });
-    assert!(
-        has_msg,
-        "expected 'type mismatch for trait member' mentioning 'count', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::TypeMismatchForTraitMember,
+        &["type mismatch for trait member", "count"],
     );
-
-    let has_code = errors
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::TypeMismatchForTraitMember));
-    assert!(
-        has_code,
-        "expected DiagnosticCode::TypeMismatchForTraitMember, got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    let first = errors[0];
-    assert!(!first.labels.is_empty(), "expected at least one label");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
 /// A structure that declares a trait requiring a sub-component of a specific type
@@ -155,31 +146,11 @@ structure def Vehicle : HasEngine {
         "expected at least one error for missing required sub-component, got: {:?}",
         module.diagnostics
     );
-
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("missing required sub-component") && d.message.contains("engine")
-    });
-    assert!(
-        has_msg,
-        "expected 'missing required sub-component' mentioning 'engine', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::MissingRequiredSubComponent,
+        &["missing required sub-component", "engine"],
     );
-
-    let has_code = errors
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::MissingRequiredSubComponent));
-    assert!(
-        has_code,
-        "expected DiagnosticCode::MissingRequiredSubComponent, got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    let first = errors[0];
-    assert!(!first.labels.is_empty(), "expected at least one label");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
 /// A structure passed as a trait-typed param argument that does not declare the
@@ -188,13 +159,8 @@ structure def Vehicle : HasEngine {
 /// Exercises conformance/mod.rs check_trait_arg_conformance StructureRef arm
 /// (Type::StructureRef path, conformance/mod.rs:183).
 ///
-/// Coverage note: the TraitObject arm (Type::TraitObject, mod.rs:205) is covered
-/// by `trait_object_arg_does_not_conform` below. The fallback `_` arm (mod.rs:225),
-/// which fires for non-structure/non-trait arguments such as bare numeric literals
-/// passed to trait-typed params, is not covered by an explicit test here; the arm's
-/// anti-cascade guard (suppresses when arg_type is Int/Real AND arg_call_name is
-/// Some) makes it hard to reach in isolation without risking a secondary "undefined
-/// function" diagnostic, so coverage is acknowledged-missing rather than attempted.
+/// The TraitObject arm is covered by `trait_object_arg_does_not_conform` and
+/// the fallback `_` arm by `fallback_arm_dimensional_param_as_trait_arg`, both below.
 #[test]
 fn type_does_not_conform_to_trait() {
     // Plain does not declare `: Material`, so passing Plain() where Material
@@ -214,31 +180,11 @@ structure def Top { sub h = Host(m: Plain()) }
         "expected at least one error for non-conforming trait arg, got: {:?}",
         module.diagnostics
     );
-
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("does not conform to trait") && d.message.contains("Material")
-    });
-    assert!(
-        has_msg,
-        "expected 'does not conform to trait' mentioning 'Material', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::TypeNotConformingToTrait,
+        &["does not conform to trait", "Material"],
     );
-
-    let has_code = errors
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait));
-    assert!(
-        has_code,
-        "expected DiagnosticCode::TypeNotConformingToTrait, got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    let first = errors[0];
-    assert!(!first.labels.is_empty(), "expected at least one label");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
 /// A trait-object-typed parameter passed where a different (non-refining) trait
@@ -268,31 +214,47 @@ structure def Top {
         "expected at least one error for incompatible trait-object arg, got: {:?}",
         module.diagnostics
     );
-
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("does not conform to trait") && d.message.contains("Mechanical")
-    });
-    assert!(
-        has_msg,
-        "expected 'does not conform to trait' mentioning 'Mechanical', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::TypeNotConformingToTrait,
+        &["does not conform to trait", "Mechanical"],
     );
+}
 
-    let has_code = errors
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait));
+/// Passing a non-structure, non-trait-object argument (a dimensional param) to a
+/// trait-typed param exercises the fallback `_` arm of `check_trait_arg_conformance`
+/// in conformance/mod.rs.
+///
+/// `thickness : Length` is not a function call, so `arg_call_name` is `None`.
+/// The anti-cascade guard (`arg_type is Real/Int AND arg_call_name.is_some()`) does
+/// not fire, so the fallback emits `TypeNotConformingToTrait` regardless of how
+/// the expression compiler represents the dimensional type internally.
+#[test]
+fn fallback_arm_dimensional_param_as_trait_arg() {
+    // `thickness` is a Length-typed param reference, not a StructureRef or
+    // TraitObject.  Passing it where `Material` is required hits the `_` arm.
+    let source = r#"
+trait Material {}
+structure def Host { param m : Material }
+structure def Top {
+    param thickness : Length = 5mm
+    sub h = Host(m: thickness)
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
     assert!(
-        has_code,
-        "expected DiagnosticCode::TypeNotConformingToTrait, got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
+        !errors.is_empty(),
+        "expected at least one error for dimensional-value-as-trait-arg, got: {:?}",
+        module.diagnostics
     );
-
-    let first = errors[0];
-    assert!(!first.labels.is_empty(), "expected at least one label");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::TypeNotConformingToTrait,
+        &["does not conform to trait", "Material"],
+    );
 }
 
 /// A trait with a let binding whose explicit type annotation is incompatible
@@ -320,31 +282,11 @@ structure def S : BadAnnotation { }
         "expected at least one error for trait let annotation mismatch, got: {:?}",
         module.diagnostics
     );
-
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("type mismatch for trait let") && d.message.contains("score")
-    });
-    assert!(
-        has_msg,
-        "expected 'type mismatch for trait let' mentioning 'score', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert_has_diagnostic(
+        &errors,
+        DiagnosticCode::TypeMismatchForTraitMember,
+        &["type mismatch for trait let", "score"],
     );
-
-    let has_code = errors
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::TypeMismatchForTraitMember));
-    assert!(
-        has_code,
-        "expected DiagnosticCode::TypeMismatchForTraitMember, got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    let first = errors[0];
-    assert!(!first.labels.is_empty(), "expected at least one label");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
 // ── Step 3: Unresolved trait error test ──────────────────────────────────────
