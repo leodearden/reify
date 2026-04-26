@@ -47981,7 +47981,7 @@
         "id": "2234",
         "title": "Add eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning",
         "description": "Three test-quality improvements to `crates/reify-eval/tests/eval_param_overrides.rs` in the guarded-group Param helper system: remove a dead parameter from a shared fixture helper, add missing else-member dimension-mismatch coverage, and loosen four task-2195 journal-shape assertions so they survive future guard-cell re-evaluation passes.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "**S1 — Drop unused active param from guarded_module_with_else (~line 53)**\n\nThe signature `guarded_module_with_else(active: bool, y_type: &str, y_default: &str)` has `active` unused by every caller. Simplify to `guarded_module_with_else(y_type: &str, y_default: &str)` and hardcode `param active : Bool = false` in the format string body. Update call sites at approximately lines 500, 684, 690, 719 (remove the `false` argument).\n\nAcceptance: all existing callers compile with one fewer argument; `cargo test -p reify-eval` still green.\n\n**S2 — Add else_members dimension-mismatch test**\n\nTest coverage for `eval_guarded_group_param_cell` is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests ✓\n- else_members-loop: type-kind + override-survival ONLY — **no dimension test** ✗\n\nAdd `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning`:\n- Construct a guarded group where `y` is in `else_members`\n- Supply a dimension-mismatched override for `y`\n- Assert the override is skipped and a warning diagnostic is emitted\n- Mirror the structure of the existing dimension-mismatch test for `members` so the two tests are symmetric\n\nAcceptance: new test passes; `cargo test -p reify-eval eval_skips_dimension` green.\n\n**S3 — Relax strict events.len()==2 assertions in four task-2195 journal-shape tests (~lines 1185-1197 and three sibling tests)**\n\nThe four tests added by task-2195 assert `events.len() == 2` (exactly one Started+Completed pair). If `post_solver_re_eval_guard_cells` (engine_eval.rs:138 area) or any future guard-cell re-evaluation path is ever invoked for guarded-group Param cells — even when user-visible behaviour stays correct — these strict equality assertions will break.\n\nReplace each strict equality with the looser shape:\n\n```rust\nassert!(matches!(events[0].kind, EventKind::Started));\nassert!(matches!(events[1].kind, EventKind::Completed { .. }));\nlet started = events.iter().filter(|e| matches!(e.kind, EventKind::Started)).count();\nlet completed = events.iter().filter(|e| matches!(e.kind, EventKind::Completed { .. })).count();\nassert_eq!(started, completed, \"Started/Completed must be paired\");\n```\n\nThis still catches a missing-pair regression (the count equality fails) and the original Started→Completed ordering, but tolerates legitimate additional re-eval events.\n\nApply to all four task-2195 strict-shape tests:\n- `eval_records_journal_pair_and_cache_entry_for_s4_top_level_param` (or similarly named)\n- `eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_param`\n- `eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param`\n- `eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override_no_default_param`\n\nAcceptance: `cargo test -p reify-eval eval_records_journal` green with the looser assertions.",
@@ -48003,9 +48003,12 @@
           },
           "curator_action": "combine",
           "curator_justification": "The candidate touches only `crates/reify-eval/tests/eval_param_overrides.rs`, identical to Task 2234's single file. Both are tiny low-priority test-quality improvements that will serialize on the same module lock. All four combine rules hold: (1) unified concern = \"test-quality improvements to eval_param_overrides.rs\" fits one sentence; (2) lock stays within the same 1 file; (3) 3 distinct concerns, 1 file — well under budget; (4) neither task is on a critical path.",
-          "combined_at": "2026-04-26T08:11:02.294943+00:00"
+          "combined_at": "2026-04-26T08:11:02.294943+00:00",
+          "done_provenance": {
+            "commit": "a6dd62e0c645eae8a9b57099bc26cccf2c8991d3"
+          }
         },
-        "updatedAt": "2026-04-26T08:11:40.077Z"
+        "updatedAt": "2026-04-26T09:05:47.985Z"
       },
       {
         "id": "2235",
@@ -48498,14 +48501,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T08:33:31.658Z",
+      "lastModified": "2026-04-26T09:05:47.985Z",
       "taskCount": 2243,
-      "completedCount": 2007,
+      "completedCount": 2008,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T08:39:35.927Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
