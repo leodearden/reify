@@ -48313,7 +48313,15 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp/src/diagnostics.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "eval_diagnostics_never_use_constraint_violation_format negative test coverage",
+              "eval-time diagnostic emitters param_override solver Infeasible NoProgress",
+              "constraint violation format entity id Display format reify-lsp"
+            ]
+          }
         }
       },
       {
