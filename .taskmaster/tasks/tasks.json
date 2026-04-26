@@ -50554,6 +50554,19 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:08:24.638Z"
+      },
+      {
+        "id": "2346",
+        "title": "Implement Worked-Example Smoke Test for Field Source Kinds",
+        "description": "Create a smoke test for field source kinds using examples/fields/composed_stiffness.ri, covering analytical, sampled, and composed types.",
+        "details": "Develop a smoke test script that exercises all three field source kinds (analytical, sampled, composed) as specified in the PRD document (docs/prds/field-source-kinds.md). Use the file examples/fields/composed_stiffness.ri to ship these examples in a single file. Ensure the implementation aligns with the specification outlined in §4.1.4 of the documentation. The test should be integrated into the eval test harness to verify the correct functionality of each field source kind.",
+        "testStrategy": "Run the eval test harness to ensure that all three field source kinds are correctly exercised and validated. Verify that the output matches expected results as per the specification in §4.1.4. Check for any discrepancies or errors in the handling of each field source kind and ensure they are resolved.",
+        "status": "pending",
+        "dependencies": [
+          "792"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50563,7 +50576,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:09:36.825Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:09:40.209Z"
     }
   }
 }
