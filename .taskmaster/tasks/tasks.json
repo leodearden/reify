@@ -49845,7 +49845,23 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:44:58.146Z"
+        "updatedAt": "2026-04-26T19:44:58.146Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "CompiledModule",
+              "SolverPragma",
+              "DispatchPlanner",
+              "apply_module_pragmas"
+            ],
+            "queries": [
+              "apply_module_pragmas precision pragma CompiledModule implementation precedent",
+              "#solver pragma dispatch back-end registration reify-eval",
+              "KNOWN_BLOCK_PRAGMAS is_known_module_pragma pragma validation design",
+              "Block-valid pragmas accept #solver at module scope"
+            ]
+          }
+        }
       },
       {
         "id": "2301",
