@@ -11,9 +11,12 @@
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
 use reify_eval::Engine;
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
-use reify_types::{BinOp, CompiledExpr, DimensionVector, ModulePath, Type, Value, ValueCellId, VersionId};
+use reify_types::{
+    BinOp, CompiledExpr, Diagnostic, DimensionVector, ModulePath, Type, Value, ValueCellId,
+    VersionId,
+};
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
 
@@ -167,6 +170,74 @@ fn eval_cached_emits_sub_component_unknown_structure_diagnostic() {
                 && d.message.contains("DoesNotExist")
         }),
         "eval_cached must emit unknown-structure diagnostic for missing sub-component; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
+// ── step-7: solver Infeasible / NoProgress ───────────────────────────────────
+
+/// eval_cached must forward Infeasible diagnostics from the constraint solver.
+///
+/// Fails today because eval_cached never invokes the solver.
+#[test]
+fn eval_cached_emits_solver_infeasible_diagnostic() {
+    let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+        "infeasible: x has no satisfying assignment",
+    )]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert!(
+        result
+            .eval_result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+        "eval_cached must forward Infeasible solver diagnostics; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
+/// eval_cached must emit a "Constraint solver made no progress" warning when
+/// the solver returns NoProgress.
+///
+/// Fails today because eval_cached never invokes the solver.
+#[test]
+fn eval_cached_emits_solver_no_progress_warning() {
+    let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert!(
+        result.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("Constraint solver made no progress")
+                && d.message.contains("iteration limit reached")
+        }),
+        "eval_cached must emit NoProgress warning from solver; got: {:?}",
         result.eval_result.diagnostics,
     );
 }
