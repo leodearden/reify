@@ -47768,13 +47768,17 @@
             "crates/reify-compiler/tests/import_warning_tests.rs"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "ModuleDag",
+              "compile_with_stdlib"
+            ],
             "queries": [
-              "module resolution not yet implemented import warning compiler",
-              "compile_with_stdlib single-module entry point LSP CLI",
-              "compiler import resolution warning cleanup"
+              "module resolution not yet implemented warning user import files",
+              "compile_with_stdlib ModuleDag integration single-module entry point",
+              "ModuleOnly category no_prelude warning"
             ]
-          }
+          },
+          "_causation_id": "94644130-2f15-41ed-9dc9-f2551db2f971"
         }
       },
       {
@@ -48304,7 +48308,9 @@
       "completedCount": 2001,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T07:51:05.168Z",
+      "description": "Tasks for master context"
     }
   }
 }
