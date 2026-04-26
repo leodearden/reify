@@ -210,5 +210,36 @@ assert "Check 7: exit code is 0 (legacy gap silently skipped)" \
 assert "Check 7: stderr contains no WARN about 'legacy gap'" \
     bash -c "! grep -q 'legacy gap' '$_stderr7'"
 
+# ==============================================================================
+# Check 8: orphan tracking ID (not in tasks.json) is gracefully skipped
+# ==============================================================================
+echo ""
+echo "--- Check 8: orphan tracking ID skipped gracefully ---"
+
+_brief8="$_tmpdir/briefing8.yaml"
+_tasks8="$_tmpdir/tasks8.json"
+
+cat > "$_brief8" <<'YAML'
+subprojects:
+  proj:
+    known_gaps:
+      - what: "some gap"
+        tracking: "9999"
+YAML
+
+cat > "$_tasks8" <<'JSON'
+{"master":{"tasks":[{"id":"1","title":"Unrelated","status":"done"}]}}
+JSON
+
+_stderr8="$_tmpdir/stderr8.txt"
+_exit8=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief8" --tasks "$_tasks8" 2>"$_stderr8" || _exit8=$?
+
+assert "Check 8: exit code is 0 (orphan ID gracefully skipped)" \
+    test "$_exit8" -eq 0
+
+assert "Check 8: no WARN emitted for orphan tracking ID" \
+    bash -c "! grep -q 'WARN' '$_stderr8'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
