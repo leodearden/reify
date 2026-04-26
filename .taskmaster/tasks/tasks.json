@@ -50460,15 +50460,16 @@
         "description": "Optional third @solver_hint payload kind. Add PreferredStrategy variant to SolverHintKind in crates/reify-compiler/src/types.rs. Extend extract_solver_hints in crates/reify-compiler/src/annotations.rs to recognise '@solver_hint(\"preferred_strategy\", <ident>)' and store the identifier as a strategy name (any ident accepted; the back-end emits a runtime warning for unknown names — no compile error so the spec §12.2 invariant 'pragmas/hints are advisory' is preserved). Initial recognised names: argmin_default, slvs_default. Forward through to the solver back-end alongside DiscreteSet/PreferStock. PRD: docs/prds/solver-hint-payloads.md item 3. Drop if scope-tight.</description>\n<parameter name=\"priority\">medium</parameter>\n<parameter name=\"dependencies\">275, 276",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:05:31.473Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:05:25.521Z",
+      "lastModified": "2026-04-26T20:05:31.477Z",
       "taskCount": 2328,
       "completedCount": 2059,
       "tags": [
