@@ -135,6 +135,24 @@ assert "run-gui.sh with non-.ri file exits non-zero" \
 assert "run-gui.sh non-.ri error message mentions '.ri'" \
     bash -c 'printf "%s\n" "$1" | grep -qF .ri' _ "$non_ri_out"
 
+# -- Test 23: behavioral — non-existent .ri path is rejected ------------------
+echo ""
+echo "--- Test 23: run-gui.sh rejects a non-existent .ri path ---"
+
+miss_path="/tmp/reify_nonexistent_$$.ri"
+assert "test path for Test 23 does not exist" \
+    bash -c '! [ -e "$1" ]' _ "$miss_path"
+
+miss_out=$(bash "$RUN_GUI" "$miss_path" 2>&1 || true)
+miss_rc=0
+bash "$RUN_GUI" "$miss_path" >/dev/null 2>&1 || miss_rc=$?
+
+assert "run-gui.sh with non-existent .ri exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$miss_rc"
+
+assert "run-gui.sh non-existent .ri error message mentions 'not found'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$miss_out"
+
 RUN_GUI_DEV="$REPO_ROOT/scripts/run-gui-dev.sh"
 
 echo ""
@@ -270,5 +288,23 @@ assert "run-gui-dev.sh with non-.ri file exits non-zero" \
 
 assert "run-gui-dev.sh non-.ri error message mentions '.ri'" \
     bash -c 'printf "%s\n" "$1" | grep -qF .ri' _ "$dev_non_ri_out"
+
+# -- Test 24: behavioral — non-existent .ri path is rejected ------------------
+echo ""
+echo "--- Test 24: run-gui-dev.sh rejects a non-existent .ri path ---"
+
+dev_miss_path="/tmp/reify_nonexistent_$$.ri"
+assert "test path for Test 24 does not exist" \
+    bash -c '! [ -e "$1" ]' _ "$dev_miss_path"
+
+dev_miss_out=$(bash "$RUN_GUI_DEV" "$dev_miss_path" 2>&1 || true)
+dev_miss_rc=0
+bash "$RUN_GUI_DEV" "$dev_miss_path" >/dev/null 2>&1 || dev_miss_rc=$?
+
+assert "run-gui-dev.sh with non-existent .ri exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$dev_miss_rc"
+
+assert "run-gui-dev.sh non-existent .ri error message mentions 'not found'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$dev_miss_out"
 
 test_summary
