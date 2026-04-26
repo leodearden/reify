@@ -2733,6 +2733,39 @@ fn edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip() {
          if > 1, Phase 3 guard_changed gate regressed",
         counter
     );
+
+    // (d) Premise lock: ValueCellNode::content_hash must NOT incorporate the
+    // member/else_member role. If content_hash is ever extended to hash the
+    // role, x and y would appear in `changed` on their own — has_dirty_guards
+    // would fire via the changed-cell path even if the role-flip probe were
+    // dropped, and T3's counter assertion above would keep passing for the
+    // wrong reason (silent test-drift).
+    //
+    // We capture the exact diff tuple that edit_source consumed (not a
+    // recomputed one) to rule out input-drift.
+    let (changed, added, removed) = incremental
+        .last_diff_value_cells()
+        .expect("edit_source must populate last_diff_value_cells");
+    assert!(
+        !changed.contains(&x_id) && !added.contains(&x_id) && !removed.contains(&x_id),
+        "Premise violated: S.x appeared in diff_value_cells (changed={}, added={}, \
+         removed={}). ValueCellNode::content_hash must not incorporate the \
+         member/else_member role — if it does, T3's perf-lock passes for the \
+         wrong reason (role-flip probe is no longer the sole signal).",
+        changed.contains(&x_id),
+        added.contains(&x_id),
+        removed.contains(&x_id),
+    );
+    assert!(
+        !changed.contains(&y_id) && !added.contains(&y_id) && !removed.contains(&y_id),
+        "Premise violated: S.y appeared in diff_value_cells (changed={}, added={}, \
+         removed={}). ValueCellNode::content_hash must not incorporate the \
+         member/else_member role — if it does, T3's perf-lock passes for the \
+         wrong reason (role-flip probe is no longer the sole signal).",
+        changed.contains(&y_id),
+        added.contains(&y_id),
+        removed.contains(&y_id),
+    );
 }
 
 // ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
