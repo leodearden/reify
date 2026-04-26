@@ -80,6 +80,28 @@ if ! git diff --quiet -- "$TASKS_JSON"; then
     _REIFY_TASKS_NORMALIZE_AMEND=1 git commit --amend --no-edit --no-verify -q
 fi
 
+# (6.5) Optional: surface known_gap closures when a done-task auto-commit fires.
+#
+# Gate on two conditions:
+#   (a) The just-committed message matches set_task_status(NNN=done)  — avoids
+#       spurious work on in-progress/pending transitions and plain source commits.
+#   (b) Both review/briefing.yaml and scripts/refresh_briefing_known_gaps.py
+#       exist in the worktree — silently no-ops if either is absent.
+#
+# This block is STRICTLY INFORMATIONAL: it never calls _loud_fail, never exits
+# non-zero, and its || true prevents the briefing script's exit code from leaking
+# back into the hook under set -eu.
+_commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1 \
+    && echo "$_commit_msg" | grep -qE 'set_task_status\([0-9]+=done\)' \
+    && [ -f "$ROOT/review/briefing.yaml" ] \
+    && [ -f "$ROOT/scripts/refresh_briefing_known_gaps.py" ]; then
+    python3 "$ROOT/scripts/refresh_briefing_known_gaps.py" \
+        --briefing "$ROOT/review/briefing.yaml" \
+        --tasks "$TASKS_JSON" \
+        --quiet 2>&1 || true
+fi
+
 # (7) Clear any stale failure marker so it reflects only the *last* attempt.
 # An absent marker means "last attempt succeeded end-to-end" (normalize AND
 # amend); a present marker means "last attempt failed".  This runs after
