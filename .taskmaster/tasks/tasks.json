@@ -48618,12 +48618,13 @@
           "memory_hints": {
             "entities": [
               "DiagnosticCode",
-              "conformance checker"
+              "Diagnostic"
             ],
             "queries": [
-              "DiagnosticCode MissingRequiredMember MissingRequiredSubComponent TypeMismatchForTraitMember TypeNotConformingToTrait conformance",
-              "task 2205 DiagnosticCode enum producer wiring conformance checker.rs mod.rs",
-              "DiagnosticCode conformance producer sites substring match typed code assertion"
+              "DiagnosticCode conformance producer reserved variants",
+              "Diagnostic.code Option<DiagnosticCode> field",
+              "DiagnosticCode constraint-domain variants completed tasks 2253 2255",
+              "conformance producer sites diagnostic attachment"
             ]
           }
         },
