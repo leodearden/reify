@@ -759,6 +759,13 @@ pub enum PragmaValue {
     Number(f64),
     String(String),
     Bool(bool),
+    /// A dimensioned quantity literal, e.g. `0.001m` or `1mm`.
+    ///
+    /// `value` is the bare number from the source, `unit` is the trailing
+    /// identifier (no whitespace between them per the grammar). Conversion
+    /// to SI is done by consumers (e.g. `unit_to_scalar`) — `PragmaValue` is
+    /// intentionally a dumb wire representation.
+    Quantity { value: f64, unit: String },
 }
 
 /// An annotation directive: `@name` or `@name(expr, ...)`.
