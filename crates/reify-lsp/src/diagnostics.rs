@@ -279,6 +279,7 @@ mod tests {
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
     use reify_types::{DimensionVector, Value, ValueCellId};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
@@ -870,6 +871,39 @@ mod tests {
         }
     }
 
+    /// Shared setup for the two param-override emitter tests.
+    ///
+    /// Parses and compiles `"structure S { param width: Scalar = 100mm }"`, does an initial
+    /// eval to warm the engine state, then overrides `width` with `override_value` and returns
+    /// the diagnostics from the second eval.
+    fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
+        let source = "structure S { param width: Scalar = 100mm }";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let _ = engine.eval(&compiled);
+        engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
+        engine.eval(&compiled).diagnostics
+    }
+
+    /// Shared setup for the two solver pass-through emitter tests.
+    ///
+    /// Parses and compiles the `"auto" + constraint-on-x` source and installs `solver`.
+    /// Returns `(counter, diagnostics)` where `counter` is the live `Arc<AtomicUsize>` from
+    /// `solver.counter_handle()`, allowing callers to assert the solver was dispatched.
+    fn run_solver_on_constrained_auto_param(
+        solver: MockConstraintSolver,
+    ) -> (Arc<AtomicUsize>, Vec<Diagnostic>) {
+        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let counter = solver.counter_handle();
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(solver));
+        let diagnostics = engine.eval(&compiled).diagnostics;
+        (counter, diagnostics)
+    }
+
     /// Locks the `ConstraintNodeId` Display invariant independently of any emitter.
     ///
     /// The production format `format!("constraint {} violated", ConstraintNodeId::new("S", 0))`
@@ -899,16 +933,7 @@ mod tests {
     /// from the param_override type-kind mismatch emitter.
     #[test]
     fn eval_diag_format_param_override_type_kind() {
-        let source = "structure S { param width: Scalar = 100mm }";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-        let _ = engine.eval(&compiled);
-        engine.set_param_and_invalidate(
-            &ValueCellId::new("S", "width"),
-            Value::Bool(true),
-        );
-        let diags = engine.eval(&compiled).diagnostics;
+        let diags = build_param_override_diags(Value::Bool(true));
 
         assert!(
             diags.iter().any(|d| d.message.contains("type-kind mismatch")),
@@ -926,16 +951,10 @@ mod tests {
     /// from the param_override dimension mismatch emitter.
     #[test]
     fn eval_diag_format_param_override_dimension() {
-        let source = "structure S { param width: Scalar = 100mm }";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-        let _ = engine.eval(&compiled);
-        engine.set_param_and_invalidate(
-            &ValueCellId::new("S", "width"),
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
-        );
-        let diags = engine.eval(&compiled).diagnostics;
+        let diags = build_param_override_diags(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        });
 
         assert!(
             diags.iter().any(|d| d.message.contains("dimension mismatch")),
@@ -979,19 +998,10 @@ mod tests {
     /// that the injected solver was actually dispatched.
     #[test]
     fn eval_diag_format_solver_infeasible() {
-        use std::sync::atomic::Ordering;
-
-        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-
         let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
             "infeasible: x has no satisfying assignment",
         )]);
-        let counter = solver.counter_handle();
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
-            .with_solver(Box::new(solver));
-        let result = engine.eval(&compiled);
+        let (counter, diags) = run_solver_on_constrained_auto_param(solver);
 
         assert!(
             counter.load(Ordering::Relaxed) > 0,
@@ -999,12 +1009,12 @@ mod tests {
              the 'auto' param + constraint source may not trigger solver dispatch"
         );
         assert!(
-            result.diagnostics.iter().any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+            diags.iter().any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
             "solver_infeasible: sanity check failed — engine_eval.rs solver Infeasible pass-through \
              must forward the injected diagnostic; got: {:#?}",
-            result.diagnostics
+            diags
         );
-        assert_no_violation_format(&result.diagnostics, "solver_infeasible");
+        assert_no_violation_format(&diags, "solver_infeasible");
     }
 
     /// Per-emitter regression lock — solver NoProgress pass-through path
@@ -1015,17 +1025,8 @@ mod tests {
     /// that the injected solver was actually dispatched.
     #[test]
     fn eval_diag_format_solver_no_progress() {
-        use std::sync::atomic::Ordering;
-
-        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-
         let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
-        let counter = solver.counter_handle();
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
-            .with_solver(Box::new(solver));
-        let result = engine.eval(&compiled);
+        let (counter, diags) = run_solver_on_constrained_auto_param(solver);
 
         assert!(
             counter.load(Ordering::Relaxed) > 0,
@@ -1033,12 +1034,12 @@ mod tests {
              the 'auto' param + constraint source may not trigger solver dispatch"
         );
         assert!(
-            result.diagnostics.iter().any(|d| d.message.contains("made no progress")),
+            diags.iter().any(|d| d.message.contains("made no progress")),
             "solver_no_progress: sanity check failed — engine_eval.rs solver NoProgress pass-through \
              must emit 'made no progress'; got: {:#?}",
-            result.diagnostics
+            diags
         );
-        assert_no_violation_format(&result.diagnostics, "solver_no_progress");
+        assert_no_violation_format(&diags, "solver_no_progress");
     }
 
 }
