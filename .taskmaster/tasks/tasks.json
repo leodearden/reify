@@ -49490,13 +49490,13 @@
         "description": "Five solver call sites in the task-1997 diff still perform a deep deref-clone of the entire merged function table when constructing `ResolutionProblem`: `engine_eval.rs:1064` and ~`1737`, `engine_edit.rs:~847` and ~`1933`, and `concurrent.rs:~400`. They use `(*self.functions).clone()` / `(*setup.functions).clone()` because `ResolutionProblem.functions` is still typed `Vec<CompiledFunction>` in reify-types. This is off the hot path (solver only runs when auto-param constraints exist), but the residual cost — and the awkward deref-then-clone idiom — should be eliminated to fully realize the Arc benefit.\n\nThis was explicitly out-of-scope for task #1997 because `ResolutionProblem` lives in `reify-types`, which is not a locked module of that task. Flagged by reviewer_comprehensive in the amendment pass (esc-1997-10, esc-1997-11 suggestion 2).",
         "details": "**Goal:** Extend the Arc<Vec<CompiledFunction>> threading from #1997 across the solver boundary so the five remaining `(*…).clone()` sites become O(1).\n\n**Scope:**\n- `crates/reify-types/src` — change `ResolutionProblem.functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` (or `&[CompiledFunction]` if lifetimes permit; the Arc form matches the engine field and is likely simpler).\n- `crates/reify-solver-*/src` — update consumers that read `problem.functions` (passed by-value or by-ref) to deref through the Arc.\n- `crates/reify-eval/src` — update the five known construction sites to pass `Arc::clone(&self.functions)` / `Arc::clone(&setup.functions)` instead of `(*…).clone()`:\n  - `engine_eval.rs:1064` (cached-eval solver path)\n  - `engine_eval.rs:~1737` (eval solver path)\n  - `engine_edit.rs:~847` (edit_param solver path)\n  - `engine_edit.rs:~1933` (edit_source solver path)\n  - `concurrent.rs:~400` (prepare_concurrent_edit solver path)\n\n**Approach:**\n1. Land the type change in reify-types.\n2. Compile-driven: walk every solver crate that breaks and switch from `problem.functions` to `&problem.functions` / `Arc::clone(&problem.functions)` as needed. Most solvers should iterate by reference, so deref via `&*problem.functions` is the minimal touch.\n3. Update the five construction sites to use `Arc::clone(&…)`.\n4. Verify with the existing #1997 tests: `prepare_concurrent_edit_shares_functions_arc_with_engine` (Arc identity sentinel) and the cargo test suites for reify-eval + reify-solver-*.\n\n**Non-goals:**\n- Do not change other Vec<CompiledFunction> sites (e.g. CompiledModule.functions in reify-compile).\n- Do not introduce additional Arc fields on ResolutionProblem; this task is only about `.functions`.\n\n**References:**\n- #1997 — original Engine::functions Arc refactor (parent of this follow-up).\n- esc-1997-10 (cleanup_needed) and esc-1997-11 suggestion 2 (review_suggestions) — both flagged the same five sites.\n\n**Modules:** crates/reify-types/src, crates/reify-eval/src/concurrent.rs, crates/reify-eval/src/engine_edit.rs, crates/reify-eval/src/engine_eval.rs, crates/reify-solver-libslvs/src, crates/reify-solver-cpsat/src, crates/reify-solver-registry/src",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1997"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T15:49:11.109Z",
+        "updatedAt": "2026-04-26T18:23:35.638Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints/src/cpsat.rs",
@@ -49604,7 +49604,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T18:23:35.347Z",
+      "lastModified": "2026-04-26T18:23:35.638Z",
       "taskCount": 2278,
       "completedCount": 2051,
       "tags": [
