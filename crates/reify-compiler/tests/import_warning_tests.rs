@@ -149,10 +149,12 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
         "severity must be Warning: {:?}",
         diag
     );
-    // (d) squiggle label present
-    assert!(
-        !diag.labels.is_empty(),
-        "diagnostic must have at least one label: {:?}",
+    // (d) exactly one (actionable) squiggle label
+    assert_eq!(
+        diag.labels.len(),
+        1,
+        "diagnostic must have exactly one (actionable) label, got {:?}: {:#?}",
+        diag.labels.len(),
         diag
     );
 }
