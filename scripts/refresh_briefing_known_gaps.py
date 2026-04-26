@@ -103,7 +103,58 @@ def main() -> int:
     if not gap_pairs:
         return 0
 
-    return 0
+    # ------------------------------------------------------------------ #
+    # Build task index from tasks.json master tag                          #
+    # ------------------------------------------------------------------ #
+    tasks_index: dict[str, dict] = {}
+    master = tasks_data.get("master", {}) if isinstance(tasks_data, dict) else {}
+    if isinstance(master, dict):
+        for task in master.get("tasks", []):
+            if isinstance(task, dict):
+                task_id = task.get("id")
+                if task_id is not None:
+                    tasks_index[str(task_id)] = task
+
+    # ------------------------------------------------------------------ #
+    # Cross-reference: find gaps whose tracked task is "done"             #
+    # ------------------------------------------------------------------ #
+    mismatches: list[dict] = []
+    for subproject_name, gap in gap_pairs:
+        tracking_id = gap.get("tracking")
+        if tracking_id is None:
+            # No tracking field — legacy entry, skip silently.
+            continue
+        tracking_id = str(tracking_id)
+        task = tasks_index.get(tracking_id)
+        if task is None:
+            # Orphan tracking ID — task not in tasks.json, skip silently.
+            continue
+        # Only "done" counts — in-progress/blocked/deferred may still be
+        # open gaps from the reviewer's perspective.
+        if task.get("status") == "done":
+            mismatches.append(
+                {
+                    "task_id": tracking_id,
+                    "title": task.get("title", ""),
+                    "subproject": subproject_name,
+                    "what": gap.get("what", ""),
+                }
+            )
+
+    # ------------------------------------------------------------------ #
+    # Emit results                                                         #
+    # ------------------------------------------------------------------ #
+    if args.json_output:
+        print(json.dumps(mismatches, indent=2))
+    else:
+        for m in mismatches:
+            print(
+                f"WARN: known_gap closed for task {m['task_id']} (\"{m['title']}\") "
+                f"— refresh review/briefing.yaml under subproject \"{m['subproject']}\"",
+                file=sys.stderr,
+            )
+
+    return 1 if mismatches else 0
 
 
 if __name__ == "__main__":
