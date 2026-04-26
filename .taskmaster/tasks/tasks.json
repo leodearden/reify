@@ -49122,13 +49122,13 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "Engine::eval_cached",
-              "eval_cached"
+              "eval_cached",
+              "EvalState"
             ],
             "queries": [
-              "eval_cached param_override Value clone fast-path pre-check performance",
-              "eval_cached fast-path cache-reuse arm override_check binding clone",
-              "validate_param_override single call per invocation per cell invariant 2267"
+              "eval_cached fast-path param_override bug fix task 2267",
+              "eval_cached fast-path pre-check content_hash match",
+              "eval_cached diagnostics dropped fix tasks 2259 2266 2267"
             ]
           },
           "_causation_id": "da54175c-5335-4e32-8882-fecea6c03735",
