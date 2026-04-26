@@ -55,7 +55,41 @@ pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 /// integration test crate can reach it; not part of the documented public API.
 pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
     use reify_types::Type;
-    !matches!(ty, Type::TypeParam(_) | Type::Geometry)
+    match ty {
+        // Unrepresentable: no corresponding `Value` variant.
+        Type::TypeParam(_) | Type::Geometry => false,
+        // Representable: every other variant that has (or may have) a
+        // corresponding `Value`. Listed explicitly so that adding a new
+        // `Type` variant to `reify_types` requires a conscious decision here
+        // rather than silently inheriting `true`.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::List(_)
+        | Type::Set(_)
+        | Type::Map(_, _)
+        | Type::Option(_)
+        | Type::Function { .. }
+        | Type::StructureRef(_) // task 1876: struct-typed params are permitted
+        | Type::TraitObject(_)
+        | Type::Field { .. }
+        | Type::Point { .. }
+        | Type::Vector { .. }
+        | Type::Tensor { .. }
+        | Type::Complex(_)
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::Range(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Matrix { .. }
+        | Type::Error => true,
+    }
 }
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
@@ -1950,6 +1984,10 @@ mod invariant_tests {
             ("E", "b", Type::Real),
             ("E", "c", Type::Bool),
             ("E", "d", Type::List(Box::new(Type::Int))),
+            // StructureRef is permitted (task 1876): struct-typed params like
+            // `material : Material` are valid; their default evaluates to Undef
+            // which passes the kind-match for any type.
+            ("E", "e", Type::StructureRef("Material".into())),
         ] {
             let id = ValueCellId::new(entity, member);
             let node = ValueCellNode {
@@ -1964,41 +2002,4 @@ mod invariant_tests {
         super::assert_value_cell_types_representable(&graph);
     }
 
-    /// Verify `is_representable_cell_type` classifies every known variant
-    /// correctly.  Unrepresentable variants return `false`; representable ones
-    /// return `true`.  StructureRef is intentionally representable (task 1876).
-    #[test]
-    fn is_representable_cell_type_classifies_known_variants() {
-        // Unrepresentable variants → false
-        assert!(
-            !super::is_representable_cell_type(&Type::TypeParam("T".into())),
-            "Type::TypeParam must be unrepresentable",
-        );
-        assert!(
-            !super::is_representable_cell_type(&Type::Geometry),
-            "Type::Geometry must be unrepresentable",
-        );
-        // Representable variants → true
-        assert!(
-            super::is_representable_cell_type(&Type::Int),
-            "Type::Int must be representable",
-        );
-        assert!(
-            super::is_representable_cell_type(&Type::Real),
-            "Type::Real must be representable",
-        );
-        assert!(
-            super::is_representable_cell_type(&Type::Bool),
-            "Type::Bool must be representable",
-        );
-        assert!(
-            super::is_representable_cell_type(&Type::List(Box::new(Type::Int))),
-            "Type::List must be representable",
-        );
-        // StructureRef is permitted (task 1876)
-        assert!(
-            super::is_representable_cell_type(&Type::StructureRef("Material".into())),
-            "Type::StructureRef must be representable (task 1876)",
-        );
-    }
 }
