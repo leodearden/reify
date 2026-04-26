@@ -48900,9 +48900,10 @@
               "Engine::eval_cached"
             ],
             "queries": [
-              "eval_cached diagnostics repeat-call regression test param_override sub-component",
-              "eval_cached_diagnostics.rs test suite repeat-call patterns circular let solver",
-              "eval_cached diagnostics repeat-call emission engine_eval.rs"
+              "eval_cached diagnostic drop bug fix task 2259",
+              "eval_cached param_override fast-path regression",
+              "eval_cached repeat-call test patterns",
+              "eval_cached sub-component diagnostics"
             ]
           },
           "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4",
