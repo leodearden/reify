@@ -991,3 +991,157 @@ fn map_string_to_traitobject_param_resolves_to_map_string_traitobject() {
         m_cell.cell_type
     );
 }
+
+// ─── Type-level fallback walker tests (task 2227) ────────────────────────────
+//
+// These tests exercise the walk_param_against_arg_type fallback that fires when
+// the arg is not a literal (e.g. a param ValueRef) and its result_type carries
+// the wrapper structure.  The dispatcher falls through from walk_param_against_arg
+// (which only matches literal kinds) to walk_param_against_arg_type for ValueRef args
+// whose result_type is a wrapped trait object.
+
+/// Positive test: a param `p : Option<Physical>` where `Physical : Material` passed
+/// to a slot `m : Option<Material>` should compile without errors.
+///
+/// `p` is a ValueRef with `result_type = Option<TraitObject("Physical")>`.
+/// `walk_param_against_arg` sees `(Option<Material>, non-literal)` → falls through to
+/// `walk_param_against_arg_type(Option<Material>, Option<Physical>)` → recurses to
+/// `(Material, Physical)` → `emit_leaf_conformance_for_arg_type` checks
+/// `trait_satisfies("Physical", "Material")` → true → passes.
+#[test]
+fn option_trait_typed_param_accepts_valueref_of_conforming_subtrait() {
+    // Self-contained: no stdlib needed — traits are declared inline.
+    let source = r#"
+        trait Material {}
+        trait Physical : Material {}
+        structure def Host { param m : Option<Material> }
+        structure def Top {
+            param p : Option<Physical>
+            sub h = Host(m: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: passing Option<Physical> (Physical : Material) for Option<Material> param, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test: a param `p : Option<Other>` where `Other` does NOT refine `Material`
+/// passed to a slot `m : Option<Material>` must produce a "does not conform to trait" error.
+///
+/// `p` is a ValueRef with `result_type = Option<TraitObject("Other")>`.
+/// `walk_param_against_arg_type` walks to the leaf `(Material, Other)` →
+/// `emit_leaf_conformance_for_arg_type` checks `trait_satisfies("Other", "Material")`
+/// → false → emits diagnostic.
+#[test]
+fn option_trait_typed_param_rejects_valueref_of_non_conforming_trait() {
+    // Self-contained: no stdlib needed — traits are declared inline.
+    let source = r#"
+        trait Material {}
+        trait Other {}
+        structure def Host { param m : Option<Material> }
+        structure def Top {
+            param p : Option<Other>
+            sub h = Host(m: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("Material")),
+        "expected a 'does not conform to trait Material' error for Option<Other> ValueRef passed to Option<Material> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Nested wrapper conformance tests (task 2227) ────────────────────────────
+//
+// These tests exercise recursive descent past depth 1.  For example,
+// `List<Option<MaterialSpec>>` requires the walker to first unwrap List → iterate
+// elements, then unwrap Option → OptionSome/OptionNone, and finally reach the
+// TraitObject leaf check for MaterialSpec.
+
+/// Negative test: a list-of-options where one element is `some(NotAMaterial())` passed
+/// to `List<Option<MaterialSpec>>` must produce a "does not conform to trait" error.
+///
+/// Walk sequence:
+/// 1. `(List<Option<MaterialSpec>>, ListLiteral([...]))` → iterate each element
+/// 2. `(Option<MaterialSpec>, OptionSome(Steel()))` → `(MaterialSpec, Steel())` → pass
+/// 3. `(Option<MaterialSpec>, OptionNone)` → pass immediately
+/// 4. `(Option<MaterialSpec>, OptionSome(NotAMaterial()))` → `(MaterialSpec, NotAMaterial())`
+///    → leaf check fails → emit diagnostic
+#[test]
+fn nested_wrapper_list_option_rejects_non_conforming_inner_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : List<Option<MaterialSpec>> }
+        structure def Top {
+            sub x = Host(ms: [some(Steel()), none, some(NotAMaterial())])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for some(NotAMaterial()) inside List<Option<MaterialSpec>>, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: a list-of-options where every non-none element conforms to the trait
+/// passed to `List<Option<MaterialSpec>>` must compile without errors.
+#[test]
+fn nested_wrapper_list_option_accepts_all_conforming_inner_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : List<Option<MaterialSpec>> }
+        structure def Top {
+            sub x = Host(ms: [some(Steel()), none, some(Steel(density: 1000.0))])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for [some(Steel()), none, some(Steel(...))] passed to List<Option<MaterialSpec>> param, got: {:?}",
+        errors
+    );
+}

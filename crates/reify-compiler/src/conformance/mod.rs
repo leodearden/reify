@@ -280,15 +280,80 @@ fn walk_param_against_arg(
     }
 }
 
+/// Shared leaf helper: emit a "does not conform to trait" diagnostic if `arg_type`
+/// does not satisfy `required_trait`.
+///
+/// Handles `Type::StructureRef` (walks trait bounds transitively via
+/// `satisfies_trait_bound`) and `Type::TraitObject` (equality-or-refinement via
+/// `trait_satisfies`). Other types are skipped silently — callers add their own
+/// fallback arm for non-struct/non-trait types.
+///
+/// This is the single source of the StructureRef/TraitObject diagnostic wording and
+/// `DiagnosticCode::TypeNotConformingToTrait` code shared by both the literal walker
+/// (`check_leaf_trait_conformance`) and the type-level fallback walker
+/// (`walk_param_against_arg_type`).
+fn emit_leaf_conformance_for_arg_type(
+    arg_type: &Type,
+    required_trait: &str,
+    arg_name: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match arg_type {
+        Type::StructureRef(struct_name) => {
+            let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
+                return;
+            };
+            if !satisfies_trait_bound(&arg_template.trait_bounds, required_trait, trait_registry) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        struct_name, required_trait, arg_name
+                    ))
+                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!(
+                            "type '{}' does not conform to trait '{}'",
+                            struct_name, required_trait
+                        ),
+                    )),
+                );
+            }
+        }
+        Type::TraitObject(arg_trait_name) => {
+            let mut visited = HashSet::new();
+            if !trait_satisfies(arg_trait_name, required_trait, trait_registry, &mut visited) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        arg_trait_name, required_trait, arg_name
+                    ))
+                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!(
+                            "trait '{}' does not refine trait '{}'",
+                            arg_trait_name, required_trait
+                        ),
+                    )),
+                );
+            }
+        }
+        // Non-struct, non-trait arg type — callers handle this with their own fallback arm.
+        _ => {}
+    }
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
 /// expressions are not available for inspection. Walks the wrapper structure of
 /// `arg_type` in lockstep with `param_type`, deferring to a type-only leaf check at
-/// `Type::TraitObject`.
+/// `Type::TraitObject` via `emit_leaf_conformance_for_arg_type`.
 ///
-/// Calls `satisfies_trait_bound` for `StructureRef` arg-types and `trait_satisfies` for
-/// `TraitObject` arg-types — same diagnostic wording/code as `check_leaf_trait_conformance`.
 /// Mismatched wrapper shapes (e.g. `Option<T>` param vs `List<T>` arg) fall through
 /// silently — the compiler does not general-purpose type-check arg shapes today.
 fn walk_param_against_arg_type(
@@ -355,57 +420,19 @@ fn walk_param_against_arg_type(
                 diagnostics,
             );
         }
-        // Leaf: param type is a trait object — type-only conformance check.
-        // Same wording/code as check_leaf_trait_conformance; no FunctionCall promotion
-        // needed here because we're already working with the resolved result_type.
-        (Type::TraitObject(required_trait), arg_ty) => match arg_ty {
-            Type::StructureRef(struct_name) => {
-                let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
-                    return;
-                };
-                if !satisfies_trait_bound(
-                    &arg_template.trait_bounds,
-                    required_trait,
-                    trait_registry,
-                ) {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "type '{}' does not conform to trait '{}' required by param '{}'",
-                            struct_name, required_trait, arg_name
-                        ))
-                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            format!(
-                                "type '{}' does not conform to trait '{}'",
-                                struct_name, required_trait
-                            ),
-                        )),
-                    );
-                }
-            }
-            Type::TraitObject(arg_trait_name) => {
-                let mut visited = HashSet::new();
-                if !trait_satisfies(arg_trait_name, required_trait, trait_registry, &mut visited) {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "type '{}' does not conform to trait '{}' required by param '{}'",
-                            arg_trait_name, required_trait, arg_name
-                        ))
-                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            format!(
-                                "trait '{}' does not refine trait '{}'",
-                                arg_trait_name, required_trait
-                            ),
-                        )),
-                    );
-                }
-            }
-            // Non-struct, non-trait arg type — cannot check, skip silently.
-            _ => {}
-        },
+        // Leaf: param type is a trait object — delegate to shared helper.
+        // No FunctionCall promotion needed here — we work with the resolved result_type.
+        (Type::TraitObject(required_trait), arg_ty) => {
+            emit_leaf_conformance_for_arg_type(
+                arg_ty,
+                required_trait,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
         // Mismatched wrapper shapes or non-wrapper/non-trait param type — skip silently.
         // The compiler does not general-purpose type-check arg shapes (e.g. passing
         // StructureRef for Option<TraitObject> is a shape mismatch outside our scope).
@@ -460,48 +487,19 @@ fn check_leaf_trait_conformance(
     let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
 
     // Check conformance based on effective_arg_type.
+    // StructureRef and TraitObject are handled by the shared helper; non-struct/non-trait
+    // types fall to the anti-cascade arm below.
     match effective_arg_type {
-        Type::StructureRef(struct_name) => {
-            // Look up the arg's structure template and walk its trait bounds.
-            let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
-                return; // Arg structure not compiled yet — skip.
-            };
-            if !satisfies_trait_bound(&arg_template.trait_bounds, required_trait, trait_registry) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type '{}' does not conform to trait '{}' required by param '{}'",
-                        struct_name, required_trait, arg_name
-                    ))
-                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!(
-                            "type '{}' does not conform to trait '{}'",
-                            struct_name, required_trait
-                        ),
-                    )),
-                );
-            }
-        }
-        Type::TraitObject(arg_trait_name) => {
-            // Trait-object arg: check that arg_trait refines (or equals) required_trait.
-            let mut visited = HashSet::new();
-            if !trait_satisfies(arg_trait_name, required_trait, trait_registry, &mut visited) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type '{}' does not conform to trait '{}' required by param '{}'",
-                        arg_trait_name, required_trait, arg_name
-                    ))
-                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!(
-                            "trait '{}' does not refine trait '{}'",
-                            arg_trait_name, required_trait
-                        ),
-                    )),
-                );
-            }
+        Type::StructureRef(_) | Type::TraitObject(_) => {
+            emit_leaf_conformance_for_arg_type(
+                effective_arg_type,
+                required_trait,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
         }
         _ => {
             // Anti-cascade: when arg_type is a numeric fallback (Real or Int)

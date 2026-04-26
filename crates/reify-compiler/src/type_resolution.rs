@@ -895,8 +895,8 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 return Some(ty.clone());
             }
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>).
-            // Pass empty structure/trait name sets: alias DFS runs before traits/structures
-            // exist, so trait-name fallback must NOT fire here.
+            // Alias DFS runs before traits/structures are compiled, so we use the
+            // subst-aware resolver (which is trait-blind by design).
             if !type_args.is_empty()
                 && let Some(ty) = resolve_parameterized_builtin_type_with_subst(
                     name,
@@ -905,8 +905,6 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
-                    &HashSet::new(),
-                    &HashSet::new(),
                 )
             {
                 return Some(ty);
@@ -1046,10 +1044,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
 /// Like `resolve_parameterized_builtin_type`, but applies parameter substitutions
 /// when resolving type arguments.
 ///
-/// `structure_names` and `trait_names` are accepted for consistency with
-/// `resolve_parameterized_builtin_type`. Pass empty sets when this is called
-/// during alias DFS (before structures and traits are compiled).
-#[allow(clippy::too_many_arguments)]
+/// Called during alias DFS (before structures and traits are compiled), so inner type
+/// args are resolved via `resolve_type_alias_expr_with_subst` — which is trait-blind by
+/// design. There is no `structure_names`/`trait_names` parameter here; the plain
+/// alias-DFS resolver is correct for this context.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
@@ -1057,8 +1055,6 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
-    _structure_names: &HashSet<String>,
-    _trait_names: &HashSet<String>,
 ) -> Option<Type> {
     match name {
         "List" if type_args.len() == 1 => {
