@@ -100,13 +100,16 @@ pub fn compute_diagnostics_with_state(
     // Eval: use incremental eval_cached when structure unchanged, else cold-start.
     state.version_counter += 1;
 
-    // Invariant: last_content_hash is Some only after a successful eval() or
-    // eval_cached() call (see update at the end of this function), so the
-    // engine is guaranteed to be initialized whenever last_content_hash is Some.
+    // Use the incremental eval_cached path only when content is unchanged AND
+    // the engine has already been initialized by a prior eval(). An uninitialized
+    // engine must always take the cold-start branch regardless of last_content_hash:
+    // eval_cached returns empty diagnostics by construction, so routing an
+    // uninitialized engine through it would silently drop eval-time errors.
     let content_unchanged = state
         .last_content_hash
         .map(|h| h == compiled.content_hash)
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && state.is_engine_initialized();
 
     // Capture eval-time diagnostics from eval() / eval_cached().
     //
