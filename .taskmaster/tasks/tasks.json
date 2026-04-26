@@ -50089,6 +50089,31 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2315",
+        "title": "Implement Geometry Traits Inference Table",
+        "description": "Build per-op trait inference for Bounded/Connected/Convex over CompiledGeometryOp variants.",
+        "details": "Create a new module `geometry_traits_inference.rs` in `crates/reify-compiler/src/`. Add an `inferred_traits` field of type `TraitSet` to `CompiledGeometryOp`. Implement a lookup table where primitives like Box, Cylinder, Sphere, and Tube produce Bounded, Connected, and Convex traits. Operations like `half_space` and `extrude_infinite` should produce Unbounded traits. Ensure Boolean operations, transforms, sweeps, and modify operations propagate traits according to the rules specified in `docs/prds/geometry-traits.md`.",
+        "testStrategy": "Develop unit tests to verify that each `CompiledGeometryOp` variant correctly maps to its expected `InferredTraits` set. Create tests for each primitive and operation type to ensure the correct traits are inferred. Validate the propagation rules for Boolean operations, transforms, sweeps, and modify operations. Use mock data to simulate various geometry operations and assert that the inferred traits match expected outcomes.",
+        "status": "pending",
+        "dependencies": [
+          "2312",
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2316",
+        "title": "Kleene logic: audit and fix forall evaluator for §9.2.6 quantifier truth table",
+        "description": "PRD docs/prds/kleene-logic.md. Audit the forall evaluator in crates/reify-expr against §9.2.6 (lines 1718-1731). Verify \"no false, some undef ⇒ undef\" and \"empty ⇒ true (vacuous truth)\". Add 4 truth-table rows × {List, Set} test matrix. Watch for incorrect short-circuit on undef when a later false would force determined. Depends on #2294.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50101,7 +50126,7 @@
       ],
       "created": "2026-04-26T19:55:29.913Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:56:02.609Z"
+      "updated": "2026-04-26T19:56:54.397Z"
     }
   }
 }
