@@ -17057,7 +17057,7 @@
         "id": "763",
         "title": "Add From<&CompiledUnit> for UnitEntry conversion",
         "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nMemory hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes. Attach memory hints: entities [\"UnitEntry\", \"CompiledUnit\"]; queries [\"UnitEntry CompiledUnit struct fields conversion\", \"From trait impl seeding loop compile_with_prelude\"].",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "details": "Ensure that the `From` trait implementation correctly maps all fields from `CompiledUnit` to `UnitEntry`, including any new fields that may be added in the future.",
@@ -17085,7 +17085,7 @@
           },
           "_causation_id": "ab53b07c-1edc-4e1f-bc6c-4a4c4bb11af9"
         },
-        "updatedAt": "2026-04-26T11:17:04.403Z"
+        "updatedAt": "2026-04-26T11:59:09.958Z"
       },
       {
         "id": "764",
@@ -45884,11 +45884,11 @@
         "description": "The `phase1_reelaborated` HashSet in both edit_param (task 2140) and edit_source (task 2142) dedup assumes Phase 1's re-elaboration is idempotent *for a given guard value*. If the guard cell itself reads a resolved auto param, wave2 can flip the guard between Phase 1 and Phase 3. `reapply_phase1_deactivations` uses the *current* guard_val to deactivate newly-inactive members (correct), but never evaluates the default_expr of newly-active else_members whose default_expr does not read a resolved auto param. Phase 3 then skips the group via `phase1_reelaborated`, leaving those cells Undef when they should be Determined.\n\nScope: crates/reify-eval/src/engine_edit.rs — applies symmetrically to both edit_source (lines ~1860-1868, ~1583-1590) and edit_param (task 2140 path, comment at 1442-1445).\n\nSuggested fix options:\n(a) Track guard value at insert time: replace `HashSet<ValueCellId>` with `HashMap<ValueCellId, Value>` and in Phase 3 don't dedup when the current guard value differs from the recorded one (fall through to full re-elaboration, including active-branch default_expr evaluation).\n(b) Have `reapply_phase1_deactivations` detect a guard flip versus Phase 1's recorded value and, on flip, fall through to full re-elaboration rather than only re-deactivating.\n\nAdd a targeted regression test: source edit that changes a non-guard constraint input, guard reads a resolved auto param, guard flips because of the resolver, else_members' default_exprs are literals (not reading auto params). Verify the newly-active else_members transition from Undef to Determined and match cold-eval results.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive). Inherited from task 2140 — predates this diff.",
         "details": "<info added on 2026-04-26T06:55:42.125Z>\nReconciliation stage 2 (2026-04-26) verified the following:\n\n1. WORKTREE STATUS: `.worktrees/2146` still exists on disk as a valid git worktree. It contains the original implementation with `group_needs_phase3()` defined (10 references in engine_edit.rs). Before starting fresh, the implementer should remove this stale worktree: `git worktree remove --force /home/leo/src/reify/.worktrees/2146` (or equivalently from repo root: `git worktree remove --force .worktrees/2146`).\n\n2. group_needs_phase3 ON MAIN: `group_needs_phase3()` is NOT present on main. The function exists only in the abandoned worktree branch. The previous attempt (the branch in .worktrees/2146) was abandoned due to merge conflicts. The implementer must implement this function fresh.\n\n3. CORRECT FILE PATH: The relevant file is `crates/reify-eval/src/engine_edit.rs` (not `reify-core` — that crate does not exist). The engine_edit.rs lines referenced in the description are correct for this file.\n</info added on 2026-04-26T06:55:42.125Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:36.012Z",
+        "updatedAt": "2026-04-26T11:59:10.141Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -47796,11 +47796,11 @@
         "description": "phase_entities (crates/reify-compiler/src/compile_builder/entities_phase.rs:107-113) unconditionally emits warning `import \"X\" noted; module resolution not yet implemented` for every user import declaration. The warning fires even when ModuleDag::compile_module successfully resolves the import (both paths share compile_with_prelude_refs → phase_entities), so users see a stale \"not implemented\" warning on imports that *do* resolve.\n\nAdditionally, the standard single-module entry point compile_with_stdlib (used by LSP/CLI/MCP) does not recurse into imported user files at all. It collects imports into ctx.imports and produces this warning, but never loads or compiles the imported file.\n\nDone: the warning text accurately reflects what happens. Either:\n  (a) ModuleDag-resolved imports are silent and only single-module compile emits a more specific \"single-module compile cannot resolve user imports — use ModuleDag\" warning, or\n  (b) compile_with_stdlib gains an opt-in resolver path so user imports from LSP/CLI/MCP work end-to-end.\n\nPick one before implementing. Option (b) closes a real user-facing gap; option (a) is a quick fix for the misleading wording.",
         "details": "## Background\n\nTask #69 (\"Module DAG + import resolution\") landed ModuleDag with all import forms, cycle detection, and module loading. ModuleDag is exercised by tests and by some compile_project paths.\n\nThe user-facing tools (LSP/CLI/MCP) all call `reify_compiler::compile_with_stdlib(&parsed)` which is single-module. Stdlib types resolve via the prelude context (task #2176), but `import \"foo.ri\"` declarations in user files do not — the file isn't loaded.\n\n## Files\n- crates/reify-compiler/src/compile_builder/entities_phase.rs:107-113 (warning emission)\n- crates/reify-compiler/src/lib.rs:106 (compile_with_stdlib entry point)\n- crates/reify-compiler/src/module_dag.rs (existing multi-module path)\n\n## Memory hints\n- search: \"ModuleDag compile_module import resolution\"\n- search: \"compile_with_stdlib LSP CLI\"\n- entity: \"ModuleDag\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:38.973Z",
+        "updatedAt": "2026-04-26T11:59:10.274Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -48359,11 +48359,11 @@
         "description": "Test-coverage gap: `eval_diagnostics_never_use_constraint_violation_format` at `crates/reify-lsp/src/diagnostics.rs:813-856` is the regression lock that justifies dropping the `violated_messages` filter from the eval-diagnostics merge loop in `compute_diagnostics_with_state`. The invariant the merge loop relies on is that `eval()` *globally* never emits `\"constraint {id} violated\"` format — but the test only exercises a single eval-time emitter (circular let-binding). A future code path in eval that synthesizes such a message wouldn't be triggered by this source, so the regression lock can give a false sense of safety.\n\nTwo issues to address (either is acceptable; both is best):\n\n1. Coverage breadth — extend the test (or add sibling tests) to also exercise the other known eval-time diagnostic emitters: param_override type/dimension mismatches, sub-component lookup failures, and solver Infeasible / NoProgress paths. Each should still emit at least one diagnostic (sanity assertion) and none should match the \"constraint {id} violated\" exact format.\n\n2. Format-match precision — the current check uses `strip_prefix(\"constraint \").and_then(|s| s.strip_suffix(\" violated\")).map_or(false, |id| !id.is_empty() && !id.contains(' '))`. Production format is `format!(\"constraint {} violated\", entry.id)` where `entry.id`'s Display is `<entity>#constraint[<n>]`. Tighten the regex/match to mirror this Display format so prose like `\"constraint foo#constraint[0] violated\"` is correctly caught — the current \"no spaces in middle token\" check accepts any single-token ID.\n\nIf the broader coverage is too costly to set up, at minimum document the test's narrowness in its docstring and treat it as a smoke-test rather than a complete invariant lock.\n\nSource: post-merge reviewer_comprehensive suggestion on task 2242.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:40.287Z",
+        "updatedAt": "2026-04-26T11:59:10.405Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src/diagnostics.rs"
@@ -48465,11 +48465,11 @@
         "description": "Doc-only nit at `crates/reify-eval/src/engine_eval.rs:663-680`. Add a sentence to the rationale comment explicitly noting that the `Completed` event's `EvalOutcome` is now whatever `cache.record_evaluation` returns (typically `New` on first eval), no longer hardcoded `Unchanged`.",
         "details": "Task-2195 introduced `cache.record_evaluation` on the S4 (rejected-override-no-default) top-level Param branch. Before that change, the `EvalEvent { kind: EventKind::Completed { outcome } }` record on this path hardcoded `EvalOutcome::Unchanged`; now `outcome` is whatever `cache.record_evaluation` returns — `New` on first eval, `Unchanged` only on identical re-record.\n\nAny downstream consumer that pattern-matches on the old fixed `Unchanged` outcome for this path will now see a different variant. The existing rationale comment at `engine_eval.rs:663-680` (which acknowledges the deferred-cache reversal) and the doc-comment on `record_eval_completed` should call out this Completed-outcome shape change so a future bisect ties the journal-shape diff to task-2195.\n\nNo code change required — comment only. Add roughly:\n\n```text\n// Note: the `Completed` event's `EvalOutcome` is now whatever\n// cache.record_evaluation returns (typically `New` on first eval,\n// `Unchanged` only on identical re-record), no longer hardcoded\n// `Unchanged` as it was before task-2195.\n```\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:56:43.282Z",
+        "updatedAt": "2026-04-26T11:59:10.536Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
@@ -48619,7 +48619,7 @@
         "description": "Task 2205 (status=done, commit 359fb3bf4cc73fe45937794b949a2190ea78ae51) introduced the typed `DiagnosticCode` enum and **explicitly listed** four variants the producer sites in conformance/checker.rs and conformance/mod.rs were supposed to attach via `.with_code(...)`:\n\n- `MissingRequiredMember`\n- `MissingRequiredSubComponent`\n- `TypeMismatchForTraitMember`\n- `TypeNotConformingToTrait`\n\nThe task description (docstring excerpt from tasks.json:2205) is unambiguous:\n> Wire `.with_code(DiagnosticCode::X)` at the matching `diagnostics.push(...)` sites in:\n> - crates/reify-compiler/src/conformance/checker.rs (~lines 810, 840, 866, 890, 895)\n> - crates/reify-compiler/src/conformance/mod.rs (~lines 191, 197, 210, 240)\n\nBut a global grep across the repo shows **zero producers** for any of those four variants — only the enum declaration (`crates/reify-types/src/diagnostics.rs:184–195`) and the historical task-tree entries. Concretely, the affected emission sites are still un-coded:\n\n- `conformance/checker.rs:808-814` \"missing required sub-component '{}' of type '{}'\" → needs `.with_code(MissingRequiredSubComponent)`\n- `conformance/checker.rs:838-844` \"type mismatch for trait member '{}': expected {}, got {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/checker.rs:864-871` \"type mismatch for trait member '{}': requirement expects {}, available default has {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/checker.rs:899-904` \"missing required member '{}' (expected type: {})\" (and the let/param-kind variant just above) → needs `.with_code(MissingRequiredMember)`\n- `conformance/checker.rs:1163-1171` \"type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/mod.rs:189-201` \"type '{}' does not conform to trait '{}' required by param '{}'\" (StructureRef arm) → needs `.with_code(TypeNotConformingToTrait)`\n- `conformance/mod.rs:208-220` same message, TraitObject arm → needs `.with_code(TypeNotConformingToTrait)`\n- `conformance/mod.rs:238-247` same message, fallback arm → needs `.with_code(TypeNotConformingToTrait)`\n\nWhy this matters at the integration boundary:\n1. The enum's `#[non_exhaustive]` and PascalCase serde wire format were committed deliberately so downstream tooling (MCP wire layer, tests) can match codes instead of substrings. Four reserved-but-unwired variants make those contracts a polite fiction.\n2. The follow-up tests called out in 2205's description (\"Migrate conformance-related tests from substring matching to code-based assertions\") cannot be done while the producer sites still emit `code: None`.\n3. The briefing convention \"Quality is king — issues may dangle briefly only if there is a task in the queue that will resolve them\" is currently being violated: the original task was closed, the variants exist, but no tracking task remains.\n\nDone means: every emission site listed above attaches the indicated `DiagnosticCode`; at least one test per variant in `crates/reify-compiler/tests/{trait_conformance_tests.rs,collection_sub_tests.rs,qualified_access_compile_tests.rs,m9_error_cases.rs}` asserts on `d.code == Some(DiagnosticCode::X)` (in addition to whatever message assertion remains as a secondary check); cargo test passes for `-p reify-compiler -p reify-types`.\n\nmemory_hints:\n- search: \"DiagnosticCode TraitNotImplemented MissingRequiredMember\"\n- search: \"task 2205 producer wiring conformance\"\n- entity: \"DiagnosticCode\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -48650,7 +48650,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-26T11:09:36.672Z"
+        "updatedAt": "2026-04-26T11:59:10.666Z"
       },
       {
         "id": "2259",
@@ -48931,7 +48931,7 @@
         "id": "2269",
         "title": "eval_cached tests: add repeat-call regression locks for param-override and sub-component diagnostics",
         "description": "Extend repeat-call coverage in `crates/reify-eval/tests/eval_cached_diagnostics.rs` for param_override mismatch warnings and sub-component unknown-structure errors, and strengthen the param_override tests with fallback Value assertions to prevent regressions that corrupt cached values while correctly re-emitting the warning.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "details": "In `crates/reify-eval/tests/eval_cached_diagnostics.rs`, repeat-call regression locks exist for solver Infeasible/NoProgress (steps 10/11) and circular-let (step 9), but NOT for:\n- param_override type/dimension mismatch warnings\n- sub-component \"unknown structure\" errors\n\nBoth diagnostics are expected to surface on every eval_cached invocation per the LSP requirement and task 2259's stated goal. Without a repeat-call test, a future change that gates either pass on `any_auto_miss` or similar cache-coherence guard will silently drop the diagnostic on second call.\n\nAdd repeat-call regression tests (or augment task-2267-added tests at lines 344-485) covering:\n1. `eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning` — second call must re-emit the warning\n2. `eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning` — second call must re-emit the warning\n3. Sub-component \"unknown structure\" error — repeat-call must re-emit\n\nFor the param_override repeat-call tests (items 1 and 2 above), each assertion block must also assert `result.eval_result.values[x_id]` equals the default-expression fallback value, NOT the rejected override Value. This locks the invariant that a correctly-rejected override does not corrupt the cached value — a regression that re-emits the warning while caching the rejected Value would otherwise pass the diagnostic-count assertion silently.",
@@ -48957,7 +48957,7 @@
           "curator_justification": "The candidate adds Value assertions to the param_override repeat-call regression tests in eval_cached_diagnostics.rs. Task 2269 is a pending, combine_eligible task that adds those very repeat-call regression tests (or supplements ones added by task 2267) in the same single file. Both tasks share the same module lock (eval_cached_diagnostics.rs only), the same root concept (strengthen repeat-call regression coverage for param_override in eval_cached), and both are individually tiny. Combining mea",
           "combined_at": "2026-04-26T11:55:58.117960+00:00"
         },
-        "updatedAt": "2026-04-26T11:56:44.478Z"
+        "updatedAt": "2026-04-26T11:59:10.801Z"
       },
       {
         "id": "2270",
@@ -49076,14 +49076,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:56:44.478Z",
+      "lastModified": "2026-04-26T11:59:10.802Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T11:57:38.458Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
