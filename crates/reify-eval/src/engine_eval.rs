@@ -1377,6 +1377,15 @@ impl Engine {
                 } else if cell.kind == ValueCellKind::Param {
                     let node_id = NodeId::Value(cell.id.clone());
 
+                    // Compute the override check once: clone the override value (if any) and
+                    // validate it against the cell type.  Binding the result here lets the
+                    // diagnostic pre-check (below) and the cache-miss fallback selector (further
+                    // below) share the same result — no second call to validate_param_override.
+                    let override_check: Option<(Value, Result<(), ParamOverrideRejection>)> =
+                        self.param_overrides
+                            .get(&cell.id)
+                            .map(|v| (v.clone(), validate_param_override(v, &cell.cell_type)));
+
                     // Unconditional override-validation diagnostic pre-check.
                     // Mirrors the step-10/step-11 pattern from task 2259: the solver pass and
                     // cycle-detection both run unconditionally regardless of cache state. The
@@ -1386,8 +1395,8 @@ impl Engine {
                     // returns the cached fallback, and the validation warning is silently dropped.
                     // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
                     // (task-2267 step-1 / step-3).
-                    if let Some(override_val) = self.param_overrides.get(&cell.id) {
-                        match validate_param_override(override_val, &cell.cell_type) {
+                    if let Some((ref override_val, ref rejection)) = override_check {
+                        match rejection {
                             Ok(()) => {}
                             Err(ParamOverrideRejection::TypeKindMismatch) => {
                                 diagnostics.push(Diagnostic::warning(format!(
@@ -1459,44 +1468,36 @@ impl Engine {
                     });
 
                     // Use override if available (with validation), otherwise evaluate default.
-                    // Mirrors eval() lines 603-622: on mismatch emit a warning and fall back.
+                    // Reuses `override_check` computed above — no second call to validate_param_override.
+                    // Mirrors eval() lines 603-622: on mismatch fall back to default.
                     // Returns (Value, DeterminacyState): rejected-override-with-no-default
                     // yields (Undef, Undetermined) matching eval()'s DeterminacyState path.
-                    let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id) {
-                        match validate_param_override(override_val, &cell.cell_type) {
-                            Ok(()) => (override_val.clone(), DeterminacyState::Determined),
-                            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                // Diagnostic already pushed by the unconditional pre-check above.
-                                // fall back to default; Undetermined if no default (mirrors eval())
-                                if let Some(ref expr) = cell.default_expr {
-                                    (reify_expr::eval_expr(
-                                        expr,
-                                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                    ), DeterminacyState::Determined)
-                                } else {
-                                    (reify_types::Value::Undef, DeterminacyState::Undetermined)
-                                }
-                            }
-                            Err(ParamOverrideRejection::ScalarDimensionMismatch { .. }) => {
-                                // Diagnostic already pushed by the unconditional pre-check above.
-                                // fall back to default; Undetermined if no default (mirrors eval())
-                                if let Some(ref expr) = cell.default_expr {
-                                    (reify_expr::eval_expr(
-                                        expr,
-                                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                    ), DeterminacyState::Determined)
-                                } else {
-                                    (reify_types::Value::Undef, DeterminacyState::Undetermined)
-                                }
+                    let (val, det) = match override_check {
+                        Some((override_val, Ok(()))) => {
+                            (override_val, DeterminacyState::Determined)
+                        }
+                        Some((_, Err(_))) => {
+                            // Diagnostic already pushed by the unconditional pre-check above.
+                            // fall back to default; Undetermined if no default (mirrors eval())
+                            if let Some(ref expr) = cell.default_expr {
+                                (reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                                ), DeterminacyState::Determined)
+                            } else {
+                                (reify_types::Value::Undef, DeterminacyState::Undetermined)
                             }
                         }
-                    } else if let Some(ref expr) = cell.default_expr {
-                        (reify_expr::eval_expr(
-                            expr,
-                            &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                        ), DeterminacyState::Determined)
-                    } else {
-                        (reify_types::Value::Undef, DeterminacyState::Determined)
+                        None => {
+                            if let Some(ref expr) = cell.default_expr {
+                                (reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                                ), DeterminacyState::Determined)
+                            } else {
+                                (reify_types::Value::Undef, DeterminacyState::Determined)
+                            }
+                        }
                     };
 
                     // Build dependency trace (params have no reads - they are roots)
