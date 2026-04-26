@@ -272,6 +272,7 @@ pub(crate) fn collect_all_requirements(
                              trait '{}' has {}, trait '{}' has {}",
                             name, existing_trait, existing_type, trait_name, default_type
                         ))
+                        .with_code(DiagnosticCode::ConflictingTraitDefaults)
                         .with_label(DiagnosticLabel::new(
                             span,
                             format!("conflict between '{}' and '{}'", existing_trait, trait_name),
