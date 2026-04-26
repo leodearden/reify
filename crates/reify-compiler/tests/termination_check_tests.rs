@@ -7,7 +7,7 @@
 //! 4. Guard that doesn't reference Int/Bool params emits error.
 //! 5. Guard that references unmodified Int param emits error.
 //! 6. Bool param with negation is valid.
-//! 7. undef in recursive sub args is forbidden.
+//! 7. undef in guard-referenced recursive sub args is forbidden.
 //! 8. Mutual recursion without guards emits errors for both sides.
 //! 9. Non-recursive structures with subs are NOT flagged.
 //! 10. Block-level guards satisfy termination requirement.
@@ -437,9 +437,8 @@ structure S {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    // Expect exactly ONE error: the "unresolved name: unknown_var" compile error.
-    // Must NOT have a second "guard references no Int/Bool param" error from the
-    // termination check piling on.
+    // Must NOT have the specific guard-references-no-param cascading error from the
+    // termination check piling on top of the underlying "unresolved name" compile error.
     let guard_ref_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
         msg.contains("guard")
