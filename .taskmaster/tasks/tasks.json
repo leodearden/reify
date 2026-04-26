@@ -50997,6 +50997,22 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2366",
+        "title": "forall statement-form: parser + lowering + guard-composition tests",
+        "description": "Develop tests for the forall statement-form focusing on parser disambiguation, lowering constraints, connect-form lowering, guard composition, and undef-count deferral.",
+        "details": "1. **Parser Tests**: Implement tests to ensure the parser correctly distinguishes between statement and expression forms of the forall statement. Verify that the parser emits the correct AST nodes (`ForallConnect`, `ForallConstraint`) based on the token following the `:`.\n\n2. **Lowering Tests**: Create tests to validate the lowering process for the forall statement-form, ensuring that the 3-element constraint is correctly enforced during compilation.\n\n3. **Connect-Form Lowering Test**: Develop tests to ensure that the connect-form of the forall statement is lowered correctly into the intermediate representation.\n\n4. **Guard Composition Test**: Implement tests to verify that guards within where-blocks compose conjunctively as specified in §6.3 of the specification.\n\n5. **Undef-Count Deferral Test**: Write tests to ensure that the deferral mechanism for undefined counts operates correctly, initially emitting zero declarations and re-elaborating once the count is determined.",
+        "testStrategy": "1. **Parser Disambiguation**: Write unit tests to parse `forall` statements and verify correct AST node creation for both statement and expression forms.\n\n2. **Lowering Verification**: Develop tests to check that the lowering process respects the 3-element constraint and correctly transforms the forall statement into the intermediate representation.\n\n3. **Connect-Form Lowering**: Validate that the connect-form is correctly lowered by comparing the output IR against expected results.\n\n4. **Guard Composition**: Test that guards in where-blocks are composed conjunctively by evaluating sample inputs and checking the logical conjunction of guards.\n\n5. **Undef-Count Handling**: Ensure that tests confirm zero declarations are emitted initially for undefined counts and that re-elaboration occurs correctly when counts are determined.",
+        "status": "pending",
+        "dependencies": [
+          "2362",
+          "2363",
+          "2364",
+          "2365"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51006,7 +51022,10 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:22:12.635Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:22:19.131Z"
     }
   }
 }
