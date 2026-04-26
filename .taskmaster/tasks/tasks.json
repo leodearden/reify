@@ -48731,11 +48731,11 @@
         "description": "scripts/refresh_briefing_known_gaps.py:163-175 documents a known limitation: subtasks are only re-indexed when the *parent* task is upgraded from non-done to done. If a tracked dotted ID (e.g. `100.1`) is `done` in tag B but the parent `100` is in-progress in both tags (or done only in the tag where the subtask is in-progress), the done subtask is never indexed and a briefing entry tracking it is silently skipped as an orphan — the same silent-default-on-error pattern Task 2257 set out to eliminate.\n\nPick one approach:\n(a) Apply done-wins per-subtask independently of the parent: iterate subtasks on every parent occurrence and merge per dotted ID using done-wins semantics.\n(b) Add a one-shot audit (script or test) confirming no current `tracking:` entries in review/briefing.yaml hit this edge case, and leave the parent-coupled limitation as documented.\n\n(a) closes the gap permanently; (b) is cheaper and matches the comment's \"rare edge case → defer to a separate audit\" stance. Either way, extend the test suite (tests/infra/test_refresh_briefing_known_gaps.sh) with a check that constructs a tasks.json hitting this divergence and asserts the chosen behaviour.",
         "details": "Edge case to cover in the new test: tasks.json has tag A {parent 100 in-progress, subtask 100.1 in-progress} and tag B {parent 100 in-progress, subtask 100.1 done}; briefing.yaml tracks \"100.1\". Current code: subtask 100.1 is indexed from whichever tag is iterated first (in-progress in tag A) and never upgraded because the parent never wins a done-upgrade. Briefing entry is silently skipped.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:41.257Z",
+        "updatedAt": "2026-04-26T11:19:14.704Z",
         "metadata": {
           "modules": [
             "scripts/refresh_briefing_known_gaps.py",
@@ -48751,6 +48751,9 @@
               "briefing tracking subtask orphan parent-coupled limitation",
               "refresh_briefing_known_gaps.py subtask iteration cross-tag"
             ]
+          },
+          "done_provenance": {
+            "commit": "207cc205bd09f348b97ef3c75a2cae878394a761"
           }
         }
       },
@@ -48945,9 +48948,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:19:04.900Z",
+      "lastModified": "2026-04-26T11:19:14.704Z",
       "taskCount": 2259,
-      "completedCount": 2022,
+      "completedCount": 2023,
       "tags": [
         "master"
       ]
