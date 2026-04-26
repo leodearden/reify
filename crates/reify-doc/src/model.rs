@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 
 /// Root documentation model for a set of compiled Reify modules.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DocModel {
     pub modules: Vec<ModuleDoc>,
 }
 
 /// Documentation for a single compiled Reify module.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ModuleDoc {
     /// Fully-qualified module path (e.g. `"electronics.board"`).
     pub path: String,
@@ -25,6 +27,9 @@ pub struct ModuleDoc {
     pub annotations: Vec<AnnotationDoc>,
     /// Module-level pragmas.
     pub pragmas: Vec<PragmaDoc>,
+    /// Cross-reference data for this module (referenced modules / items / traits).
+    /// Populated by the lowering slice; absent in serialized JSON from earlier slices.
+    pub cross_refs: CrossRefs,
 }
 
 /// Documentation for a single `@annotation(...)` attached to a declaration.
@@ -32,6 +37,7 @@ pub struct ModuleDoc {
 /// Arguments are stored as rendered/printable strings — not typed AST values —
 /// so `reify-doc` remains free of any dependency on `reify-syntax` or `reify-types`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AnnotationDoc {
     /// The annotation name (e.g. `"deprecated"`, `"units"`).
     pub name: String,
@@ -44,6 +50,7 @@ pub struct AnnotationDoc {
 /// Like `AnnotationDoc`, arguments are rendered strings to avoid
 /// coupling to `reify-syntax`'s `PragmaArg`/`PragmaValue` types.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PragmaDoc {
     /// The pragma name (e.g. `"inline"`, `"layout"`).
     pub name: String,
@@ -57,6 +64,7 @@ pub struct PragmaDoc {
 /// rendering of the parameter's type (e.g. `"Length"`), and `default_repr`
 /// holds a rendering of the default expression if present.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ParamDoc {
     /// Parameter name.
     pub name: String,
@@ -72,6 +80,7 @@ pub struct ParamDoc {
 
 /// Documentation for a port declaration on a structure or occurrence.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PortDoc {
     /// Port name.
     pub name: String,
@@ -85,6 +94,7 @@ pub struct PortDoc {
 
 /// Documentation for a constraint expression on a topology template.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ConstraintDoc {
     /// Optional user-given label for the constraint.
     pub label: Option<String>,
@@ -96,6 +106,7 @@ pub struct ConstraintDoc {
 
 /// Documentation for a sub-component instantiation inside a topology template.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SubComponentDoc {
     /// Instance name within the parent template.
     pub name: String,
@@ -113,6 +124,7 @@ pub struct SubComponentDoc {
 /// (e.g. schematic placement, layout, simulation). `op_summaries` holds
 /// one rendered string per operation inside the realization body.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RealizationDoc {
     /// Realization name (e.g. `"SchematicView"`, `"PCBLayout"`).
     pub name: String,
@@ -126,6 +138,7 @@ pub struct RealizationDoc {
 /// In slice 1 the type exists solely so downstream crates can take a
 /// dependency on the schema without needing to wait for the lowering pass.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CrossRefs {
     /// Fully-qualified paths of modules imported or referenced.
     pub referenced_modules: Vec<String>,
@@ -558,6 +571,11 @@ mod tests {
             ],
             annotations: vec![AnnotationDoc { name: "version".to_string(), args: vec!["\"1.0\"".to_string()] }],
             pragmas: vec![PragmaDoc { name: "stability".to_string(), args: vec!["stable".to_string()] }],
+            cross_refs: CrossRefs {
+                referenced_modules: vec!["mechanics.base".to_string()],
+                referenced_items: vec!["MCU".to_string()],
+                referenced_traits: vec![],
+            },
         };
         let model = DocModel { modules: vec![module.clone()] };
         let json = serde_json::to_string(&model).expect("serialize");
@@ -664,6 +682,17 @@ mod tests {
                 "variant={expected_kind}: expected {expected_tag} in serialized JSON: {json}",
             );
         }
+    }
+
+    /// Forward-compat guard: JSON serialized before `cross_refs` was added
+    /// (and before any future additive field) must still deserialize via
+    /// `#[serde(default)]`.  Catches accidental removal of the attribute.
+    #[test]
+    fn module_doc_deserializes_without_cross_refs() {
+        let legacy_json = r#"{"path":"old.module","doc":null,"items":[],"annotations":[],"pragmas":[]}"#;
+        let m: ModuleDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
+        assert_eq!(m.path, "old.module");
+        assert_eq!(m.cross_refs, CrossRefs::default());
     }
 
     #[test]
