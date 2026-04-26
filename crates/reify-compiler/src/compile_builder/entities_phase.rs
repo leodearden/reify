@@ -135,7 +135,6 @@ pub(crate) fn phase_entities(
                             "import \"{}\" not resolved by this entry point",
                             import.path
                         ))
-                        .with_label(DiagnosticLabel::new(import.span, "import"))
                         .with_label(DiagnosticLabel::new(
                             import.span,
                             "use compile_project (ModuleDag) for cross-file imports",
