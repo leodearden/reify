@@ -783,29 +783,35 @@ purpose weight_target(subject : Structure) {
     );
 }
 
-// ── §8: Reflective aggregation trap (task-2199) ──────────────────────────────
+// ── §8: Reflective aggregation acceptance (task-2289) ────────────────────────
 
-/// # Characterization test — do NOT fix by making this GREEN without reading the comment
+/// Acceptance test for runtime expansion of `subject.params` (task-2289).
 ///
-/// This test pins the **vacuous-true trap**: `subject.params` inside a purpose body
-/// compiles to an empty `ListLiteral` (placeholder at `expr.rs:1136-1150`), so
-/// `forall p in []: determined(p)` is vacuously true and the purpose reports
-/// `Satisfied` even for an entity with undetermined params.
+/// Guards the end-to-end pipeline that fires `forall p in subject.params:
+/// determined(p)` against a real entity:
 ///
-/// This is a CHARACTERIZATION test of the *current broken behavior*, NOT a test of
-/// the desired correct behavior.
+///   1. The compiler emits a `PurposeReflectiveAggregation` placeholder in
+///      place of the legacy empty `ListLiteral` (task-2289 step-7).
+///   2. `activate_purpose` walks the constraint expression and rewrites the
+///      placeholder into `ListLiteral([ValueRef(Bracket, x)])` using the
+///      bound entity's resolved param queries (task-2289 step-11).
+///   3. The quantifier evaluator detects the all-`ValueRef` collection and
+///      iterates over cell IDs, calling `remap_cell` per iteration so
+///      `determined(p)` is rewritten to `determined(Bracket.x)` rather than
+///      `determined($loop_var)` (task-2289 step-9).
 ///
-/// **When runtime expansion lands, FLIP this assertion to `Satisfaction::Violated`
-/// (or `Satisfaction::Indeterminate`).**
+/// `Bracket.x` is declared with no default and no auto, so it is
+/// `Undetermined` at runtime → `determined(Bracket.x)` is `false` →
+/// `forall` returns `false` → the purpose reports `Violated`.
 ///
-/// See `FIXME(task-2199)` at `crates/reify-compiler/src/expr.rs:1141` for the
-/// full blocker analysis (list population, quantifier identity carry-through,
-/// element-type lockstep).
+/// Historical note: this test previously pinned a vacuous-true trap
+/// (`Satisfied` for an entity with undetermined params) under
+/// task-2199; runtime expansion landing under task-2289 closed the trap.
 #[test]
-fn manufacturing_ready_silently_passes_for_undetermined_params_trap() {
+fn manufacturing_ready_violates_for_undetermined_params() {
     // Bracket has a deliberately undetermined param: no default, no auto.
-    // With runtime expansion, `determined(p)` for `Bracket.x` would return
-    // false → `forall` → false → Violated.  Today it silently passes (trap).
+    // Runtime expansion makes `determined(p)` for `Bracket.x` return
+    // false → `forall` → false → Violated.
     let source = r#"
 structure Bracket {
     param x : Real
@@ -854,19 +860,14 @@ purpose manufacturing_ready(subject : Structure) {
             )
         });
 
-    // ‼ TRAP ASSERTION — asserts the broken/vacuous-true behavior, NOT desired behavior ‼
-    //
-    // `subject.params` compiles to `[]` (empty list), so
-    // `forall p in []: determined(p)` is vacuously true → Satisfied.
-    // Bracket.x is undetermined, but the forall never inspects it.
-    //
-    // WHEN RUNTIME EXPANSION LANDS: flip this to Satisfaction::Violated or Indeterminate.
+    // Acceptance: runtime expansion + cell-iteration quantifier eval cause
+    // `determined(Bracket.x)` to return false → forall false → Violated.
     assert_eq!(
         purpose_result.satisfaction,
-        Satisfaction::Satisfied,
-        "TRAP (task-2199 / expr.rs:1136-1150): vacuous-true — subject.params compiles \
-         to an empty list, so forall iterates [] and returns true regardless of Bracket.x \
-         being undetermined. When runtime expansion lands, flip this assertion to Violated.",
+        Satisfaction::Violated,
+        "task-2289 acceptance: subject.params expands at activation to [ValueRef(Bracket, x)], \
+         the quantifier iterates cell IDs and rewrites determined(p) into determined(Bracket.x); \
+         Bracket.x is undetermined, so forall is false and the purpose must be Violated.",
     );
 }
 
