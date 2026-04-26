@@ -120,9 +120,10 @@ def main() -> int:
     # ------------------------------------------------------------------ #
     mismatches: list[dict] = []
     for subproject_name, gap in gap_pairs:
+        # Use .get() not [] so that legacy entries without a tracking: field
+        # are silently skipped rather than raising KeyError.
         tracking_id = gap.get("tracking")
         if tracking_id is None:
-            # No tracking field — legacy entry, skip silently.
             continue
         tracking_id = str(tracking_id)
         task = tasks_index.get(tracking_id)
