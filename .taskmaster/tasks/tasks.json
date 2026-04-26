@@ -48941,16 +48941,16 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "Engine::eval_cached"
+              "Engine::eval_cached",
+              "eval_cached"
             ],
             "queries": [
-              "eval_cached diagnostic drop bug fix task 2259",
-              "eval_cached param_override fast-path regression",
-              "eval_cached repeat-call test patterns",
-              "eval_cached sub-component diagnostics"
+              "eval_cached fast-path param_override validation warning dropped bug",
+              "eval_cached diagnostics drop Vec::new never appended 2259",
+              "eval_cached fast-path content_hash solver cycle diagnostic bugs pattern"
             ]
           },
-          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4",
+          "_causation_id": "fb7c6bb3-6a7d-4560-a692-e3568c4fe90b",
           "modules": [
             "crates/reify-eval/tests/eval_cached_diagnostics.rs"
           ],
