@@ -353,6 +353,16 @@ esac
 NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
+# Stub curl: always exit 1 so the polling loop never thinks vite is ready.
+# Without this stub, a pre-existing server on :1420 (e.g. a running vite dev
+# session in the developer's environment) causes curl to succeed and the loop
+# to skip the vite-death branch entirely.
+cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+exit 1
+CURL_STUB
+chmod +x "$_t25_tmpdir/bin/curl"
+
 # Run the script with the stubbed PATH; capture combined output + rc in one shot.
 _t25_out=$(PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
