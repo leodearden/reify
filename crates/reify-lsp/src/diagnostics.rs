@@ -893,6 +893,85 @@ mod tests {
         );
     }
 
+    /// Per-emitter regression lock — param_override type-kind mismatch path
+    /// (engine_eval.rs param_override type-kind path).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the param_override type-kind mismatch emitter.
+    #[test]
+    fn eval_diag_format_param_override_type_kind() {
+        let source = "structure S { param width: Scalar = 100mm }";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let _ = engine.eval(&compiled);
+        engine.set_param_and_invalidate(
+            &ValueCellId::new("S", "width"),
+            Value::Bool(true),
+        );
+        let diags = engine.eval(&compiled).diagnostics;
+
+        assert!(
+            diags.iter().any(|d| d.message.contains("type-kind mismatch")),
+            "param_override_type_kind: sanity check failed — engine_eval.rs param_override \
+             type-kind path must emit 'type-kind mismatch'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "param_override_type_kind");
+    }
+
+    /// Per-emitter regression lock — param_override dimension mismatch path
+    /// (engine_eval.rs param_override dimension path).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the param_override dimension mismatch emitter.
+    #[test]
+    fn eval_diag_format_param_override_dimension() {
+        let source = "structure S { param width: Scalar = 100mm }";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let _ = engine.eval(&compiled);
+        engine.set_param_and_invalidate(
+            &ValueCellId::new("S", "width"),
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
+        );
+        let diags = engine.eval(&compiled).diagnostics;
+
+        assert!(
+            diags.iter().any(|d| d.message.contains("dimension mismatch")),
+            "param_override_dimension: sanity check failed — engine_eval.rs param_override \
+             dimension path must emit 'dimension mismatch'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "param_override_dimension");
+    }
+
+    /// Per-emitter regression lock — sub-component lookup failure path
+    /// (engine_eval.rs sub-component lookup).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the sub-component unknown-structure emitter.
+    #[test]
+    fn eval_diag_format_sub_component_unknown() {
+        let source = "structure S { sub x = Unknown() }";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let diags = engine.eval(&compiled).diagnostics;
+
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("sub-component")
+                    && d.message.contains("references unknown structure")
+            }),
+            "sub_component_unknown: sanity check failed — engine_eval.rs sub-component lookup \
+             must emit 'sub-component ... references unknown structure'; got: {:#?}",
+            diags
+        );
+        assert_no_violation_format(&diags, "sub_component_unknown");
+    }
+
     /// Regression-lock cluster: `eval()` must never emit the `"constraint ... violated"`
     /// format (checked by inline `strip_prefix / strip_suffix / !contains(' ')`) from any
     /// of the known eval-time diagnostic emitters.
