@@ -51353,6 +51353,21 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2389",
+        "title": "auto type-param: LSP diagnostic surface for all four codes",
+        "description": "Integrate LSP diagnostics to surface POOL_OVERFLOW, NO_CANDIDATE, AMBIGUOUS, and NON_UNIQUE codes with detailed candidate listings and suggestions.",
+        "details": "Implement the integration of Language Server Protocol (LSP) diagnostics to surface the four error codes: POOL_OVERFLOW, NO_CANDIDATE, AMBIGUOUS, and NON_UNIQUE. Ensure that each diagnostic includes a full listing of candidates, reasons for rejection, and explicit substitution suggestions. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 6. Utilize existing diagnostic pathways to ensure consistency and leverage the candidate enumeration logic from Task 2384. Implement detailed logging for each diagnostic type to aid in debugging and future enhancements.",
+        "testStrategy": "1. Develop unit tests to verify that each diagnostic code is correctly surfaced via the LSP. 2. Ensure that candidate listings and rejection reasons are complete and accurate. 3. Test explicit substitution suggestions for correctness and clarity. 4. Simulate scenarios for each error code to confirm proper diagnostic generation and LSP integration. 5. Run integration tests to ensure compatibility with existing diagnostic systems.",
+        "status": "pending",
+        "dependencies": [
+          "2384",
+          "2385",
+          "2386"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51362,7 +51377,10 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:25:18.029Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:25:22.147Z"
     }
   }
 }
