@@ -4,7 +4,7 @@
 //! CompiledExprKind::OptionNone with correct types instead of falling through
 //! to generic function call resolution.
 
-use reify_compiler::{CompiledGuardedGroup, TopologyTemplate, ValueCellDecl};
+use reify_compiler::{CompiledGuardedGroup, ValueCellDecl};
 use reify_test_support::compile_first_template;
 use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
 

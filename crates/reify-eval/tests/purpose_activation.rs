@@ -31,7 +31,7 @@ use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_types::{BinOp, CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity};
+use reify_types::{CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

@@ -12,7 +12,7 @@ fn kernel_status_for_true_returns_available() {
 #[test]
 fn kernel_status_for_false_returns_unavailable_with_message() {
     let status = kernel_status_for(false);
-    assert_eq!(status.available, false);
+    assert!(!status.available);
     assert_eq!(status.message.as_deref(), Some(KERNEL_UNAVAILABLE_MESSAGE));
 }
 

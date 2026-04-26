@@ -2771,6 +2771,7 @@ fn edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip() {
 ///
 /// Task 2142 — post-wave2 cleanup for edit_source cross-phase dedup.
 #[test]
+#[allow(clippy::doc_overindented_list_items)]
 fn edit_source_wave2_does_not_corrupt_inactive_members() {
     let fixture = wave2_flip_fixture();
 
@@ -2891,6 +2892,7 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
 /// Task 2147 — role-flip/added-member interaction with edit_source cross-phase dedup.
 /// Responds to esc-2142-102 (reviewer_comprehensive) post-merge coverage gap.
 #[test]
+#[allow(clippy::doc_overindented_list_items)]
 fn edit_source_role_flip_wave2_and_phase3_dedup() {
     use std::collections::HashMap;
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};

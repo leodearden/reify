@@ -2662,7 +2662,7 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
 #[test]
 fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
     let x_id = ValueCellId::new("S", "x");
-    let y_id = ValueCellId::new("S", "y");
+    let _y_id = ValueCellId::new("S", "y");
     let depth_id = ValueCellId::new("S", "depth");
     let guard_a_id = ValueCellId::new("S", "__guard_0");
     let guard_b_id = ValueCellId::new("S", "__guard_1");

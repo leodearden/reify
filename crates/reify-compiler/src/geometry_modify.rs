@@ -345,7 +345,7 @@ mod tests {
         );
         let parsed = reify_syntax::parse(
             &source,
-            reify_types::ModulePath::single(&format!("test_fallback_{}", fn_name)),
+            reify_types::ModulePath::single(format!("test_fallback_{}", fn_name)),
         );
         assert!(
             parsed.errors.is_empty(),
@@ -452,7 +452,7 @@ mod tests {
         );
         let parsed = reify_syntax::parse(
             &source,
-            reify_types::ModulePath::single(&format!("test_{}_step_offset_nonzero", fn_name)),
+            reify_types::ModulePath::single(format!("test_{}_step_offset_nonzero", fn_name)),
         );
         assert!(
             parsed.errors.is_empty(),
