@@ -353,6 +353,14 @@ esac
 NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
+# Stub curl: always exits 1 — prevents an existing :1420 listener in the CI/dev
+# environment from satisfying the readiness poll and bypassing the kill-0 path.
+cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+exit 1
+CURL_STUB
+chmod +x "$_t25_tmpdir/bin/curl"
+
 # Run the script with the stubbed PATH; capture combined output + rc in one shot.
 _t25_out=$(PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
