@@ -50224,6 +50224,19 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:59:05.333Z"
+      },
+      {
+        "id": "2324",
+        "title": "Implement OCCT FFI for Geometry Operations",
+        "description": "Develop FFI bindings for closest_point, on(point, geometry), and angle_between_surfaces using the OCCT library.",
+        "details": "Follow the FFI pattern established in Task #319 for closest_point_on_shape. Implement the following functions:\n\n1. **closest_point_on_shape**: Re-export from Task #319, ensuring it integrates with the OCCT library to find the closest point on a given shape.\n\n2. **point_on_shape**: Implement membership checking to determine if a point lies on a specified geometry. Use OCCT's geometric evaluation capabilities.\n\n3. **surface_angle**: Calculate the dihedral angle between two surfaces using the dot product of their face normals. Leverage OCCT's surface analysis tools.\n\nUpdate the stdlib bindings to register these functions and ensure they are correctly wired through the eval pipeline. Refer to `docs/prds/topology-selectors.md` task 2 for detailed requirements.",
+        "testStrategy": "Conduct happy-path tests using box and sphere fixtures to verify each function:\n\n1. **closest_point_on_shape**: Test with various points and shapes to ensure the closest point is accurately calculated.\n\n2. **point_on_shape**: Verify membership results for points on and off the geometry.\n\n3. **surface_angle**: Test angle calculations between known surfaces to ensure accuracy.\n\nEnsure all tests pass using the `cargo test` framework, focusing on edge cases and typical use scenarios.",
+        "status": "pending",
+        "dependencies": [
+          "319"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50233,7 +50246,10 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:59:53.613Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:59:59.402Z"
     }
   }
 }
