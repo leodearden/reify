@@ -4,18 +4,22 @@
 # Usage: scripts/run-gui-dev.sh <file.ri>
 #
 # Performs every build step needed to launch reify-gui in dev mode:
-#   1. Build the sidecar (idempotent; ~20ms tsup bundle).
-#   2. Install gui/ npm deps (vite needs them).
-#   3. Start the vite dev server in the background and wait for :${REIFY_VITE_PORT:-1420}.
-#   4. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
-#   5. Export REIFY_DEBUG=1 + OCCT LD_LIBRARY_PATH.
-#   6. Run target/debug/reify-gui <file.ri> AS A CHILD (NOT exec) so the
-#      EXIT trap fires and we can reap vite cleanly.
+#   1. Install gui/sidecar/ npm deps (tsup needs typescript at runtime).
+#   2. Build the sidecar (idempotent; ~20ms tsup bundle).
+#   3. Install gui/ npm deps (vite needs them).
+#   4. Start the vite dev server in the background and wait for :${REIFY_VITE_PORT:-1420}.
+#   5. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
+#   6. Export REIFY_DEBUG=1 + OCCT LD_LIBRARY_PATH.
+#   7. Run target/debug/reify-gui <file.ri> as a backgrounded child and
+#      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
+#      both vite and reify-gui.
 #
 # IMPORTANT: this script does NOT `exec` the GUI binary. `exec` would replace
-# the shell process with the binary, killing the EXIT trap that reaps the
-# vite background process. We run it as a child, capture its exit code,
-# explicitly kill vite, and propagate the binary's exit code.
+# the shell process with the binary, killing the trap that reaps vite.
+# We background reify-gui and `wait` so signals delivered to the script
+# trigger cleanup of BOTH children — otherwise an external `kill` of the
+# script orphans reify-gui (it survives showing "connection refused" once
+# vite is reaped).
 
 set -euo pipefail
 
@@ -53,7 +57,14 @@ cd "$REPO_ROOT"
 # with another worktree's vite already bound to :1420. See task 2308.
 REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
 
-# -- 2. Build the sidecar -----------------------------------------------------
+# -- 2. Install sidecar npm deps ---------------------------------------------
+# build-sidecar.sh runs `npx tsup`, which requires `typescript` to be present
+# in gui/sidecar/node_modules. On a fresh checkout (or fresh worktree) this
+# directory doesn't exist yet, so install before building. Idempotent.
+echo "==> Installing sidecar dependencies..."
+(cd gui/sidecar && npm install --no-audit --no-fund --silent)
+
+# -- 3. Build the sidecar -----------------------------------------------------
 echo "==> Building sidecar..."
 bash gui/sidecar/build-sidecar.sh
 
@@ -73,16 +84,36 @@ npm run dev -- --port "$REIFY_VITE_PORT" &
 VITE_PID=$!
 popd >/dev/null
 
-# Install EXIT trap to reap vite on every termination path. This MUST stay
-# active for the whole script — we deliberately do NOT exec the GUI binary
-# so this trap fires when reify-gui exits (or when the user Ctrl-C's during
-# the polling loop, etc.).
+# Install cleanup trap to reap BOTH vite and reify-gui on every termination
+# path. This MUST stay active for the whole script — we deliberately do NOT
+# exec the GUI binary so this trap fires when reify-gui exits, when the user
+# Ctrl-C's, or when an external supervisor `kill`s the script.
+#
+# Why we reap reify-gui too: bash does NOT propagate SIGTERM to foreground
+# children by default. Without this, `kill <script-pid>` reaps vite via the
+# trap but orphans reify-gui — the window survives, displays "Connection
+# refused" once vite dies, and squats on resources.
 #
 # We reap descendants first via `pkill -P "$VITE_PID"`: npm typically forks
 # vite as a child, and signaling only npm can leave vite holding the port.
 # `pkill -P` is best-effort (may not be on every system); the `|| true` keeps
 # the trap robust under set -e.
-trap 'pkill -P "$VITE_PID" 2>/dev/null || true; kill "$VITE_PID" 2>/dev/null || true; wait "$VITE_PID" 2>/dev/null || true' EXIT
+GUI_PID=""
+cleanup() {
+    if [ -n "$GUI_PID" ]; then
+        kill "$GUI_PID" 2>/dev/null || true
+        wait "$GUI_PID" 2>/dev/null || true
+    fi
+    pkill -P "$VITE_PID" 2>/dev/null || true
+    kill "$VITE_PID" 2>/dev/null || true
+    wait "$VITE_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+# Forward SIGINT/SIGTERM to children explicitly. Bash's default behavior is
+# to wait for foreground children before honoring the signal; backgrounding
+# reify-gui + `wait` (below) plus these handlers ensures clean shutdown.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # -- 5. Wait for vite readiness ----------------------------------------------
 echo "==> Waiting for vite at http://127.0.0.1:$REIFY_VITE_PORT/ ..."
@@ -119,12 +150,21 @@ cargo build -p reify-gui --bin reify-gui --features gui
 export REIFY_DEBUG=1
 export LD_LIBRARY_PATH="/snap/freecad/current/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# -- 8. Run reify-gui as a CHILD (not exec) ----------------------------------
+# -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------
 # Critical: do NOT use `exec` here — `exec` replaces the shell process with
-# the binary, which kills the EXIT trap that should reap vite.
+# the binary, which kills the trap that should reap vite.
+#
+# We background reify-gui (rather than running it foreground) so that:
+#   - The script's own SIGTERM/SIGINT handlers fire promptly (foreground
+#     children block bash's signal delivery until they exit).
+#   - The cleanup trap can kill GUI_PID explicitly when the script is
+#     killed externally, instead of orphaning the GUI window.
 echo "==> Launching target/debug/reify-gui $FILE (REIFY_DEBUG=1)"
+target/debug/reify-gui "$FILE" &
+GUI_PID=$!
 RC=0
-target/debug/reify-gui "$FILE" || RC=$?
+wait "$GUI_PID" || RC=$?
+GUI_PID=""  # already reaped; suppress double-kill in cleanup
 
 # Trap will reap vite on exit; propagate the binary's exit code.
 exit "$RC"
