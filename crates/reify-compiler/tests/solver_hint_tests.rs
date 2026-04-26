@@ -264,6 +264,38 @@ fn solver_hint_multiple_on_same_param() {
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
 
+// ── Step-1 (task 2339): @solver_hint("preferred_strategy", argmin_default) compiles ──
+
+#[test]
+fn solver_hint_preferred_strategy_argmin_default_compiles() {
+    let source = r#"structure S { @solver_hint("preferred_strategy", argmin_default) param length : Length = auto }"#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let template = &module.templates[0];
+    assert!(
+        !template.value_cells.is_empty(),
+        "expected at least one value cell"
+    );
+
+    let cell = &template.value_cells[0];
+    assert_eq!(
+        cell.solver_hints.len(),
+        1,
+        "expected 1 solver hint, got {:?}",
+        cell.solver_hints
+    );
+    assert_eq!(
+        cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::PreferredStrategy
+    );
+    assert_eq!(cell.solver_hints[0].collection, "argmin_default");
+}
+
 // ── Step 21: builder creates param with solver hints ───────────────────────
 
 #[test]
