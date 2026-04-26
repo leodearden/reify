@@ -50499,14 +50499,18 @@
       {
         "id": "2342",
         "title": "reify-doc crate scaffold + DocModel types",
-        "description": "Add a new crate crates/reify-doc to the workspace as the foundation for the `reify doc` documentation generator. Define DocModel and its child types (ModuleDoc, ItemDoc, ParamDoc, PortDoc, ConstraintDoc, SubComponentDoc, RealizationDoc, AnnotationDoc, PragmaDoc, CrossRefs) in src/model.rs as pure data with serde derives. No formatters yet. Add reify-doc to Cargo.toml workspace.members and workspace.dependencies. Empty `cargo test -p reify-doc` should pass green. Doc-comment / annotation / pragma / meta / sub-component / port plumbing already exists in CompiledModule (tasks #214–#217 and pragma tasks done). PRD: docs/prds/reify-doc-tool.md task slice 1.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
-        "details": "",
-        "testStrategy": "",
+        "description": "Add the reify-doc crate to the workspace as the foundation for the `reify doc` documentation generator, define DocModel and child types in src/model.rs, and implement reify_doc::build_doc_model(&CompiledModule, source: &str) -> DocModel in src/lib.rs with span-based constraint rendering.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
+        "details": "- Add `crates/reify-doc` to `Cargo.toml` workspace.members and workspace.dependencies\n- Define `DocModel` and child types (`ModuleDoc`, `ItemDoc`, `ParamDoc`, `PortDoc`, `ConstraintDoc`, `SubComponentDoc`, `RealizationDoc`, `AnnotationDoc`, `PragmaDoc`, `CrossRefs`) in `src/model.rs` as pure data with serde derives. No formatters yet.\n- Implement `reify_doc::build_doc_model(module: &CompiledModule, source: &str) -> DocModel` in `src/lib.rs`:\n  - Read `TopologyTemplate` fields: `value_cells`, `ports`, `constraints`, `meta`, `annotations`, `sub_components`, `realizations`, `trait_bounds`, `type_params`, `doc`\n  - Read `CompiledFunction`, `TraitDef`, `EnumDef`, and module-level pragmas: `declared_version`, `default_tolerance`, `solver_pragma`, `kernel_pragma`\n  - Render constraint expressions by re-slicing `source` via the span attached to each compiled constraint node\n- Empty `cargo test -p reify-doc` must pass green",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:07:08.056Z"
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Task 2342 scaffolds the reify-doc crate and DocModel types — the candidate's build_doc_model function is the immediate next step that consumes those types. Both touch only crates/reify-doc/, they serialize on the same module lock, and neither can ship usefully without the other. An implementer loads context once. Combined task stays under 3 files and a single coherent concern. 2342 is pending and combine_eligible.",
+          "combined_at": "2026-04-26T20:08:06.030485+00:00"
+        }
       },
       {
         "id": "2343",
@@ -50514,26 +50518,24 @@
         "description": "Wire composed field source kind to combinators, enabling lazy evaluation and dependency tracking for cache invalidation.",
         "details": "Implement the composed field source kind by integrating it with existing combinators as referenced in task #342. Modify the compiler to track dependencies by capturing field references within the lambda body of `composed { |p| ... }`. Ensure that the lambda is evaluated lazily at each `sample(other_field, p)` call. Update the cache invalidation mechanism to invalidate the composed field's cache when any of its referenced fields are edited. This requires extending the dependency tracking system to include these dynamic dependencies.",
         "testStrategy": "Create tests to verify that editing a field referenced by a composed field invalidates its cache. Ensure that the composed field is re-evaluated correctly upon subsequent accesses. Use existing test frameworks to simulate field edits and check cache states before and after edits.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "11",
           "342"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:08:16.947Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:07:08.074Z",
-      "taskCount": 2331,
+      "lastModified": "2026-04-26T20:08:16.947Z",
+      "taskCount": 2332,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:08:02.374Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:08:05.933Z"
+      ]
     }
   }
 }
