@@ -305,6 +305,10 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
         assert_eq!(
+            results[0].diagnostics.messages[0].severity,
+            Severity::Error,
+        );
+        assert_eq!(
             results[0].diagnostics.messages[0].code,
             Some(DiagnosticCode::ConstraintViolated),
         );
@@ -327,6 +331,10 @@ mod tests {
         let results = checker.check(&input);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
+        assert_eq!(
+            results[0].diagnostics.messages[0].severity,
+            Severity::Error,
+        );
         assert_eq!(
             results[0].diagnostics.messages[0].code,
             Some(DiagnosticCode::ConstraintViolated),

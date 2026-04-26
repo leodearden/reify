@@ -197,6 +197,13 @@ pub enum DiagnosticCode {
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
     /// - `"constraint <id> evaluated to non-boolean value"` (non-bool fallback, Severity::Error)
+    ///
+    /// Note: Both the Bool(false) case (semantically violated predicate) and the non-bool
+    /// fallback (expression is not a predicate at all) intentionally share this code. Both
+    /// set `Satisfaction::Violated` and `Severity::Error`. If downstream tooling needs to
+    /// distinguish "predicate returned false" from "expression was not boolean", a separate
+    /// `ConstraintNotBoolean` variant can be added additively (the `#[non_exhaustive]` flag
+    /// makes that non-breaking).
     ConstraintViolated,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical message:

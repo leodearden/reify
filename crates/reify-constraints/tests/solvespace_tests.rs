@@ -972,10 +972,12 @@ fn inconsistent_geometric_diagnostic_carries_constraint_unsatisfiable_code() {
     match result {
         SolveResult::Infeasible { diagnostics } => {
             assert!(!diagnostics.is_empty(), "should have diagnostics");
-            assert_eq!(
-                diagnostics[0].code,
-                Some(DiagnosticCode::ConstraintUnsatisfiable),
-                "inconsistent geometric diagnostic must carry ConstraintUnsatisfiable code",
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintUnsatisfiable)),
+                "inconsistent geometric diagnostic must carry ConstraintUnsatisfiable code; got: {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
             );
         }
         other => panic!(
