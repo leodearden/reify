@@ -5,4 +5,5 @@
 //! `serde`/`serde_json` so it can be embedded in any downstream consumer without
 //! pulling in the full compiler stack.
 
+pub mod cross_refs;
 pub mod model;
