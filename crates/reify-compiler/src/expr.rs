@@ -614,16 +614,9 @@ pub(crate) fn compile_expr_guarded(
             // Intercept `some(expr)` before general function resolution.
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
-                if args.len() != 1 {
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "some() requires exactly 1 argument, got {}",
-                            args.len()
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                    );
+                if !check_arg_count_exact("some", args.len(), 1, expr.span, diagnostics) {
+                    // Anti-cascade (task-448/task-1912/task-1921): helper pushes; propagate poison.
+                    return propagate_poison();
                 }
                 let inner = compile_expr_guarded(
                     &args[0],
@@ -758,18 +751,15 @@ pub(crate) fn compile_expr_guarded(
                     };
 
                     if let Some(kind) = determinacy_kind {
-                        if compiled_args.len() != 1 {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "{}() requires exactly 1 argument, got {}",
-                                    name,
-                                    compiled_args.len()
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "wrong number of arguments",
-                                )),
-                            );
+                        if !check_arg_count_exact(
+                            name,
+                            compiled_args.len(),
+                            1,
+                            expr.span,
+                            diagnostics,
+                        ) {
+                            // Intentional non-Error fallback (task-1921): determinacy predicates
+                            // return Type::Bool per the documented poison policy in this module.
                             return CompiledExpr::literal(Value::Undef, Type::Bool);
                         }
 
@@ -1846,16 +1836,17 @@ pub(crate) fn compile_expr_guarded(
             match selector_kind {
                 SelectorKind::Face | SelectorKind::Edge => {
                     if args.len() != 1 {
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
+                        // Anti-cascade (task-448/task-1912/task-1921): helper pushes; propagate poison.
+                        push_labeled_arg_count_error(
+                            format!(
                                 "@{} expects exactly 1 argument (a string name), got {}",
                                 selector,
                                 args.len()
-                            ))
-                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                            ),
+                            expr.span,
+                            diagnostics,
                         );
+                        return propagate_poison();
                     }
                     // Check that the argument is a string literal (type check)
                     if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind {
@@ -1875,15 +1866,16 @@ pub(crate) fn compile_expr_guarded(
                 }
                 SelectorKind::Point => {
                     if args.len() != 3 {
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
+                        // Anti-cascade (task-448/task-1912/task-1921): helper pushes; propagate poison.
+                        push_labeled_arg_count_error(
+                            format!(
                                 "@point expects exactly 3 coordinate arguments, got {}",
                                 args.len()
-                            ))
-                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                            ),
+                            expr.span,
+                            diagnostics,
                         );
+                        return propagate_poison();
                     }
                 }
             }

@@ -284,6 +284,49 @@ structure S {
     );
 }
 
+/// Compile `p @ face("a", "b")` — two arguments instead of one.
+/// Asserts: (a) an error whose message contains the @face custom text, and
+/// (b) that error has a label with the canonical "wrong number of arguments" text.
+#[test]
+fn compile_face_wrong_arg_count_uses_canonical_label() {
+    let source = r#"
+trait T { param d : Length }
+structure S {
+    let shape = box(10mm, 10mm, 10mm)
+    port p : out T { param d : Length = 5mm }
+    let r = p @ face("a", "b")
+}
+"#;
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for @face with wrong arg count"
+    );
+    let arg_count_error = errors
+        .iter()
+        .find(|d| d.message.contains("@face expects exactly 1 argument"));
+    assert!(
+        arg_count_error.is_some(),
+        "expected error containing '@face expects exactly 1 argument', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let diag = arg_count_error.unwrap();
+    let has_canonical_label = diag
+        .labels
+        .iter()
+        .any(|l| l.message == "wrong number of arguments");
+    assert!(
+        has_canonical_label,
+        "expected label 'wrong number of arguments' on @face arg-count error, got labels: {:?}",
+        diag.labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+    );
+}
+
 /// Compile `p @ edge(width * 2)` — expression argument (not a literal).
 /// Expression arguments should compile through without error.
 #[test]
