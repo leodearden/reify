@@ -998,8 +998,10 @@ fn compile_purpose_user_defined_structure_named_structure_bypasses_validation() 
     // `subject.mass` references a *real* param of the declared template — it is
     // included as a real-param probe so the combined `no_member_errors` filter
     // covers both a spurious member access (`bogus`) and a legitimate one (`mass`).
-    // If a future refactor makes the wildcard guard registry-aware, `mass` would
-    // start failing the combined filter for the right reason.
+    // If a future refactor makes the wildcard guard registry-aware, `bogus` would
+    // start producing a `has no member` diagnostic for the right reason while
+    // `mass` would remain silent because it is a legitimate member of the
+    // registered template.
     let source = r#"
 structure Structure {
     param mass : Mass = 1kg
@@ -1017,17 +1019,16 @@ purpose check(subject : Structure) {
     // to silently drop the declaration), `find_template` returns None — the
     // wildcard-guard assertions below would then pass vacuously.  This assertion
     // is the direct positive confirmation called for by esc-2213-28 S1.
-    let registered = find_template(&module.templates, "Structure");
-    assert!(
-        registered.is_some(),
-        "expected user-declared `structure Structure` to be registered in \
-         module.templates (positive precondition for the wildcard-guard \
-         characterization below); got templates: {:?}",
-        module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-    );
+    let template = find_template(&module.templates, "Structure").unwrap_or_else(|| {
+        panic!(
+            "expected user-declared `structure Structure` to be registered in \
+             module.templates (positive precondition for the wildcard-guard \
+             characterization below); got templates: {:?}",
+            module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        )
+    });
     // Corroborate that the template body parsed and the `mass` param compiled —
     // guards against partial-registration regression (name present, body dropped).
-    let template = registered.unwrap();
     assert!(
         template.value_cells.iter().any(|vc| vc.id.member == "mass"),
         "expected registered `Structure` template to contain a `mass` value \
