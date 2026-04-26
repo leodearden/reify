@@ -48165,11 +48165,11 @@
         "description": "Three small follow-up improvements to crates/reify-lsp/src/diagnostics.rs from the task 2236 review (all in the eval/eval_cached diagnostics-capture path landed there):\n\n1. (robustness) In `compute_diagnostics_with_state` (~lines 106-109), tighten the `content_unchanged` predicate from `state.last_content_hash.map(|h| h == compiled.content_hash).unwrap_or(false)` to also require `state.is_engine_initialized()`. The existing comment-only invariant (\"last_content_hash is Some only after a successful eval()/eval_cached() call\") relies on no other code path setting `last_content_hash` independently — but `EvalState` is `pub`, and `last_content_hash` / `engine` are decoupled in principle. Making the check explicit guarantees an unprimed engine deterministically takes the cold-start branch. The `is_engine_initialized()` accessor already exists (diagnostics.rs:39).\n\n2. (test_quality) Rewrite or drop `eval_cached_path_does_not_surface_circular_let_binding_known_limitation` (diagnostics.rs:610-653). Today it pins the known eval_cached bug (engine_eval.rs:1179 — immutable `let diagnostics = Vec::new()`) as the asserted behavior; when the bug is fixed, it will fail with no real regression. Preferred fix: rewrite as an `#[ignore = \"enable when eval_cached emits diagnostics\"]`'d positive test that asserts the post-fix behavior, so a future maintainer just removes the `ignore` attribute. The cold-start positive test (`eval_diagnostic_surfaces_via_stateful_pipeline_for_circular_let_binding`) plus a TODO comment in production code already covers the new capture logic.\n\n3. (code_quality) The `violated_messages` filter applied to the `eval_diagnostics` merge loop (diagnostics.rs:179-190) is a no-op today by the author's own comment — eval-time diagnostics never use the `\"constraint {id} violated\"` format. Either drop the filter and rely on a unit test that fails if eval ever starts emitting that format, or extract `is_constraint_violation_message(&str)` so the predicate is explicit and reusable rather than expressed as set membership in a HashSet built for an unrelated loop.\n\nThese are all small polish items in the same function and file; bundling minimizes overhead.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T06:57:06.412Z",
+        "updatedAt": "2026-04-26T07:44:40.809Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -48182,7 +48182,10 @@
               "engine-init invariant diagnostics.rs LSP"
             ]
           },
-          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351"
+          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351",
+          "done_provenance": {
+            "commit": "12f9af36a3a0badcfbc907ff7c4fa91c71b214c0"
+          }
         }
       },
       {
@@ -48279,9 +48282,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:43:38.839Z",
+      "lastModified": "2026-04-26T07:44:40.809Z",
       "taskCount": 2237,
-      "completedCount": 1999,
+      "completedCount": 2000,
       "tags": [
         "master"
       ]
