@@ -2597,8 +2597,8 @@ fn edit_source_added_member_in_unchanged_guard_group_forces_non_skip() {
           despite guard value being unchanged; Phase 3 does not fire); \
          got {} — \
          if 0, has_added_in_group arm of the Phase 1 per-group skip condition was \
-           dropped (added member on inactive branch would \
-           silently retain a Determined value); \
+           dropped (added member on the active branch would \
+           silently retain Undef instead of being activated to its declared default value); \
          if > 1, Phase 3 guard_changed gate regressed",
         counter
     );
