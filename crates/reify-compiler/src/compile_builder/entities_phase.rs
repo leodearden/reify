@@ -72,6 +72,17 @@ pub(crate) fn phase_entities(
         )
         .collect();
 
+    // Build a set of dotted import paths that are already resolved in the
+    // prelude (e.g. "std.units", "a", "shapes.bolts"). When a prelude module
+    // covers an import, no diagnostic is needed — the import was resolved.
+    // Only emit the warning for imports that have no matching prelude entry.
+    // Note: ModulePath::to_string() uses '/' separators; use .0.join(".") to
+    // get the dotted form that matches ImportDecl.path (see task 2226).
+    let resolved_import_paths: HashSet<String> = prelude
+        .iter()
+        .map(|m| m.path.0.join("."))
+        .collect();
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
@@ -104,13 +115,19 @@ pub(crate) fn phase_entities(
                     is_pub: import.is_pub,
                     span: import.span,
                 });
-                ctx.diagnostics.push(
-                    Diagnostic::warning(format!(
-                        "import \"{}\" noted; module resolution not yet implemented",
-                        import.path
-                    ))
-                    .with_label(DiagnosticLabel::new(import.span, "import")),
-                );
+                // Only warn when the import was NOT resolved via the prelude.
+                // Resolved imports (ModuleDag user modules, stdlib modules) are
+                // already in `resolved_import_paths` — suppress the warning for
+                // those. See task 2226 for detection strategy.
+                if !resolved_import_paths.contains(&import.path) {
+                    ctx.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "import \"{}\" noted; module resolution not yet implemented",
+                            import.path
+                        ))
+                        .with_label(DiagnosticLabel::new(import.span, "import")),
+                    );
+                }
             }
             reify_syntax::Declaration::Function(_) => {
                 // Already compiled by functions_phase::phase_functions.
