@@ -769,14 +769,18 @@ impl Engine {
                 let guard_is_true = matches!(&guard_val, Value::Bool(true));
                 let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
-                // Evaluate members (active when guard is true)
-                let mut members_ctx = GuardedParamCtx {
+                // Single ctx reused by both the members and else_members loops —
+                // the mutable borrows on journal/cache are released when each loop
+                // ends, so a single GuardedParamCtx compiles cleanly across both.
+                let mut param_ctx = GuardedParamCtx {
                     journal: &mut self.journal,
                     cache: &mut self.cache,
                     functions: &functions,
                     meta_map: &self.meta_map,
                     version,
                 };
+
+                // Evaluate members (active when guard is true)
                 for cell in &group.members {
                     if guard_is_true {
                         // Evaluate normally
@@ -787,7 +791,7 @@ impl Engine {
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
-                                &mut members_ctx,
+                                &mut param_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
@@ -826,13 +830,6 @@ impl Engine {
                 }
 
                 // Evaluate else_members (active when guard is false)
-                let mut else_ctx = GuardedParamCtx {
-                    journal: &mut self.journal,
-                    cache: &mut self.cache,
-                    functions: &functions,
-                    meta_map: &self.meta_map,
-                    version,
-                };
                 for cell in &group.else_members {
                     if guard_is_false {
                         // Mirror the top-level Param branch and the members loop above:
@@ -845,7 +842,7 @@ impl Engine {
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
-                                &mut else_ctx,
+                                &mut param_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
