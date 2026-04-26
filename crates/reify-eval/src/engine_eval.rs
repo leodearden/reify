@@ -164,15 +164,7 @@ fn post_solver_re_eval_guard_cells(
     }
 }
 
-/// Engine-scoped state threaded through [`eval_guarded_group_param_cell`].
-///
-/// Bundles the five parameters that are shared across the members and
-/// else_members loops inside `Engine::eval`'s third pass, reducing the
-/// helper's argument list from 10 to 6 and allowing the
-/// `#[allow(clippy::too_many_arguments)]` suppression to be removed.
-///
-/// Lifetime `'a` ties all borrowed fields to the call scope in `Engine::eval`.
-/// `version` is `Copy` and stored by value — no ref needed.
+/// Engine-scoped state shared by [`eval_guarded_group_param_cell`] callers within `Engine::eval`'s third pass.
 struct GuardedParamCtx<'a> {
     journal: &'a mut crate::journal::EventJournal,
     cache: &'a mut crate::cache::CacheStore,
