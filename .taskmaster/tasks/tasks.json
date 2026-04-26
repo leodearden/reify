@@ -50498,7 +50498,14 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:04:13.069Z"
+        "updatedAt": "2026-04-26T20:04:13.069Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/cache.rs",
+            "crates/reify-eval/src/freshness_walk.rs",
+            "crates/reify-eval/src/lib.rs"
+          ]
+        }
       },
       {
         "id": "2336",
@@ -50923,7 +50930,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:19:00.429Z",
+      "description": "Tasks for master context"
     }
   }
 }
