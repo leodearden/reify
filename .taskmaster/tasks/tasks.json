@@ -48467,11 +48467,11 @@
         "description": "Reduce parameter count and remove `u64`→`VersionId` impedance mismatch in `eval_guarded_group_param_cell` and its companion `record_eval_completed` (both in `crates/reify-eval/src/engine_eval.rs`).",
         "details": "Two related cleanups surfaced by review of task-2195:\n\n1. **Parameter explosion (engine_eval.rs:215-226).** `eval_guarded_group_param_cell` now takes 10 parameters and is silenced with `#[allow(clippy::too_many_arguments)]`. Five of them (`journal`, `cache`, `version_id`, `meta_map`, `functions`) are engine-scoped state and the helper is only called from `Engine::eval`. Introduce a small bundle (e.g. `struct GuardedParamCtx<'a> { journal: &'a mut EventJournal, cache: &'a mut CacheStore, functions: &'a [CompiledFunction], meta_map: &'a HashMap<String, HashMap<String, String>>, version: VersionId }`) and pass it as a single argument. Remove the `clippy::too_many_arguments` suppression.\n\n2. **Type strength (engine_eval.rs:178).** `record_eval_completed` and `eval_guarded_group_param_cell` accept `version_id: u64` and immediately wrap it as `VersionId(version_id)` at every use site (twice in the helper). Other engine code wraps once at the call boundary. Change `version_id: u64` → `version: VersionId` in both helpers; update the four `Engine::eval` call sites to wrap once at the boundary.\n\nCombine both because they touch the same signatures — doing them in one PR avoids a second churn of `engine_eval.rs`. Lock with the existing journal+cache regression tests in `crates/reify-eval/tests/eval_param_overrides.rs` (no behaviour change expected).\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T14:28:58.651Z",
+        "updatedAt": "2026-04-26T18:23:32.463Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
@@ -48486,6 +48486,10 @@
               "guarded group param cell context struct design",
               "eval_guarded_group_param_cell documentation anchors"
             ]
+          },
+          "done_provenance": {
+            "commit": "6b1f28d3b635d0235d9dc592c9ad58965ea1c629",
+            "note": "reconcile: branch deleted but merge marker found on main"
           }
         }
       },
@@ -48939,7 +48943,7 @@
         "id": "2268",
         "title": "Refactor: extract shared helpers between eval() and eval_cached (cycle detection + solver invocation)",
         "description": "Three categories of code in `crates/reify-eval/src/engine_eval.rs` are duplicated between `eval()`, `eval_cached`, and/or `eval_guarded_group_param_cell`; extract private helpers so a future fix to one site automatically covers all others. Additionally, scope the `sorted_set` HashSet allocation in `eval_cached` lazily to eliminate wasted work on the cycle-free hot path.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "details": "Two large blocks of `crates/reify-eval/src/engine_eval.rs::eval_cached` were copy-pasted from their `eval()` counterparts during task 2259. Both sites format identical messages and identical control flow; any future fix to one will silently fail to propagate to the other.\n\n(a) Cycle detection (eval_cached lines 1491-1531 vs evaluate_let_bindings lines ~1768-1805): build let_cells map, extract traces, topological_sort, emit cyclic_members diagnostic. Extract a private helper `fn detect_let_cycle(…)` shared by both paths.\n\n    As part of this extraction, scope the `sorted_set` HashSet allocation (currently unconditional at lines 1572-1573) inside the cycle-diagnostic `if` block at line 1578 — after the task-2266 fix, `sorted_set` is only referenced inside that block. The comment \"Owned set so sorted_lets is still iterable for second-pass ordering below\" is stale; the second pass no longer consults `sorted_set`. Remove or replace the comment. The sibling eval() path at lines 1839-1855 already builds the set lazily inside the diagnostic block; mirror that pattern.\n\n(b) Solver invocation: identical control flow around solver dispatch is duplicated between eval() and eval_cached. Extract a shared helper so both paths call the same code.\n\n(c) Param-override rejection warning emission (three sites diverged after task 2267):\n- `eval_cached` unconditional pre-check (lines 1398-1417, added by task 2267)\n- `eval()` inline emission inside the cache-miss match (lines 615-633)\n- `eval_guarded_group_param_cell` (~L180-254)\n\nAll three sites format identical TypeKindMismatch and ScalarDimensionMismatch rejection warnings. Extract a small helper, e.g. `fn emit_param_override_rejection_warning(diagnostics: &mut Vec<Diagnostic>, cell_id: &NodeId, kind: OverrideRejection)`, and replace all three call sites.",
@@ -48966,7 +48970,7 @@
           "curator_justification": "The candidate's work — lazily scoping `sorted_set` inside the cycle-diagnostic `if` block and deleting its stale comment — is a direct sub-concern of task 2268's cycle-detection helper extraction. When `detect_let_cycle(…)` is extracted from eval_cached lines 1491-1531, the `sorted_set` allocation at 1572-1573 naturally moves inside that helper, making the candidate's explicit scoping step redundant as a separate pass. Both tasks touch only `crates/reify-eval/src/engine_eval.rs` (same module loc",
           "combined_at": "2026-04-26T13:06:13.237448+00:00"
         },
-        "updatedAt": "2026-04-26T13:07:30.447Z"
+        "updatedAt": "2026-04-26T18:23:32.782Z"
       },
       {
         "id": "2269",
@@ -49600,15 +49604,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T16:39:02.266Z",
-      "taskCount": 2277,
-      "completedCount": 2050,
+      "lastModified": "2026-04-26T18:23:32.782Z",
+      "taskCount": 2278,
+      "completedCount": 2051,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T16:55:19.402Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T16:55:19.437Z"
+      ]
     }
   }
 }
