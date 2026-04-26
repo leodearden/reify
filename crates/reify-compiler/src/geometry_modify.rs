@@ -560,4 +560,47 @@ mod tests {
             assert_non_geometry_target_fallback_step_offset_nonzero(kind, fn_name, tail);
         }
     }
+
+    /// Assert that the `CASES` table in `single_geom_target_kinds()` contains exactly one entry
+    /// per `ModifyKind` variant — i.e., that the set of variants in the table has the same
+    /// cardinality as `ModifyKind::VARIANT_COUNT`.
+    ///
+    /// ## Gap this closes
+    ///
+    /// The two existing exhaustiveness tripwires in `single_geom_target_kinds()` protect against
+    /// *missing* entries but not against *duplicate-with-omission* edits:
+    ///
+    /// 1. **Compile-time count assert** (`geometry_modify.rs` — the `const _: () = assert!(
+    ///    CASES.len() == ModifyKind::VARIANT_COUNT, ...)` immediately after the `CASES`
+    ///    declaration): fires at `cargo check` if the table length drifts from the variant count,
+    ///    but passes for any table of exactly 5 rows — including one with two `Chamfer` rows and
+    ///    zero `Draft` rows.
+    ///
+    /// 2. **No-wildcard sentinel closure** (`geometry_modify.rs` — the `let _ = |k: ModifyKind|
+    ///    match k { ModifyKind::Chamfer | ... => () }` below `CASES`): fails to compile when a
+    ///    new variant is added without updating the closure, but only enumerates variants; it does
+    ///    not cross-check the `CASES` rows against that enumeration.
+    ///
+    /// Neither tripwire catches a routine table edit that silently swaps one variant for a
+    /// duplicate. This test closes that gap by collecting the `ModifyKind` keys from `CASES` into
+    /// a `HashSet` and asserting the set's length equals `ModifyKind::VARIANT_COUNT`. A
+    /// duplicate row shrinks the set size below the count, failing the assertion.
+    #[test]
+    fn single_geom_target_kinds_cases_table_unique_variant_set() {
+        use std::collections::HashSet;
+        let variants: HashSet<ModifyKind> = single_geom_target_kinds()
+            .iter()
+            .map(|&(k, _, _)| k)
+            .collect();
+        assert_eq!(
+            variants.len(),
+            ModifyKind::VARIANT_COUNT,
+            "CASES table has duplicate variants — every ModifyKind must appear exactly once \
+             (got {:?}, expected {} unique entries); a duplicate-with-omission edit (e.g., two \
+             `Chamfer` rows and zero `Draft`) would slip past the count-only `const _: () = \
+             assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` check above",
+            variants,
+            ModifyKind::VARIANT_COUNT,
+        );
+    }
 }
