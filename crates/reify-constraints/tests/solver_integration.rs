@@ -1759,7 +1759,7 @@ fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
 /// Companion to `infeasible_diagnostic_carries_constraint_unsatisfiable_code` — the existing
 /// case exercises the bounds-cap path (constraint > bounds upper); this case exercises the
 /// residual-only path (no bounds-cap; contradictory equalities). Both currently pass through
-/// solver.rs:672-682's shared `Infeasible` return with `code: Some(ConstraintUnsatisfiable)`.
+/// the shared `Infeasible` return after the residual check in `solve_core` with `code: Some(ConstraintUnsatisfiable)`.
 ///
 /// Specific refactor this guards: if `solver.rs` is split so that the early-exit bounds-cap
 /// branch and the residual-gradient branch each construct their own `Infeasible` emission,
