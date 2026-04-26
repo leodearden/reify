@@ -547,13 +547,28 @@ assert "Check 11: in-progress commit does not invoke briefing script (sentinel a
 # ==============================================================================
 # Check 12: hook tolerates a briefing script that exits non-zero
 # ==============================================================================
-# The hook uses `|| true` so the briefing script's non-zero exit code cannot
-# leak back through `set -eu` and fail the hook. This check guards against
-# regressions where the `|| true` is dropped or the block is restructured.
+# REGRESSION-DETECTION MECHANISM:
+# If `|| true` is dropped from hooks/post-commit's step (3.5) invocation of the
+# briefing script, the briefing script's exit 99 leaks back through `set -eu`,
+# causing the hook to abort BEFORE step (5) (the normalizer). With the hook
+# aborted, the int→string conversion never happens, so the subtask id in
+# tasks.json on disk remains a JSON number. The primary assertion below checks
+# for that exact condition via `jq type == "string"`.
 #
-# Build a fixture where the briefing script always exits 99. Make a done-task
-# commit. Assert: HEAD advanced (commit succeeded), hook exit is 0, and
-# .git/NORMALIZE_FAILED was NOT created (briefing failures ≠ normalize failures).
+# The test mechanism works because:
+#   1. The seed commit uses an EMPTY tasks.json (no subtasks), so the seed
+#      commit's post-commit hook run is a no-op at step (5) and does not
+#      pre-normalize the int id we add next.
+#   2. After the seed, we overwrite tasks.json with a numeric subtask id so a
+#      real commit (not --allow-empty) triggers both step (3.5) (briefing gate)
+#      and step (5) (normalizer).
+#   3. We confirm step (5) ran end-to-end by checking the on-disk subtask id
+#      type in tasks.json after the commit.
+#
+# Summary: if `|| true` is present → step (3.5) absorbs exit 99 → step (5) runs
+# → subtask id is string → assertion PASSES.  If `|| true` is absent → hook
+# aborts after step (3.5) → step (5) never runs → subtask id is number →
+# assertion FAILS.
 echo ""
 echo "--- Check 12: hook tolerates briefing script non-zero exit ---"
 
@@ -566,6 +581,9 @@ subprojects:
     known_gaps: []
 YAML
 
+# SEED with empty tasks.json — no subtasks means the normalizer is a no-op at
+# step (5) of the seed commit's hook run, so the int subtask id we add next is
+# NOT pre-normalized before the real test commit fires.
 cat > "$_repo12/.taskmaster/tasks/tasks.json" <<'JSON'
 {"master":{"tasks":[]}}
 JSON
@@ -578,22 +596,39 @@ sys.exit(99)
 STUB
 chmod +x "$_repo12/scripts/refresh_briefing_known_gaps.py"
 
-# Seed HEAD (no-verify) then make the done-task commit.
+# Seed HEAD. Note: --no-verify bypasses pre-commit/commit-msg only; post-commit
+# still fires. With empty tasks.json the normalizer is a no-op at step (5).
 git -C "$_repo12" add .
 git -C "$_repo12" commit --no-verify -m "chore: seed" -q
 
+# Overwrite tasks.json with a numeric subtask id. This is what the normalizer
+# (step 5) must convert to a string — confirming it ran past the exit-99 stub.
+cat > "$_repo12/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"555","title":"Fix thing","status":"done","subtasks":[{"id":42,"title":"sub","status":"done"}]}]}}
+JSON
+
+# Commit the updated tasks.json — NOT --allow-empty so the file is in the diff
+# and step (4) does NOT short-circuit, ensuring step (5) will actually run.
 _head12_before="$(git -C "$_repo12" rev-parse HEAD)"
 _hook12_exit=0
-(cd "$_repo12" && git commit --allow-empty \
-    -m "chore(tasks): auto-commit after set_task_status(555=done)" \
+(cd "$_repo12" && \
+    git add .taskmaster/tasks/tasks.json && \
+    git commit -m "chore(tasks): auto-commit after set_task_status(555=done)" \
     ) 2>/dev/null || _hook12_exit=$?
 
-assert "Check 12: commit succeeded despite briefing script exit 99 (hook exit 0)" \
-    test "$_hook12_exit" -eq 0
+# PRIMARY: normalizer ran past the failing briefing script (subtask id is string).
+# If `|| true` is dropped from hooks/post-commit step (3.5): the briefing script's
+# exit 99 leaks back through `set -eu`, the hook aborts, step (5) never runs, the
+# subtask id on disk stays a JSON number, and this assertion FAILS.
+assert "Check 12: normalizer ran past failing briefing script (subtask id is string, not numeric)" \
+    bash -c "jq -e '.master.tasks[0].subtasks[0].id | type == \"string\"' \
+             '$_repo12/.taskmaster/tasks/tasks.json' >/dev/null"
 
+# Secondary: the commit itself still succeeded and HEAD advanced.
 assert "Check 12: HEAD advanced (commit was not rolled back)" \
     bash -c "test \"\$(git -C '$_repo12' rev-parse HEAD)\" != '$_head12_before'"
 
+# Secondary: NORMALIZE_FAILED not created (briefing failure ≠ normalize failure).
 assert "Check 12: .git/NORMALIZE_FAILED not created (briefing failure ≠ normalize failure)" \
     test ! -f "$_repo12/.git/NORMALIZE_FAILED"
 
