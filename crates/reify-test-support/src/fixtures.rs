@@ -916,6 +916,20 @@ pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
     "Damping",
 ];
 
+/// Geometry conformance marker traits defined in `geometry_traits.ri`. These
+/// are pure markers — no fields, no constraints, no defaults — declared at
+/// module path `std.geometry.traits` and intended to be inferred from kernel
+/// results and attached as metadata.
+pub const EXPECTED_GEOMETRY_TRAITS: &[&str] = &[
+    "Bounded",
+    "Closed",
+    "Manifold",
+    "Orientable",
+    "Convex",
+    "Connected",
+    "Watertight",
+];
+
 /// Steel:Elastic conformance source — 3 params for the Elastic trait.
 pub fn steel_elastic_source() -> &'static str {
     r#"
