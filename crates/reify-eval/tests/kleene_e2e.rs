@@ -78,3 +78,18 @@ fn kleene_e2e_and_absorption() {
         "undef && false should be Bool(false) (Kleene AND absorption)"
     );
 }
+
+/// Kleene OR absorption: `undef || true = true`.
+///
+/// `a` is `Value::Undef`, `true` is the absorbing element for OR.
+/// `p2 = a || true` should short-circuit on the right operand and return `Bool(true)`.
+#[test]
+fn kleene_e2e_or_absorption() {
+    let result = eval_kleene();
+    let id = ValueCellId::new("Foo", "p2");
+    assert_eq!(
+        result.values.get(&id).expect("Foo.p2 not found"),
+        &Value::Bool(true),
+        "undef || true should be Bool(true) (Kleene OR absorption)"
+    );
+}
