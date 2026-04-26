@@ -45873,7 +45873,9 @@
           "memory_hints": {
             "entities": [],
             "queries": [
-              "resolution for: Cross-phase dedup: handle wave2 guard flip in edit_source/edit_param"
+              "wave2 guard flip phase1_reelaborated dedup engine_edit.rs group_needs_phase3",
+              "edit_param edit_source cross-phase dedup phase 3 skip guard flip HashMap ValueCellId",
+              "task 2140 task 2142 edit_param edit_source cross-phase dedup completed"
             ]
           },
           "files": [
@@ -48037,7 +48039,9 @@
       "completedCount": 1985,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T06:43:11.646Z",
+      "description": "Tasks for master context"
     }
   }
 }
