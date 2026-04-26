@@ -33,9 +33,8 @@ use reify_types::Severity;
 /// Builds the Reify source for a design that embeds `n` `some(Steel())` elements
 /// in a `List<Option<MaterialSpec>>` arg.
 fn make_source(n: usize) -> String {
-    let list_elements = "some(Steel()), ".repeat(n);
-    // `trim_end_matches` removes the trailing ", " for clean syntax.
-    let list_body = list_elements.trim_end_matches(", ");
+    debug_assert!(n > 0, "make_source requires n >= 1");
+    let list_body = (0..n).map(|_| "some(Steel())").collect::<Vec<_>>().join(", ");
     format!(
         r#"
         structure def Steel : MaterialSpec {{
