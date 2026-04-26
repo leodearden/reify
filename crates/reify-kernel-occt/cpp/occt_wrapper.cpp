@@ -1505,16 +1505,18 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
 
 rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) {
     try {
-        // Materialize a stable 0-based face index via TopExp_Explorer order.
-        std::vector<TopoDS_Face> faces;
-        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
-            faces.push_back(TopoDS::Face(ex.Current()));
-        }
-        if (face_index >= faces.size()) {
+        // Build a stable 0-based face index via TopExp::MapShapes (the
+        // 1-based IndexedMap deduplicates by IsSame). Use it both as the
+        // canonical index source and for O(1) parent-face lookups.
+        TopTools_IndexedMapOfShape face_map;
+        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+
+        const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
+        if (face_index >= face_count) {
             std::string msg = "adjacent_faces: face index "
                 + std::to_string(face_index)
                 + " out of range; shape has "
-                + std::to_string(faces.size())
+                + std::to_string(face_count)
                 + " faces";
             throw std::runtime_error(msg);
         }
@@ -1524,9 +1526,11 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) 
         TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
 
         // For each edge of the queried face, look up its parent faces and
-        // recover the global face index by IsSame against `faces[]`.
+        // recover the 0-based global face index via face_map.FindIndex (O(1)
+        // via the map's IsSame-keyed hash).
+        const TopoDS_Shape& target =
+            face_map.FindKey(static_cast<Standard_Integer>(face_index + 1));
         std::set<uint32_t> result;
-        const TopoDS_Face& target = faces[face_index];
         for (TopExp_Explorer ex(target, TopAbs_EDGE); ex.More(); ex.Next()) {
             const TopoDS_Shape& edge = ex.Current();
             if (!edge_face_map.Contains(edge)) {
@@ -1535,13 +1539,15 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) 
             const TopTools_ListOfShape& parents = edge_face_map.FindFromKey(edge);
             for (TopTools_ListIteratorOfListOfShape it(parents); it.More(); it.Next()) {
                 const TopoDS_Shape& parent_face = it.Value();
-                for (size_t i = 0; i < faces.size(); ++i) {
-                    if (i == face_index) continue;
-                    if (parent_face.IsSame(faces[i])) {
-                        result.insert(static_cast<uint32_t>(i));
-                        break;
-                    }
+                Standard_Integer one_based = face_map.FindIndex(parent_face);
+                if (one_based < 1) {
+                    continue;
                 }
+                uint32_t parent_idx = static_cast<uint32_t>(one_based - 1);
+                if (parent_idx == face_index) {
+                    continue;
+                }
+                result.insert(parent_idx);
             }
         }
 
@@ -1561,24 +1567,25 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) 
 
 rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index) {
     try {
-        // Materialize a stable 0-based face index via TopExp_Explorer order.
-        std::vector<TopoDS_Face> faces;
-        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
-            faces.push_back(TopoDS::Face(ex.Current()));
-        }
-        if (face_a_index >= faces.size()) {
+        // Build a stable 0-based face index via TopExp::MapShapes (the
+        // 1-based IndexedMap deduplicates by IsSame).
+        TopTools_IndexedMapOfShape face_map;
+        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+
+        const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
+        if (face_a_index >= face_count) {
             std::string msg = "shared_edges: face index "
                 + std::to_string(face_a_index)
                 + " out of range; shape has "
-                + std::to_string(faces.size())
+                + std::to_string(face_count)
                 + " faces";
             throw std::runtime_error(msg);
         }
-        if (face_b_index >= faces.size()) {
+        if (face_b_index >= face_count) {
             std::string msg = "shared_edges: face index "
                 + std::to_string(face_b_index)
                 + " out of range; shape has "
-                + std::to_string(faces.size())
+                + std::to_string(face_count)
                 + " faces";
             throw std::runtime_error(msg);
         }
@@ -1596,25 +1603,22 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
         TopTools_IndexedMapOfShape edge_map;
         TopExp::MapShapes(shape.shape, TopAbs_EDGE, edge_map);
 
-        // Collect all edges of face_a for IsSame matching against face_b's edges.
-        std::vector<TopoDS_Edge> face_a_edges;
-        for (TopExp_Explorer ex(faces[face_a_index], TopAbs_EDGE); ex.More(); ex.Next()) {
-            face_a_edges.push_back(TopoDS::Edge(ex.Current()));
-        }
+        const TopoDS_Shape& face_a =
+            face_map.FindKey(static_cast<Standard_Integer>(face_a_index + 1));
+        const TopoDS_Shape& face_b =
+            face_map.FindKey(static_cast<Standard_Integer>(face_b_index + 1));
 
-        // For each edge of face_b, check if any edge of face_a IsSame; if so,
-        // recover the global edge index via the indexed map (1-based -> 0-based).
+        // Build face_a's edge set as an IndexedMap so membership testing for
+        // face_b's edges is O(1) (IsSame-keyed hash) instead of a linear scan.
+        TopTools_IndexedMapOfShape face_a_edge_map;
+        TopExp::MapShapes(face_a, TopAbs_EDGE, face_a_edge_map);
+
+        // For each edge of face_b, check membership in face_a's edge set; if
+        // present, recover the global edge index via edge_map (1-based -> 0-based).
         std::set<uint32_t> result;
-        for (TopExp_Explorer ex(faces[face_b_index], TopAbs_EDGE); ex.More(); ex.Next()) {
+        for (TopExp_Explorer ex(face_b, TopAbs_EDGE); ex.More(); ex.Next()) {
             const TopoDS_Shape& b_edge = ex.Current();
-            bool matched = false;
-            for (const TopoDS_Edge& a_edge : face_a_edges) {
-                if (a_edge.IsSame(b_edge)) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
+            if (!face_a_edge_map.Contains(b_edge)) {
                 continue;
             }
             Standard_Integer one_based = edge_map.FindIndex(b_edge);
