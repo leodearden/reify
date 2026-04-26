@@ -49475,7 +49475,26 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T15:49:11.109Z"
+        "updatedAt": "2026-04-26T15:49:11.109Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints/src/cpsat.rs",
+            "crates/reify-constraints/src/registry.rs",
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/cpsat_tests.rs",
+            "crates/reify-constraints/tests/registry_tests.rs",
+            "crates/reify-constraints/tests/solver_integration.rs",
+            "crates/reify-constraints/tests/solver_tracing.rs",
+            "crates/reify-constraints/tests/solvespace_tests.rs",
+            "crates/reify-eval/src/concurrent.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-test-support/src/mocks.rs",
+            "crates/reify-types/src/constraint.rs",
+            "crates/reify-types/tests/exports.rs"
+          ]
+        }
       }
     ],
     "metadata": {
