@@ -50144,6 +50144,31 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2318",
+        "title": "Implement OCCT FFI for Geometry Conformance Queries",
+        "description": "Add FFI functions for is_watertight, is_manifold, and is_orientable using OCCT's BRepCheck_Analyzer and ShapeAnalysis tools.",
+        "details": "Implement new FFI functions in the crates/reify-kernel-occt module to support runtime conformance queries for geometric properties: is_watertight, is_manifold, and is_orientable. Use OCCT's BRepCheck_Analyzer for watertight checks, ShapeAnalysis_Shell for manifold checks, and ShapeAnalysis_Wire for orientable checks. Follow the existing FFI pattern established in Task #319 for point_in_solid and shapes_intersect. Ensure the functions are exposed correctly in the FFI interface and documented in the geometry-traits.md as per task 4 of the PRD.",
+        "testStrategy": "Create fixture-based tests to verify the new FFI functions. Use a known-good box shape that should return true for all three queries and a known-bad disconnected union shape that should return false for is_watertight. Ensure tests cover edge cases and are integrated into the existing test suite.",
+        "status": "pending",
+        "dependencies": [
+          "319",
+          "2297"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2319",
+        "title": "Freshness: define Freshness enum (Final/Intermediate/Pending/Failed) + ResultRef/ErrorRef opaque types",
+        "description": "PRD docs/prds/freshness-4-variant.md. Define `Freshness` in reify-types (or reify-eval if it lives closer to the cache) per arch §7.1 lines 716-728 and §9.2 lines 880-890. Variants: Final; Intermediate { generation: u64 }; Pending { last_substantive: ResultRef }; Failed { error: ErrorRef }. Doc-comment cites spec §9.6 + arch §7.1 with line numbers. No-op landing — type exists, nothing yet uses it. Existing tests must stay green.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50155,7 +50180,8 @@
         "master"
       ],
       "created": "2026-04-26T19:57:23.359Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:57:44.495Z"
     }
   }
 }
