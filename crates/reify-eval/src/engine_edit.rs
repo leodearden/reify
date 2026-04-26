@@ -405,6 +405,14 @@ where
     (changed, added, removed)
 }
 
+/// The `(changed, added, removed)` triple returned by [`diff_value_cells`]
+/// and captured by [`crate::Engine::last_diff_value_cells`].
+///
+/// - `0` (`changed`): present in both graphs with differing `content_hash`.
+/// - `1` (`added`):   present only in the new graph.
+/// - `2` (`removed`): present only in the old graph.
+pub(crate) type ValueCellDiff = (HashSet<ValueCellId>, HashSet<ValueCellId>, HashSet<ValueCellId>);
+
 /// Classify every `ValueCellId` across a pair of graphs into three disjoint
 /// sets by comparing per-node `ValueCellNode::content_hash`:
 ///
@@ -420,7 +428,7 @@ where
 pub(crate) fn diff_value_cells(
     old_graph: &EvaluationGraph,
     new_graph: &EvaluationGraph,
-) -> (HashSet<ValueCellId>, HashSet<ValueCellId>, HashSet<ValueCellId>) {
+) -> ValueCellDiff {
     diff_nodes(&old_graph.value_cells, &new_graph.value_cells, |n| {
         n.content_hash
     })
@@ -1287,7 +1295,11 @@ impl Engine {
         // Disjoint-field borrow: `eval_state` is borrowed read-only above; this
         // assignment touches only the sibling field `last_diff_value_cells` — NLL
         // allows it (see the borrow safety note at the top of this function).
-        self.last_diff_value_cells = Some((changed.clone(), added.clone(), removed.clone()));
+        // Gated to avoid the three HashSet clones in production builds.
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        {
+            self.last_diff_value_cells = Some((changed.clone(), added.clone(), removed.clone()));
+        }
         let changed_set: HashSet<ValueCellId> =
             changed.iter().chain(added.iter()).cloned().collect();
 

@@ -258,11 +258,7 @@ pub struct Engine {
     /// absent from all three sets after a role-flip-only edit, confirming that
     /// `ValueCellNode::content_hash` does not incorporate the member/else_member
     /// role (task 2170).
-    last_diff_value_cells: Option<(
-        std::collections::HashSet<ValueCellId>,
-        std::collections::HashSet<ValueCellId>,
-        std::collections::HashSet<ValueCellId>,
-    )>,
+    last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.

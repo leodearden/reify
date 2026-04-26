@@ -367,13 +367,7 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_diff_value_cells(
         &self,
-    ) -> Option<
-        &(
-            std::collections::HashSet<reify_types::ValueCellId>,
-            std::collections::HashSet<reify_types::ValueCellId>,
-            std::collections::HashSet<reify_types::ValueCellId>,
-        ),
-    > {
+    ) -> Option<&crate::engine_edit::ValueCellDiff> {
         self.last_diff_value_cells.as_ref()
     }
 
