@@ -1802,6 +1802,11 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
                 "infeasible diagnostic must carry ConstraintUnsatisfiable code; got: {:?}",
                 diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
             );
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains("max absolute residual")),
+                "expected residual-branch diagnostic message containing \"max absolute residual\"; got: {:?}",
+                diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>(),
+            );
         }
         other => panic!(
             "expected Infeasible for contradictory equality constraints, got {:?}",
