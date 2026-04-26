@@ -830,3 +830,101 @@ fn precision_pragma_with_keyvalue_arg_warns_unrecognised_form() {
         warns
     );
 }
+
+/// Helper: filter warnings that match the block-level "deferred to v0.2"
+/// shape — message contains "ignored in v0.1" AND ("v0.2" OR "per-block").
+fn deferred_v02_warnings<'a>(
+    module: &'a reify_compiler::CompiledModule,
+) -> Vec<&'a reify_types::Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("ignored in v0.1")
+                && (d.message.contains("v0.2") || d.message.contains("per-block"))
+        })
+        .collect()
+}
+
+/// Block-level `#precision` on a structure emits exactly one "ignored in v0.1;
+/// per-block tolerance deferred to v0.2" warning, leaves default_tolerance
+/// unset, and produces no errors.
+#[test]
+fn block_level_precision_pragma_emits_deferred_warning() {
+    let module = compile_source("structure S { #precision(0.001m) param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "block-level #precision must NOT set the module default, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns = deferred_v02_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for block-level #precision, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for trait-level `#precision`.
+#[test]
+fn trait_level_precision_pragma_emits_deferred_warning() {
+    let module = compile_source("trait T { #precision(0.001m) param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "trait-level #precision must NOT set the module default, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns = deferred_v02_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for trait-level #precision, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for purpose-level `#precision`.
+#[test]
+fn purpose_level_precision_pragma_emits_deferred_warning() {
+    let source = r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #precision(0.001m)
+            constraint 1 > 0
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "purpose-level #precision must NOT set the module default, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns = deferred_v02_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for purpose-level #precision, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
