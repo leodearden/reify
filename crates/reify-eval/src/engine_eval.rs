@@ -1377,6 +1377,36 @@ impl Engine {
                 } else if cell.kind == ValueCellKind::Param {
                     let node_id = NodeId::Value(cell.id.clone());
 
+                    // Unconditional override-validation diagnostic pre-check.
+                    // Mirrors the step-10/step-11 pattern from task 2259: the solver pass and
+                    // cycle-detection both run unconditionally regardless of cache state. The
+                    // architectural rule is that any diagnostic which must surface on every LSP
+                    // keystroke must run BEFORE any cache fast-path or cache-reuse short-circuit.
+                    // Without this pre-check a same-version repeat call hits try_fast_path,
+                    // returns the cached fallback, and the validation warning is silently dropped.
+                    // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
+                    // (task-2267 step-1 / step-3).
+                    if let Some(override_val) = self.param_overrides.get(&cell.id) {
+                        match validate_param_override(override_val, &cell.cell_type) {
+                            Ok(()) => {}
+                            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                                    cell.id, cell.cell_type, override_val
+                                )));
+                            }
+                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
+                                expected,
+                                got,
+                            }) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                                    cell.id, expected, got
+                                )));
+                            }
+                        }
+                    }
+
                     // Check version fast path
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
@@ -1436,10 +1466,7 @@ impl Engine {
                         match validate_param_override(override_val, &cell.cell_type) {
                             Ok(()) => (override_val.clone(), DeterminacyState::Determined),
                             Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                    cell.id, cell.cell_type, override_val
-                                )));
+                                // Diagnostic already pushed by the unconditional pre-check above.
                                 // fall back to default; Undetermined if no default (mirrors eval())
                                 if let Some(ref expr) = cell.default_expr {
                                     (reify_expr::eval_expr(
@@ -1450,14 +1477,8 @@ impl Engine {
                                     (reify_types::Value::Undef, DeterminacyState::Undetermined)
                                 }
                             }
-                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                expected,
-                                got,
-                            }) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                    cell.id, expected, got
-                                )));
+                            Err(ParamOverrideRejection::ScalarDimensionMismatch { .. }) => {
+                                // Diagnostic already pushed by the unconditional pre-check above.
                                 // fall back to default; Undetermined if no default (mirrors eval())
                                 if let Some(ref expr) = cell.default_expr {
                                     (reify_expr::eval_expr(
