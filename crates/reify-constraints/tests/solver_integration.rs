@@ -1755,3 +1755,53 @@ fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
         ),
     }
 }
+
+/// Companion to `infeasible_diagnostic_carries_constraint_unsatisfiable_code` — the existing
+/// case exercises the bounds-cap path (constraint > bounds upper); this case exercises the
+/// residual-only path (no bounds-cap; contradictory equalities). Both currently pass through
+/// solver.rs:672-682's shared return; if a future refactor splits them, this test guards the
+/// residual branch independently.
+#[test]
+fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+    let x_ref2 = value_ref("Part", "x");
+
+    // No bounds-cap: x == 1mm AND x == 2mm — contradictory equalities, residual-only Infeasible.
+    // bounds: None falls back to default_bounds_for(Type::length()), which is wide enough that
+    // the bounds-cap path is not exercised here.
+    let c1 = eq(x_ref, literal(mm(1.0)));
+    let c2 = eq(x_ref2, literal(mm(2.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+            free: false,
+        }],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintUnsatisfiable)),
+                "infeasible diagnostic must carry ConstraintUnsatisfiable code; got: {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            );
+        }
+        other => panic!(
+            "expected Infeasible for contradictory equality constraints, got {:?}",
+            other
+        ),
+    }
+}
