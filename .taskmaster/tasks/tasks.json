@@ -49035,11 +49035,11 @@
         "description": "In `crates/reify-compiler/tests/termination_check_tests.rs:770-779`, the (a) sanity check infers the underlying compile error by substring-matching `\"unresolved\"` or `\"unknown\"` in the lowercased message:\n\n```rust\nlet has_compile_error = errors.iter().any(|d| {\n    let msg = d.message.to_lowercase();\n    msg.contains(\"unresolved\") || msg.contains(\"unknown\")\n});\n```\n\nIf the diagnostic text is reworded (e.g. to \"undeclared identifier\"), the (a) sanity assertion silently passes for the wrong reason — there could be zero compile errors and zero termination errors and the test would still pass.\n\nFix: replace with `assert!(!errors.is_empty(), ...)` (or match a stable diagnostic code/kind if available), since the goal of the (a) check is just to ensure compilation actually fails — the specific wording is irrelevant.\n\nSource: post-merge review suggestion S2 from esc-1296-114 on task 1296.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:59:10.923Z",
+        "updatedAt": "2026-04-26T11:59:20.639Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49076,7 +49076,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:59:17.955Z",
+      "lastModified": "2026-04-26T11:59:20.640Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
