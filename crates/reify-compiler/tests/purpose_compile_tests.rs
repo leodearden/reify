@@ -1160,3 +1160,94 @@ purpose check(a : Structure, b : Structure) {
         errors
     );
 }
+
+/// GREEN regression guard (task-2201): a single-StructureRef-param purpose must
+/// NOT trigger the multi-param rejection, and must still compile its body with
+/// the purpose-name entity stamp on member refs (the invariant the rejection
+/// protects).
+///
+/// Pins: `subject.mass` in a single-param purpose compiles to
+/// `ValueRef { entity: "lightweight", member: "mass", result_type: Type::Real }`.
+/// This is the pre-remap form; activate_purpose rewrites the entity stamp to the
+/// actual entity_ref at eval time via `expr.remap_entity(purpose_name, entity_ref)`.
+///
+/// If a future Approach-2 refactor changes the entity stamp to
+/// `format!("{}::{}", purpose_name, param_name)` without updating
+/// `activate_purpose`, this assertion will fail immediately.
+#[test]
+fn compile_purpose_single_param_still_emits_purpose_name_stamped_valueref() {
+    let source = r#"
+structure Bracket {
+    param mass : Mass = 5kg
+}
+
+purpose lightweight(subject : Structure) {
+    constraint subject.mass > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No multi-param rejection diagnostic emitted.
+    let rejection_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("multi-StructureRef purpose params not supported"))
+        .collect();
+    assert!(
+        rejection_errors.is_empty(),
+        "expected NO 'multi-StructureRef' rejection for a single-param purpose, \
+         but got: {:#?}",
+        rejection_errors
+    );
+
+    // (b) Exactly 1 compiled purpose with 1 constraint.
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "lightweight");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    // (c) Constraint left side is ValueRef with entity == purpose name (pre-remap).
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(
+                *op,
+                BinOp::Gt,
+                "expected BinOp::Gt for 'subject.mass > 0', got {:?}",
+                op
+            );
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "lightweight",
+                        "ValueRef entity must equal purpose name (pre-remap stamp), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                    assert_eq!(
+                        left.result_type,
+                        Type::Real,
+                        "expected result_type == Type::Real for subject.mass, got {:?}",
+                        left.result_type
+                    );
+                }
+                other => panic!(
+                    "expected ValueRef for left side of constraint BinOp, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected BinOp constraint expression, got {:?}",
+            other
+        ),
+    }
+}
