@@ -14,7 +14,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::parse_and_compile_with_stdlib;
-use reify_types::{ModulePath, Severity};
+use reify_types::{FieldSourceKind, ModulePath, Severity, Value, FIELD_ENTITY_PREFIX, ValueCellId};
 
 /// Absolute path to the fixture, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -63,4 +63,55 @@ fn composed_stiffness_compiles_with_stdlib() {
         "unexpected field names: {:?}",
         names
     );
+}
+
+/// Eval the fixture and verify each field's `Value::Field` carries the expected
+/// `FieldSourceKind`: Analytical, Sampled, Composed.
+#[test]
+fn composed_stiffness_evals_with_three_field_source_kinds() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/fields/composed_stiffness.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors.
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    // Each field cell must exist in result.values with the correct FieldSourceKind.
+    let expected: &[(&str, FieldSourceKind)] = &[
+        ("temperature_distribution", FieldSourceKind::Analytical),
+        ("material_density", FieldSourceKind::Sampled),
+        ("composed_stiffness", FieldSourceKind::Composed),
+    ];
+
+    for (field_name, expected_kind) in expected {
+        let cell_id = ValueCellId::new(FIELD_ENTITY_PREFIX, *field_name);
+        let val = result
+            .values
+            .get(&cell_id)
+            .unwrap_or_else(|| panic!("no value for field cell {:?}", cell_id));
+
+        match val {
+            Value::Field { source, .. } => {
+                assert_eq!(
+                    source, expected_kind,
+                    "field '{}': expected FieldSourceKind::{:?}, got {:?}",
+                    field_name, expected_kind, source
+                );
+            }
+            other => panic!(
+                "field '{}': expected Value::Field, got: {:?}",
+                field_name, other
+            ),
+        }
+    }
 }
