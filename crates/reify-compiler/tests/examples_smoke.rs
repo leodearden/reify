@@ -12,13 +12,17 @@ use std::path::{Path, PathBuf};
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
-/// Files to skip in the bulk smoke test.  Each entry is `(filename, reason)`.
+/// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
+/// where `relative_path` is the forward-slash-separated path rooted at `examples/`
+/// (e.g. `"bracket.ri"`, `"fields/composed_stiffness.ri"`).  Using the full
+/// relative path rather than a bare basename means that same-basename files in
+/// different subdirectories can be skipped independently without ambiguity.
 /// The reason is mandatory — the `(&str, &str)` tuple shape forces every entry
 /// to carry a one-line human-readable justification, making skips auditable at
 /// review time.
 ///
-/// Default: empty — all 42 example files compile clean on HEAD after task #2181
-/// (purpose-body MemberAccess) was merged on 2026-04-24.
+/// Default: empty — all 43 example files compile clean on HEAD after task #2346
+/// (recursive examples_smoke discovery) was merged on 2026-04-26.
 const SKIP_SET: &[(&str, &str)] = &[];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
@@ -45,16 +49,12 @@ fn all_examples_parse_and_compile_with_stdlib() {
 
     let mut exercised = 0usize;
     for path in &paths {
-        let filename = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        if skip.contains(filename.as_str()) {
+        let rel_key = relative_to_examples_dir(path);
+        if skip.contains(rel_key.as_str()) {
             continue;
         }
         exercised += 1;
-        smoke_one(path, &filename, &mut failures);
+        smoke_one(path, &rel_key, &mut failures);
     }
 
     if !failures.is_empty() {
@@ -74,17 +74,17 @@ fn all_examples_parse_and_compile_with_stdlib() {
     }
 }
 
-/// Sanity guard: every entry in SKIP_SET must name a file that actually exists
-/// under `examples/`.  Catches mis-typed or stale skip entries before they
+/// Sanity guard: every entry in SKIP_SET must name a relative path that actually
+/// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    for (filename, reason) in SKIP_SET {
-        let path = Path::new(EXAMPLES_DIR).join(filename);
+    for (rel_path, reason) in SKIP_SET {
+        let path = Path::new(EXAMPLES_DIR).join(rel_path);
         assert!(
             path.exists(),
             "SKIP_SET entry '{}' (reason: {}) does not exist under {}",
-            filename,
+            rel_path,
             reason,
             EXAMPLES_DIR,
         );
@@ -180,14 +180,15 @@ fn relative_to_examples_dir_output_round_trips_to_existing_file() {
 /// `failures` if either parse errors or Error-severity compile diagnostics are
 /// found.  Returns without appending when the file is clean.
 ///
-/// `filename` is the `file_name()` string computed by the caller; passing it
-/// in avoids a second extraction of the same data.
-fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) {
+/// `rel_key` is the `relative_to_examples_dir()` string computed by the caller;
+/// it is used as the failure-tuple key and in error messages so that nested
+/// files are unambiguous in failure reports.
+fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     use reify_compiler::compile_with_stdlib;
     use reify_types::{ModulePath, Severity};
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("examples_smoke: cannot read '{}': {}", filename, e)
+        panic!("examples_smoke: cannot read '{}': {}", rel_key, e)
     });
 
     // Derive a module name from the file stem (e.g. "m5_geometry_flange").
@@ -206,7 +207,7 @@ fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) 
             .iter()
             .map(|e| e.message.clone())
             .collect();
-        failures.push((filename.to_owned(), msgs.join("\n")));
+        failures.push((rel_key.to_owned(), msgs.join("\n")));
         return;
     }
 
@@ -220,6 +221,6 @@ fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) 
         .collect();
 
     if !errors.is_empty() {
-        failures.push((filename.to_owned(), errors.join("\n")));
+        failures.push((rel_key.to_owned(), errors.join("\n")));
     }
 }
