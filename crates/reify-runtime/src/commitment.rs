@@ -641,6 +641,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_instance_override_resolves_to_instance_value_and_isolates_other_nodes() {
+        let mut overrides = NodePolicyOverrides::new();
+        let node_a = make_node("a");
+        let node_b = make_node("b");
+
+        overrides.set_instance(node_a.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+
+        // node_a should return the set value
+        assert_eq!(
+            overrides.resolve(&node_a),
+            NodeCommitmentOverride::AlwaysCancelWhenStale
+        );
+        // node_b (unset) should still return the default
+        assert_eq!(
+            overrides.resolve(&node_b),
+            NodeCommitmentOverride::CommitIfSlow
+        );
+
+        // Re-setting node_a: last-write semantics
+        overrides.set_instance(node_a.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        assert_eq!(
+            overrides.resolve(&node_a),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs
+        );
+    }
+
     // --- NodeKind tests ---
 
     #[test]
