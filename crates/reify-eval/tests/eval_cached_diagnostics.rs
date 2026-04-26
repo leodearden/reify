@@ -241,3 +241,63 @@ fn eval_cached_emits_solver_no_progress_warning() {
         result.eval_result.diagnostics,
     );
 }
+
+// ── step-9: repeat-call regression lock ──────────────────────────────────────
+
+/// Calling eval_cached twice on the same (unchanged) module must continue to
+/// surface the circular let-binding diagnostic on BOTH calls.
+///
+/// This locks the LSP scenario: when the user keeps typing in a broken-source
+/// file, every keypress goes through eval_cached (content_unchanged=true) and
+/// the error must appear each time — not only on the cold-start call.
+///
+/// Should pass immediately after step-2 because cycle detection runs
+/// unconditionally on every eval_cached invocation (not gated by cache state).
+#[test]
+fn eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic() {
+    let expr_a = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+    let expr_b = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "a", Type::Real, expr_a)
+        .let_binding("S", "b", Type::Real, expr_b)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+
+    // First call — cold start
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("circular let-binding dependency")
+                && d.message.contains("in template S")
+        }),
+        "first eval_cached call must emit circular diagnostic; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — same module content, bumped version (models "user kept typing
+    // unchanged source" in the LSP eval_cached path)
+    let result2 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result2.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("circular let-binding dependency")
+                && d.message.contains("in template S")
+        }),
+        "second eval_cached call must also emit circular diagnostic (must not drop on cache hit); \
+         got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+}
