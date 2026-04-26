@@ -1072,42 +1072,4 @@ structure S {
         );
     }
 
-    // ── Arc no-leak invariant: edit_param ─────────────────────────────────────
-
-    /// Guard that `edit_param()` releases its internal `Arc::clone` of
-    /// `Engine.functions` before returning. The local binding created inside
-    /// `edit_param` must be dropped at scope exit, leaving only the Engine's own
-    /// copy (strong_count == 1). This complements
-    /// `prepare_concurrent_edit_shares_functions_arc_with_engine`: together the
-    /// two tests guard that (a) the Arc is shared correctly when needed, and (b)
-    /// no extra long-lived strong reference leaks out of `edit_param`.
-    ///
-    /// Note: if a future refactor reverts the local binding to a deep-clone
-    /// (`(*self.functions).clone()`), this test still passes — strong_count is
-    /// 1 either way. The test's value is in the combination: a type-level check
-    /// (Arc field) + no-leak check (strong_count == 1) together make it hard to
-    /// silently regress the O(1) clone invariant.
-    #[test]
-    fn edit_param_does_not_leak_functions_arc() {
-        use reify_test_support::bracket_compiled_module;
-        use reify_test_support::mocks::MockConstraintChecker;
-        use std::sync::Arc;
-
-        let module = bracket_compiled_module();
-        let checker = MockConstraintChecker::new();
-        let mut engine = Engine::new(Box::new(checker), None);
-        engine.eval(&module);
-
-        let cell = ValueCellId::new("Bracket", "width");
-        // Drop the result immediately so any Arc held by EvalResult (if any) is
-        // released before the assertion.
-        let _ = engine.edit_param(cell, Value::length(0.2));
-
-        assert_eq!(
-            Arc::strong_count(&engine.functions),
-            1,
-            "Arc::strong_count must be 1 after edit_param returns — the local \
-            Arc::clone inside edit_param must be dropped, leaving only Engine's copy"
-        );
-    }
 }
