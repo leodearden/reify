@@ -47962,7 +47962,7 @@
         "id": "2235",
         "title": "LSP: add soft sanity bound or move timing benchmark to benches/ harness",
         "description": "Two eval_cached tests in reify-lsp are fragile in complementary ways: the timing benchmark has no assertion and will not catch a regression where eval_cached silently degenerates into a cold-start; the unit test is coupled to engine cache-store internals and breaks when engine-layer implementation details change.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "## Timing benchmark (crates/reify-lsp/tests/incremental_eval_benchmark.rs)\n\n'timing_cold_start_vs_incremental_baseline' (lines 86-122) is `#[ignore]`d and contains no assertion — it only prints wall-clock numbers via `eprintln!`. As written it is a benchmark, not a test, and will not catch a regression where `eval_cached` silently degenerates into a cold-start.\n\nDone: either (a) move to `benches/` (criterion or similar) for proper benchmarking, or (b) add a loose sanity assertion such as `assert!(incremental < cold_start)` to make it a real regression guard.\n\n## Unit test engine-internal coupling (crates/reify-lsp/src/diagnostics.rs)\n\n'incremental_path_uses_eval_cached_when_content_unchanged' (lines 532-565) reaches into engine internals via `engine.cache_store().get(NodeId::Value(ValueCellId::new(\"Bracket\", \"width\")))` and asserts `basis_version.0 > 0`. This couples the LSP-layer test to (a) the existence of a cache entry for the specific param `width` and (b) the convention that cold-start eval starts at `VersionId(0)`. Either change at the engine layer breaks the test even though the LSP behaviour is unchanged.\n\nDone: refactor the assertion to observable LSP-layer behaviour instead — e.g., verify that the diagnostic result after a second identical `didChange` is equal to the first (same errors, same spans), or introduce a spy/counter on `EvalState` that records whether `eval_cached` was called, and assert the counter is non-zero rather than inspecting the raw cache store.",
@@ -47981,8 +47981,12 @@
               "Task 2225 LSP incremental eval timing benchmark benches",
               "LSP incremental eval implementation benchmark"
             ]
+          },
+          "done_provenance": {
+            "commit": "ade435e1c7978fbbfcd9dce6297bdbca83bb1d76"
           }
-        }
+        },
+        "updatedAt": "2026-04-26T06:52:08.671Z"
       },
       {
         "id": "2236",
@@ -48092,9 +48096,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:44:55.737Z",
+      "lastModified": "2026-04-26T06:52:08.671Z",
       "taskCount": 2229,
-      "completedCount": 1987,
+      "completedCount": 1988,
       "tags": [
         "master"
       ]
