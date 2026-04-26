@@ -102,6 +102,7 @@ pub(crate) fn collect_all_requirements(
     let Some(compiled_trait) = trait_registry.get(trait_name) else {
         diagnostics.push(
             Diagnostic::error(format!("unresolved trait: '{}'", trait_name))
+                .with_code(DiagnosticCode::UnresolvedTrait)
                 .with_label(DiagnosticLabel::new(span, "unknown trait")),
         );
         return;
