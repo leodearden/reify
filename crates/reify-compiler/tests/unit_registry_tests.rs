@@ -2050,10 +2050,10 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
     );
 }
 
-// ─── From<&CompiledUnit> for UnitEntry ────────────────────────────────────────
+// ─── UnitEntry::from_compiled_for_prelude ────────────────────────────────────
 
 #[test]
-fn from_compiled_unit_populates_shared_fields() {
+fn from_compiled_for_prelude_populates_shared_fields_and_prelude_defaults() {
     use reify_compiler::CompiledUnit;
     use reify_types::ContentHash;
 
@@ -2067,7 +2067,7 @@ fn from_compiled_unit_populates_shared_fields() {
         content_hash: hash,
     };
 
-    let entry = UnitEntry::from(&cu);
+    let entry = UnitEntry::from_compiled_for_prelude(&cu, "test/module".to_string());
 
     assert_eq!(entry.name, "newton");
     assert!(entry.is_pub);
@@ -2075,6 +2075,34 @@ fn from_compiled_unit_populates_shared_fields() {
     assert!((entry.factor - 1.5).abs() < 1e-12, "factor mismatch: {}", entry.factor);
     assert_eq!(entry.offset, Some(2.5));
     assert_eq!(entry.content_hash, hash);
-    // UnitEntry-only fields take safe defaults; callers override as needed.
-    assert!(entry.source_module.is_none());
+    assert!(entry.span.is_prelude(), "span must be the prelude sentinel");
+    assert_eq!(entry.source_module, Some("test/module".to_string()));
+}
+
+#[test]
+fn from_compiled_for_prelude_mirrors_units_phase_call_pattern() {
+    use reify_compiler::CompiledUnit;
+    use reify_types::ContentHash;
+
+    let hash = ContentHash::of_str("metre");
+    let cu = CompiledUnit {
+        name: "metre".to_string(),
+        is_pub: true,
+        dimension: DimensionVector::LENGTH,
+        factor: 1.0,
+        offset: None,
+        content_hash: hash,
+    };
+
+    // Mirror the production call site shape: module_display is derived from a
+    // prelude module path (e.g. via prelude_module.path.to_string()).
+    let module_display = "std/units".to_string();
+    let entry = UnitEntry::from_compiled_for_prelude(&cu, module_display.clone());
+
+    assert!(entry.span.is_prelude(), "prelude seeding must use SourceSpan::prelude()");
+    assert_eq!(
+        entry.source_module,
+        Some("std/units".to_string()),
+        "source_module must record the originating prelude module"
+    );
 }
