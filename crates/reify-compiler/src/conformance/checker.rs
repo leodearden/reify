@@ -810,6 +810,7 @@ pub(super) fn check_phase_check_members_against_requirements(
                             "missing required sub-component '{}' of type '{}'",
                             req.name, structure_name
                         ))
+                        .with_code(DiagnosticCode::MissingRequiredSubComponent)
                         .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                     );
                 }
