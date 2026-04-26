@@ -1375,4 +1375,110 @@ mod tests {
             "match_expr hash must equal TAG_MATCH-based reconstruction"
         );
     }
+
+    /// step-1 (task-2289): `remap_cell` rewrites every occurrence of a target
+    /// `ValueCellId` to a replacement, traversing all variants that carry a cell.
+    ///
+    /// Builds a tree exercising every cell-bearing variant the remap must touch:
+    /// `ValueRef`, `BinOp` containing `ValueRef`s, `Quantifier { variable_id }`,
+    /// `DeterminacyPredicate { cell }`, and `Lambda { captures, param_ids }`.
+    /// Calls `remap_cell(old, new)` once, then asserts every matching id was
+    /// rewritten and every non-matching id is unchanged.
+    ///
+    /// RED before step-2: `remap_cell` does not yet exist on `CompiledExpr`.
+    #[test]
+    fn remap_cell_rewrites_all_matching_occurrences() {
+        let old = ValueCellId::new("E", "x");
+        let other = ValueCellId::new("E", "y");
+        let new_id = ValueCellId::new("E2", "x_renamed");
+        let unrelated = ValueCellId::new("U", "z");
+
+        // ValueRef(old) → BinOp ValueRef(old) > ValueRef(other)
+        let lhs = CompiledExpr::value_ref(old.clone(), Type::Real);
+        let rhs = CompiledExpr::value_ref(other.clone(), Type::Real);
+        let binop = CompiledExpr::binop(BinOp::Gt, lhs, rhs, Type::Bool);
+
+        // Quantifier with variable_id == old, predicate references determinacy on old
+        let det = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            old.clone(),
+        );
+        let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let quant =
+            CompiledExpr::quantifier(QuantifierKind::ForAll, "p".to_string(), old.clone(), coll, det);
+
+        // Lambda with captures = [old, unrelated] and param_ids = [old]
+        let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::Real);
+        let lambda = CompiledExpr::lambda(
+            vec![("p".to_string(), Some(Type::Real))],
+            vec![old.clone()],
+            lambda_body,
+            vec![old.clone(), unrelated.clone()],
+            Type::Real,
+        );
+
+        // Combine all under a top-level BinOp so a single remap_cell call walks them.
+        // Use a Conditional to bundle the three sub-expressions (binop, quant, lambda)
+        // since they have different result types and BinOp wants matching children.
+        let cond_then = CompiledExpr::list_literal(
+            vec![binop, quant, lambda],
+            Type::List(Box::new(Type::Real)),
+        );
+        let cond_else = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let mut tree = make_conditional(
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            cond_then,
+            cond_else,
+            Type::List(Box::new(Type::Real)),
+        );
+
+        tree.remap_cell(&old, &new_id);
+
+        // Walk and collect every cell-bearing site we touched.
+        let mut value_refs = Vec::new();
+        let mut quant_var_ids = Vec::new();
+        let mut det_cells = Vec::new();
+        let mut lambda_captures = Vec::new();
+        let mut lambda_param_ids = Vec::new();
+        tree.walk(&mut |node| match &node.kind {
+            CompiledExprKind::ValueRef(id) => value_refs.push(id.clone()),
+            CompiledExprKind::Quantifier { variable_id, .. } => {
+                quant_var_ids.push(variable_id.clone())
+            }
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => det_cells.push(cell.clone()),
+            CompiledExprKind::Lambda {
+                captures,
+                param_ids,
+                ..
+            } => {
+                lambda_captures.extend(captures.iter().cloned());
+                lambda_param_ids.extend(param_ids.iter().cloned());
+            }
+            _ => {}
+        });
+
+        // Every direct ValueRef(old) is rewritten to new_id; ValueRef(other) is
+        // unchanged; ValueRef(unrelated) (lambda body) is unchanged.
+        assert!(value_refs.contains(&new_id), "ValueRef(old) should be rewritten to new_id");
+        assert!(value_refs.contains(&other), "ValueRef(other) must remain");
+        assert!(value_refs.contains(&unrelated), "ValueRef(unrelated) must remain");
+        assert!(!value_refs.contains(&old), "no ValueRef(old) should remain");
+
+        // Quantifier.variable_id rewritten.
+        assert_eq!(quant_var_ids.len(), 1);
+        assert_eq!(quant_var_ids[0], new_id, "Quantifier.variable_id should be rewritten");
+
+        // DeterminacyPredicate.cell rewritten.
+        assert_eq!(det_cells.len(), 1);
+        assert_eq!(det_cells[0], new_id, "DeterminacyPredicate.cell should be rewritten");
+
+        // Lambda captures: old → new_id, unrelated → unchanged.
+        assert!(lambda_captures.contains(&new_id), "Lambda capture(old) should be rewritten");
+        assert!(lambda_captures.contains(&unrelated), "Lambda capture(unrelated) must remain");
+        assert!(!lambda_captures.contains(&old), "no Lambda capture(old) should remain");
+
+        // Lambda param_ids: old → new_id.
+        assert!(lambda_param_ids.contains(&new_id), "Lambda param_id(old) should be rewritten");
+        assert!(!lambda_param_ids.contains(&old), "no Lambda param_id(old) should remain");
+    }
 }
