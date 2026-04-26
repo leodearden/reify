@@ -49100,6 +49100,28 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T12:35:46.139Z"
+      },
+      {
+        "id": "2275",
+        "title": "Refactor eval-diagnostics regression-lock cluster: per-emitter #[test]s, drop Fixture struct, drop line-number refs",
+        "description": "Three related test-cleanup suggestions on the eval-diagnostics regression-lock cluster in `crates/reify-lsp/src/diagnostics.rs` (the `eval_diagnostics_regression_lock_cluster` test added by task 2248):\n\n1. **Split the single `#[test]` into per-emitter tests.** All five fixtures (param_override_type_kind_mismatch, param_override_dimension_mismatch, sub_component_unknown_structure, solver_infeasible, solver_no_progress) currently run inside one `#[test]`. The first failure aborts the rest, so a regression that breaks two emitters is reported as a single failure — losing diagnostic value. The fixtures are independent (own engine, own source) so there is no shared expensive setup that would justify bundling. Split into five `#[test]` functions named after the emitter (e.g. `eval_diag_format_param_override_type_kind`, `..._dimension`, `..._sub_component_unknown`, `..._solver_infeasible`, `..._solver_no_progress`).\n\n2. **Drop the `Fixture` struct + `Vec<Box<dyn Fn>>` machinery.** Once split per (1), the dynamic-dispatch / boxed-closure scaffolding (`Box<dyn Fn(&[Diagnostic]) -> bool>` / `Box<dyn Fn() -> Vec<Diagnostic>>` in a `Vec<Fixture>`) is unnecessary noise — there's no runtime parametrization or tabular extension. Replace with a small helper `assert_no_violation_format(diags: &[Diagnostic], label: &str)` that each test calls inline.\n\n3. **Drop cross-file line-number references in doc-comments and `sanity_desc`.** The doc-comments and inline `sanity_desc` strings pin specific line numbers in `engine_eval.rs` (282-287, 289-293, 877-880, 1165-1169, 1170-1175) and `unfold.rs:518`. These rot every time those files are touched, but nothing actually fails when they go stale — they degrade silently. Drop the `:NNN-NNN` suffixes and refer to the emitter by symbol/path (e.g. \"engine_eval.rs param_override path\", \"engine_eval.rs sub-component lookup\"); keep the call-site description.\n\nThe anchor assertion (lines 879–892) and the `counter > 0` solver-dispatch checks must be preserved across the split. Source: post-merge `reviewer_comprehensive` suggestions on task 2248.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2276",
+        "title": "Replace substring-based sanity_check matches in eval-diagnostics regression-lock cluster with structural signals",
+        "description": "In `crates/reify-lsp/src/diagnostics.rs` `eval_diagnostics_regression_lock_cluster` (the cluster added by task 2248), each fixture's `sanity_check` substring-matches functional diagnostic wording from the eval crate:\n- `\"type-kind mismatch\"`\n- `\"dimension mismatch\"`\n- `\"sub-component\"` + `\"references unknown structure\"`\n- `\"made no progress\"`\n- `\"infeasible: x has no satisfying assignment\"`\n\nAny future rewording — even punctuation — will break the regression-lock cluster despite the actual invariant being intact. A maintainer's first instinct will be to update the substring rather than to question whether the emitter still fires.\n\nThe cluster's real invariant is the *negative* check (no `constraint ... violated` format); the sanity_check exists only to prove non-vacuity. Make the sanity check less wording-coupled:\n\n- Assert `!diagnostics.is_empty()` and (where applicable) `severity == Error/Warning`.\n- For stronger evidence the right path fired, prefer structural signals — the solver `counter_handle` pattern is a good model. Consider extending it to the param_override / sub-component paths via a sentinel/inspectable engine state (e.g. a counter on a wrapped Engine, or an event hook) rather than substring-matching prose.\n- For the solver fixtures the `counter > 0` check is sufficient on its own; the message substring is redundant and can be dropped.\n\nSource: post-merge `reviewer_comprehensive` suggestion on task 2248.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49109,7 +49131,10 @@
       "completedCount": 2032,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T12:36:33.051Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T12:36:33.325Z"
     }
   }
 }
