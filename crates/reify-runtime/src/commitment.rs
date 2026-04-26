@@ -28,6 +28,37 @@ pub struct CommitmentPolicy {
     pub commit_when_proportion_done: f64,
 }
 
+/// Discriminant for the "type" of a node in the evaluation graph.
+///
+/// Mirrors the variants of [`NodeId`] (§7.6 of the architecture) but without
+/// the per-instance identifier payload, making it usable as a lightweight
+/// key for per-type policy overrides (§7.3, lines 751–767).
+///
+/// Use [`NodeKind::of`] to extract the kind from a [`NodeId`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NodeKind {
+    /// A value cell node.
+    Value,
+    /// A constraint node.
+    Constraint,
+    /// A realization (geometry output) node.
+    Realization,
+    /// A resolution (constraint solver) node.
+    Resolution,
+}
+
+impl NodeKind {
+    /// Extract the [`NodeKind`] discriminant from a [`NodeId`].
+    pub fn of(node_id: &NodeId) -> Self {
+        match node_id {
+            NodeId::Value(_) => Self::Value,
+            NodeId::Constraint(_) => Self::Constraint,
+            NodeId::Realization(_) => Self::Realization,
+            NodeId::Resolution(_) => Self::Resolution,
+        }
+    }
+}
+
 /// Per-node override for commitment behavior.
 ///
 /// Each node can override the project-level commitment policy:
@@ -517,6 +548,49 @@ mod tests {
 
     fn make_node(name: &str) -> NodeId {
         NodeId::Value(reify_types::ValueCellId::new("T", name))
+    }
+
+    fn make_constraint_node(entity: &str, idx: u32) -> NodeId {
+        NodeId::Constraint(reify_types::ConstraintNodeId::new(entity, idx))
+    }
+
+    fn make_realization_node(entity: &str, idx: u32) -> NodeId {
+        NodeId::Realization(reify_types::RealizationNodeId::new(entity, idx))
+    }
+
+    fn make_resolution_node(entity: &str, idx: u32) -> NodeId {
+        NodeId::Resolution(reify_types::ResolutionNodeId::new(entity, idx))
+    }
+
+    // --- NodeKind tests ---
+
+    #[test]
+    fn nodekind_of_each_variant_maps_correctly() {
+        let value_node = make_node("v");
+        let constraint_node = make_constraint_node("E", 0);
+        let realization_node = make_realization_node("E", 0);
+        let resolution_node = make_resolution_node("E", 0);
+
+        assert_eq!(NodeKind::of(&value_node), NodeKind::Value);
+        assert_eq!(NodeKind::of(&constraint_node), NodeKind::Constraint);
+        assert_eq!(NodeKind::of(&realization_node), NodeKind::Realization);
+        assert_eq!(NodeKind::of(&resolution_node), NodeKind::Resolution);
+
+        // Verify Copy trait: assignment should not move
+        let k = NodeKind::Value;
+        let k2 = k; // copy, not move
+        assert_eq!(k, k2);
+
+        // Verify Hash: can insert into a HashMap
+        let mut m = std::collections::HashMap::new();
+        m.insert(NodeKind::Value, 1u8);
+        m.insert(NodeKind::Constraint, 2u8);
+        m.insert(NodeKind::Realization, 3u8);
+        m.insert(NodeKind::Resolution, 4u8);
+        assert_eq!(m.len(), 4);
+
+        // Verify Debug
+        let _ = format!("{:?}", NodeKind::Constraint);
     }
 
     #[test]
