@@ -209,11 +209,13 @@ pub enum DiagnosticCode {
     /// Replaces canonical message:
     /// `"constraint <id> indeterminate: undefined inputs"` (Undef branch, Severity::Warning)
     ConstraintIndeterminate,
-    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver` and
-    ///          `crates/reify-constraints/src/solvespace.rs::SolveSpaceSolver`.
+    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`,
+    ///          `crates/reify-constraints/src/solvespace.rs::SolveSpaceSolver`, and
+    ///          `crates/reify-constraints/src/cpsat.rs::CpSatSolver`.
     /// Replaces canonical messages:
     /// - `"constraints could not be satisfied (max absolute residual: …)"` (solver.rs, Severity::Error)
     /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
+    /// - `"CpSatSolver: no satisfying assignment found for … auto params with … constraints"` (cpsat.rs, Severity::Error)
     ConstraintUnsatisfiable,
     /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`
     ///          (strict-auto uniqueness verification path, `verify_uniqueness`).

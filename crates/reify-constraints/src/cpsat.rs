@@ -7,7 +7,7 @@
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     AutoParam, CompiledExpr, CompiledExprKind, ConstraintNodeId, ConstraintSolver, Diagnostic,
-    ResolutionProblem, SolveResult, Type, Value, ValueCellId, ValueMap,
+    DiagnosticCode, ResolutionProblem, SolveResult, Type, Value, ValueCellId, ValueMap,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -251,7 +251,8 @@ impl ConstraintSolver for CpSatSolver {
                     "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",
                     problem.auto_params.len(),
                     problem.constraints.len()
-                ))],
+                ))
+                .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
             },
         }
     }
