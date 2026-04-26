@@ -231,8 +231,30 @@ fn walk_param_against_arg(
         // cases like passing `param p : Option<Physical>` to a slot of `Option<Material>`
         // where `Physical : Material`. Non-wrapper and non-trait params fall through
         // silently inside walk_param_against_arg_type.
+        //
+        // Apply StructureRef promotion when the compiled arg is a FunctionCall whose
+        // result_type defaulted to Real/Int (the expression compiler's numeric fallback
+        // for structure calls) and the callee is a known structure template. Without this,
+        // wrapper-shape diagnostics would show the misleading numeric fallback type (e.g.
+        // 'Real') instead of the structure name (e.g. 'Steel') for cases like
+        // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
         _ => {
-            walk_param_against_arg_type(param_type, &compiled_arg.result_type, ctx);
+            let promoted: Option<Type> =
+                if matches!(compiled_arg.result_type, Type::Real | Type::Int) {
+                    if let CompiledExprKind::FunctionCall { function, .. } = &compiled_arg.kind {
+                        if ctx.templates.contains_key(function.name.as_str()) {
+                            Some(Type::StructureRef(function.name.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
+            walk_param_against_arg_type(param_type, effective_type, ctx);
         }
     }
 }
@@ -307,8 +329,14 @@ fn emit_leaf_conformance_for_arg_type(
 /// `arg_type` in lockstep with `param_type`, deferring to a type-only leaf check at
 /// `Type::TraitObject` via `emit_leaf_conformance_for_arg_type`.
 ///
-/// Mismatched wrapper shapes (e.g. `Option<T>` param vs `List<T>` arg) fall through
-/// silently — the compiler does not general-purpose type-check arg shapes today.
+/// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
+/// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
+/// `Option/List/Set/Map`. The emission is suppressed when either the top-level
+/// `param_type` or `arg_type` is `Type::Error` (anti-cascade guard). Note: this guard
+/// is top-level only — an `Error` nested inside a wrapper (e.g. `Option<Error>`) is
+/// not detected and may produce a secondary wrapper-shape diagnostic on top of the
+/// root-cause error. Non-wrapper, non-trait param types (e.g. `Real`, `Int`) fall
+/// through silently — a fully general arg-shape pass is tracked as future work.
 fn walk_param_against_arg_type(
     param_type: &Type,
     arg_type: &Type,
@@ -334,10 +362,34 @@ fn walk_param_against_arg_type(
         (Type::TraitObject(required_trait), arg_ty) => {
             emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
         }
-        // Mismatched wrapper shapes or non-wrapper/non-trait param type — skip silently.
-        // The compiler does not general-purpose type-check arg shapes (e.g. passing
-        // StructureRef for Option<TraitObject> is a shape mismatch outside our scope).
-        _ => {}
+        // Wrapper-shape mismatch or non-wrapper/non-trait param type.
+        // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
+        // arg_type doesn't match that wrapper — e.g. bare leaf passed to Option<T>,
+        // or List<T> passed to Option<T>. Non-wrapper non-trait params (Real, Int,
+        // etc.) fall through silently; a fully general arg-shape pass is future work.
+        _ => {
+            // Anti-cascade: skip when either type carries the poison sentinel so we
+            // don't pile diagnostics on top of an already-reported upstream error.
+            if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
+                return;
+            }
+            if matches!(
+                param_type,
+                Type::Option(_) | Type::List(_) | Type::Set(_) | Type::Map(_, _)
+            ) {
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
+                        arg_type, ctx.arg_name, param_type
+                    ))
+                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                    .with_label(DiagnosticLabel::new(
+                        ctx.span,
+                        format!("expected '{}', got '{}'", param_type, arg_type),
+                    )),
+                );
+            }
+        }
     }
 }
 
