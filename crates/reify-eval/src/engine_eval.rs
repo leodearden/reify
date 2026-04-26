@@ -81,10 +81,9 @@ pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
 /// (CI regression lock).
 #[cfg(debug_assertions)]
 pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
-    use reify_types::Type;
     for (id, node) in graph.value_cells.iter() {
         assert!(
-            !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
+            is_representable_cell_type(&node.cell_type),
             "{}: value cell `{}` has cell_type {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
