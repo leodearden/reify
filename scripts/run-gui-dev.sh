@@ -88,7 +88,9 @@ for _ in $(seq 1 60); do
         break
     fi
     if ! kill -0 "$VITE_PID" 2>/dev/null; then
-        echo "Error: vite process exited before becoming ready" >&2
+        vite_rc=0
+        wait "$VITE_PID" 2>/dev/null || vite_rc=$?
+        echo "Error: vite process exited (rc=$vite_rc) before becoming ready; check vite output above" >&2
         exit 1
     fi
     sleep 0.5
