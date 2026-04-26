@@ -680,5 +680,64 @@ git -C "$_repo13" commit -m "fix: don't call set_task_status(555=done) twice" 2>
 assert "Check 13: non-canonical embed does not invoke briefing script (sentinel absent)" \
     test ! -f "$_sentinel13"
 
+# ==============================================================================
+# Check 14: hook surfaces briefing mismatch on set_task_status(2106.1=done)
+# ==============================================================================
+# Mirror of Check 9 but with a dotted subtask ID (2106.1). The gate regex in
+# step (3.5) must match set_task_status(NNN.M=done) as well as
+# set_task_status(NNN=done). Against the current regex [0-9]+=done the dotted
+# form does NOT match, so the briefing script is never invoked, no WARN is
+# emitted, and the assertions below FAIL (RED). After the regex is widened to
+# [0-9]+(\.[0-9]+)?=done in step-2 they PASS (GREEN).
+echo ""
+echo "--- Check 14: briefing mismatch surfaced on dotted subtask done-commit ---"
+
+mk_repo_fixture _repo14
+# Copy the real briefing script into the fixture.
+if [ -f "$REFRESH_SCRIPT" ]; then
+    cp "$REFRESH_SCRIPT" "$_repo14/scripts/refresh_briefing_known_gaps.py"
+    chmod +x "$_repo14/scripts/refresh_briefing_known_gaps.py"
+fi
+
+# Create review/briefing.yaml with a known_gap tracking dotted subtask 2106.1.
+mkdir -p "$_repo14/review"
+cat > "$_repo14/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps:
+      - what: "Subtask that was actually completed"
+        tracking: "2106.1"
+YAML
+
+# Create tasks.json with parent task 2106 carrying subtask 1 marked done.
+# The briefing script indexes subtasks as "{parent}.{sub}" so "2106.1" resolves
+# to this subtask dict; status "done" makes it a mismatch.
+mkdir -p "$_repo14/.taskmaster/tasks"
+cat > "$_repo14/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"2106","title":"Parent task","status":"in-progress","subtasks":[{"id":"1","title":"Subtask","status":"done"}]}]}}
+JSON
+
+# Seed HEAD with --no-verify so the hook doesn't fire on the seed commit.
+git -C "$_repo14" add .
+git -C "$_repo14" commit --no-verify -m "chore: seed initial state" -q
+
+# Now make the real commit: message matches set_task_status(2106.1=done).
+# The post-commit hook should fire and invoke refresh_briefing_known_gaps.py
+# (once the regex is widened). Capture stderr to check for WARN.
+_stderr14pc="$_tmpdir/stderr14_postcommit.txt"
+_hook14_exit=0
+(cd "$_repo14" && git commit --allow-empty \
+    -m "chore(tasks): auto-commit after set_task_status(2106.1=done)" \
+    2>"$_stderr14pc") || _hook14_exit=$?
+
+assert "Check 14: hook exited 0 (briefing check is informational)" \
+    test "$_hook14_exit" -eq 0
+
+assert "Check 14: hook stderr contains WARN" \
+    grep -q "WARN" "$_stderr14pc"
+
+assert "Check 14: hook stderr contains dotted task id 2106.1" \
+    grep -q "2106.1" "$_stderr14pc"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
