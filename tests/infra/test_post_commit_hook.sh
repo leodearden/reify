@@ -544,5 +544,58 @@ git -C "$_repo11" commit -m "chore(tasks): auto-commit after set_task_status(555
 assert "Check 11: in-progress commit does not invoke briefing script (sentinel absent)" \
     test ! -f "$_sentinel11"
 
+# ==============================================================================
+# Check 12: hook tolerates a briefing script that exits non-zero
+# ==============================================================================
+# The hook uses `|| true` so the briefing script's non-zero exit code cannot
+# leak back through `set -eu` and fail the hook. This check guards against
+# regressions where the `|| true` is dropped or the block is restructured.
+#
+# Build a fixture where the briefing script always exits 99. Make a done-task
+# commit. Assert: HEAD advanced (commit succeeded), hook exit is 0, and
+# .git/NORMALIZE_FAILED was NOT created (briefing failures ≠ normalize failures).
+echo ""
+echo "--- Check 12: hook tolerates briefing script non-zero exit ---"
+
+mk_repo_fixture _repo12
+mkdir -p "$_repo12/review" "$_repo12/.taskmaster/tasks"
+
+cat > "$_repo12/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+
+cat > "$_repo12/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a stub that always exits 99.
+cat > "$_repo12/scripts/refresh_briefing_known_gaps.py" <<'STUB'
+#!/usr/bin/env python3
+import sys
+sys.exit(99)
+STUB
+chmod +x "$_repo12/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD (no-verify) then make the done-task commit.
+git -C "$_repo12" add .
+git -C "$_repo12" commit --no-verify -m "chore: seed" -q
+
+_head12_before="$(git -C "$_repo12" rev-parse HEAD)"
+_hook12_exit=0
+(cd "$_repo12" && git commit --allow-empty \
+    -m "chore(tasks): auto-commit after set_task_status(555=done)" \
+    ) 2>/dev/null || _hook12_exit=$?
+
+assert "Check 12: commit succeeded despite briefing script exit 99 (hook exit 0)" \
+    test "$_hook12_exit" -eq 0
+
+assert "Check 12: HEAD advanced (commit was not rolled back)" \
+    bash -c "test \"\$(git -C '$_repo12' rev-parse HEAD)\" != '$_head12_before'"
+
+assert "Check 12: .git/NORMALIZE_FAILED not created (briefing failure ≠ normalize failure)" \
+    test ! -f "$_repo12/.git/NORMALIZE_FAILED"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
