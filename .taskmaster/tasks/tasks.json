@@ -50322,15 +50322,19 @@
       },
       {
         "id": "2330",
-        "title": "Freshness: implement Failed failure path with error realization event",
-        "description": "PRD docs/prds/freshness-4-variant.md. Implement the Failed { error: ErrorRef } path per arch §9.1-§9.2 (lines 868-890): catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed. Emit EventKind::error realization event. Add failure-injection tests asserting forced panic in a leaf node ⇒ leaf Failed + exactly one error event emitted. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test. Should reference structured DiagnosticCode variants from #2253 once available.",
-        "details": "",
-        "testStrategy": "",
+        "title": "Freshness: implement Failed production and Pending propagation with diagnostic chain",
+        "description": "PRD docs/prds/freshness-4-variant.md. Implement the complete Failed-state handling per arch §9.1-§9.2 (lines 868-890): (1) catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed { error: ErrorRef }; emit EventKind::error realization event exactly once per failure; (2) per arch §7.2 line 748 (\"Pending as propagation gate\") and §9.2 line 890, when a node consumes a Failed input produce Pending { last_substantive } with a diagnostic chain referencing the original failure node — Pending must NOT trigger downstream re-evaluation, naturally quieting the downstream subtree. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "high",
+        "details": "- Produce `Failed { error: ErrorRef }` at all error sites: panic boundary, kernel error, out-of-bounds, missing-key map lookup (arch §9.1)\n- Emit `EventKind::error` realization event exactly once per failure (arch §9.2 lines 868-890)\n- When any input to a node is `Failed`, produce `Pending { last_substantive }` with a diagnostic chain referencing the original failure node (arch §7.2 line 748, §9.2 line 890)\n- `Pending` arising from Failed-input propagation must NOT trigger downstream re-evaluation — it naturally quiets the downstream subtree\n- Constraint violations (§9.3) must produce cached `violated`, NOT `Failed`; add a regression test pinning this distinction\n- Tests:\n  - Forced panic in a leaf node ⇒ leaf `Failed` + exactly one error event emitted\n  - Forced panic in leaf ⇒ mid node `Pending` with diagnostic chain pointing to the leaf\n  - Downstream of mid stays at last-substantive value without re-evaluating",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:02:05.453Z"
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "The candidate and Task 2330 are tightly coupled halves of the same Failed-state concern: 2330 produces Failed at error sites; the candidate propagates Failed-inputs as Pending downstream. Both reference the same PRD section (§9.1-§9.2), touch the same reify-eval/reify-types module lock, and the candidate's own test (\"forced panic in leaf ⇒ leaf Failed … mid node Pending\") directly depends on 2330's output. Loading context once for the end-to-end path is strictly better; the union stays within ≤5",
+          "combined_at": "2026-04-26T20:02:50.958567+00:00"
+        }
       },
       {
         "id": "2331",
@@ -50356,6 +50360,42 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2333",
+        "title": "Implement Worked-Example Smoke Tests for Topology Selectors",
+        "description": "Create and ship example .ri files for topology selectors, specifically block_inertia and fillet_top_edges, and integrate them with the eval test harness.",
+        "details": "1. Review the PRD document at docs/prds/topology-selectors.md, focusing on task 7.\n2. Develop two .ri example files: \n   - **block_inertia.ri**: Calculate the moment_of_inertia for a steel box.\n   - **fillet_top_edges.ri**: Select the top face using faces_by_normal, then walk adjacent_faces and shared_edges to fillet only those edges.\n3. Place these files under examples/topology_selectors/.\n4. Ensure these examples are exercised by the eval test harness, verifying their correctness and integration.\n5. Update documentation and comments within the code to reflect the purpose and usage of these examples.",
+        "testStrategy": "1. Run the eval test harness to ensure both block_inertia.ri and fillet_top_edges.ri execute without errors.\n2. Verify that block_inertia correctly computes the moment_of_inertia for a steel box.\n3. Confirm that fillet_top_edges correctly identifies and fillets the appropriate edges.\n4. Check that the examples are correctly located in the examples/topology_selectors/ directory and are accessible by the test harness.",
+        "status": "pending",
+        "dependencies": [
+          "2329",
+          "239"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2334",
+        "title": "@solver_hint payload wire-up: end-to-end test against std.stock collections",
+        "description": "Integration test that pins the @solver_hint payload-resolution path end-to-end against the new std.stock collections. Add crates/reify-compiler/tests/solver_hint_payload_tests.rs (or fold into solver_hint_tests.rs) covering: (1) compile_with_stdlib of '@solver_hint(\"discrete_set\", standard_bolt_lengths) param length : Length = auto' succeeds with no warnings, the resulting ValueCellDecl.solver_hints carries the right collection name, and the looked-up collection resolves to the expected Vec<Length>. (2) Same for prefer_stock + standard_sheet_thicknesses. (3) Negative case: '@solver_hint(\"discrete_set\", standard_doesnotexist)' produces an unresolved-identifier error at the use site (validates that hint payload references go through normal name resolution, not a special-cased lookup). PRD: docs/prds/solver-hint-payloads.md item 2.</description>\n<parameter name=\"priority\">high</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2335",
+        "title": "Freshness: implement freshness-only propagation walk for value-unchanged transitions",
+        "description": "PRD docs/prds/freshness-4-variant.md. Per arch §3.5 lines 432-436: when a node's value is unchanged but its freshness transitions (e.g. Intermediate → Final via upstream cutoff), propagate freshness downstream without value recomputation. Lightweight mode within dirty-cone walk; freshness early cutoff stops walk when freshness doesn't change at a node. Test: synthetic graph where upstream Intermediate→Final transition with no value change correctly updates downstream freshness metadata, no value evaluator calls fired.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50365,7 +50405,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:02:51.072Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:03:56.970Z"
     }
   }
 }
