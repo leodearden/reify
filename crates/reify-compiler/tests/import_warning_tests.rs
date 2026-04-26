@@ -1,37 +1,56 @@
-//! TDD tests pinning the import-warning behaviour introduced in task 2226.
-//!
-//! Tests are added in TDD order across steps 1 and 3:
-//!
-//! Step-1 tests (silent-on-resolved):
-//! 1. `module_dag_resolved_user_import_emits_no_warning` — when ModuleDag
-//!    recursively compiles a user import and seeds the result into the entry
-//!    module's prelude, the import declaration in the entry module should NOT
-//!    produce a warning diagnostic (the import was resolved).
-//!
-//! 2. `compile_with_stdlib_resolved_std_import_emits_no_warning` — when
-//!    `compile_with_stdlib` is used and the source imports a stdlib module
-//!    (e.g. `std.units`), no warning should fire because the stdlib prelude
-//!    already contains `std.units`.
-//!
-//! Step-3 test (specific wording):
-//! 3. `compile_with_stdlib_unresolved_user_import_emits_specific_warning` —
-//!    when `compile_with_stdlib` is used and the source imports a user module
-//!    that is not in the prelude, a Warning diagnostic is emitted with accurate
-//!    wording (references compile_project / ModuleDag; does NOT say "not yet
-//!    implemented").
-//!
-//! Amendment test (coverage gap from reviewer):
-//! 4. `module_dag_resolved_destructured_import_emits_no_warning` — pins the
-//!    path-form invariant: `import a.{Foo}` has path="a" in the AST, and
-//!    ModuleDag's prelude key for `a.ri` is also "a", so the gate matches and
-//!    no warning fires.
+//! Pin the import-warning behaviour: silent when the import path is in the prelude
+//! (resolved by ModuleDag or by `compile_with_stdlib`'s stdlib seed), and a
+//! specific actionable warning otherwise.
 
 use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_types::Severity;
 
-// ── Step-1: silent-on-resolved tests ─────────────────────────────────────────
+/// Assert that compiling `b.ri` (with content `b_source`) alongside a canonical
+/// `a.ri` via `compile_project` produces no Warning diagnostic whose message
+/// contains `import "<module_name>"`.
+///
+/// `module_name` must match the stem of the module file written by this helper
+/// (currently `a.ri`). Creates a temporary directory, writes the canonical
+/// `a.ri` (`pub structure Foo`), writes `b.ri` with the caller-supplied source,
+/// runs `compile_project`, and asserts the resulting entry module has no matching
+/// import warning.
+fn assert_no_import_warning_for(b_source: &str, module_name: &str) {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    fs::write(dir.join("b.ri"), b_source).unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let modules = compile_project(&dir.join("b.ri"), &resolver)
+        .expect("compile_project should succeed");
+
+    let b_module = modules.last().expect("expected at least one module in result");
+
+    let needle = format!("import \"{}\"", module_name);
+    let import_warnings: Vec<_> = b_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains(&needle))
+        .collect();
+
+    assert!(
+        import_warnings.is_empty(),
+        "expected no import-warning for path '{}', but got: {:?}",
+        module_name,
+        import_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
 
 /// ModuleDag-resolved user import: no warning diagnostic on the entry module.
 ///
@@ -40,48 +59,11 @@ use reify_types::Severity;
 /// compile `a`, seed it into `b`'s prelude, and suppress the import warning.
 #[test]
 fn module_dag_resolved_user_import_emits_no_warning() {
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // Module a: leaf, no imports
-    fs::write(
-        dir.join("a.ri"),
-        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
-    )
-    .unwrap();
-
-    // Module b: imports a
-    fs::write(
-        dir.join("b.ri"),
+    assert_no_import_warning_for(
         "import a\nstructure Bar {\n    param y: Scalar = 2mm\n}",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let modules = compile_project(&dir.join("b.ri"), &resolver)
-        .expect("compile_project should succeed for valid two-module project");
-
-    // The entry module (b) is last in topological order.
-    let b_module = modules.last().expect("expected at least one module in result");
-
-    // No Warning diagnostic should mention import "a".
-    let import_warnings: Vec<_> = b_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"a\""))
-        .collect();
-
-    assert!(
-        import_warnings.is_empty(),
-        "expected no import-warning for resolved module 'a', but got: {:?}",
-        import_warnings
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        "a",
     );
 }
-
-// ── Step-3: specific wording for unresolved user imports ─────────────────────
 
 /// Unresolved user import through `compile_with_stdlib`: the warning must use
 /// accurate, actionable wording.
@@ -149,10 +131,11 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
         "severity must be Warning: {:?}",
         diag
     );
-    // (d) squiggle label present
-    assert!(
-        !diag.labels.is_empty(),
-        "diagnostic must have at least one label: {:?}",
+    // (d) exactly one (actionable) squiggle label
+    assert_eq!(
+        diag.labels.len(),
+        1,
+        "diagnostic must have exactly one (actionable) label: {:#?}",
         diag
     );
 }
@@ -191,8 +174,6 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
     );
 }
 
-// ── Amendment: path-form invariant for destructured imports ──────────────────
-
 /// Destructured import `import a.{Foo}` is resolved silently by ModuleDag.
 ///
 /// Pins the path-form invariant: the parser stores path = "a" (just the
@@ -205,44 +186,8 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
 /// (`import a`) but also Destructured-kind (`import a.{Foo}`).
 #[test]
 fn module_dag_resolved_destructured_import_emits_no_warning() {
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // a.ri: defines pub structure Foo
-    fs::write(
-        dir.join("a.ri"),
-        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
-    )
-    .unwrap();
-
-    // b.ri: destructured import of Foo from module a; Bar uses Foo as a
-    // sub-component so a regression in name binding also fails the test.
-    fs::write(
-        dir.join("b.ri"),
+    assert_no_import_warning_for(
         "import a.{Foo}\nstructure Bar {\n    param y: Scalar = 2mm\n    sub f = Foo(x: 3mm)\n}",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let modules = compile_project(&dir.join("b.ri"), &resolver)
-        .expect("compile_project should succeed with destructured import");
-
-    // The entry module (b) is last in topological order.
-    let b_module = modules.last().expect("expected at least one module in result");
-
-    // No Warning diagnostic should mention import "a" (destructured path).
-    let import_warnings: Vec<_> = b_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"a\""))
-        .collect();
-
-    assert!(
-        import_warnings.is_empty(),
-        "expected no import-warning for resolved destructured import 'a.{{Foo}}', but got: {:?}",
-        import_warnings
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        "a",
     );
 }
