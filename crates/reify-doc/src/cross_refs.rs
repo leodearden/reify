@@ -28,3 +28,30 @@
 //! Both types are disambiguated by module path:
 //! `reify_doc::cross_refs::CrossRefs` vs `reify_doc::model::CrossRefs`.
 //! Neither is re-exported at the crate root to prevent name ambiguity at use sites.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_cross_refs_empty_input_returns_default() {
+        let result = build_cross_refs(&[]);
+        assert!(result.trait_to_conformers.is_empty());
+        assert!(result.entity_to_containers.is_empty());
+    }
+
+    #[test]
+    fn cross_refs_default_has_empty_maps() {
+        let r = CrossRefs::default();
+        assert!(r.trait_to_conformers.is_empty());
+        assert!(r.entity_to_containers.is_empty());
+    }
+
+    #[test]
+    fn cross_refs_default_serde_round_trip() {
+        let original = CrossRefs::default();
+        let json = serde_json::to_string(&original).expect("serialize");
+        let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, roundtripped);
+    }
+}
