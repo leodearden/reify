@@ -123,6 +123,18 @@ pub enum CompiledExprKind {
         selector_kind: SelectorKind,
         args: Vec<CompiledExpr>,
     },
+    /// Reflective-aggregation placeholder for `purpose_param.<query_kind>`
+    /// member access (e.g. `subject.params`, `subject.geometric_params`).
+    /// Emitted by the compiler in lieu of an empty `ListLiteral` so that
+    /// `Engine::activate_purpose` can unambiguously identify and rewrite
+    /// these nodes into populated `ListLiteral([ValueRef(...), ...])` against
+    /// the bound entity's value cells (task-2289).
+    PurposeReflectiveAggregation {
+        /// The purpose-parameter name this query was on (e.g. `"subject"`).
+        param_name: String,
+        /// The schema-query kind (e.g. `"params"`, `"geometric_params"`).
+        query_kind: String,
+    },
 }
 
 /// Determinacy predicate kinds.
@@ -216,7 +228,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[25]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[26]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -238,6 +250,7 @@ pub const TAG_DETERMINACY_PREDICATE: u8 = 17;
 pub const TAG_RANGE_CONSTRUCTOR: u8 = 18;
 pub const TAG_AD_HOC_SELECTOR: u8 = 19;
 pub const TAG_MATCH: u8 = 24;
+pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -376,6 +389,8 @@ impl CompiledExpr {
                     arg.walk(f);
                 }
             }
+            // Placeholder is a leaf — no children to traverse.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -509,6 +524,9 @@ impl CompiledExpr {
                     arg.collect_value_refs_inner(refs);
                 }
             }
+            // Placeholder carries no concrete cell IDs — activation will
+            // expand it before any dependency-tracking pass runs.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -781,6 +799,10 @@ impl CompiledExpr {
                     arg.remap_entity(from_entity, to_entity);
                 }
             }
+            // Placeholder carries no entity-bearing cell IDs; the activation
+            // walk in `engine_purposes::activate_purpose` resolves it against
+            // the bound entity directly. No-op here.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -912,6 +934,8 @@ impl CompiledExpr {
                     arg.remap_cell(from, to);
                 }
             }
+            // Placeholder has no cell to rewrite — activation expands it.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -1070,6 +1094,35 @@ impl CompiledExpr {
             kind: CompiledExprKind::Match {
                 discriminant: Box::new(discriminant),
                 arms,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a reflective-aggregation placeholder expression (task-2289).
+    ///
+    /// Emitted by the compiler in lieu of an empty `ListLiteral` to mark a
+    /// `purpose_param.<query_kind>` reference (e.g. `subject.params`) so that
+    /// `Engine::activate_purpose` can unambiguously rewrite it into a
+    /// populated list of `ValueRef`s against the bound entity's value cells.
+    ///
+    /// Hash tag byte: `TAG_PURPOSE_REFLECTIVE_AGGREGATION` (= `[25]`).
+    /// Combines the tag, then the param_name and query_kind strings, so two
+    /// structurally-equal placeholders share a hash and any field difference
+    /// produces a distinct hash.
+    pub fn purpose_reflective_aggregation(
+        param_name: String,
+        query_kind: String,
+        result_type: Type,
+    ) -> Self {
+        let content_hash = ContentHash::of(&[TAG_PURPOSE_REFLECTIVE_AGGREGATION])
+            .combine(ContentHash::of_str(&param_name))
+            .combine(ContentHash::of_str(&query_kind));
+        CompiledExpr {
+            kind: CompiledExprKind::PurposeReflectiveAggregation {
+                param_name,
+                query_kind,
             },
             result_type,
             content_hash,
