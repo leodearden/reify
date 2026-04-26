@@ -139,6 +139,35 @@ mod tests {
     }
 
     #[test]
+    fn test_forall_statement_with_constraint() {
+        let mut parser = make_parser();
+        let source = b"structure S { forall v in vents: constraint v.mass < 50 }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall-constraint source: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"forall_statement".to_string()),
+            "expected forall_statement node, got: {kinds:?}"
+        );
+
+        let forall_node = find_node_by_kind(tree.root_node(), "forall_statement")
+            .expect("forall_statement not found in tree");
+        let body = forall_node
+            .child_by_field_name("body")
+            .expect("forall_statement missing 'body' field");
+        assert_eq!(
+            body.kind(),
+            "constraint_declaration",
+            "expected body to be constraint_declaration, got: {}",
+            body.kind()
+        );
+    }
+
+    #[test]
     fn test_hash_not_parsed_as_comment() {
         let mut parser = make_parser();
         // # is not a valid comment in Reify; it should produce an ERROR node
