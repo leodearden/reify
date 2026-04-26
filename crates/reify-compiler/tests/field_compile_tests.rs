@@ -201,6 +201,38 @@ field def temp : Scalar -> Scalar { source = analytical { |x| x } }
     );
 }
 
+// ── Step 2336: analytical field codomain type-check ─────────────────────────
+
+#[test]
+fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
+    // Body returns Real (param x has default Real type), codomain declared as Scalar[m].
+    // implicitly_converts_to(Real, Scalar[LENGTH]) is false → FieldCodomainMismatch.
+    let module =
+        compile_source("field def temp : Real -> Scalar { source = analytical { |x| x } }");
+
+    let has_mismatch = module.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Error
+            && d.code == Some(DiagnosticCode::FieldCodomainMismatch)
+    });
+    assert!(
+        has_mismatch,
+        "expected DiagnosticCode::FieldCodomainMismatch error for codomain mismatch, got: {:?}",
+        module.diagnostics
+    );
+
+    // The diagnostic message should name both types.
+    let mismatch_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch))
+        .unwrap();
+    assert!(
+        mismatch_diag.message.contains("Real") && mismatch_diag.message.contains("Scalar"),
+        "expected message to name both 'Real' and 'Scalar', got: {}",
+        mismatch_diag.message
+    );
+}
+
 // ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
 
 #[test]
