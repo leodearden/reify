@@ -48237,11 +48237,16 @@
         "description": "Task 2225 ('LSP: wire incremental eval (eval_cached) into compute_diagnostics_with_state') was completed on 2026-04-25 via commit e68a9649cac704c27a8146238d1cb808fc7f69f8. The review/briefing.yaml still lists it as a known_gap — it was added in the 2026-04-25T07:09 briefing refresh (Task 2222) and the task completed ~2h later. Run /review-briefing to remove Task 2225 from known_gaps. Tasks 2226 (module import warning cleanup) and 2227 (Option<TraitObject>/collection trait conformance) remain in-progress and should stay listed.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:35:43.083Z"
+        "updatedAt": "2026-04-26T07:49:28.906Z",
+        "metadata": {
+          "done_provenance": {
+            "note": "review/briefing.yaml lines 219-222 (Task 2225 known_gap entry) removed by recon-stage-task_knowledge_sync in cycle 94644130. Task 2225 was completed 2026-04-25 via commit e68a9649. Direct file edit executed — no commit required for briefing.yaml updates."
+          }
+        }
       },
       {
         "id": "2246",
@@ -48282,9 +48287,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:44:40.809Z",
+      "lastModified": "2026-04-26T07:49:28.907Z",
       "taskCount": 2237,
-      "completedCount": 2000,
+      "completedCount": 2001,
       "tags": [
         "master"
       ]
