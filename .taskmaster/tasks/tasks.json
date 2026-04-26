@@ -49727,7 +49727,7 @@
         "id": "2294",
         "title": "Kleene logic: extract shared truth-table helper, route and/or/not/implies through it",
         "description": "Per PRD docs/prds/kleene-logic.md, audit the existing `and`/`or`/`not`/`implies` evaluator paths in `crates/reify-expr` (and any duplicates in `crates/reify-eval`), route them through a single shared `kleene` helper module implementing spec §9.2.3, and add exhaustive truth-table tests covering all 9 input pairs × 4 ops plus commutativity assertions.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "details": "**Refactor (implementation):**\n- Source: docs/prds/kleene-logic.md\n- Audit existing `and`/`or`/`not`/`implies` evaluator paths in `crates/reify-expr` (and any duplicates in `crates/reify-eval`) and route them through a single shared `kleene` helper module that implements the spec §9.2.3 truth table.\n- Pure refactor — pin behaviour with existing tests before adding new ones. Existing tasks #155 (implies) and #63 (forall/exists) introduced fragmented eval paths; this consolidates them.\n\n**Tests:**\n- Tests live in `crates/reify-expr/tests/kleene_logic_tests.rs` (or equivalent). Each test name cites the spec line range (lines 1662-1680 of docs/prds/kleene-logic.md).\n- Cover all 9 input pairs for `and`/`or`/`implies` (3 values for each of 2 operands), all 3 inputs for `not`, plus commutativity assertions for `and`/`or`.\n- Critically pin the asymmetric `implies` rows: `false implies undef = true` and `undef implies false = undef`.\n- Specific rows that often regress:\n  - `false and undef = false` (absorption)\n  - `true or undef = true` (absorption)\n  - `not undef = undef`\n  - `false implies undef = true` (vacuously true premise)\n  - `undef implies false = undef` (consequent forced false but premise unknown)\n  - `undef implies true = true` (vacuously true consequent)\n- Commutativity: for every pair (a, b) in {true, false, undef}², `eval(a and b) == eval(b and a)` and likewise for `or`. (`implies` is not commutative — do not assert.)\n- If any row fails, fix the implementation (the shared helper localises the fault).",
@@ -49736,8 +49736,13 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Candidate depends directly on Task 2294 (the truth-table-helper extraction task), touches identical module locks (crates/reify-expr, crates/reify-eval), and forms a single coherent concern with it. Both are high-priority, pending, combine_eligible, and small. Combining loads Kleene subsystem context once: extract helper + route operators + add exhaustive tests is one unified implementation session.",
-          "combined_at": "2026-04-26T19:36:17.738655+00:00"
-        }
+          "combined_at": "2026-04-26T19:36:17.738655+00:00",
+          "modules": [
+            "crates/reify-expr/src/kleene.rs",
+            "crates/reify-expr/src/lib.rs"
+          ]
+        },
+        "updatedAt": "2026-04-26T19:44:09.862Z"
       },
       {
         "id": "2295",
@@ -49749,7 +49754,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:42:08.437Z"
+        "updatedAt": "2026-04-26T19:42:08.437Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: [v0.2] Multi-kernel geometry dispatch (Manifold/Truck/Fidget/OpenVDB)"
+            ]
+          }
+        }
       },
       {
         "id": "2296",
@@ -49780,7 +49793,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:42:08.438Z",
+      "lastModified": "2026-04-26T19:44:09.862Z",
       "taskCount": 2286,
       "completedCount": 2058,
       "tags": [
