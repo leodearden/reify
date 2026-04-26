@@ -1,0 +1,13 @@
+// Field source kinds worked example — exercises analytical, sampled, and
+// composed source kinds from §4.1.4 of docs/reify-language-spec.md.
+//
+// Coverage:
+//   1. Analytical source: lambda evaluated directly at each sample point
+//   2. Sampled source: resolution+interpolation config (runtime data pending)
+//   3. Composed source: lambda evaluated at each sample point (pure arithmetic)
+//   4. Structure sampling analytical and composed fields with range constraints
+
+// ── Analytical field ─────────────────────────────────────────────────────────
+
+// f(p) = 300.0 + 50.0 * p  — linear temperature profile
+field def temperature_distribution : Real -> Real { source = analytical { |p| 300.0 + 50.0 * p } }
