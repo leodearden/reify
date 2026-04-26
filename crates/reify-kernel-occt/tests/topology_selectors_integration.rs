@@ -71,3 +71,70 @@ fn box_face_zero_has_four_adjacent_faces() {
         }
     }
 }
+
+/// Helper: query `AdjacentFaces` for `face_index` and return the neighbor
+/// list as a `HashSet<i64>`. Asserts `Ok(Value::List(_))` of `Value::Int`.
+fn neighbors_of(
+    kernel: &OcctKernel,
+    shape: GeometryHandleId,
+    face_index: usize,
+) -> std::collections::HashSet<i64> {
+    let result = kernel
+        .query(&GeometryQuery::AdjacentFaces { shape, face_index })
+        .unwrap_or_else(|e| panic!("AdjacentFaces({}) returned Err: {:?}", face_index, e));
+    let items = match result {
+        Value::List(v) => v,
+        other => panic!("expected Value::List, got {:?}", other),
+    };
+    items
+        .into_iter()
+        .map(|v| match v {
+            Value::Int(i) => i,
+            other => panic!("expected Value::Int neighbor, got {:?}", other),
+        })
+        .collect()
+}
+
+#[test]
+fn box_every_face_has_four_adjacent_faces_and_adjacency_is_symmetric() {
+    let (kernel, box_id) = box_kernel();
+
+    let neighbors: Vec<std::collections::HashSet<i64>> =
+        (0..6).map(|i| neighbors_of(&kernel, box_id, i)).collect();
+
+    // Each face has exactly 4 neighbors.
+    for (i, set) in neighbors.iter().enumerate() {
+        assert_eq!(
+            set.len(),
+            4,
+            "face {} should have 4 neighbors, got {} ({:?})",
+            i,
+            set.len(),
+            set
+        );
+    }
+
+    // Symmetry: a in adj(b) <=> b in adj(a).
+    for a in 0..6 {
+        for b in 0..6 {
+            let a_in_b = neighbors[b].contains(&(a as i64));
+            let b_in_a = neighbors[a].contains(&(b as i64));
+            assert_eq!(
+                a_in_b, b_in_a,
+                "adjacency asymmetric: a={} b={} a_in_b={} b_in_a={}",
+                a, b, a_in_b, b_in_a
+            );
+        }
+    }
+
+    // Union of all neighbor sets covers exactly faces 0..6.
+    let mut all: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for set in &neighbors {
+        all.extend(set.iter().copied());
+    }
+    let expected: std::collections::HashSet<i64> = (0i64..6).collect();
+    assert_eq!(
+        all, expected,
+        "union of all adjacency lists should cover faces 0..6 exactly"
+    );
+}
