@@ -50406,7 +50406,7 @@
         "id": "2330",
         "title": "Freshness: implement Failed production and Pending propagation with diagnostic chain",
         "description": "PRD docs/prds/freshness-4-variant.md. Implement the complete Failed-state handling per arch §9.1-§9.2 (lines 868-890): (1) catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed { error: ErrorRef }; emit EventKind::error realization event exactly once per failure; (2) per arch §7.2 line 748 (\"Pending as propagation gate\") and §9.2 line 890, when a node consumes a Failed input produce Pending { last_substantive } with a diagnostic chain referencing the original failure node — Pending must NOT trigger downstream re-evaluation, naturally quieting the downstream subtree. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test.",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "2253",
           "2328"
@@ -50426,7 +50426,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-26T20:18:22.212Z"
+        "updatedAt": "2026-04-26T20:19:41.098Z"
       },
       {
         "id": "2331",
@@ -50925,14 +50925,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:18:37.103Z",
+      "lastModified": "2026-04-26T20:19:41.098Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:19:00.429Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
