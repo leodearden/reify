@@ -114,3 +114,28 @@ fn watertight_refines_closed_and_manifold() {
         watertight.refinements
     );
 }
+
+// ─── step-7: non-Watertight traits have empty refinements ────────────────────
+
+/// Step 7: All six non-Watertight traits are pure markers with no parents —
+/// their refinements lists must be empty.
+#[test]
+fn non_watertight_traits_have_empty_refinements() {
+    let module = load_stdlib_module();
+
+    let names = ["Bounded", "Closed", "Manifold", "Orientable", "Convex", "Connected"];
+    for name in &names {
+        let trait_def = module
+            .trait_defs
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' trait in compiled module", name));
+
+        assert!(
+            trait_def.refinements.is_empty(),
+            "trait '{}' should have empty refinements, got: {:?}",
+            name,
+            trait_def.refinements
+        );
+    }
+}
