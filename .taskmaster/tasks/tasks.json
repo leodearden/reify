@@ -50944,7 +50944,18 @@
           "modules": [
             "crates/reify-runtime/src/commitment.rs",
             "crates/reify-runtime/tests/concurrent_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "NodePolicyOverrides",
+              "NodeTraits"
+            ],
+            "queries": [
+              "AlwaysCancelWhenStale dirty-cone cancellation commitment threshold override",
+              "node-trait composition §7.5 §7.3 dual-threshold commit-if-slow policy cancellation",
+              "NodePolicyOverrides instance type default precedence resolution"
+            ]
+          }
         }
       },
       {
@@ -50975,7 +50986,20 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:26:39.074Z"
+        "updatedAt": "2026-04-26T20:26:39.074Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "NodeTraits",
+              "Freshness enum"
+            ],
+            "queries": [
+              "PROGRESSIVE node intermediate emission freshness propagation multiple cache updates",
+              "freshness-only propagation walk value-unchanged transitions task 2335 2328",
+              "node-trait composition PRD §7.6 PROGRESSIVE scheduler intermediate Final transition"
+            ]
+          }
+        }
       },
       {
         "id": "2361",
@@ -51455,7 +51479,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:29:28.393Z",
+      "description": "Tasks for master context"
     }
   }
 }
