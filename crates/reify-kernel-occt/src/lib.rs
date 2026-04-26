@@ -961,9 +961,25 @@ impl OcctKernel {
                 face_a,
                 face_b,
             } => {
-                let _ = (shape, face_a, face_b);
-                Err(QueryError::QueryFailed(
-                    "topology selector not yet implemented".into(),
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let a_u32: u32 = (*face_a).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "shared_edges: face_a {} exceeds u32::MAX",
+                        face_a
+                    ))
+                })?;
+                let b_u32: u32 = (*face_b).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "shared_edges: face_b {} exceeds u32::MAX",
+                        face_b
+                    ))
+                })?;
+                let edges = ffi::ffi::shared_edges(s, a_u32, b_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    edges.into_iter().map(|i| Value::Int(i as i64)).collect(),
                 ))
             }
         }

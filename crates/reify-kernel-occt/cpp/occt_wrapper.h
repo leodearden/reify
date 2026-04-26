@@ -205,6 +205,13 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
 /// std::runtime_error if `face_index` is out of range.
 rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
 
+/// Return the 0-based global indices (TopExp_Explorer/TopAbs_EDGE order) of
+/// edges shared between `faces[face_a_index]` and `faces[face_b_index]`,
+/// using `TopoDS_Shape::IsSame` for matching. Returns an empty vector if
+/// `face_a_index == face_b_index`. Deduplicated; returned in ascending order.
+/// Throws std::runtime_error if either index is out of range.
+rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

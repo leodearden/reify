@@ -259,6 +259,15 @@ pub mod ffi {
         /// Excludes the queried face; deduplicated; returned ascending.
         fn adjacent_faces(shape: &OcctShape, face_index: u32) -> Result<Vec<u32>>;
 
+        /// Edges shared between `face_a_index` and `face_b_index` (0-based,
+        /// TopExp order). Empty if the two indices are equal. Deduplicated;
+        /// returned ascending. Errors if either index is out of range.
+        fn shared_edges(
+            shape: &OcctShape,
+            face_a_index: u32,
+            face_b_index: u32,
+        ) -> Result<Vec<u32>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

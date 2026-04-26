@@ -26,6 +26,7 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
 #include <TopoDS.hxx>
 
@@ -1555,6 +1556,84 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) 
         throw std::runtime_error(std::string("OCCT adjacent_faces: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT adjacent_faces: unknown C++ exception");
+    }
+}
+
+rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index) {
+    try {
+        // Materialize a stable 0-based face index via TopExp_Explorer order.
+        std::vector<TopoDS_Face> faces;
+        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            faces.push_back(TopoDS::Face(ex.Current()));
+        }
+        if (face_a_index >= faces.size()) {
+            std::string msg = "shared_edges: face index "
+                + std::to_string(face_a_index)
+                + " out of range; shape has "
+                + std::to_string(faces.size())
+                + " faces";
+            throw std::runtime_error(msg);
+        }
+        if (face_b_index >= faces.size()) {
+            std::string msg = "shared_edges: face index "
+                + std::to_string(face_b_index)
+                + " out of range; shape has "
+                + std::to_string(faces.size())
+                + " faces";
+            throw std::runtime_error(msg);
+        }
+
+        // Same-face short-circuit: by design we treat shared_edges(f, f) as
+        // empty rather than "all edges of f" (see plan design decisions).
+        if (face_a_index == face_b_index) {
+            return rust::Vec<uint32_t>{};
+        }
+
+        // Materialize a stable 0-based edge index via TopExp::MapShapes,
+        // which deduplicates by IsSame (TopExp_Explorer alone would visit
+        // each shared edge once per parent face). The resulting IndexedMap
+        // is 1-based; we expose 0-based indices to callers.
+        TopTools_IndexedMapOfShape edge_map;
+        TopExp::MapShapes(shape.shape, TopAbs_EDGE, edge_map);
+
+        // Collect all edges of face_a for IsSame matching against face_b's edges.
+        std::vector<TopoDS_Edge> face_a_edges;
+        for (TopExp_Explorer ex(faces[face_a_index], TopAbs_EDGE); ex.More(); ex.Next()) {
+            face_a_edges.push_back(TopoDS::Edge(ex.Current()));
+        }
+
+        // For each edge of face_b, check if any edge of face_a IsSame; if so,
+        // recover the global edge index via the indexed map (1-based -> 0-based).
+        std::set<uint32_t> result;
+        for (TopExp_Explorer ex(faces[face_b_index], TopAbs_EDGE); ex.More(); ex.Next()) {
+            const TopoDS_Shape& b_edge = ex.Current();
+            bool matched = false;
+            for (const TopoDS_Edge& a_edge : face_a_edges) {
+                if (a_edge.IsSame(b_edge)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                continue;
+            }
+            Standard_Integer one_based = edge_map.FindIndex(b_edge);
+            if (one_based >= 1) {
+                result.insert(static_cast<uint32_t>(one_based - 1));
+            }
+        }
+
+        rust::Vec<uint32_t> out;
+        for (uint32_t i : result) {
+            out.push_back(i);
+        }
+        return out;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT shared_edges: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT shared_edges: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT shared_edges: unknown C++ exception");
     }
 }
 
