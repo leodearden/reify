@@ -47991,11 +47991,11 @@
         "description": "The doc-comment for `eval_guarded_group_param_cell` (crates/reify-eval/src/engine_eval.rs:163-179 at task-2154 landing) cites three hard-coded line ranges in the same file: `engine_eval.rs:487-496`, `engine_eval.rs:402-424`, `engine_eval.rs:576-613`. Line numbers shift with every edit, so these pointers will silently rot. Same problem applies to test-file comments in crates/reify-eval/tests/eval_param_overrides.rs (around lines 432-435, 466-469 at task-2154 landing).\n\nFix: replace numeric refs with stable anchors. Examples:\n- \"see top-level Param branch in `Engine::eval`, rejected-no-default arm\" instead of `engine_eval.rs:487-496`\n- \"see members-loop test ABOVE\" or by test function name instead of `eval_param_overrides.rs:208-260`\n\nScope is doc-comments only — no code/behavioural changes. Source: esc-2154-17 review_suggestion #1.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T14:11:32.952Z",
+        "updatedAt": "2026-04-26T14:28:55.650Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -48010,7 +48010,10 @@
               "guarded group param cell eval line refs refactoring"
             ]
           },
-          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351"
+          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351",
+          "done_provenance": {
+            "commit": "3f9bdb80ef7ca8461fa8867709c81cae8b63d086"
+          }
         }
       },
       {
@@ -49402,9 +49405,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T14:23:57.798Z",
+      "lastModified": "2026-04-26T14:28:55.650Z",
       "taskCount": 2272,
-      "completedCount": 2041,
+      "completedCount": 2042,
       "tags": [
         "master"
       ]
