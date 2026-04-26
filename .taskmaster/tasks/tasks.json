@@ -49465,7 +49465,19 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "CompiledFunction",
+              "Engine"
+            ],
+            "queries": [
+              "task 1997 Engine functions Arc refactor edit_param prepare_concurrent_edit test",
+              "edit_param_does_not_leak_functions_arc Arc strong_count test weak invariant",
+              "ResolutionProblem Arc CompiledFunction solver boundary task 2286"
+            ]
+          },
+          "_causation_id": "7a19d25f-861d-4fa2-9676-d4456a4bd83b"
         }
       },
       {
