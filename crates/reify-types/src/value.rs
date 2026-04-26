@@ -2050,6 +2050,52 @@ impl ResultRef {
     }
 }
 
+/// Opaque carrier for an evaluation failure stored in [`Freshness::Failed`].
+///
+/// Wraps the existing [`EvalError`] with a private inner field so callers
+/// cannot access the raw string directly, satisfying the "opaque type"
+/// requirement.  `Display` is delegated to the inner `EvalError`, and
+/// `From<EvalError>` provides ergonomic conversion from any site that
+/// already holds an `EvalError`.
+///
+/// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorRef(EvalError);
+
+impl ErrorRef {
+    /// Construct an `ErrorRef` from a plain message string.
+    pub fn new(message: impl Into<String>) -> Self {
+        ErrorRef(EvalError(message.into()))
+    }
+
+    /// Construct an `ErrorRef` from an existing [`EvalError`].
+    pub fn from_eval_error(error: EvalError) -> Self {
+        ErrorRef(error)
+    }
+
+    /// Returns the error message string.
+    pub fn message(&self) -> &str {
+        &self.0.0
+    }
+
+    /// Returns a reference to the inner [`EvalError`].
+    pub fn as_eval_error(&self) -> &EvalError {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ErrorRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<EvalError> for ErrorRef {
+    fn from(error: EvalError) -> Self {
+        ErrorRef(error)
+    }
+}
+
 /// Freshness of a cached value (for incremental evaluation).
 ///
 /// M2 model: tracks evaluation lifecycle with richer state than M1's
