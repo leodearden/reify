@@ -353,6 +353,17 @@ esac
 NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
+# Stub curl: always fail so the readiness check never succeeds regardless of
+# what happens to be listening on :1420 in the test environment (e.g. an
+# unrelated vite dev server from a concurrent task).  The polling loop must
+# reach the `kill -0 "$VITE_PID"` death-detection branch, not the
+# curl-success branch.
+cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
+#!/usr/bin/env bash
+exit 7
+CURL_STUB
+chmod +x "$_t25_tmpdir/bin/curl"
+
 # Run the script with the stubbed PATH; capture combined output + rc in one shot.
 _t25_out=$(PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
