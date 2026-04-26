@@ -50507,6 +50507,20 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:07:08.056Z"
+      },
+      {
+        "id": "2343",
+        "title": "Implement Composed Field Source Kind with Cache Invalidation",
+        "description": "Wire composed field source kind to combinators, enabling lazy evaluation and dependency tracking for cache invalidation.",
+        "details": "Implement the composed field source kind by integrating it with existing combinators as referenced in task #342. Modify the compiler to track dependencies by capturing field references within the lambda body of `composed { |p| ... }`. Ensure that the lambda is evaluated lazily at each `sample(other_field, p)` call. Update the cache invalidation mechanism to invalidate the composed field's cache when any of its referenced fields are edited. This requires extending the dependency tracking system to include these dynamic dependencies.",
+        "testStrategy": "Create tests to verify that editing a field referenced by a composed field invalidates its cache. Ensure that the composed field is re-evaluated correctly upon subsequent accesses. Use existing test frameworks to simulate field edits and check cache states before and after edits.",
+        "status": "pending",
+        "dependencies": [
+          "11",
+          "342"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50516,7 +50530,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:08:02.374Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:08:05.933Z"
     }
   }
 }
