@@ -49405,11 +49405,11 @@
         "description": "Extract a shared predicate (e.g. `pub(crate) fn is_representable_cell_type(ty: &Type) -> bool` or `#[doc(hidden)] pub`) from `engine_eval.rs::assert_value_cell_types_representable` and have `tests/value_cell_type_invariants.rs::assert_template_cells_representable` consume it. Today both sites copy-paste `Type::TypeParam(_) | Type::Geometry`; if a third unrepresentable variant is added to the production assertion, the test silently keeps passing.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T15:49:10.576Z",
+        "updatedAt": "2026-04-26T16:10:31.573Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -49426,6 +49426,9 @@
               "assert_value_cell_types_representable engine_eval.rs invariant",
               "value_cell_type_invariants test file reify-eval"
             ]
+          },
+          "done_provenance": {
+            "commit": "88dd8ee4a94395bb631463a15d7ab5df3d3950b3"
           }
         }
       },
@@ -49511,9 +49514,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T16:10:29.577Z",
+      "lastModified": "2026-04-26T16:10:31.573Z",
       "taskCount": 2276,
-      "completedCount": 2047,
+      "completedCount": 2048,
       "tags": [
         "master"
       ]
