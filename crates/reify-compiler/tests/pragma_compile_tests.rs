@@ -660,3 +660,40 @@ fn precision_pragma_with_cm_unit_converts_to_metres() {
         "expected default_tolerance Some(0.02) for #precision(2cm)"
     );
 }
+
+/// Multiple module-level `#precision` pragmas: first wins, the second emits
+/// exactly one warning indicating it is ignored.
+#[test]
+fn multiple_module_level_precision_pragmas_first_wins() {
+    let module = compile_source(
+        "#precision(0.001m)\n#precision(0.002m)\nstructure S { param x : Real }",
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.001),
+        "expected default_tolerance Some(0.001) (first wins) for the duplicate pragma case"
+    );
+
+    // Filter warnings whose message mentions one of the "ignored / first wins /
+    // subsequent" keywords. The PRD requires *exactly one* such warning — for the
+    // second `#precision`, not the first.
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("ignored") || m.contains("first wins") || m.contains("subsequent")
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning for subsequent #precision, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
