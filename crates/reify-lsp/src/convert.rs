@@ -133,24 +133,9 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
     }
 }
 
-/// Convert a Reify Diagnostic to an LSP Diagnostic.
-///
-/// When `diag.code` is `Some(c)`, the returned LSP diagnostic carries
-/// `code = Some(NumberOrString::String(format!("{:?}", c)))`.
-///
-/// **Wire-format note:** The `Debug` representation produces PascalCase variant
-/// names for all current unit variants of `DiagnosticCode` (e.g. `"Shadowing"`,
-/// `"TraitNotImplemented"`, `"DeepDotChain"`), which coincides with the serde
-/// `rename_all = "PascalCase"` wire form. This equivalence is tested for the
-/// `Shadowing` variant by `shadowing_diagnostic_code_variant_round_trips` in
-/// `crates/reify-types/src/diagnostics.rs`, and for other variants by their own
-/// variant-specific tests (e.g. `diagnostic_code_deep_dot_chain_variant`,
-/// `diagnostic_code_dimension_mismatch_serde_pascal_case`). However, `Debug` is
-/// not the authoritative wire contract: a future variant carrying fields would
-/// produce `"Variant(...)"` rather than a clean PascalCase code, silently
-/// breaking client-side matching. A more robust implementation would use serde
-/// serialization via `serde_json::to_value(c)`, which requires enabling
-/// `features = ["serde"]` on the `reify-types` dependency in `Cargo.toml`.
+/// Convert a Reify Diagnostic to an LSP Diagnostic. The `code` field, when
+/// present, is rendered as a PascalCase string identifier matching the serde
+/// wire form of `DiagnosticCode`.
 pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_types::Diagnostic {
     let range = if let Some(first_label) = diag.labels.first() {
         span_to_range(source, first_label.span)
@@ -178,9 +163,13 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         None
     };
 
+    // NOTE: route through serde so future field-bearing DiagnosticCode variants don't
+    // leak Debug-style "Variant(...)" strings to the wire; as_str() returns None for
+    // non-string JSON values, leaving the code field absent (safe degradation).
     let code = diag
         .code
-        .map(|c| lsp_types::NumberOrString::String(format!("{:?}", c)));
+        .and_then(|c| serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)))
+        .map(lsp_types::NumberOrString::String);
 
     lsp_types::Diagnostic {
         range,
@@ -354,12 +343,15 @@ mod tests {
     }
 
     /// Locks the `convert_diagnostic` code-field conversion for a representative
-    /// spread of `DiagnosticCode` variants. Each expected wire string must match
-    /// the serde `rename_all = "PascalCase"` form.
+    /// spread of `DiagnosticCode` variants. The LSP `code` field renders
+    /// `DiagnosticCode` via the serde `rename_all = "PascalCase"` wire form.
     ///
-    /// If the `Debug` impl of any listed variant diverges from PascalCase (e.g.
-    /// because it gains fields), this test will catch the regression before it
-    /// reaches the LSP client.
+    /// Each iteration asserts two independent conditions:
+    /// 1. `serde_json::to_value(&code)` produces the hard-coded PascalCase literal.
+    /// 2. `convert_diagnostic` produces the same literal as the LSP `code` field.
+    ///
+    /// Double-binding to a fixed literal catches drift in either direction: if serde
+    /// and the conversion diverge, or if either independently drifts from PascalCase.
     #[test]
     fn convert_diagnostic_code_wire_str_matches_pascal_case_for_representative_variants() {
         let cases: &[(DiagnosticCode, &str)] = &[
@@ -369,6 +361,11 @@ mod tests {
             (DiagnosticCode::Shadowing, "Shadowing"),
         ];
         for &(code, expected_wire) in cases {
+            assert_eq!(
+                serde_json::to_value(&code).unwrap().as_str().unwrap(),
+                expected_wire,
+                "serde wire form for DiagnosticCode::{code:?} must equal {expected_wire:?}"
+            );
             let diag = Diagnostic::warning("test").with_code(code);
             let lsp = convert_diagnostic(&diag, "", &test_uri());
             assert_eq!(
