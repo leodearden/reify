@@ -31,10 +31,6 @@ fn io_module() -> &'static reify_compiler::CompiledModule {
 ///
 /// Mirrors the `find_trait` / `param_type` closure pattern from
 /// `io_traits_tests.rs::io_refining_traits_with_correct_params_and_dimensions`.
-///
-/// RED before step-2: `Costed` is not present in io.ri yet — `find_trait`
-/// panics with "std.io should contain trait 'Costed'; found: [Source, Sink,
-/// Input, Buy, Output, Discard]".
 #[test]
 fn cost_aggregation_costed_trait_present_in_std_io_with_required_quantity_produced() {
     let module = io_module();
@@ -97,9 +93,6 @@ fn cost_aggregation_costed_trait_present_in_std_io_with_required_quantity_produc
 /// money-typed `line_cost` cell. Without the explicit `Money` annotation, the
 /// trait-let cell_type would be `None` and the contract would only be
 /// exercised through type inference at conformance sites.
-///
-/// RED before step-4: step-2 added only the param, not the let-default; the
-/// `defaults` vec is empty so `find` returns None.
 #[test]
 fn cost_aggregation_costed_exposes_line_cost_let_default_with_money_dim() {
     let module = io_module();
@@ -137,32 +130,23 @@ fn cost_aggregation_costed_exposes_line_cost_let_default_with_money_dim() {
     }
 }
 
-// ─── step-5: user structure conforming to Costed compiles clean ──────────────
+// ─── Per-structure trait-let injection probe ─────────────────────────────────
 
-/// A user `structure def CapScrew : Costed { ... }` with concrete defaults
-/// for all four `Buy` params + `quantity_produced` must compile clean under
-/// the stdlib prelude, and the resulting template must carry an inherited
-/// `line_cost` value cell whose type is `Scalar<MONEY>`.
-///
-/// This is the conformance acceptance gate: it pins that the trait-let
-/// default injection path correctly produces a money-typed cell on
-/// conforming structures (the same machinery that lets
-/// `examples/large_assembly.ri:252+` access `self.b01.mass` on a
-/// `Physical : MaterialSpec`-conforming structure).
-///
-/// RED before step-4: any reference to `Costed` would resolve to "unknown
-/// trait" and conformance would fail. After step-4: the structure conforms
-/// and the trait-let cell is injected — test goes GREEN with no further
-/// code change.
+/// Minimal probe: a smallest-possible `Costed`-conforming structure inherits
+/// a `line_cost` value cell typed `Scalar<MONEY>`. Complements the
+/// example-file test below by isolating the per-structure trait-let injection
+/// path (independent of assembly aggregation), so a regression in trait-let
+/// default injection fails here with a clear cell-not-found error rather
+/// than a downstream `.sum`/member-access failure in the example test.
 #[test]
 fn cost_aggregation_user_structure_conforming_to_costed_compiles_clean_under_stdlib() {
     let source = r#"
-structure def CapScrew : Costed {
-    param supplier         : String = "McMaster-Carr"
-    param part_number      : String = "91251A190"
-    param unit_cost        : Money  = 0.12USD
-    param lead_time        : Time   = 24h
-    param quantity_produced : Real  = 24.0
+structure def MinimalCosted : Costed {
+    param supplier         : String = "S"
+    param part_number      : String = "P"
+    param unit_cost        : Money  = 1USD
+    param lead_time        : Time   = 1h
+    param quantity_produced : Real  = 1.0
 }
 "#;
     let module = common::compile_with_stdlib_helper(source);
@@ -174,36 +158,32 @@ structure def CapScrew : Costed {
         .collect();
     assert!(
         errors.is_empty(),
-        "expected zero Error diagnostics compiling CapScrew : Costed, got:\n{:#?}",
+        "expected zero Error diagnostics compiling MinimalCosted : Costed, got:\n{:#?}",
         errors
     );
 
-    let cap_screw = module
+    let probe = module
         .templates
         .iter()
-        .find(|t| t.name == "CapScrew")
-        .expect("CapScrew template should be present in compiled module");
+        .find(|t| t.name == "MinimalCosted")
+        .expect("MinimalCosted template should be present in compiled module");
 
-    let line_cost_cell = cap_screw
+    let line_cost_cell = probe
         .value_cells
         .iter()
         .find(|c| c.id.member == "line_cost")
         .unwrap_or_else(|| {
             panic!(
-                "CapScrew should inherit a 'line_cost' value cell from Costed; \
+                "MinimalCosted should inherit a 'line_cost' value cell from Costed; \
                  found cells: {:?}",
-                cap_screw
-                    .value_cells
-                    .iter()
-                    .map(|c| &c.id.member)
-                    .collect::<Vec<_>>()
+                probe.value_cells.iter().map(|c| &c.id.member).collect::<Vec<_>>()
             )
         });
 
     assert_eq!(
         line_cost_cell.cell_type,
         Type::Scalar { dimension: DimensionVector::MONEY },
-        "CapScrew.line_cost should have type Scalar<MONEY>, got {:?}",
+        "MinimalCosted.line_cost should have type Scalar<MONEY>, got {:?}",
         line_cost_cell.cell_type
     );
 }
@@ -219,9 +199,6 @@ structure def CapScrew : Costed {
 /// pattern (`purpose_compile_tests.rs:719-755`): CARGO_MANIFEST_DIR-anchored
 /// path, `read_to_string` with explicit panic, `parse` + assert no parse
 /// errors, `compile_with_stdlib` + filter to Severity::Error, assert empty.
-///
-/// RED before step-10: the example file does not exist; `read_to_string`
-/// panics with "failed to read examples/cost_aggregation.ri".
 #[test]
 fn cost_aggregation_example_compiles_under_stdlib_with_zero_errors() {
     const EXAMPLE_PATH: &str = concat!(
