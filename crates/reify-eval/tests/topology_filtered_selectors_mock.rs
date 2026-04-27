@@ -208,6 +208,23 @@ fn faces_by_normal_zero_target_returns_query_failed() {
                 "error should mention 'non-zero and finite', got: {msg:?}"
             );
         }
-        other => panic!("expected Err(QueryFailed), got {:?}", other),
+        other => panic!("expected Err(QueryFailed) for zero target, got {:?}", other),
     }
+}
+
+#[test]
+fn faces_by_normal_nan_target_returns_query_failed() {
+    // The !mag.is_finite() guard catches NaN before the mag < f64::EPSILON
+    // check would (any comparison with NaN is false, so NaN would otherwise
+    // slip through as "not too small").
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [f64::NAN, 0.0, 1.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "NaN target must produce Err(QueryFailed), got {:?}",
+        result
+    );
 }
