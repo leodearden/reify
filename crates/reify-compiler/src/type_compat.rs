@@ -313,24 +313,31 @@ pub(crate) fn format_dimension_mismatch_diagnostic(
     right_ty: &Type,
     span: SourceSpan,
 ) -> Diagnostic {
-    let d = Diagnostic::error(format!(
-        "dimension mismatch in {op_name}: {left_ty} vs {right_ty}"
-    ))
-    .with_code(DiagnosticCode::DimensionMismatch)
-    .with_label(DiagnosticLabel::new(span, "incompatible dimensions"));
-
-    // Attach a secondary canonical-names label when both operands are named scalars.
-    if let (
+    // Compute the optional secondary label before building the diagnostic so
+    // there is a single exit point and no early return.
+    let secondary: Option<DiagnosticLabel> = if let (
         Type::Scalar { dimension: ldim },
         Type::Scalar { dimension: rdim },
     ) = (left_ty, right_ty)
         && let (Some(lname), Some(rname)) = (ldim.canonical_name(), rdim.canonical_name())
         && lname != rname
     {
-        return d.with_label(DiagnosticLabel::new(
+        Some(DiagnosticLabel::new(
             span,
             format!("{lname} and {rname} are different dimensions and cannot be combined directly"),
-        ));
+        ))
+    } else {
+        None
+    };
+
+    let mut d = Diagnostic::error(format!(
+        "dimension mismatch in {op_name}: {left_ty} vs {right_ty}"
+    ))
+    .with_code(DiagnosticCode::DimensionMismatch)
+    .with_label(DiagnosticLabel::new(span, "incompatible dimensions"));
+
+    if let Some(label) = secondary {
+        d = d.with_label(label);
     }
 
     d
