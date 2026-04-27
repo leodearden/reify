@@ -813,6 +813,19 @@ impl Engine {
         // `engine_eval.rs::Engine::eval` via the shared `elaborate_field`
         // helper. Sampled / Imported fields are skipped: their source has
         // no callable lambda and therefore no captures to refresh.
+        //
+        // Precision gate (task 2343 step-10): the `dirty_cone.contains`
+        // check below is the precision contract — a composed field is
+        // re-elaborated ONLY when one of its registered deps (captures from
+        // step-4) appears in `changed_set`, since `compute_dirty_cone`
+        // never adds a node whose deps did not change. Pinned by
+        // `eval_composed_field_invalidates_only_when_dep_changes` in
+        // `crates/reify-eval/tests/field_eval_tests.rs` (step-9), which
+        // edits a param NOT captured by any field and verifies via
+        // `Arc::ptr_eq` that no field's lambda Arc is rebuilt. Removing
+        // or weakening this gate (e.g. always re-elaborating every field)
+        // would re-elaborate fields whose captures haven't changed,
+        // wasting work and breaking the step-9 test.
         let compiled_fields = Arc::clone(&self.compiled_fields);
         for field in compiled_fields.iter() {
             if !matches!(
