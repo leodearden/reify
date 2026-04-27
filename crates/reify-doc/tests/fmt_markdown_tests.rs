@@ -2136,3 +2136,103 @@ fn split_mode_per_item_cross_refs_use_filename_links() {
         "MCU Used-by must NOT use old fragment link (#Board), got:\n{mcu_body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-module split per-item cross-ref relative paths
+// ---------------------------------------------------------------------------
+
+/// In multi-module split mode, cross-reference bullets in per-item files must
+/// use relative paths that are correct from the *containing file's* location:
+/// - Same-module references: `{kind}-{name}.md` (sibling, no `../` prefix).
+/// - Cross-module references: `../{other_module}/{kind}-{name}.md` (up one
+///   directory, then into the other module's subdirectory).
+#[test]
+fn multi_module_split_per_item_cross_refs_use_relative_paths() {
+    // alpha: Bolt (Structure), LocalT (Trait — same-module reference)
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let local_t = ItemDoc::Trait {
+        name: "LocalT".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        members: vec![],
+    };
+    // beta: Fastener (Trait — cross-module reference from alpha/Bolt)
+    let fastener = ItemDoc::Trait {
+        name: "Fastener".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        members: vec![],
+    };
+    let model = DocModel {
+        modules: vec![
+            ModuleDoc {
+                path: "alpha".into(),
+                items: vec![bolt, local_t],
+                ..Default::default()
+            },
+            ModuleDoc {
+                path: "beta".into(),
+                items: vec![fastener],
+                ..Default::default()
+            },
+        ],
+    };
+    let mut xrefs = CrossRefs::default();
+    // Bolt conforms to both Fastener (cross-module, in beta) and LocalT (same-module, in alpha).
+    xrefs
+        .trait_to_conformers
+        .insert("Fastener".into(), vec!["Bolt".into()]);
+    xrefs
+        .trait_to_conformers
+        .insert("LocalT".into(), vec!["Bolt".into()]);
+
+    let files = match render_markdown(&model, Some(&xrefs), &MarkdownOptions { split: true }) {
+        MarkdownOutput::Split(v) => v,
+        MarkdownOutput::Single(_) => panic!("expected Split output"),
+    };
+
+    // Locate alpha/structure-Bolt.md.
+    let bolt_body = &files
+        .iter()
+        .find(|(n, _)| n == "alpha/structure-Bolt.md")
+        .expect("alpha/structure-Bolt.md missing in split output")
+        .1;
+
+    // Cross-module: Fastener is in beta — must use ../beta/ relative path.
+    assert!(
+        bolt_body.contains("### Conforms to"),
+        "Bolt must have Conforms-to section, got:\n{bolt_body}"
+    );
+    assert!(
+        bolt_body.contains("- [`Fastener`](../beta/trait-Fastener.md)"),
+        "Bolt cross-module Conforms-to must use ../beta/trait-Fastener.md, got:\n{bolt_body}"
+    );
+    assert!(
+        !bolt_body.contains("(beta/trait-Fastener.md)"),
+        "Bolt must NOT use root-relative beta/ path (would resolve as alpha/beta/...), \
+         got:\n{bolt_body}"
+    );
+    assert!(
+        !bolt_body.contains("(#Fastener)"),
+        "Bolt must NOT fall back to fragment link for Fastener, got:\n{bolt_body}"
+    );
+
+    // Same-module: LocalT is in alpha — must use sibling link (no ../ prefix).
+    assert!(
+        bolt_body.contains("- [`LocalT`](trait-LocalT.md)"),
+        "Bolt same-module Conforms-to must use sibling trait-LocalT.md, got:\n{bolt_body}"
+    );
+    assert!(
+        !bolt_body.contains("(alpha/trait-LocalT.md)"),
+        "Bolt must NOT use module-prefixed path for same-module LocalT, got:\n{bolt_body}"
+    );
+}
