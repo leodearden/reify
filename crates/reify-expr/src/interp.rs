@@ -110,9 +110,13 @@ fn resolve_method(method: InterpolationMethod) -> (InterpolationMethod, Option<D
 /// Locate the cell `[grid[i], grid[i+1]]` bracketing `query` in a strictly
 /// ascending grid. Returns `Some(i)` if `query` falls inside the grid (taking
 /// the right-most cell when `query == grid.last()`), `None` if the grid has
-/// fewer than two points or `query` is outside the grid.
+/// fewer than two points, `query` is outside the grid, or `query` is NaN
+/// (NaN is by definition not in the grid).
 fn locate_cell(grid: &[f64], query: f64) -> Option<usize> {
     if grid.len() < 2 {
+        return None;
+    }
+    if query.is_nan() {
         return None;
     }
     if query < grid[0] || query > grid[grid.len() - 1] {
@@ -728,10 +732,15 @@ fn cubic_3d(
 
 /// Locate a cell on a single axis with constant-extrapolation clamping.
 /// Returns `(cell_index, t)` where `t ∈ [0, 1]` is the local cell parameter,
-/// clamped to `0.0` or `1.0` for out-of-range queries. The grid must have at
-/// least two points.
+/// clamped to `0.0` or `1.0` for out-of-range queries. Returns `(0, f64::NAN)`
+/// when `query` is NaN so that any downstream `lerp` propagates NaN rather
+/// than silently clamping to a boundary value. The grid must have at least two
+/// points.
 fn locate_cell_with_clamp(grid: &[f64], query: f64) -> (usize, f64) {
     debug_assert!(grid.len() >= 2);
+    if query.is_nan() {
+        return (0, f64::NAN);
+    }
     let last = grid.len() - 1;
     if query <= grid[0] {
         return (0, 0.0);
