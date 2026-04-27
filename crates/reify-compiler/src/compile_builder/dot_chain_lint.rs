@@ -837,12 +837,7 @@ mod tests {
                     // actual overflow depth would fall outside this window and
                     // the assertion below would catch it even though the arm
                     // 'panicked with MAX_EXPR_DEPTH' check above passed.
-                    let overflow_depth: usize = msg
-                        .split("(depth = ")
-                        .nth(1)
-                        .and_then(|s| s.split(')').next())
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
+                    let overflow_depth = parse_overflow_depth(&msg);
                     assert!(
                         overflow_depth > MAX_EXPR_DEPTH
                             && overflow_depth <= MAX_EXPR_DEPTH + depth_per_layer(arm),
@@ -857,6 +852,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn parse_overflow_depth(msg: &str) -> usize {
+        msg.split("(depth = ")
+            .nth(1)
+            .and_then(|s| s.split(')').next())
+            .and_then(|s| s.parse().ok())
+            .expect("panic message must contain `(depth = N)` — format string drifted?")
     }
 
     #[test]
