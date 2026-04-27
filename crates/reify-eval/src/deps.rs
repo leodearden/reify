@@ -651,6 +651,72 @@ mod tests {
         );
     }
 
+    // ── Task 2343 step-5: composed fields register as dependents ──────────
+    //
+    // After the compiler's `phase_augment_composed_captures` post-pass,
+    // composed-field lambdas carry `__field.<dep>` cell IDs in their
+    // `captures`. The reverse-dependency index (extended to iterate
+    // `module.fields`) must then register each composed field as a dependent
+    // of every cell its lambda transitively reads.
+
+    /// Build a tiny module with three analytical-and-composed fields,
+    /// pass it to `build_from_graph_and_fields`, and assert the composed
+    /// field's NodeId appears in the dependents-of set for both upstream
+    /// field cells. Analytical fields contribute no dependents from their
+    /// own bodies (they reference no other fields).
+    #[test]
+    fn reverse_index_includes_composed_field_dependencies() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::parse_and_compile;
+        use reify_types::FIELD_ENTITY_PREFIX;
+
+        let module = parse_and_compile(
+            r#"
+field def f1 : Real -> Real { source = analytical { |p| p } }
+field def f2 : Real -> Real { source = analytical { |x| x } }
+field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
+"#,
+        );
+
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &module.fields);
+
+        let f1_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f1");
+        let f2_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f2");
+        let f3_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f3");
+        let f3_node = NodeId::Value(f3_cell.clone());
+
+        // (a) dependents_of(f1) includes f3
+        let f1_deps = index.dependents_of(&f1_cell);
+        assert!(
+            f1_deps.contains(&f3_node),
+            "dependents_of(__field.f1) should contain Value(__field.f3), got: {:?}",
+            f1_deps
+        );
+
+        // (b) dependents_of(f2) includes f3
+        let f2_deps = index.dependents_of(&f2_cell);
+        assert!(
+            f2_deps.contains(&f3_node),
+            "dependents_of(__field.f2) should contain Value(__field.f3), got: {:?}",
+            f2_deps
+        );
+
+        // (c) Analytical fields f1 and f2 themselves register no dependents
+        // from their lambda bodies (they reference no other fields).
+        let f3_deps = index.dependents_of(&f3_cell);
+        assert!(
+            !f3_deps.contains(&NodeId::Value(f1_cell.clone())),
+            "f1 should not be a dependent of f3 (no upstream link), got: {:?}",
+            f3_deps
+        );
+        assert!(
+            !f3_deps.contains(&NodeId::Value(f2_cell.clone())),
+            "f2 should not be a dependent of f3, got: {:?}",
+            f3_deps
+        );
+    }
+
     /// Step 5: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
     /// in cached entries (the statically extracted trace, not a separate runtime trace).
     ///
