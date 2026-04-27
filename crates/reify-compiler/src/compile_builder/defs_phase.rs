@@ -291,6 +291,7 @@ mod tests {
             pragmas: vec![],
             default_tolerance: None,
             declared_version: None,
+            solver_pragma: None,
             diagnostics: vec![],
             content_hash: ContentHash::of_str(""),
         }

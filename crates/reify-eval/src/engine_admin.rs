@@ -7,7 +7,8 @@ use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, GeometryKernel,
+    OptimizedImpl,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,6 +55,22 @@ pub(crate) enum ParamOverrideRejection {
 ///
 /// Any future refinement lands here and is picked up by every call site
 /// automatically.
+/// Returns `true` iff at least one template in `module` declares at least one
+/// auto-param value cell (`ValueCellKind::Auto { .. }`).
+///
+/// Used by `resolve_solver_for_module` to suppress the "named back-end not
+/// registered, falling back to default solver" warning on modules that would
+/// never invoke the solver anyway: such modules see `build_solver_problem`
+/// return `None` for every template and the warning would refer to a fallback
+/// that never happens. This keeps `#solver(<name>)` usable as a forward-
+/// compatible declaration on auto-param-free modules without surfacing noise.
+fn module_has_auto_cells(module: &CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .any(|t| t.value_cells.iter().any(|c| c.kind.is_auto()))
+}
+
 pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,
@@ -136,6 +153,7 @@ impl Engine {
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),
+            solvers: HashMap::new(),
         }
     }
 
@@ -240,6 +258,110 @@ impl Engine {
     pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
         self.solver = Some(solver);
         self
+    }
+
+    /// Register a named constraint solver selectable via the `#solver(<name>)`
+    /// module pragma (Task 2300).
+    ///
+    /// Modules whose `solver_pragma.name` matches `name` route their solver
+    /// invocations to `solver` instead of the default `self.solver` set via
+    /// `with_solver`. If `name` is not the value of any module's
+    /// `#solver(<name>)`, the registered solver is never invoked.
+    ///
+    /// If a solver is already registered for `name`, it is silently overwritten
+    /// and the previous solver is dropped. Mirrors `register_optimized_impl`'s
+    /// `HashMap::insert` semantics; intentional to support hot-reload and test
+    /// fixture scenarios where callers swap impls between runs.
+    pub fn register_solver(
+        &mut self,
+        name: impl Into<String>,
+        solver: Box<dyn ConstraintSolver>,
+    ) {
+        self.solvers.insert(name.into(), solver);
+    }
+
+    /// Remove a previously registered named solver. Returns `true` if a solver
+    /// was registered (and has now been dropped), `false` otherwise. Mirrors
+    /// `unregister_optimized_impl`.
+    pub fn unregister_solver(&mut self, name: &str) -> bool {
+        self.solvers.remove(name).is_some()
+    }
+
+    /// Iterate over the names that currently have a registered solver, in
+    /// unspecified order. Primarily intended for diagnostics and test
+    /// assertions ("was this back-end registered?"). Mirrors
+    /// `optimized_targets`.
+    pub fn registered_solvers(&self) -> impl Iterator<Item = &str> {
+        self.solvers.keys().map(String::as_str)
+    }
+
+    /// Look up the constraint solver to use for `module` (Task 2300).
+    ///
+    /// Resolution policy:
+    /// - `module.solver_pragma == None`: return `self.solver.as_deref()`.
+    /// - `module.solver_pragma == Some({ name, .. })` and `name` is in
+    ///   `self.solvers`: return the named solver.
+    /// - `module.solver_pragma == Some({ name, .. })` and `name` is NOT in
+    ///   `self.solvers`: return `self.solver.as_deref()` (default fallback;
+    ///   may itself be `None` if `with_solver` was never called).
+    ///
+    /// This helper is the lookup-only counterpart of
+    /// [`Engine::resolve_solver_for_module`]: it does NOT emit the
+    /// "not registered" warning. It is intended for the inner solver-invocation
+    /// expression where the `&self` borrow only needs to live for one
+    /// statement (the `.solve(&problem)` call). The warning is emitted by
+    /// `resolve_solver_for_module` once per resolution call, before the
+    /// template loop.
+    pub(crate) fn lookup_solver_for_module(
+        &self,
+        module: &CompiledModule,
+    ) -> Option<&dyn ConstraintSolver> {
+        match module.solver_pragma.as_ref() {
+            None => self.solver.as_deref(),
+            Some(p) => self
+                .solvers
+                .get(&p.name)
+                .map(|b| b.as_ref() as &dyn ConstraintSolver)
+                .or(self.solver.as_deref()),
+        }
+    }
+
+    /// Resolve the constraint solver to use for `module`, emitting the
+    /// "named back-end not registered" warning at most once (Task 2300).
+    ///
+    /// Called once per `eval()` / `eval_cached()` invocation before the
+    /// template loop so the warning is emitted at most once even when the
+    /// module contains many auto-param templates that would otherwise iterate
+    /// the solver in lock-step. The returned `Option<&dyn ConstraintSolver>`
+    /// can be used directly, but callers iterating over templates that mutate
+    /// `&mut self` between solver calls should use
+    /// [`Engine::lookup_solver_for_module`] inside the inner loop and rely on
+    /// this method only for the one-shot warning + overall availability check.
+    ///
+    /// The warning is suppressed when the module has zero auto-param cells
+    /// across all templates: such a module never invokes the solver, so a
+    /// "falling back" warning would be misleading (no solver was ever
+    /// consulted). This lets users write `#solver(libslvs)` purely as a
+    /// forward-compatible declaration on a module without any auto params
+    /// without surfacing a noisy diagnostic.
+    ///
+    /// Mirrors the design decision: "Encapsulate the eval/eval_cached solver
+    /// lookup in a single helper".
+    pub(crate) fn resolve_solver_for_module(
+        &self,
+        module: &CompiledModule,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<&dyn ConstraintSolver> {
+        if let Some(p) = module.solver_pragma.as_ref()
+            && !self.solvers.contains_key(&p.name)
+            && module_has_auto_cells(module)
+        {
+            diagnostics.push(Diagnostic::warning(format!(
+                "#solver: named back-end '{}' is not registered; falling back to default solver",
+                p.name
+            )));
+        }
+        self.lookup_solver_for_module(module)
     }
 
     /// Access the cache store (for testing/inspection).
@@ -426,6 +548,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::ParamOverrideRejection;
+    use crate::Engine;
 
     // Pin that `ParamOverrideRejection` fits within 32 bytes.
     // See `ParamOverrideRejection::ScalarDimensionMismatch` doc for rationale.
@@ -436,6 +559,45 @@ mod tests {
             "ParamOverrideRejection is {} bytes; expected <= 32. \
              Box the DimensionVector fields in ScalarDimensionMismatch.",
             std::mem::size_of::<ParamOverrideRejection>()
+        );
+    }
+
+    /// `register_solver` stores a named solver in the registry; `unregister_solver`
+    /// returns `true` when a matching name was registered (and removes it) and
+    /// `false` otherwise. `registered_solvers()` iterates over the currently
+    /// registered names. Mirrors the optimized-impl registry contract
+    /// (`register_optimized_impl` / `unregister_optimized_impl` /
+    /// `optimized_targets`) for the named-solver dispatch added by Task 2300.
+    #[test]
+    fn register_solver_stores_named_solver_and_unregister_returns_true_when_present() {
+        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
+        use std::collections::HashMap;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_solver(
+            "libslvs",
+            Box::new(SpyConstraintSolver::new_solved(HashMap::new())),
+        );
+        assert!(
+            engine.registered_solvers().any(|n| n == "libslvs"),
+            "expected 'libslvs' in registered_solvers(), got {:?}",
+            engine.registered_solvers().collect::<Vec<_>>()
+        );
+
+        // Unregister returns true and the name is no longer registered.
+        assert!(
+            engine.unregister_solver("libslvs"),
+            "expected unregister_solver('libslvs') to return true"
+        );
+        assert_eq!(
+            engine.registered_solvers().count(),
+            0,
+            "expected registered_solvers() to be empty after unregister"
+        );
+
+        // Unregister of a missing name returns false.
+        assert!(
+            !engine.unregister_solver("missing"),
+            "expected unregister_solver('missing') to return false"
         );
     }
 }

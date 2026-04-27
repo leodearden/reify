@@ -359,6 +359,13 @@ pub struct Engine {
     /// whose `optimized_target` matches a registered key is routed to that
     /// impl instead of the language-level `constraint_checker` (Task 273).
     optimization_registry: HashMap<String, Box<dyn OptimizedImpl>>,
+    /// Registry of named constraint solvers selectable via the `#solver(<name>)`
+    /// module pragma (Task 2300). Populated at runtime startup via
+    /// `register_solver`; the default fallback solver remains `self.solver`
+    /// (set via `with_solver`). At solve time, `Engine::resolve_solver_for_module`
+    /// looks up `module.solver_pragma.name` here; on miss it falls back to
+    /// `self.solver` and emits a "named solver not registered" warning.
+    solvers: HashMap<String, Box<dyn ConstraintSolver>>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

@@ -1480,3 +1480,377 @@ fn version_pragma_malformed_args_emit_warning_and_leave_declared_version_none() 
         );
     }
 }
+
+// ── Task 2300: #solver pragma — solver_pragma plumbing ───────────────────────
+
+/// Without any `#solver` pragma, `module.solver_pragma` is `None`.
+#[test]
+fn solver_pragma_absent_keeps_solver_pragma_none() {
+    let module = compile_source("structure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "expected solver_pragma None when no #solver pragma, got {:?}",
+        module.solver_pragma
+    );
+}
+
+/// `#solver(libslvs)` (single bare ident arg) sets
+/// `solver_pragma = Some(SolverPragma { name: "libslvs", options: empty })`,
+/// emits no errors, and emits no warnings about expected/ignored/unknown forms.
+#[test]
+fn solver_pragma_with_bare_ident_sets_name_and_empty_options() {
+    let module = compile_source("#solver(libslvs)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for #solver(libslvs)");
+    assert_eq!(
+        solver_pragma.name, "libslvs",
+        "expected solver_pragma.name == \"libslvs\""
+    );
+    assert!(
+        solver_pragma.options.is_empty(),
+        "expected solver_pragma.options to be empty, got: {:?}",
+        solver_pragma.options
+    );
+
+    // No malformed-shape, deferred-to-v0.2, or unknown-back-end warnings about #solver.
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("#solver")
+                && (m.contains("expected") || m.contains("ignored") || m.contains("unknown"))
+        })
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no #solver expected/ignored/unknown warnings for #solver(libslvs), got: {:?}",
+        bad_warns
+    );
+}
+
+/// `#solver(argmin, threads=4, mode="fast", strict=true)` populates the typed
+/// options map with three entries. Iteration order is alphabetical (BTreeMap):
+/// mode → "fast", strict → true, threads → 4.
+#[test]
+fn solver_pragma_with_keyvalue_args_populates_options() {
+    let module = compile_source(
+        r#"#solver(argmin, threads=4, mode="fast", strict=true)
+structure S { param x : Real }"#,
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for #solver(argmin, ...)");
+    assert_eq!(solver_pragma.name, "argmin");
+
+    // BTreeMap iteration is alphabetical: mode, strict, threads.
+    let pairs: Vec<(&String, &reify_syntax::PragmaValue)> = solver_pragma.options.iter().collect();
+    assert_eq!(
+        pairs.len(),
+        3,
+        "expected 3 option entries, got {}: {:?}",
+        pairs.len(),
+        solver_pragma.options
+    );
+    assert_eq!(pairs[0].0, "mode");
+    assert_eq!(
+        pairs[0].1,
+        &reify_syntax::PragmaValue::String("fast".to_string())
+    );
+    assert_eq!(pairs[1].0, "strict");
+    assert_eq!(pairs[1].1, &reify_syntax::PragmaValue::Bool(true));
+    assert_eq!(pairs[2].0, "threads");
+    assert_eq!(pairs[2].1, &reify_syntax::PragmaValue::Number(4.0));
+}
+
+/// Malformed `#solver` arg shapes leave `solver_pragma` as `None`, produce
+/// zero errors, and emit exactly one warning whose message contains both
+/// "#solver" and "expected" + "ident" (the form hint mentions a back-end
+/// name identifier). Mirrors the analogous version-pragma malformed-args
+/// coverage above.
+#[test]
+fn solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none() {
+    let cases: &[(&str, &str)] = &[
+        // (source, label-for-failure-message)
+        ("#solver\nstructure S { param x : Real }", "no-args"),
+        ("#solver(42)\nstructure S { param x : Real }", "bare-number"),
+        ("#solver(true)\nstructure S { param x : Real }", "bare-bool"),
+        (
+            "#solver(\"libslvs\")\nstructure S { param x : Real }",
+            "bare-string",
+        ),
+        (
+            "#solver(0.001m)\nstructure S { param x : Real }",
+            "bare-quantity",
+        ),
+        (
+            "#solver(method=\"gradient\")\nstructure S { param x : Real }",
+            "key-value-first",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        assert!(
+            errors_only(&module).is_empty(),
+            "[{label}] unexpected errors for malformed #solver: {:?}",
+            errors_only(&module)
+        );
+        assert!(
+            module.solver_pragma.is_none(),
+            "[{label}] expected solver_pragma None for malformed #solver, got {:?}",
+            module.solver_pragma
+        );
+
+        // Exactly one warning whose message contains "#solver" + "expected" +
+        // "ident" (the form hint refers to the back-end identifier).
+        let warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("#solver")
+                    && d.message.contains("expected")
+                    && d.message.contains("ident")
+            })
+            .collect();
+        assert_eq!(
+            warns.len(),
+            1,
+            "[{label}] expected exactly 1 malformed-#solver warning mentioning \
+             '#solver' + 'expected' + 'ident', got {}: {:?}",
+            warns.len(),
+            warnings_only(&module)
+        );
+    }
+}
+
+/// Multiple module-level `#solver` pragmas: first wins, the second emits
+/// exactly one warning indicating it is ignored. Mirrors
+/// `multiple_module_level_precision_pragmas_first_wins`.
+#[test]
+fn multiple_module_level_solver_pragmas_first_wins() {
+    let module = compile_source(
+        "#solver(libslvs)\n#solver(argmin)\nstructure S { param x : Real }",
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for first-wins");
+    assert_eq!(
+        solver_pragma.name, "libslvs",
+        "expected solver_pragma.name == \"libslvs\" (first wins)"
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("ignored") || m.contains("first wins") || m.contains("subsequent")
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning for subsequent #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Helper: filter warnings that match the block-level `#solver` "deferred to
+/// v0.2" shape — message contains "ignored in v0.1" AND ("v0.2" OR
+/// "per-block").
+fn deferred_v02_solver_warnings<'a>(
+    module: &'a reify_compiler::CompiledModule,
+) -> Vec<&'a reify_types::Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("#solver")
+                && d.message.contains("ignored in v0.1")
+                && (d.message.contains("v0.2") || d.message.contains("per-block"))
+        })
+        .collect()
+}
+
+/// Block-level `#solver` on a structure emits exactly one "ignored in v0.1;
+/// per-block solver tuning deferred to v0.2" warning, leaves `solver_pragma`
+/// unset, and produces no errors.
+#[test]
+fn block_level_solver_pragma_on_structure_emits_deferred_warning() {
+    let module = compile_source(r#"structure S { #solver(libslvs) param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "block-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for structure-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for trait-level `#solver`.
+#[test]
+fn block_level_solver_pragma_on_trait_emits_deferred_warning() {
+    let module = compile_source(r#"trait T { #solver(libslvs) param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "trait-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for trait-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for purpose-level `#solver`.
+#[test]
+fn block_level_solver_pragma_on_purpose_emits_deferred_warning() {
+    let source = r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #solver(libslvs)
+            constraint 1 > 0
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "purpose-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for purpose-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#solver(turbocharger)` (a back-end name not in the v0.1 known list)
+/// emits exactly one warning mentioning the user-supplied name + "v0.1"
+/// (or "libslvs"/"argmin"/"supports"). Storage on `solver_pragma` mirrors
+/// `#version`'s storage-reflects-declared policy: the user-declared name is
+/// kept verbatim so downstream tooling and the runtime registry can resolve
+/// it. The warning must NOT be the generic "unknown pragma" warning (that's
+/// reserved for unknown pragma NAMES, e.g. `#turbo`, not unknown args).
+#[test]
+fn solver_pragma_unknown_backend_warns_but_stores_name() {
+    let module = compile_source("#solver(turbocharger)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for #solver(turbocharger) (storage = declared)");
+    assert_eq!(solver_pragma.name, "turbocharger");
+    assert!(solver_pragma.options.is_empty());
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("turbocharger")
+                && (d.message.contains("v0.1")
+                    || d.message.contains("libslvs")
+                    || d.message.contains("argmin")
+                    || d.message.contains("supports"))
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 unknown-back-end warning for #solver(turbocharger), got {}: {:?}",
+        warns.len(),
+        warnings_only(&module)
+    );
+
+    // Pin: this is NOT the generic "unknown pragma" warning.
+    assert!(
+        pragma_warnings(&module, "unknown pragma").is_empty(),
+        "expected no 'unknown pragma' warning for #solver(turbocharger), got: {:?}",
+        pragma_warnings(&module, "unknown pragma")
+    );
+}
+
+/// Same deferred-warning behaviour for `constraint def`-level `#solver`.
+#[test]
+fn block_level_solver_pragma_on_constraint_def_emits_deferred_warning() {
+    let source = r#"
+        constraint def C { #solver(libslvs) param x : Real }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "constraint-def-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for constraint-def-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}

@@ -1195,8 +1195,20 @@ impl Engine {
         }
 
         // Resolution phase: resolve auto params using the constraint solver.
+        //
+        // `resolve_solver_for_module` consults `module.solver_pragma` against the
+        // named-solver registry (`Engine::register_solver`, Task 2300) and falls
+        // back to `self.solver` if the named back-end isn't registered. It is
+        // called once before the template loop so the "not registered" warning
+        // is emitted at most once per eval call. The inner loop re-looks-up the
+        // active solver via `lookup_solver_for_module` (no warning, single
+        // expression) so the &self borrow doesn't extend across the &mut self
+        // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
-        if self.solver.is_some() {
+        let has_active_solver = self
+            .resolve_solver_for_module(module, &mut diagnostics)
+            .is_some();
+        if has_active_solver {
             // Refresh template-native objectives so edit_param() can access them.
             self.objectives.clear();
             for template in &module.templates {
@@ -1215,10 +1227,26 @@ impl Engine {
                 };
 
                 let parent_snap_id = snapshot.id;
-                // Use a temporary borrow of the solver so the reference
-                // doesn't outlive the solve() call — this allows &mut self
-                // for evaluate_let_bindings below.
-                let solve_result = self.solver.as_ref().unwrap().solve(&problem);
+                // Use a temporary borrow of the resolved solver so the
+                // reference doesn't outlive the solve() call — this allows
+                // &mut self for evaluate_let_bindings and snapshot ID bumps
+                // below. `lookup_solver_for_module` re-runs the named-vs-default
+                // routing without re-emitting the warning.
+                //
+                // Cost: per-iteration this is one `solver_pragma.as_ref()` match
+                // plus at most one `HashMap::get` plus an `or(self.solver.as_deref())`
+                // — negligible relative to the `.solve(&problem)` call that follows.
+                // Hoisting the resolved name outside the loop would require either
+                // (a) a slimmer inner helper taking `Option<&str>`, or
+                // (b) duplicating the routing logic at the call site, both of
+                // which trade a minor speedup for an extra surface that must
+                // stay in lock-step with `lookup_solver_for_module`. Given typical
+                // template counts (single-digit per module), the current shape is
+                // the better trade. (Task 2300 reviewer comment.)
+                let solve_result = self
+                    .lookup_solver_for_module(module)
+                    .expect("has_active_solver is true => solver lookup returns Some")
+                    .solve(&problem);
 
                 match solve_result {
                     SolveResult::Solved {
@@ -1433,6 +1461,19 @@ impl Engine {
         // This ensures MetaAccess expressions resolve correctly even when
         // eval_cached is called without a prior eval().
         self.meta_map = build_meta_map(module);
+
+        // Resolve the active solver once per call so the named-vs-default
+        // routing (Task 2300) is identical to eval(): `resolve_solver_for_module`
+        // consults `module.solver_pragma` against the named-solver registry
+        // (`Engine::register_solver`) and emits the "not registered" warning at
+        // most once per eval_cached call (rather than once per template).
+        // Inside the template loop, `lookup_solver_for_module` re-runs the
+        // unwarned lookup so the &self borrow only spans the `.solve(&problem)`
+        // expression and doesn't conflict with `&mut self` mutations elsewhere
+        // in the loop body (e.g. `self.last_sub_component_unknown_structure_errors`).
+        let has_active_solver = self
+            .resolve_solver_for_module(module, &mut diagnostics)
+            .is_some();
 
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
@@ -1829,7 +1870,14 @@ impl Engine {
             // value/snapshot updates in eval_cached are a separate gap (see design decision:
             // "Solver Solved arm in eval_cached is intentionally empty"). Only the
             // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
-            if let Some(solver) = &self.solver {
+            //
+            // `has_active_solver` was computed once before the template loop via
+            // `resolve_solver_for_module` so the "not registered" warning is emitted
+            // at most once. Inside the loop we re-run `lookup_solver_for_module`
+            // (no warning, single expression) to obtain the solver reference for
+            // the `.solve(&problem)` call without holding the &self borrow across
+            // the surrounding &mut self mutations.
+            if has_active_solver {
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` centralises construction so both eval() and
                 // eval_cached() build identical inputs to the solver (pinned by the
@@ -1840,7 +1888,16 @@ impl Engine {
                 if let Some(problem) =
                     build_solver_problem(template, &values, Arc::clone(&self.functions))
                 {
-                    let solve_result = solver.solve(&problem);
+                    // Per-iteration cost of `lookup_solver_for_module`: one
+                    // `solver_pragma.as_ref()` match plus at most one
+                    // `HashMap::get`, negligible vs. `.solve(&problem)`. See
+                    // the matching note at the eval() site (~line 1235) for
+                    // why this is preferred over hoisting the name outside
+                    // the loop. (Task 2300 reviewer comment.)
+                    let solve_result = self
+                        .lookup_solver_for_module(module)
+                        .expect("has_active_solver is true => solver lookup returns Some")
+                        .solve(&problem);
 
                     match solve_result {
                         SolveResult::Solved { .. } => {
