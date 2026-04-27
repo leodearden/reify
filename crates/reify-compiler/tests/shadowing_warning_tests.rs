@@ -634,3 +634,137 @@ trait T {
         l0.span
     );
 }
+
+/// A nested lambda inside a field's analytical-source expression shadows the
+/// outer (domain-binding) lambda. Source:
+///
+/// ```text
+/// field def temp : Point3 -> Scalar {
+///     source = analytical { |p| (|p| p + 1.0)(p) }
+/// }
+/// ```
+///
+/// The OUTER `|p|` is the field's domain binder; the INNER `|p|` shadows
+/// it. The shadow is detected naturally by `walk_expr`'s Lambda handling
+/// (the outer Lambda pushes a frame `{p}`; the inner Lambda's `p` lookup in
+/// that frame finds it). Exactly ONE Shadowing warning is expected.
+#[test]
+fn field_analytical_lambda_inner_lambda_shadows_outer_param() {
+    let source = r#"
+field def temp : Point3 -> Scalar {
+    source = analytical { |p| (|p| p + 1.0)(p) }
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (inner |p| vs outer field-domain |p|), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'p'"),
+        "expected the warning to be about `p`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+}
+
+/// A lambda inside a purpose body shadows the purpose's param.
+///
+/// The plan's example used `constraint (|subject| true)(subject)`, but the
+/// parser rejects a function-call-of-lambda expression in the constraint
+/// position with "invalid constraint". The shadow-lint contract is identical
+/// regardless of which member-decl variant carries the lambda — `walk_members`
+/// routes every embedded expression to `walk_expr` — so we exercise it with a
+/// `let`-bound lambda, which the parser accepts.
+///
+/// Source:
+///
+/// ```text
+/// purpose mfg(subject : Structure) {
+///     let f = |subject| subject
+///     constraint subject.mass > 0
+/// }
+/// ```
+///
+/// The lambda's `subject` shadows the purpose param `subject`. Exactly ONE
+/// Shadowing warning is expected; the original-decl span lies on the
+/// purpose param `subject`.
+#[test]
+fn purpose_constraint_lambda_shadows_purpose_param() {
+    let source = r#"
+purpose mfg(subject : Structure) {
+    let f = |subject| subject
+    constraint subject.mass > 0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda |subject| vs purpose param subject), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'subject'"),
+        "expected the warning to be about `subject`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    // The purpose param `subject` appears in the signature `(subject :
+    // Structure)`. The lambda's `|subject|` appears inside the let-binding.
+    // Verify the original-decl span sits before the lambda.
+    let purpose_param = source
+        .find("(subject :")
+        .expect("source must contain `(subject :`");
+    let lambda_subject = source
+        .find("|subject|")
+        .expect("source must contain `|subject|`");
+
+    let l0 = &warning.labels[0]; // child site
+    let l1 = &warning.labels[1]; // original-decl site
+    assert!(
+        (l1.span.start as usize) >= purpose_param
+            && (l1.span.start as usize) < lambda_subject,
+        "original-decl span must point at the purpose param `subject` \
+         (between byte {} and {}), got {:?}",
+        purpose_param,
+        lambda_subject,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= lambda_subject,
+        "child-site span must point at the lambda's `|subject|` (>= byte {}), \
+         got {:?}",
+        lambda_subject,
+        l0.span
+    );
+}
