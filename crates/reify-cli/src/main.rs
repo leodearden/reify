@@ -289,6 +289,56 @@ fn minimal_doc_model_from_compiled(
     }
 }
 
+/// Escape the five HTML-significant characters (`&`, `<`, `>`, `"`, `'`) so
+/// that arbitrary text — including the markdown body we wrap inside `<pre>` —
+/// cannot break out of the HTML structure.
+fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Render a self-contained HTML page wrapping the markdown body inside a
+/// `<pre>` block.
+///
+/// This is a deliberate placeholder so the spec-mandated `--format html`
+/// default has *some* HTML-shaped output end-to-end without preempting the
+/// real formatter.
+///
+/// TODO(post-2361): replace with `reify_doc::fmt_html::render_html` when
+/// task 2359 lands the dedicated HTML formatter (`fmt_html.rs`).
+fn render_html_stub(model: &reify_doc::model::DocModel) -> String {
+    let md_body = match reify_doc::fmt_markdown::render_markdown(
+        model,
+        None,
+        &reify_doc::fmt_markdown::MarkdownOptions::default(),
+    ) {
+        reify_doc::fmt_markdown::MarkdownOutput::Single(s) => s,
+        // Single-mode dispatch always returns Single; guard against future
+        // refactors so we still produce a valid HTML page.
+        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => String::new(),
+    };
+    let path = model
+        .modules
+        .first()
+        .map(|m| m.path.as_str())
+        .unwrap_or("");
+    let escaped_path = escape_html(path);
+    let escaped_body = escape_html(&md_body);
+    format!(
+        "<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>{escaped_path}</title></head>\n<body>\n<pre>\n{escaped_body}\n</pre>\n</body>\n</html>\n"
+    )
+}
+
 fn cmd_doc(args: &[String]) -> ExitCode {
     if args.is_empty() {
         eprintln!("{}", DOC_USAGE);
@@ -411,7 +461,9 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
     }
 
-    // TODO(post-2361): html branch added in later steps.
+    // Default + explicit `--format html`: emit the in-CLI HTML stub.
+    let body = render_html_stub(&model);
+    print!("{body}");
     ExitCode::SUCCESS
 }
 
