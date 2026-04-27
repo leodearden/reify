@@ -7,11 +7,9 @@
 //! File-stem `io_traits` matches the `cargo test -p reify-compiler -- io_traits`
 //! filter used in the task testStrategy.
 //!
-//! Coverage notes: "no error diagnostics" for std/io is covered for every
-//! stdlib module by `stdlib_loader_tests.rs::all_stdlib_modules_have_no_errors`
-//! — this file does not duplicate that check. Module presence is implicitly
-//! exercised by the `io_module()` helper's `expect(...)` panic in every test
-//! below — so no explicit module-load test is needed in this file.
+//! Coverage: "no error diagnostics" is centrally checked by
+//! `stdlib_loader_tests.rs::all_stdlib_modules_have_no_errors`; module
+//! presence is implicitly exercised by the `io_module()` `expect(...)` panic.
 
 use reify_compiler::{RequirementKind, stdlib_loader};
 use reify_types::{DimensionVector, Type};
@@ -73,12 +71,8 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Input : Source — source: String, provenance: StructureRef("Provenance")
     let refinements = &find_trait("Input").refinements;
-    assert_eq!(refinements.len(), 1, "Input should refine exactly 1 trait, got: {:?}", refinements);
-    assert!(
-        refinements.contains(&"Source".to_string()),
-        "Input should refine Source, got: {:?}",
-        refinements
-    );
+    assert_eq!(refinements.as_slice(), ["Source".to_string()].as_slice(),
+        "Input should refine exactly [Source], got: {:?}", refinements);
     assert_eq!(param_type("Input", "source"), Type::String);
     assert_eq!(
         param_type("Input", "provenance"),
@@ -87,12 +81,8 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Buy : Source — supplier, part_number: String; unit_cost: Money; lead_time: Time
     let refinements = &find_trait("Buy").refinements;
-    assert_eq!(refinements.len(), 1, "Buy should refine exactly 1 trait, got: {:?}", refinements);
-    assert!(
-        refinements.contains(&"Source".to_string()),
-        "Buy should refine Source, got: {:?}",
-        refinements
-    );
+    assert_eq!(refinements.as_slice(), ["Source".to_string()].as_slice(),
+        "Buy should refine exactly [Source], got: {:?}", refinements);
     assert_eq!(param_type("Buy", "supplier"), Type::String);
     assert_eq!(param_type("Buy", "part_number"), Type::String);
     // Critical: Buy.unit_cost must have Money dimension.
@@ -109,12 +99,8 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Output : Sink — format: Enum("OutputFormat")
     let refinements = &find_trait("Output").refinements;
-    assert_eq!(refinements.len(), 1, "Output should refine exactly 1 trait, got: {:?}", refinements);
-    assert!(
-        refinements.contains(&"Sink".to_string()),
-        "Output should refine Sink, got: {:?}",
-        refinements
-    );
+    assert_eq!(refinements.as_slice(), ["Sink".to_string()].as_slice(),
+        "Output should refine exactly [Sink], got: {:?}", refinements);
     assert_eq!(
         param_type("Output", "format"),
         Type::Enum("OutputFormat".into())
@@ -122,12 +108,8 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Discard : Sink — reason: Enum("DiscardReason"), disposal_method: Enum("DisposalMethod")
     let refinements = &find_trait("Discard").refinements;
-    assert_eq!(refinements.len(), 1, "Discard should refine exactly 1 trait, got: {:?}", refinements);
-    assert!(
-        refinements.contains(&"Sink".to_string()),
-        "Discard should refine Sink, got: {:?}",
-        refinements
-    );
+    assert_eq!(refinements.as_slice(), ["Sink".to_string()].as_slice(),
+        "Discard should refine exactly [Sink], got: {:?}", refinements);
     assert_eq!(
         param_type("Discard", "reason"),
         Type::Enum("DiscardReason".into())
