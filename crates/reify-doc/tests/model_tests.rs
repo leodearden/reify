@@ -73,7 +73,10 @@ fn build_fixture() -> DocModel {
                     name: "Bolt".into(),
                     doc: Some("A standard fastening bolt conforming to Physical.".into()),
                     is_pub: true,
-                    annotations: vec![],
+                    annotations: vec![AnnotationDoc {
+                        name: "test".into(),
+                        args: vec![],
+                    }],
                     pragmas: vec![],
                     params: vec![],
                     ports: vec![],
@@ -100,7 +103,10 @@ fn build_fixture() -> DocModel {
                     name: "safety_factor".into(),
                     doc: Some("Safety factor for real-valued loads.".into()),
                     is_pub: true,
-                    annotations: vec![],
+                    annotations: vec![AnnotationDoc {
+                        name: "deprecated".into(),
+                        args: vec!["\"superseded by safety_margin\"".into()],
+                    }],
                     pragmas: vec![],
                     signature: "fn safety_factor(load: Real) -> Real".into(),
                 },
