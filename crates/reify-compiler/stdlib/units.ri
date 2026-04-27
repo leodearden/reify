@@ -63,3 +63,11 @@ pub unit ksi  : Pressure = 6894757.293168361
 
 pub unit fl_oz : Volume = 0.0000295735295625
 pub unit gal   : Volume = 0.003785411784
+
+// ── Money (no SI base) ──────────────────────────────────────────────────────
+// USD is the project-default monetary unit (factor = 1.0, no offset).
+// User-defined currencies like `unit GBP : Money = 1.25USD` belong in user
+// code, not stdlib — exchange rates are project-scoped and out of scope for
+// the standard library. See docs/reify-language-spec.md §4.6.
+
+pub unit USD : Money
