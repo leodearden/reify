@@ -52,7 +52,18 @@ const FIXTURE_SOURCE: &str = "structure def Bolt { constraint length >= diameter
 /// TODO(build_doc_model): Replace with `reify_doc::build_doc_model(&compiled_module)`
 /// once the lowering pass is available.
 fn build_fixture() -> DocModel {
-    DocModel::default()
+    DocModel {
+        modules: vec![ModuleDoc {
+            path: "test_fixture".into(),
+            doc: Some(
+                "Minimal fixture pinning the build_doc_model output-shape contract.".into(),
+            ),
+            items: vec![],
+            annotations: vec![],
+            pragmas: vec![],
+            cross_refs: ModuleCrossRefs::default(),
+        }],
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
