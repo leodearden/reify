@@ -468,4 +468,51 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         walk_expr(&expr, &mut diagnostics);
     }
+
+    /// Representative *second-variant* depth-guard test: where
+    /// `walk_expr_depth_exceeding_max_depth_panics_in_debug_builds` (above)
+    /// exercises the `UnOp` single-child recursion arm, this test exercises the
+    /// `BinOp` two-child recursion arm.
+    ///
+    /// The depth guard (`if depth > MAX_EXPR_DEPTH { debug_assert!(...); return; }`)
+    /// sits at the top of `walk_expr_depth` and protects EVERY structural-recursion
+    /// arm: BinOp, Conditional, FunctionCall.args, Match, Lambda, list/map/set
+    /// literals, IndexAccess, Quantifier, AdHocSelector, QualifiedAccess,
+    /// InstanceQualifiedAccess, and Range. Adding a new recursion arm without
+    /// forwarding `next = depth + 1` to its child walk is the bug class BOTH the
+    /// UnOp test and this BinOp test guard against.
+    ///
+    /// Depth arithmetic (same as the UnOp test): the outermost BinOp wrapper is
+    /// visited at depth 0, the innermost at depth MAX_EXPR_DEPTH (= 256, not yet
+    /// tripped), and the leaf NumberLiteral at the bottom of the `left` chain is
+    /// called at depth MAX_EXPR_DEPTH + 1 (= 257), which satisfies
+    /// `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "MAX_EXPR_DEPTH")]
+    fn walk_expr_depth_exceeding_max_depth_panics_via_binop_recursion() {
+        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of BinOp.
+        // The deep recursion path runs through the `left` operand; `right` is a
+        // fresh shallow leaf at each layer and never trips the guard.
+        let span = SourceSpan::empty(0);
+        let mut expr = Expr {
+            kind: ExprKind::NumberLiteral(0.0),
+            span,
+        };
+        for _ in 0..(MAX_EXPR_DEPTH + 1) {
+            expr = Expr {
+                kind: ExprKind::BinOp {
+                    op: "+".to_string(),
+                    left: Box::new(expr),
+                    right: Box::new(Expr {
+                        kind: ExprKind::NumberLiteral(1.0),
+                        span,
+                    }),
+                },
+                span,
+            };
+        }
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        walk_expr(&expr, &mut diagnostics);
+    }
 }
