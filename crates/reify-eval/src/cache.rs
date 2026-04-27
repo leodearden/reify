@@ -2032,4 +2032,41 @@ mod tests {
             "NodeCache::clone must drop warm_state (transient hint, not preserved)"
         );
     }
+
+    // --- CacheStore::freshness() tests (task #2326, step-3) ---
+
+    #[test]
+    fn cache_store_freshness_reader_defaults_final_for_missing_and_returns_cached_for_present() {
+        use reify_types::{Freshness, VersionId};
+
+        // (a) Absent node → freshness() must return Freshness::Final (via Default).
+        let store = CacheStore::new();
+        let missing = NodeId::Value(ValueCellId::new("T", "missing"));
+        assert_eq!(
+            store.freshness(&missing),
+            Freshness::Final,
+            "freshness() on absent node must return Freshness::Final (the type-level default)"
+        );
+
+        // (b) Present node with Intermediate freshness → freshness() returns the cached value.
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "present"));
+        store.put(
+            node.clone(),
+            NodeCache::new(
+                CachedResult::Value(
+                    reify_types::Value::Int(1),
+                    reify_types::DeterminacyState::Determined,
+                ),
+                Freshness::Intermediate { generation: 7 },
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 7 },
+            "freshness() must return the stored Freshness variant for a present node"
+        );
+    }
 }
