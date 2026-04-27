@@ -30,8 +30,12 @@
 //! - `combine_union` / `combine_difference` / `combine_intersection` /
 //!   `combine_transform` / `combine_modify` / `combine_pattern` /
 //!   `combine_sweep` — pure pairwise/unary propagation rules.
+//! - [`try_infer_traits_for_function_call`] — returns `Some(InferredTraits)`
+//!   for every explicitly-dispatched function name, or `None` for the
+//!   unknown-name fallback. Consumed by the coverage test in
+//!   `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
 //! - [`infer_traits_for_expr`] — walks a `CompiledExpr` tree by FunctionCall
-//!   name. This is the **only** consumer-facing entry point: the conformance
+//!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
 //!
 //! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later)
@@ -352,26 +356,47 @@ pub fn infer_traits_for_expr(expr: &CompiledExpr) -> InferredTraits {
     }
 }
 
-/// Dispatch on the function-call name. Each arm either looks up a
-/// primitive's trait set directly or recurses on the geometry-typed
-/// arguments and folds the matching `combine_*` rule.
-fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> InferredTraits {
+/// Dispatch on the function-call name. Returns `Some(InferredTraits)` for
+/// every explicitly-dispatched name, or `None` for the unknown-name fallback.
+///
+/// Each known arm either returns a constant trait set for a primitive, or
+/// recurses on the geometry-typed arguments and folds the matching
+/// `combine_*` rule.
+///
+/// # Coverage contract
+///
+/// This function is consumed by the coverage test
+/// `every_geometry_function_name_has_explicit_dispatch_arm` in
+/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// That test iterates `crate::GEOMETRY_FUNCTION_NAMES` and asserts `Some(_)`
+/// for each name. Adding a name to `GEOMETRY_FUNCTION_NAMES` without a
+/// corresponding arm here causes the test to fail loudly.
+///
+/// # `None` arm
+///
+/// `None` is the return value of the `_ =>` arm — the single, audited place
+/// where an unknown name would fall back to Bounded. The private wrapper
+/// [`infer_traits_for_function_call`] maps `None` to `InferredTraits::all()`.
+pub fn try_infer_traits_for_function_call(
+    name: &str,
+    args: &[CompiledExpr],
+) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
-        "box" | "cylinder" | "sphere" | "tube" => InferredTraits::all(),
+        "box" | "cylinder" | "sphere" | "tube" => Some(InferredTraits::all()),
 
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {
             let (a, b) = first_two_geometry_args(args);
-            combine_union(a, b)
+            Some(combine_union(a, b))
         }
         "difference" => {
             let (a, b) = first_two_geometry_args(args);
-            combine_difference(a, b)
+            Some(combine_difference(a, b))
         }
         "intersection" => {
             let (a, b) = first_two_geometry_args(args);
-            combine_intersection(a, b)
+            Some(combine_intersection(a, b))
         }
 
         // ─── Variadic Boolean combinators → fold combine_* across args ──
@@ -379,26 +404,26 @@ fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> Inferred
         // `union_all` / `intersection_all` are recognised by
         // [`crate::units::is_geometry_function`] and routed here from the
         // conformance walker. Without explicit arms they would silently take
-        // the unknown-name `_ => all()` fallback below, which is harmless
+        // the unknown-name `_ => None` fallback below, which is harmless
         // today (every primitive is Bounded) but defeats the Bounded check
         // the moment `half_space` / `extrude_infinite` lands and is fed
         // through `union_all`. We fold the matching pairwise rule across
         // every geometry-typed argument; an empty geometry-arg list defaults
         // to `all()` (defensive — well-formed source always supplies at
         // least one argument).
-        "union_all" => fold_geometry_args(args, combine_union),
-        "intersection_all" => fold_geometry_args(args, combine_intersection),
+        "union_all" => Some(fold_geometry_args(args, combine_union)),
+        "intersection_all" => Some(fold_geometry_args(args, combine_intersection)),
 
         // ─── Transform combinators → recurse + combine_transform ────────
         "translate" | "rotate" | "scale" | "rotate_around" => {
             let t = first_geometry_arg(args);
-            combine_transform(t)
+            Some(combine_transform(t))
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
         "fillet" | "chamfer" | "shell" | "draft" | "thicken" => {
             let t = first_geometry_arg(args);
-            combine_modify(t)
+            Some(combine_modify(t))
         }
 
         // ─── Pattern combinators → recurse + combine_pattern ────────────
@@ -408,25 +433,39 @@ fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> Inferred
         | "linear_pattern_2d"
         | "arbitrary_pattern" => {
             let t = first_geometry_arg(args);
-            combine_pattern(t)
+            Some(combine_pattern(t))
         }
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
         "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep"
         | "sweep_guided" | "loft" | "loft_guided" | "pipe" => {
             let t = first_geometry_arg(args);
-            combine_sweep(t)
+            Some(combine_sweep(t))
         }
 
         // ─── Curve constructors → all() (1-D primitives) ────────────────
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
-            InferredTraits::all()
+            Some(InferredTraits::all())
         }
 
-        // Unknown function name → default-Bounded. See the doc-comment on
-        // `infer_traits_for_expr` for the rationale.
-        _ => InferredTraits::all(),
+        // Unknown function name → None. The private wrapper maps this to
+        // `InferredTraits::all()` (default-Bounded). This is the single
+        // audited place where an unrecognised name falls back to Bounded —
+        // see the "Default-Bounded fallback" section in the `infer_traits_for_expr`
+        // doc-comment above.
+        _ => None,
     }
+}
+
+/// Thin private wrapper: dispatch via [`try_infer_traits_for_function_call`]
+/// and collapse `None` to `InferredTraits::all()`.
+///
+/// This is the single, audited place where unknown geometry function names
+/// fall back to fully-Bounded. The `try_*` companion returns `None` precisely
+/// for the `_ =>` arm, so the coverage test can detect the gap without any
+/// `#[cfg(test)]` branches in production code.
+fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> InferredTraits {
+    try_infer_traits_for_function_call(name, args).unwrap_or(InferredTraits::all())
 }
 
 /// Find the first geometry-typed argument and recurse, defaulting to
