@@ -1579,3 +1579,64 @@ structure S { param x : Real }"#,
     assert_eq!(pairs[2].0, "threads");
     assert_eq!(pairs[2].1, &reify_syntax::PragmaValue::Number(4.0));
 }
+
+/// Malformed `#solver` arg shapes leave `solver_pragma` as `None`, produce
+/// zero errors, and emit exactly one warning whose message contains both
+/// "#solver" and "expected" + "ident" (the form hint mentions a back-end
+/// name identifier). Mirrors the analogous version-pragma malformed-args
+/// coverage above.
+#[test]
+fn solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none() {
+    let cases: &[(&str, &str)] = &[
+        // (source, label-for-failure-message)
+        ("#solver\nstructure S { param x : Real }", "no-args"),
+        ("#solver(42)\nstructure S { param x : Real }", "bare-number"),
+        ("#solver(true)\nstructure S { param x : Real }", "bare-bool"),
+        (
+            "#solver(\"libslvs\")\nstructure S { param x : Real }",
+            "bare-string",
+        ),
+        (
+            "#solver(0.001m)\nstructure S { param x : Real }",
+            "bare-quantity",
+        ),
+        (
+            "#solver(method=\"gradient\")\nstructure S { param x : Real }",
+            "key-value-first",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        assert!(
+            errors_only(&module).is_empty(),
+            "[{label}] unexpected errors for malformed #solver: {:?}",
+            errors_only(&module)
+        );
+        assert!(
+            module.solver_pragma.is_none(),
+            "[{label}] expected solver_pragma None for malformed #solver, got {:?}",
+            module.solver_pragma
+        );
+
+        // Exactly one warning whose message contains "#solver" + "expected" +
+        // "ident" (the form hint refers to the back-end identifier).
+        let warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("#solver")
+                    && d.message.contains("expected")
+                    && d.message.contains("ident")
+            })
+            .collect();
+        assert_eq!(
+            warns.len(),
+            1,
+            "[{label}] expected exactly 1 malformed-#solver warning mentioning \
+             '#solver' + 'expected' + 'ident', got {}: {:?}",
+            warns.len(),
+            warnings_only(&module)
+        );
+    }
+}
