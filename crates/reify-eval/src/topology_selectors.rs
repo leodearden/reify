@@ -119,9 +119,7 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     max_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
-    let values = query_per_subshape(kernel, &edges, "edges_by_length", |id| {
-        GeometryQuery::EdgeLength(id)
-    })?;
+    let values = query_per_subshape(kernel, &edges, "edges_by_length", GeometryQuery::EdgeLength)?;
     let mut out = Vec::with_capacity(edges.len());
     for (id, value) in edges.iter().zip(values) {
         let len = expect_real("EdgeLength", *id, value)?;
@@ -152,9 +150,7 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
-    let values = query_per_subshape(kernel, &faces, "faces_by_area", |id| {
-        GeometryQuery::SurfaceArea(id)
-    })?;
+    let values = query_per_subshape(kernel, &faces, "faces_by_area", GeometryQuery::SurfaceArea)?;
     let mut out = Vec::with_capacity(faces.len());
     for (id, value) in faces.iter().zip(values) {
         let area = expect_real("SurfaceArea", *id, value)?;
@@ -305,9 +301,7 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         )
     })?;
     let faces = kernel.extract_faces(handle)?;
-    let values = query_per_subshape(kernel, &faces, "faces_by_normal", |id| {
-        GeometryQuery::FaceNormal(id)
-    })?;
+    let values = query_per_subshape(kernel, &faces, "faces_by_normal", GeometryQuery::FaceNormal)?;
     let mut out = Vec::with_capacity(faces.len());
     for (id, normal_value) in faces.iter().zip(values) {
         let raw = parse_xyz_value(&normal_value, "FaceNormal")?;
@@ -362,9 +356,7 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
-    let values = query_per_subshape(kernel, &edges, "edges_parallel_to", |id| {
-        GeometryQuery::EdgeTangent(id)
-    })?;
+    let values = query_per_subshape(kernel, &edges, "edges_parallel_to", GeometryQuery::EdgeTangent)?;
     let mut out = Vec::with_capacity(edges.len());
     for (id, tan_value) in edges.iter().zip(values) {
         let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
@@ -411,9 +403,7 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
     tol_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
-    let values = query_per_subshape(kernel, &edges, "edges_at_height", |id| {
-        GeometryQuery::BoundingBox(id)
-    })?;
+    let values = query_per_subshape(kernel, &edges, "edges_at_height", GeometryQuery::BoundingBox)?;
     let mut out = Vec::with_capacity(edges.len());
     for (id, bbox_value) in edges.iter().zip(values) {
         let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
@@ -890,33 +880,6 @@ mod tests {
     }
 
     #[test]
-    fn edges_by_length_detects_query_many_length_invariant_violation() {
-        // Three edges, kernel returns only two values: selector must
-        // surface `QueryError::QueryFailed` instead of silently truncating.
-        let edge_ids = vec![
-            GeometryHandleId(601),
-            GeometryHandleId(602),
-            GeometryHandleId(603),
-        ];
-        let mut kernel = FixedReplyQueryManyKernel {
-            edges: edge_ids,
-            canned_reply: vec![Value::Real(0.005), Value::Real(0.010)],
-        };
-        let err = edges_by_length(&mut kernel, GeometryHandleId(1), 0.0, 1.0)
-            .expect_err("selector must reject length-mismatched query_many output");
-        match err {
-            QueryError::QueryFailed(msg) => {
-                assert!(
-                    msg.contains("edges_by_length") && msg.contains("length invariant"),
-                    "expected length-invariant message, got {:?}",
-                    msg
-                );
-            }
-            other => panic!("expected QueryFailed, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn edges_by_length_detects_query_many_overlong_reply() {
         // Three edges, kernel returns FOUR values (len(queries)+1): selector
         // must surface `QueryError::QueryFailed` instead of silently ignoring
@@ -989,7 +952,7 @@ mod tests {
             &mut kernel,
             &edge_ids,
             "test_label",
-            |id| GeometryQuery::EdgeLength(id),
+            GeometryQuery::EdgeLength,
         )
         .expect("query_per_subshape should succeed");
 
@@ -1029,7 +992,7 @@ mod tests {
             &mut kernel,
             &edge_ids,
             "my_selector",
-            |id| GeometryQuery::EdgeLength(id),
+            GeometryQuery::EdgeLength,
         )
         .expect_err("query_per_subshape must reject length-mismatched query_many output");
 
