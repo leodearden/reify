@@ -100,6 +100,20 @@ fn build_fixture() -> DocModel {
                         ("revision".into(), "B".into()),
                     ],
                 },
+                // Occurrence — MCU (rank 2)
+                ItemDoc::Occurrence {
+                    name: "MCU".into(),
+                    doc: Some("Microcontroller occurrence.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
                 // Enum — Grade (rank 3)
                 ItemDoc::Enum {
                     name: "Grade".into(),
