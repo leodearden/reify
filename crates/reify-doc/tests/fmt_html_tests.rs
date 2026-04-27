@@ -1147,6 +1147,113 @@ fn cross_refs_used_by_renders_for_occurrence() {
     );
 }
 
+/// `@test`-annotated items must be grouped under a trailing `<h2>Tests</h2>`
+/// section, after all non-test items, with each test in its own `<section>`.
+#[test]
+fn test_annotated_items_grouped_under_tests_section() {
+    let foo = ItemDoc::Structure {
+        name: "Foo".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let bar = ItemDoc::Structure {
+        name: "Bar".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![AnnotationDoc {
+            name: "test".into(),
+            args: vec![],
+        }],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![foo, bar],
+            ..Default::default()
+        }],
+    };
+    let out = render_html(&model, None);
+
+    // Both <section>s are present.
+    let foo_pos = out
+        .find("<section id=\"Foo\">")
+        .unwrap_or_else(|| panic!("missing Foo section; got:\n{out}"));
+    let bar_pos = out
+        .find("<section id=\"Bar\">")
+        .unwrap_or_else(|| panic!("missing Bar section; got:\n{out}"));
+
+    // The `<h2>Tests</h2>` heading sits AFTER Foo's section and BEFORE Bar's.
+    let tests_h2 = out
+        .find("<h2>Tests</h2>")
+        .unwrap_or_else(|| panic!("missing <h2>Tests</h2>; got:\n{out}"));
+    assert!(
+        foo_pos < tests_h2 && tests_h2 < bar_pos,
+        "expected Foo < <h2>Tests</h2> < Bar; got foo@{foo_pos} tests@{tests_h2} bar@{bar_pos}\n{out}"
+    );
+
+    // The `@test` item must NOT appear in the TOC: only Foo should appear in
+    // any nav `<a href="#...">` entry.
+    let toc_start = out.find("<nav>").expect("nav must be present");
+    let toc_end = out[toc_start..]
+        .find("</nav>")
+        .map(|p| toc_start + p)
+        .expect("nav must close");
+    let toc_slice = &out[toc_start..toc_end];
+    assert!(
+        toc_slice.contains("<a href=\"#Foo\">"),
+        "Foo must appear in TOC; got toc:\n{toc_slice}"
+    );
+    assert!(
+        !toc_slice.contains("<a href=\"#Bar\">"),
+        "@test-annotated Bar must NOT appear in TOC; got toc:\n{toc_slice}"
+    );
+}
+
+/// When no item carries `@test`, the `<h2>Tests</h2>` heading must be absent.
+#[test]
+fn no_tests_no_tests_header() {
+    let foo = ItemDoc::Structure {
+        name: "Foo".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![foo],
+            ..Default::default()
+        }],
+    };
+    let out = render_html(&model, None);
+    assert!(
+        !out.contains("<h2>Tests</h2>"),
+        "expected no <h2>Tests</h2> when no items are @test-annotated; got:\n{out}"
+    );
+}
+
 /// `cross_refs = None` and `cross_refs = Some(&CrossRefs::default())` must
 /// both omit the Conforms-to / Used-by sections.
 #[test]
