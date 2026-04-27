@@ -267,11 +267,12 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
         // unactionable diagnostic.
         debug_assert!(
             false,
-            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {}; \
+            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
              dot-chain lint coverage truncated at this subtree — likely \
              upstream parser bug or fuzzer input producing pathologically \
              deep AST",
-            MAX_EXPR_DEPTH
+            MAX_EXPR_DEPTH,
+            depth
         );
         return;
     }
@@ -731,13 +732,50 @@ mod tests {
 
         // Returns how many levels of depth each wrap layer contributes.
         // Used to compute the minimum wrap count needed to trip MAX_EXPR_DEPTH.
+        //
+        // The match is intentionally exhaustive (no wildcard): the compiler
+        // rejects a new ArmKind variant until it is listed here, preventing
+        // the wrap-count formula from silently inheriting the wrong depth.
+        // After updating this match, also add the new variant to ALL_ARMS.
         fn depth_per_layer(arm: ArmKind) -> usize {
             match arm {
                 // Each MemberAccessLeafRoot layer contributes 2: one from the
                 // trailing `walk_expr_depth(cursor, …, next)` after the chain
                 // walk, and one from the interleaved UnOp's own recursion.
                 ArmKind::MemberAccessLeafRoot => 2,
-                _ => 1,
+                // All other arms produce exactly one depth-increment per layer.
+                ArmKind::UnOp
+                | ArmKind::BinOpLeft
+                | ArmKind::BinOpRight
+                | ArmKind::FunctionCallFirstArg
+                | ArmKind::ConditionalCondition
+                | ArmKind::ConditionalThen
+                | ArmKind::ConditionalElse
+                | ArmKind::ListLiteralFirst
+                | ArmKind::SetLiteralFirst
+                | ArmKind::MapLiteralFirstKey
+                | ArmKind::MapLiteralFirstValue
+                | ArmKind::IndexAccessObject
+                | ArmKind::IndexAccessIndex
+                | ArmKind::MatchScrutinee
+                | ArmKind::MatchFirstArmBody
+                | ArmKind::LambdaBody
+                | ArmKind::QuantifierCollection
+                | ArmKind::QuantifierPredicate
+                | ArmKind::AdHocSelectorBase
+                | ArmKind::AdHocSelectorFirstArg
+                | ArmKind::QualifiedAccessQualifier
+                | ArmKind::InstanceQualifiedAccessObject
+                | ArmKind::InstanceQualifiedAccessQualified
+                | ArmKind::RangeLower
+                | ArmKind::RangeUpper
+                | ArmKind::FunctionCallSecondArg
+                | ArmKind::ListLiteralSecond
+                | ArmKind::SetLiteralSecond
+                | ArmKind::MapLiteralSecondKey
+                | ArmKind::MapLiteralSecondValue
+                | ArmKind::AdHocSelectorSecondArg
+                | ArmKind::MatchSecondArmBody => 1,
             }
         }
 
@@ -789,6 +827,32 @@ mod tests {
                         "arm {:?} panicked but message {:?} did not mention MAX_EXPR_DEPTH",
                         arm,
                         msg
+                    );
+                    // Verify the panic fired at the expected depth boundary, not
+                    // via some unrelated pathway.  Each wrap layer contributes
+                    // `depth_per_layer(arm)` (= N) to depth; with
+                    // `MAX_EXPR_DEPTH / N + 1` wraps the first overflow call
+                    // lands at a depth in (MAX_EXPR_DEPTH, MAX_EXPR_DEPTH + N].
+                    // If `depth_per_layer` lies or the wrap shape is wrong, the
+                    // actual overflow depth would fall outside this window and
+                    // the assertion below would catch it even though the arm
+                    // 'panicked with MAX_EXPR_DEPTH' check above passed.
+                    let overflow_depth: usize = msg
+                        .split("(depth = ")
+                        .nth(1)
+                        .and_then(|s| s.split(')').next())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    assert!(
+                        overflow_depth > MAX_EXPR_DEPTH
+                            && overflow_depth <= MAX_EXPR_DEPTH + depth_per_layer(arm),
+                        "arm {:?} overflowed at depth {} — expected range ({}, {}]; \
+                         depth_per_layer or wrap shape may be inconsistent with \
+                         the walk_expr_depth implementation",
+                        arm,
+                        overflow_depth,
+                        MAX_EXPR_DEPTH,
+                        MAX_EXPR_DEPTH + depth_per_layer(arm)
                     );
                 }
             }
