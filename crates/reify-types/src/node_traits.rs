@@ -196,7 +196,33 @@ pub enum NodeArchKind {
 impl NodeArchKind {
     /// Returns the architecture-specified default [`NodeTraits`] for this node kind.
     ///
-    /// Source: `docs/reify-implementation-architecture.md §7.6 Node Traits`.
+    /// ## Derivation
+    ///
+    /// Each per-kind default is drawn from several sections of
+    /// `docs/reify-implementation-architecture.md`:
+    ///
+    /// | Section | Role in this function |
+    /// |---------|----------------------|
+    /// | §2.1 "Node Taxonomy (7 Types)" | Canonical description of each kind's purpose |
+    /// | §3.3 "Two-Cone Scheduling Model" | P0/P1-fast scheduling → `IMMEDIATE` |
+    /// | §4.1 "The WarmStartable Protocol" | Iterative/incremental computation → `WARM_STARTABLE` |
+    /// | §7.3 "Task Commitment Policy" | May run past commitment thresholds → `COMMITTABLE` |
+    /// | §7.6 "Node Traits" | Authoritative definition of the four trait flags |
+    ///
+    /// **`IMMEDIATE` kinds** (`ValueCellScalar`, `SchemaNode`, `SourceNode`): §3.3 classifies
+    /// these as P0/P1-fast — cheap, sub-frame reads evaluable inline. No warm-start or
+    /// commitment machinery is required.
+    ///
+    /// **`WARM_STARTABLE | COMMITTABLE` kinds** (`ResolutionNode`, `RealizationNode`,
+    /// `ComputeNode`): §4.1 targets these as the long-running iterative/incremental
+    /// computations that benefit from resuming a saved warm state. §7.3 notes that they
+    /// may run past a commitment threshold and must therefore finish against their original
+    /// snapshot, justifying `COMMITTABLE`.
+    ///
+    /// **`ConstraintNode` (empty)**: Predicate evaluation is cheap but §7.6 does not yet
+    /// classify it under any of the four traits. Assigning `IMMEDIATE` would conflate it
+    /// with sub-frame `ValueCell` reads; leaving the set empty is the conservative choice
+    /// until a downstream scheduler task formalises the policy.
     pub const fn default_traits(self) -> NodeTraits {
         match self {
             NodeArchKind::ValueCellScalar => NodeTraits::IMMEDIATE,
