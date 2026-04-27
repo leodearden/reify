@@ -266,6 +266,13 @@ fn cubic_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
     cubic4_eval(p0, p1, p2, p3, t)
 }
 
+/// Row-major flat-index for a 2D grid with `ny` columns: `values[i * ny + j]`
+/// is the sample at `(grid_x[i], grid_y[j])`.
+#[inline]
+fn index_2d(i: usize, j: usize, ny: usize) -> usize {
+    i * ny + j
+}
+
 /// Linear interpolation kernel for a 1D grid. Constant-extrapolates outside
 /// the convex hull.
 fn linear_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
@@ -285,4 +292,118 @@ fn linear_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
     }
     let t = (query - grid[i]) / span;
     lerp(values[i], values[i + 1], t)
+}
+
+// ---------------------------------------------------------------------------
+// Public 2D entry point
+// ---------------------------------------------------------------------------
+
+/// Interpolate a 2D scalar grid at `query = (x, y)`.
+///
+/// `grid_x` and `grid_y` must each be strictly ascending. `values` is a
+/// row-major flattened slice of shape `(grid_x.len(), grid_y.len())` such
+/// that `values[i * grid_y.len() + j]` is the sample at
+/// `(grid_x[i], grid_y[j])`.
+///
+/// Out-of-range queries clamp each axis independently to the nearest
+/// endpoint (constant extrapolation). `Rbf`/`Kriging` fall back to `Linear`
+/// and emit a single deferred-method warning.
+///
+/// Panics if `grid_x.len() < 2`, `grid_y.len() < 2`, or
+/// `values.len() != grid_x.len() * grid_y.len()`.
+pub fn interpolate_2d(
+    method: InterpolationMethod,
+    grid_x: &[f64],
+    grid_y: &[f64],
+    values: &[f64],
+    query: (f64, f64),
+) -> InterpolationResult {
+    assert!(
+        grid_x.len() >= 2,
+        "interpolate_2d: grid_x must have at least 2 points"
+    );
+    assert!(
+        grid_y.len() >= 2,
+        "interpolate_2d: grid_y must have at least 2 points"
+    );
+    assert_eq!(
+        values.len(),
+        grid_x.len() * grid_y.len(),
+        "interpolate_2d: values length {} does not match grid shape ({}, {})",
+        values.len(),
+        grid_x.len(),
+        grid_y.len()
+    );
+
+    match method {
+        InterpolationMethod::Linear => {
+            let value = linear_2d(grid_x, grid_y, values, query);
+            InterpolationResult {
+                value,
+                diagnostics: Vec::new(),
+            }
+        }
+        InterpolationMethod::NearestNeighbor => unreachable!(
+            "InterpolationMethod::NearestNeighbor 2D not yet implemented"
+        ),
+        InterpolationMethod::Cubic => unreachable!(
+            "InterpolationMethod::Cubic 2D not yet implemented"
+        ),
+        InterpolationMethod::Rbf => unreachable!(
+            "InterpolationMethod::Rbf 2D not yet implemented"
+        ),
+        InterpolationMethod::Kriging => unreachable!(
+            "InterpolationMethod::Kriging 2D not yet implemented"
+        ),
+    }
+}
+
+/// Bilinear kernel for a 2D grid. Implemented as two 1D-linear sweeps:
+/// along `x` for the two y-rows bracketing the query, then along `y` over
+/// the two intermediate values.
+fn linear_2d(
+    grid_x: &[f64],
+    grid_y: &[f64],
+    values: &[f64],
+    query: (f64, f64),
+) -> f64 {
+    let (qx, qy) = query;
+    let ny = grid_y.len();
+
+    // Locate y-cell first (we'll use j and j+1 as the two bracketing rows).
+    // Out-of-range on y degenerates to a single row.
+    let (j, ty) = locate_cell_with_clamp(grid_y, qy);
+    // Two rows of values along x for y = grid_y[j] and y = grid_y[j+1] (or
+    // equal rows if the query was clamped to a y-boundary, but we still
+    // use the same 2-row structure for uniformity).
+    let row_lo: Vec<f64> = (0..grid_x.len()).map(|i| values[index_2d(i, j, ny)]).collect();
+    let j_hi = if j + 1 < grid_y.len() { j + 1 } else { j };
+    let row_hi: Vec<f64> = (0..grid_x.len()).map(|i| values[index_2d(i, j_hi, ny)]).collect();
+
+    let v_lo = linear_1d(grid_x, &row_lo, qx);
+    let v_hi = linear_1d(grid_x, &row_hi, qx);
+    lerp(v_lo, v_hi, ty)
+}
+
+/// Locate a cell on a single axis with constant-extrapolation clamping.
+/// Returns `(cell_index, t)` where `t ∈ [0, 1]` is the local cell parameter,
+/// clamped to `0.0` or `1.0` for out-of-range queries. The grid must have at
+/// least two points.
+fn locate_cell_with_clamp(grid: &[f64], query: f64) -> (usize, f64) {
+    debug_assert!(grid.len() >= 2);
+    let last = grid.len() - 1;
+    if query <= grid[0] {
+        return (0, 0.0);
+    }
+    if query >= grid[last] {
+        return (last - 1, 1.0);
+    }
+    let i = locate_cell(grid, query).expect("in-range query bracketed");
+    let span = grid[i + 1] - grid[i];
+    let t = if span > 0.0 {
+        (query - grid[i]) / span
+    } else {
+        0.0
+    };
+    (i, t)
 }
