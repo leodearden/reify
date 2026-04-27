@@ -19,7 +19,10 @@
 //! for the inference pipeline.
 
 use reify_compiler::PrimitiveKind;
-use reify_compiler::geometry_traits_inference::{GeometryTrait, InferredTraits, infer_primitive};
+use reify_compiler::geometry_traits_inference::{
+    GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_union,
+    infer_primitive,
+};
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
 
@@ -115,4 +118,86 @@ fn infer_primitive_kind_yields_all_three_traits() {
             kind
         );
     }
+}
+
+// ─── combine_union — bounded if both, connected/convex always dropped ────────
+
+/// `combine_union(all, all)` preserves Bounded but drops Connected and
+/// Convex (a union of two non-overlapping shapes is generally disconnected;
+/// even when they overlap, the union of two convex sets is not convex in
+/// general — IR-level analysis cannot tell).
+#[test]
+fn combine_union_of_two_full_inputs_is_bounded_only() {
+    let result = combine_union(InferredTraits::all(), InferredTraits::all());
+    assert_eq!(result, InferredTraits::bounded_only());
+}
+
+/// `combine_union` requires Bounded on **both** sides — if either is
+/// unbounded, the union is unbounded.
+#[test]
+fn combine_union_with_one_unbounded_input_is_none() {
+    let result = combine_union(InferredTraits::none(), InferredTraits::all());
+    assert_eq!(result, InferredTraits::none());
+
+    let result = combine_union(InferredTraits::all(), InferredTraits::none());
+    assert_eq!(result, InferredTraits::none());
+}
+
+// ─── combine_difference — left-inherit Bounded only ─────────────────────────
+
+/// `combine_difference(left, _)` preserves only `bounded` from the **left**
+/// operand: subtracting any geometry from a bounded shape stays bounded
+/// (the left bounds the result), but Connected and Convex are not
+/// preserved in general.
+#[test]
+fn combine_difference_inherits_bounded_from_left_only() {
+    // Bounded left, unbounded right → Bounded result.
+    let result = combine_difference(InferredTraits::all(), InferredTraits::none());
+    assert_eq!(result, InferredTraits::bounded_only());
+}
+
+/// `combine_difference(unbounded_left, _)` is unbounded — the cutter on
+/// the right cannot bound an unbounded body.
+#[test]
+fn combine_difference_with_unbounded_left_is_none() {
+    let result = combine_difference(InferredTraits::none(), InferredTraits::all());
+    assert_eq!(result, InferredTraits::none());
+}
+
+// ─── combine_intersection — bounded if either, convex if both ───────────────
+
+/// `combine_intersection` preserves Bounded if **either** side is bounded
+/// (the bounded one bounds the intersection). Connected is always dropped
+/// (intersection of two connected shapes can produce disjoint pieces).
+/// Convex is preserved only if **both** sides are convex (a property of
+/// convex set theory).
+#[test]
+fn combine_intersection_with_one_bounded_input_is_bounded() {
+    let result = combine_intersection(InferredTraits::all(), InferredTraits::none());
+    assert_eq!(result, InferredTraits::bounded_only());
+}
+
+/// `combine_intersection(all, all)` preserves Bounded **and** Convex; only
+/// Connected is dropped. We don't have a named constructor for
+/// "bounded + convex" so we assert against a struct literal.
+#[test]
+fn combine_intersection_of_two_full_inputs_preserves_bounded_and_convex() {
+    let result = combine_intersection(InferredTraits::all(), InferredTraits::all());
+    assert_eq!(
+        result,
+        InferredTraits {
+            bounded: true,
+            connected: false,
+            convex: true,
+        }
+    );
+}
+
+/// `combine_intersection(none, none)` → `none()`: with neither side
+/// bounded, the result is unbounded (and trivially neither connected nor
+/// convex).
+#[test]
+fn combine_intersection_of_two_unbounded_inputs_is_none() {
+    let result = combine_intersection(InferredTraits::none(), InferredTraits::none());
+    assert_eq!(result, InferredTraits::none());
 }
