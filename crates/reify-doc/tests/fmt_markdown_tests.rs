@@ -5,7 +5,15 @@
 //! sibling `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::DocModel;
+use reify_doc::model::{DocModel, ModuleDoc};
+
+/// Helper: render the model in single-file mode and unwrap to `String`.
+fn render_single(model: &DocModel) -> String {
+    match render_markdown(model, None, &MarkdownOptions::default()) {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(_) => panic!("expected Single output"),
+    }
+}
 
 /// `MarkdownOptions::default()` must yield single-file (non-split) mode so that
 /// callers who don't care about splitting can rely on the obvious default.
@@ -61,4 +69,47 @@ fn empty_model_split_mode_yields_index_only() {
             assert_eq!(v[0].0, "index.md");
         }
     }
+}
+
+/// A module with `path = "electronics.board"` and a top-level doc renders an
+/// `# electronics.board` H1 header followed by the doc paragraph.
+#[test]
+fn module_header_and_doc_paragraph() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "electronics.board".to_string(),
+            doc: Some("Electronics board module.".to_string()),
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+    assert!(
+        out.contains("# electronics.board\n"),
+        "expected H1 module header, got:\n{out}"
+    );
+    assert!(
+        out.contains("Electronics board module."),
+        "expected module doc paragraph, got:\n{out}"
+    );
+    // Header followed by blank line and then the doc paragraph.
+    let header_idx = out.find("# electronics.board").expect("header present");
+    let doc_idx = out.find("Electronics board module.").expect("doc present");
+    assert!(
+        doc_idx > header_idx,
+        "doc paragraph must come after header"
+    );
+}
+
+/// A module with no `doc` renders only the H1 (no extra paragraph).
+#[test]
+fn module_header_without_doc() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "no_doc.module".to_string(),
+            doc: None,
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+    assert!(out.contains("# no_doc.module"), "header present, got: {out}");
 }
