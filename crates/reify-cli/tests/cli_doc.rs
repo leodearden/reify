@@ -343,6 +343,26 @@ fn doc_split_markdown_writes_files_to_directory() {
 }
 
 #[test]
+fn doc_split_without_output_path_exits_two() {
+    // Regression guard: step 28's Split arm requires `-o <dir>`.  This test
+    // pins that behaviour; if a future refactor accidentally allows
+    // `--split` without `-o`, this test fails loudly.
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "markdown", "--split", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format markdown --split without -o must exit 2.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--split requires -o"),
+        "stderr should explain that --split requires -o, got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
