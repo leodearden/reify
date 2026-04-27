@@ -365,6 +365,10 @@ fn linear_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
 /// endpoint (constant extrapolation). `Rbf`/`Kriging` fall back to `Linear`
 /// and emit a single deferred-method warning.
 ///
+/// If any component of `query` is NaN, returns a NaN value with no
+/// diagnostics (IEEE 754 NaN-poisoning convention: any-component-NaN poisons
+/// the result).
+///
 /// Panics if `grid_x.len() < 2`, `grid_y.len() < 2`, or
 /// `values.len() != grid_x.len() * grid_y.len()`.
 pub fn interpolate_2d(
@@ -390,6 +394,12 @@ pub fn interpolate_2d(
         grid_x.len(),
         grid_y.len()
     );
+    if query.0.is_nan() || query.1.is_nan() {
+        return InterpolationResult {
+            value: f64::NAN,
+            diagnostics: Vec::new(),
+        };
+    }
 
     match method {
         InterpolationMethod::Linear => {
