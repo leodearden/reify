@@ -31,9 +31,14 @@ pub(crate) enum ParamOverrideRejection {
     TypeKindMismatch,
     /// Both sides are Scalar, but their dimensions disagree (e.g. a
     /// LENGTH override pushed against a MASS cell).
+    ///
+    /// Boxed for size hygiene — `DimensionVector` is `[Rational; 10]`
+    /// (40 bytes each), which would push this variant to ~88 bytes
+    /// unboxed.  Consistent with the directly-downstream
+    /// `EngineError::DimensionMismatch` (task 2430 / lib.rs:50-54).
     ScalarDimensionMismatch {
-        expected: reify_types::dimension::DimensionVector,
-        got: reify_types::dimension::DimensionVector,
+        expected: Box<reify_types::dimension::DimensionVector>,
+        got: Box<reify_types::dimension::DimensionVector>,
     },
 }
 
@@ -63,8 +68,8 @@ pub(crate) fn validate_param_override(
         && *got != *expected
     {
         return Err(ParamOverrideRejection::ScalarDimensionMismatch {
-            expected: *expected,
-            got: *got,
+            expected: Box::new(*expected),
+            got: Box::new(*got),
         });
     }
     Ok(())
