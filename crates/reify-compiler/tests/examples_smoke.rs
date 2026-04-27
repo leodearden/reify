@@ -165,25 +165,6 @@ fn relative_to_examples_dir_strips_prefix_for_top_level_and_nested_files() {
     );
 }
 
-/// Verify that the string produced by `relative_to_examples_dir` for the only
-/// nested example on HEAD round-trips back to an existing file when joined onto
-/// `EXAMPLES_DIR`.
-///
-/// This locks the SKIP_SET-key contract: entries must be join-compatible
-/// (no leading slash, portable forward-slash separators, no absolute path).
-#[test]
-fn relative_to_examples_dir_output_round_trips_to_existing_file() {
-    let abs = Path::new(EXAMPLES_DIR).join("fields/composed_stiffness.ri");
-    let rel = relative_to_examples_dir(&abs);
-    let joined = Path::new(EXAMPLES_DIR).join(&rel);
-    assert!(
-        joined.exists() && joined.is_file(),
-        "round-trip failed: EXAMPLES_DIR.join({:?}) = {:?} does not exist",
-        rel,
-        joined
-    );
-}
-
 /// Verify two invariants for every path returned by `discover_ri_files()`:
 ///
 /// (a) `relative_to_examples_dir` accepts the path without panicking (i.e. the
