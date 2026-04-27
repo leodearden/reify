@@ -62,4 +62,42 @@ mod tests {
     fn is_empty_true_for_empty() {
         assert!(NodeTraits::empty().is_empty());
     }
+
+    // --- Step 3: flag constants, pairwise distinct, non-empty, contains ---
+
+    #[test]
+    fn flag_constants_are_non_empty() {
+        assert!(!NodeTraits::IMMEDIATE.is_empty());
+        assert!(!NodeTraits::WARM_STARTABLE.is_empty());
+        assert!(!NodeTraits::PROGRESSIVE.is_empty());
+        assert!(!NodeTraits::COMMITTABLE.is_empty());
+    }
+
+    #[test]
+    fn flag_constants_are_pairwise_distinct() {
+        assert_ne!(NodeTraits::IMMEDIATE, NodeTraits::WARM_STARTABLE);
+        assert_ne!(NodeTraits::IMMEDIATE, NodeTraits::PROGRESSIVE);
+        assert_ne!(NodeTraits::IMMEDIATE, NodeTraits::COMMITTABLE);
+        assert_ne!(NodeTraits::WARM_STARTABLE, NodeTraits::PROGRESSIVE);
+        assert_ne!(NodeTraits::WARM_STARTABLE, NodeTraits::COMMITTABLE);
+        assert_ne!(NodeTraits::PROGRESSIVE, NodeTraits::COMMITTABLE);
+    }
+
+    #[test]
+    fn contains_self() {
+        assert!(NodeTraits::IMMEDIATE.contains(NodeTraits::IMMEDIATE));
+        assert!(NodeTraits::WARM_STARTABLE.contains(NodeTraits::WARM_STARTABLE));
+        assert!(NodeTraits::PROGRESSIVE.contains(NodeTraits::PROGRESSIVE));
+        assert!(NodeTraits::COMMITTABLE.contains(NodeTraits::COMMITTABLE));
+    }
+
+    #[test]
+    fn does_not_contain_other_flag() {
+        assert!(!NodeTraits::IMMEDIATE.contains(NodeTraits::WARM_STARTABLE));
+        assert!(!NodeTraits::IMMEDIATE.contains(NodeTraits::PROGRESSIVE));
+        assert!(!NodeTraits::IMMEDIATE.contains(NodeTraits::COMMITTABLE));
+        assert!(!NodeTraits::WARM_STARTABLE.contains(NodeTraits::IMMEDIATE));
+        assert!(!NodeTraits::WARM_STARTABLE.contains(NodeTraits::PROGRESSIVE));
+        assert!(!NodeTraits::WARM_STARTABLE.contains(NodeTraits::COMMITTABLE));
+    }
 }
