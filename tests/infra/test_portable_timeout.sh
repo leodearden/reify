@@ -609,6 +609,18 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
+        _abs_kill=$(command -v kill)
+        _abs_awk=$(command -v awk)
+
+        # Kill stale "sleep 31339" orphans left by prior runs or concurrent verify
+        # pipelines so they do not cause resource contention / timing interference
+        # for this invocation.  Mirrors the stabilization applied to Test 21b in
+        # cbeeb5a81 / 14f9287f2 and to Test 16b in f72ef337e.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
+            | "$_abs_awk" "{print \$1}" \
+            | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
+        "$_abs_sleep" 0.5
 
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
