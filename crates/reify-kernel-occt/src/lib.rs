@@ -214,6 +214,75 @@ impl OcctKernel {
         let shape = self.get_shape(handle)?;
         Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
+
+    /// Extract every unique edge of `handle` as a fresh handle with
+    /// `ReprKind::Edge`. Order follows the canonical
+    /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
+    ///
+    /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
+    pub fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
+        // immutable borrow of `self` (via get_shape) drops before we mutate
+        // self via store_with_repr.
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(handle)
+                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let vec = ffi::ffi::get_edges(shape)
+                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, ReprKind::Edge);
+            ids.push(h.id);
+        }
+        Ok(ids)
+    }
+
+    /// Extract every unique face of `handle` as a fresh handle with
+    /// `ReprKind::Face`. Order follows the canonical
+    /// `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration.
+    ///
+    /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
+    pub fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(handle)
+                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let vec = ffi::ffi::get_faces(shape)
+                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, ReprKind::Face);
+            ids.push(h.id);
+        }
+        Ok(ids)
+    }
 }
 
 #[cfg(has_occt)]

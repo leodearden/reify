@@ -709,6 +709,24 @@ void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
     vec.shapes.push_back(shape.shape);
 }
 
+size_t shape_vec_len(const OcctShapeVec& vec) {
+    return vec.shapes.size();
+}
+
+std::unique_ptr<OcctShape> shape_vec_at(const OcctShapeVec& vec, size_t idx) {
+    return wrap_occt_call("shape_vec_at", [&]() {
+        if (idx >= vec.shapes.size()) {
+            throw std::runtime_error(
+                std::string("shape_vec_at: idx ") + std::to_string(idx)
+                + " out of range; vector has "
+                + std::to_string(vec.shapes.size()) + " shapes");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = vec.shapes[idx];
+        return out;
+    });
+}
+
 // --- make_line_wire ---
 
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
@@ -1702,6 +1720,40 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
     } catch (...) {
         throw std::runtime_error("OCCT shared_edges: unknown C++ exception");
     }
+}
+
+// --- Topology extractors (task 318) ---
+//
+// `get_edges` and `get_faces` materialize the unique sub-shapes of the given
+// shape into a fresh OcctShapeVec, in the canonical TopExp::MapShapes order.
+// Both reuse the cached `edge_map()` / `face_map()` so the build counters
+// validated by topology_cache_observability.rs continue to satisfy
+// "build exactly once per slot per shape".
+
+std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape) {
+    return wrap_occt_call("get_edges", [&]() {
+        const TopTools_IndexedMapOfShape& edge_map = shape.edge_map();
+        auto out = std::make_unique<OcctShapeVec>();
+        const Standard_Integer n = edge_map.Extent();
+        out->shapes.reserve(static_cast<size_t>(n));
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            out->shapes.push_back(edge_map.FindKey(i));
+        }
+        return out;
+    });
+}
+
+std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape) {
+    return wrap_occt_call("get_faces", [&]() {
+        const TopTools_IndexedMapOfShape& face_map = shape.face_map();
+        auto out = std::make_unique<OcctShapeVec>();
+        const Standard_Integer n = face_map.Extent();
+        out->shapes.reserve(static_cast<size_t>(n));
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            out->shapes.push_back(face_map.FindKey(i));
+        }
+        return out;
+    });
 }
 
 // --- Export ---

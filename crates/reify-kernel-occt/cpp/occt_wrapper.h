@@ -65,6 +65,15 @@ std::unique_ptr<OcctShapeVec> new_shape_vec();
 /// Push a shape into the vector (mutable borrow via Pin).
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
 
+/// Return the number of shapes in the vector.
+size_t shape_vec_len(const OcctShapeVec& vec);
+
+/// Return the i-th shape in the vector wrapped in a fresh `OcctShape`.
+///
+/// Deep-copies the underlying `TopoDS_Shape` (which is itself a thin handle,
+/// so the copy is cheap). Throws std::runtime_error if `idx` is out of range.
+std::unique_ptr<OcctShape> shape_vec_at(const OcctShapeVec& vec, size_t idx);
+
 // Shared types — defined by cxx bridge. Forward-declared here for function signatures.
 struct Point3;
 struct BBox;
@@ -275,6 +284,16 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
 /// returned in ascending order. Throws std::runtime_error if either index is
 /// out of range.
 rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
+
+/// Return the unique edges of `shape` as an OcctShapeVec, in canonical
+/// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order (deduplicated by
+/// `TopoDS_Shape::IsSame`). Reuses the cached `edge_map()`.
+std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape);
+
+/// Return the unique faces of `shape` as an OcctShapeVec, in canonical
+/// `TopExp::MapShapes(.., TopAbs_FACE, ..)` order (deduplicated by
+/// `TopoDS_Shape::IsSame`). Reuses the cached `face_map()`.
+std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 
 // --- Conformance queries ---
 
