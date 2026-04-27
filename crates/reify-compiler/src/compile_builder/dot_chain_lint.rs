@@ -160,8 +160,8 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
 /// of every `MemberDecl` variant.
 ///
 /// Visits:
-///   * `Param`: `default` + `where_clause.condition`.
-///   * `Let`: `value` + `where_clause.condition`.
+///   * `Param`: `annotations[*].args` + `default` + `where_clause.condition`.
+///   * `Let`: `annotations[*].args` + `value` + `where_clause.condition`.
 ///   * `Constraint` (bare-expression form): `expr` + `where_clause.condition`.
 ///   * `ConstraintInst`: `args[*].1` + `where_clause.condition`.
 ///   * `Sub`: `args[*].1` + `where_clause.condition`.
@@ -188,6 +188,7 @@ fn walk_members(
     for member in members {
         match member {
             MemberDecl::Param(p) => {
+                walk_annotations(&p.annotations, diagnostics);
                 if let Some(default) = &p.default {
                     walk_expr(default, diagnostics);
                 }
@@ -196,6 +197,7 @@ fn walk_members(
                 }
             }
             MemberDecl::Let(l) => {
+                walk_annotations(&l.annotations, diagnostics);
                 walk_expr(&l.value, diagnostics);
                 if let Some(wc) = &l.where_clause {
                     walk_expr(&wc.condition, diagnostics);
