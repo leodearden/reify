@@ -1480,3 +1480,21 @@ fn version_pragma_malformed_args_emit_warning_and_leave_declared_version_none() 
         );
     }
 }
+
+// ── Task 2300: #solver pragma — solver_pragma plumbing ───────────────────────
+
+/// Without any `#solver` pragma, `module.solver_pragma` is `None`.
+#[test]
+fn solver_pragma_absent_keeps_solver_pragma_none() {
+    let module = compile_source("structure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "expected solver_pragma None when no #solver pragma, got {:?}",
+        module.solver_pragma
+    );
+}
