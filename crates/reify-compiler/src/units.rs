@@ -1,47 +1,65 @@
 use super::*;
 
+/// The complete set of stdlib geometry constructor names recognised by the
+/// compiler. This is the **source of truth** for both [`is_geometry_function`]
+/// (derived via `.contains(&name)`) and the dispatch coverage test in
+/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+///
+/// # Maintenance contract
+///
+/// When adding a new geometry function name here, you **must** also add an
+/// explicit arm for it in `infer_traits_for_function_call` (or its `try_*`
+/// companion) in `crates/reify-compiler/src/geometry_traits_inference.rs`.
+/// The test `every_geometry_function_name_has_explicit_dispatch_arm` will
+/// fail loudly if a name is added here without a matching dispatch arm —
+/// turning the previously-silent `_ => InferredTraits::all()` fallback into
+/// a compile-time-traceable assertion failure.
+///
+/// Order matches the original `matches!` in the pre-refactor `is_geometry_function`
+/// for diff readability. Case-sensitive: Reify function names are snake_case.
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "box",
+    "cylinder",
+    "sphere",
+    "linear_pattern",
+    "linear_pattern_2d",
+    "circular_pattern",
+    "mirror",
+    "arbitrary_pattern",
+    "loft",
+    "loft_guided",
+    "extrude",
+    "revolve",
+    "revolve_full",
+    "shell",
+    "thicken",
+    "draft",
+    "chamfer",
+    "fillet",
+    "union",
+    "intersection",
+    "difference",
+    "union_all",
+    "intersection_all",
+    "sweep",
+    "sweep_guided",
+    "extrude_symmetric",
+    "translate",
+    "rotate",
+    "scale",
+    "rotate_around",
+    "line_segment",
+    "arc",
+    "helix",
+    "interp",
+    "bezier",
+    "nurbs",
+    "tube",
+    "pipe",
+];
+
 pub(crate) fn is_geometry_function(name: &str) -> bool {
-    matches!(
-        name,
-        "box"
-            | "cylinder"
-            | "sphere"
-            | "linear_pattern"
-            | "linear_pattern_2d"
-            | "circular_pattern"
-            | "mirror"
-            | "arbitrary_pattern"
-            | "loft"
-            | "loft_guided"
-            | "extrude"
-            | "revolve"
-            | "revolve_full"
-            | "shell"
-            | "thicken"
-            | "draft"
-            | "chamfer"
-            | "fillet"
-            | "union"
-            | "intersection"
-            | "difference"
-            | "union_all"
-            | "intersection_all"
-            | "sweep"
-            | "sweep_guided"
-            | "extrude_symmetric"
-            | "translate"
-            | "rotate"
-            | "scale"
-            | "rotate_around"
-            | "line_segment"
-            | "arc"
-            | "helix"
-            | "interp"
-            | "bezier"
-            | "nurbs"
-            | "tube"
-            | "pipe"
-    )
+    GEOMETRY_FUNCTION_NAMES.contains(&name)
 }
 
 // --- Unit conversion ---
