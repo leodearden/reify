@@ -553,6 +553,58 @@ mod tests {
         ));
     }
 
+    // --- step-3: diagnostic-count helper tests (RED until step-4 adds the methods) ---
+
+    #[test]
+    fn count_donated_returns_zero_for_empty_journal() {
+        let journal = EventJournal::new();
+        assert_eq!(journal.count_donated(), 0);
+    }
+
+    #[test]
+    fn count_evicted_returns_zero_for_empty_journal() {
+        let journal = EventJournal::new();
+        assert_eq!(journal.count_evicted(), 0);
+    }
+
+    #[test]
+    fn count_donated_counts_only_donated_events() {
+        let mut journal = EventJournal::new();
+        // Mixed sequence: Started, Donated, CacheHit, Donated, Evicted, Completed
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Donated { size_bytes: 100 }, 0));
+        journal.record(make_event("c", EventKind::CacheHit, 0));
+        journal.record(make_event("d", EventKind::Donated { size_bytes: 200 }, 0));
+        journal.record(make_event("e", EventKind::Evicted { size_bytes: 100 }, 0));
+        journal.record(make_event(
+            "f",
+            EventKind::Completed {
+                outcome: EvalOutcome::Changed,
+            },
+            0,
+        ));
+        assert_eq!(journal.count_donated(), 2);
+        assert_eq!(journal.count_evicted(), 1);
+    }
+
+    #[test]
+    fn count_helpers_ignore_other_kinds() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::CacheHit, 0));
+        journal.record(make_event("c", EventKind::WarmStartUsed, 0));
+        journal.record(make_event("d", EventKind::Cancelled, 0));
+        journal.record(make_event(
+            "e",
+            EventKind::Failed {
+                error: "oops".to_string(),
+            },
+            0,
+        ));
+        assert_eq!(journal.count_donated(), 0);
+        assert_eq!(journal.count_evicted(), 0);
+    }
+
     // --- step-1: new EventKind variant tests (RED until step-2 adds the variants) ---
 
     #[test]
