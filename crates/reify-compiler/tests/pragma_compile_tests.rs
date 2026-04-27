@@ -1539,3 +1539,43 @@ fn solver_pragma_with_bare_ident_sets_name_and_empty_options() {
         bad_warns
     );
 }
+
+/// `#solver(argmin, threads=4, mode="fast", strict=true)` populates the typed
+/// options map with three entries. Iteration order is alphabetical (BTreeMap):
+/// mode → "fast", strict → true, threads → 4.
+#[test]
+fn solver_pragma_with_keyvalue_args_populates_options() {
+    let module = compile_source(
+        r#"#solver(argmin, threads=4, mode="fast", strict=true)
+structure S { param x : Real }"#,
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for #solver(argmin, ...)");
+    assert_eq!(solver_pragma.name, "argmin");
+
+    // BTreeMap iteration is alphabetical: mode, strict, threads.
+    let pairs: Vec<(&String, &reify_syntax::PragmaValue)> = solver_pragma.options.iter().collect();
+    assert_eq!(
+        pairs.len(),
+        3,
+        "expected 3 option entries, got {}: {:?}",
+        pairs.len(),
+        solver_pragma.options
+    );
+    assert_eq!(pairs[0].0, "mode");
+    assert_eq!(
+        pairs[0].1,
+        &reify_syntax::PragmaValue::String("fast".to_string())
+    );
+    assert_eq!(pairs[1].0, "strict");
+    assert_eq!(pairs[1].1, &reify_syntax::PragmaValue::Bool(true));
+    assert_eq!(pairs[2].0, "threads");
+    assert_eq!(pairs[2].1, &reify_syntax::PragmaValue::Number(4.0));
+}
