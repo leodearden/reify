@@ -25,11 +25,11 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 
 /// The maximum target language version this compiler can compile.
 ///
-/// **Bumping ritual.** When this constant changes (e.g. to `(0, 2)`), update
-/// the verbatim version string in the too-new diagnostic produced by
-/// `apply_version_pragma` ("this compiler supports up to 0.1") and the
-/// "treating as 0.1" wording in the too-old diagnostic. Both are hard-coded
-/// per `docs/prds/pragmas.md` §5 to give users a single canonical phrasing.
+/// The too-new error, too-old warning, and their span labels in
+/// `apply_version_pragma` all derive their `MAJOR.MINOR` literal from this
+/// constant via `format!`, so bumping it (e.g. to `(0, 2)`) automatically
+/// updates the user-facing wording. The PRD (`docs/prds/pragmas.md` §5)
+/// specifies the wording template, not a literal version string.
 const COMPILER_SUPPORTED_VERSION: (u16, u16) = (0, 1);
 
 /// Append the spans of every `#precision` pragma in `pragmas` to `out`.
@@ -280,26 +280,51 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 // Integer-valued numbers (e.g. `0.0`, `1.0`) lose their `.0`
                 // under f64 Display, yielding `"0"` / `"1"`; treat those as
                 // MAJOR with MINOR=0 so `#version(0.0)` parses cleanly.
-                let rendered = format!("{n}");
-                let result = match rendered.split_once('.') {
-                    Some((maj_s, min_s)) => match (maj_s.parse::<u16>(), min_s.parse::<u16>()) {
-                        (Ok(maj), Ok(min)) => Some((maj, min)),
-                        _ => None,
-                    },
-                    None => match rendered.parse::<u16>() {
-                        Ok(maj) => Some((maj, 0)),
-                        Err(_) => None,
-                    },
-                };
-                if result.is_none() {
-                    // Number that fails to parse as u16.u16 (negative,
-                    // exponent form, > 65535, etc.).
+                //
+                // Non-finite / negative short-circuit: f64 Display renders
+                // NaN/inf as "NaN"/"inf" and negatives with a leading '-',
+                // none of which parse as u16. Catching them up-front lets us
+                // give a more informative warning than the generic catch-all
+                // and avoids wasting work on hopeless inputs. The grammar's
+                // `\d+(\.\d+)?` regex currently produces only non-negative
+                // finite f64s from source, so this branch is unreachable
+                // today; it stays as defence-in-depth (mirroring the
+                // analogous guard in `apply_precision_pragma`).
+                if !n.is_finite() || *n < 0.0 {
                     module.diagnostics.push(
-                        Diagnostic::warning("#version: expected MAJOR.MINOR (e.g. 0.1); ignored")
-                            .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                        Diagnostic::warning(
+                            "#version: version number must be non-negative and finite; \
+                             expected MAJOR.MINOR (e.g. 0.1); ignored",
+                        )
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                     );
+                    None
+                } else {
+                    let rendered = format!("{n}");
+                    let result = match rendered.split_once('.') {
+                        Some((maj_s, min_s)) => {
+                            match (maj_s.parse::<u16>(), min_s.parse::<u16>()) {
+                                (Ok(maj), Ok(min)) => Some((maj, min)),
+                                _ => None,
+                            }
+                        }
+                        None => match rendered.parse::<u16>() {
+                            Ok(maj) => Some((maj, 0)),
+                            Err(_) => None,
+                        },
+                    };
+                    if result.is_none() {
+                        // Finite non-negative number that fails to parse as
+                        // u16.u16 (e.g. > 65535).
+                        module.diagnostics.push(
+                            Diagnostic::warning(
+                                "#version: expected MAJOR.MINOR (e.g. 0.1); ignored",
+                            )
+                            .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                        );
+                    }
+                    result
                 }
-                result
             }
             [PragmaArg::Bare(PragmaValue::String(s))] => {
                 // Strict MAJOR.MINOR — exactly two components, each parseable
@@ -345,10 +370,12 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             // validation outcome (see task design decision).
             module.declared_version = Some((maj, min));
 
+            let (sup_maj, sup_min) = COMPILER_SUPPORTED_VERSION;
             if (maj, min) > COMPILER_SUPPORTED_VERSION {
                 module.diagnostics.push(
                     Diagnostic::error(format!(
-                        "module declares version {maj}.{min}; this compiler supports up to 0.1"
+                        "module declares version {maj}.{min}; this compiler supports up to \
+                         {sup_maj}.{sup_min}"
                     ))
                     .with_label(DiagnosticLabel::new(pragma.span, "unsupported version")),
                 );
@@ -356,9 +383,12 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 module.diagnostics.push(
                     Diagnostic::warning(format!(
                         "declared version {maj}.{min} predates the first stable language; \
-                         treating as 0.1"
+                         treating as {sup_maj}.{sup_min}"
                     ))
-                    .with_label(DiagnosticLabel::new(pragma.span, "predates v0.1")),
+                    .with_label(DiagnosticLabel::new(
+                        pragma.span,
+                        format!("predates v{sup_maj}.{sup_min}"),
+                    )),
                 );
             }
         }
