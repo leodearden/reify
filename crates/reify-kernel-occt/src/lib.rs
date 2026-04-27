@@ -5485,13 +5485,21 @@ mod tests {
     ///
     /// An axis-aligned cube has analytically zero off-diagonals at the centroid, so it is
     /// not a useful regression shape for this property.  A non-cubic box (1000×2000×500)
-    /// rotated 30° about the Z-axis has I_xy ≈ 1.08e14 by the rotation-of-axes formula:
+    /// rotated 30° about the Z-axis has I_xy ≈ 1.0825e14 by the rotation-of-axes formula:
     ///   I_xy_world = (I_xx_local - I_yy_local) · sin(30°) · cos(30°)
+    ///             = (3.5417e14 - 1.0417e14) · (√3/4) ≈ 1.0825e14
     /// This is orders of magnitude above any noise threshold and conclusively exercises the
     /// regime where the old 1e-6 absolute threshold was unsound.  The bit-equality
     /// assertions pin the averaging behaviour: they would fail if query_inertia_tensor
     /// returned m(i,j) and m(j,i) from two independent m.Value(…) reads (pre-fix) and
     /// OCCT's two reads happened to disagree at the ULP level.
+    ///
+    /// T7 additionally strengthens the assertions with analytical magnitude values for
+    /// the three diagonals and the off-diagonal I_xy.  The stronger checks catch:
+    ///   (a) sign-flip in off-diagonal convention (|I_xy| < I_xy_expected fails)
+    ///   (b) row/col transpose in FFI marshalling (symmetry equality fails)
+    ///   (c) accidental zeroing of off-diagonals (already caught by > 1e12 but now also
+    ///       by the ~1% relative tolerance against the analytic value)
     #[test]
     fn inertia_tensor_rotated_non_cubic_box_offdiagonals_symmetric() {
         let mut kernel = OcctKernel::new();
@@ -5564,6 +5572,54 @@ mod tests {
             "I_xy must be large (> 1e12) for rotated non-cubic box, got {}",
             entries[0][1]
         );
+        // T7 strengthening: analytical magnitude check for I_xy (1% relative tolerance).
+        // Derivation: m=1e9, I_xx_local=m/12·(2000²+500²)≈3.5417e14, I_yy_local=m/12·(1000²+500²)≈1.0417e14
+        //   I'_xy = (√3/4)·(I_xx_local − I_yy_local) = (√3/4)·2.5e14 ≈ 1.0825e14
+        let i_xy_expected = (3.0_f64.sqrt() / 4.0) * 2.5e14_f64; // ≈ 1.0825e14
+        let rel_tol = 1e-3_f64; // 0.1% — well above OCCT's polyhedron integration noise
+        assert!(
+            (entries[0][1].abs() - i_xy_expected).abs() / i_xy_expected < rel_tol,
+            "I_xy magnitude expected ≈{i_xy_expected:.6e} (analytic), got {} (|val|={}), \
+             relative error {}",
+            entries[0][1], entries[0][1].abs(),
+            (entries[0][1].abs() - i_xy_expected).abs() / i_xy_expected
+        );
+        // Sign check: I'_xy = sin·cos·(I_xx − I_yy) > 0 since I_xx > I_yy for this box.
+        // (OCCT's tensor layout matches the standard rotation-of-axes convention;
+        //  a sign-flip here would indicate a FFI convention reversal.)
+        assert!(
+            entries[0][1] > 0.0,
+            "I_xy expected positive (I_xx_local > I_yy_local → positive cross-term after 30° Z-rotation), \
+             got {}",
+            entries[0][1]
+        );
+        // T7 strengthening: analytical diagonal magnitude checks (1% relative tolerance).
+        // After 30° Z-rotation (c=cos30=√3/2, s=sin30=1/2):
+        //   I'_xx = c²·I_xx_local + s²·I_yy_local = 0.75·3.5417e14 + 0.25·1.0417e14 ≈ 2.9167e14
+        //   I'_yy = s²·I_xx_local + c²·I_yy_local = 0.25·3.5417e14 + 0.75·1.0417e14 ≈ 1.6667e14
+        //   I'_zz = I_zz_local = m/12·(w²+h²) = 1e9/12·(1e6+4e6) ≈ 4.1667e14 (Z invariant)
+        let m = 1.0e9_f64;
+        let w = 1000.0_f64; let h = 2000.0_f64; let d = 500.0_f64;
+        let i_xx_local = m / 12.0 * (h * h + d * d);
+        let i_yy_local = m / 12.0 * (w * w + d * d);
+        let i_zz_local = m / 12.0 * (w * w + h * h);
+        let c2 = 0.75_f64; // cos²(30°)
+        let s2 = 0.25_f64; // sin²(30°)
+        let diag_expected = [
+            c2 * i_xx_local + s2 * i_yy_local, // I'_xx ≈ 2.9167e14
+            s2 * i_xx_local + c2 * i_yy_local, // I'_yy ≈ 1.6667e14
+            i_zz_local,                          // I'_zz ≈ 4.1667e14
+        ];
+        for i in 0..3 {
+            let expected = diag_expected[i];
+            assert!(
+                (entries[i][i] - expected).abs() / expected < rel_tol,
+                "diagonal [{i}][{i}] expected ≈{expected:.6e} (analytic), got {}, \
+                 relative error {}",
+                entries[i][i],
+                (entries[i][i] - expected).abs() / expected
+            );
+        }
         // I_xz and I_yz must remain near zero (Z-rotation does not mix Z products).
         assert!(
             entries[0][2].abs() < 1e6,
