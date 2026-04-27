@@ -134,6 +134,23 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
 }
 
 /// Convert a Reify Diagnostic to an LSP Diagnostic.
+///
+/// When `diag.code` is `Some(c)`, the returned LSP diagnostic carries
+/// `code = Some(NumberOrString::String(format!("{:?}", c)))`.
+///
+/// **Wire-format note:** The `Debug` representation produces PascalCase variant
+/// names for all current unit variants of `DiagnosticCode` (e.g. `"Shadowing"`,
+/// `"TraitNotImplemented"`, `"DeepDotChain"`), which coincides with the serde
+/// `rename_all = "PascalCase"` wire form. This equivalence is tested for the
+/// `Shadowing` variant by `shadowing_diagnostic_code_variant_round_trips` in
+/// `crates/reify-types/src/diagnostics.rs`, and for other variants by their own
+/// variant-specific tests (e.g. `diagnostic_code_deep_dot_chain_variant`,
+/// `diagnostic_code_dimension_mismatch_serde_pascal_case`). However, `Debug` is
+/// not the authoritative wire contract: a future variant carrying fields would
+/// produce `"Variant(...)"` rather than a clean PascalCase code, silently
+/// breaking client-side matching. A more robust implementation would use serde
+/// serialization via `serde_json::to_value(c)`, which requires enabling
+/// `features = ["serde"]` on the `reify-types` dependency in `Cargo.toml`.
 pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_types::Diagnostic {
     let range = if let Some(first_label) = diag.labels.first() {
         span_to_range(source, first_label.span)
@@ -161,9 +178,14 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         None
     };
 
+    let code = diag
+        .code
+        .map(|c| lsp_types::NumberOrString::String(format!("{:?}", c)));
+
     lsp_types::Diagnostic {
         range,
         severity: Some(convert_severity(diag.severity)),
+        code,
         message: diag.message.clone(),
         source: Some("reify".to_string()),
         related_information,
@@ -185,8 +207,8 @@ pub fn convert_parse_error(err: &ParseError, source: &str, _uri: &Url) -> lsp_ty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::DiagnosticLabel;
-    use tower_lsp::lsp_types::{DiagnosticSeverity, Position, Url};
+    use reify_types::{DiagnosticCode, DiagnosticLabel};
+    use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString, Position, Url};
 
     #[test]
     fn offset_zero_in_empty_string() {
@@ -303,6 +325,58 @@ mod tests {
         let related = lsp_diag.related_information.unwrap();
         assert_eq!(related.len(), 1);
         assert_eq!(related[0].message, "related");
+    }
+
+    #[test]
+    fn convert_diagnostic_populates_string_code_for_typed_code() {
+        let source = "structure S {\n    param x : Real = 1\n    let f = |x| x * 2\n}\n";
+        let diag = Diagnostic::warning("declaration of 'x' shadows enclosing declaration")
+            .with_code(DiagnosticCode::Shadowing)
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 1), "child"))
+            .with_label(DiagnosticLabel::new(SourceSpan::new(2, 3), "parent"));
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp_diag.code,
+            Some(NumberOrString::String("Shadowing".to_string())),
+            "convert_diagnostic must populate code from DiagnosticCode::Shadowing"
+        );
+    }
+
+    #[test]
+    fn convert_diagnostic_leaves_code_none_when_input_code_absent() {
+        let source = "anything";
+        let diag = Diagnostic::error("some error");
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp_diag.code, None,
+            "convert_diagnostic must leave code as None when no DiagnosticCode is attached"
+        );
+    }
+
+    /// Locks the `convert_diagnostic` code-field conversion for a representative
+    /// spread of `DiagnosticCode` variants. Each expected wire string must match
+    /// the serde `rename_all = "PascalCase"` form.
+    ///
+    /// If the `Debug` impl of any listed variant diverges from PascalCase (e.g.
+    /// because it gains fields), this test will catch the regression before it
+    /// reaches the LSP client.
+    #[test]
+    fn convert_diagnostic_code_wire_str_matches_pascal_case_for_representative_variants() {
+        let cases: &[(DiagnosticCode, &str)] = &[
+            (DiagnosticCode::TraitNotImplemented, "TraitNotImplemented"),
+            (DiagnosticCode::DimensionMismatch, "DimensionMismatch"),
+            (DiagnosticCode::DeepDotChain, "DeepDotChain"),
+            (DiagnosticCode::Shadowing, "Shadowing"),
+        ];
+        for &(code, expected_wire) in cases {
+            let diag = Diagnostic::warning("test").with_code(code);
+            let lsp = convert_diagnostic(&diag, "", &test_uri());
+            assert_eq!(
+                lsp.code,
+                Some(NumberOrString::String(expected_wire.to_string())),
+                "DiagnosticCode::{code:?} should convert to wire string {expected_wire:?}"
+            );
+        }
     }
 
     // --- UTF-8 boundary safety tests (step-21) ---
