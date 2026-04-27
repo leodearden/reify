@@ -1292,6 +1292,39 @@ pub(crate) fn convert_type_params(
 mod tests {
     use super::*;
 
+    /// Minimal helper: build a Named TypeExpr with a synthetic zero span.
+    fn named_type_expr(name: &str) -> reify_syntax::TypeExpr {
+        reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: name.to_string(),
+                type_args: vec![],
+            },
+            span: reify_types::SourceSpan::new(0, 0),
+        }
+    }
+
+    #[test]
+    fn resolve_dimension_type_recognises_money() {
+        let te = named_type_expr("Money");
+        let mut diagnostics = Vec::new();
+        let result = resolve_dimension_type(&te, &mut diagnostics);
+        assert_eq!(result, Some(DimensionVector::MONEY));
+        assert!(diagnostics.is_empty(), "unexpected diagnostic: {:?}", diagnostics);
+    }
+
+    #[test]
+    fn resolve_dimension_type_unknown_lists_money_in_error() {
+        let te = named_type_expr("Foo");
+        let mut diagnostics = Vec::new();
+        let _ = resolve_dimension_type(&te, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].message.contains("Money"),
+            "error message should list 'Money' in the expected list; got: {}",
+            diagnostics[0].message
+        );
+    }
+
     #[test]
     fn solid_resolves_to_geometry() {
         assert_eq!(
