@@ -73,6 +73,12 @@ std
   determinacy
     mod.ri         // determined(), constrained(), undetermined()
     purposes       // design_review, simulation_ready
+  mechanism
+    joints       // Prismatic, Revolute, Coupling, transform_at
+    builder      // mechanism(), .body() chaining, closed-chain detection
+    snapshot     // snapshot(), bodies(), transform_of(), center_of_mass(), bounding_box()
+    sweep        // sweep(), sweep_grid()
+    query        // interferes(), interferes_with(), min_clearance()
 ```
 
 ---
@@ -1075,3 +1081,158 @@ purpose simulation_ready(subject : Physical) {
     constraint determined(subject.material)
 }
 ```
+
+---
+
+## 13. `std.mechanism`
+
+The `std.mechanism` library adds stdlib-level kinematic mechanism modelling. v0.1 ships **forward kinematics over open chains** with **prismatic, revolute, and position-coupling** joints, a **batch-sweep** API, and an **interference/clearance query**. Closed chains — bodies reachable via two distinct joint paths — are detected as a build-time error in v0.1 and deferred to v0.2 (see `v0_2/kinematic-constraints.md`). No new core syntax or IR is introduced: joints, mechanisms, and motion variables are pure stdlib values. This honours the language spec rationale (spec line 36): "Domain complexity (GD&T, DFM rules, kinematic joints, material databases) belongs in community-driven libraries."
+
+### 13.1 `std.mechanism.joints`
+
+Joint primitives are first-class stdlib values. Each joint type internally exposes `transform_at`, which returns a `Transform<3>` for a given motion-variable value. User code reaches it through the mechanism builder and snapshot APIs rather than calling `transform_at` directly.
+
+```
+fn prismatic(axis: Vector3<Dimensionless>, range: Range<Length>) -> Prismatic
+fn revolute(axis: Axis, range: Range<Angle>) -> Revolute
+fn couple(other: Joint, ratio: Real, offset: Length = 0mm) -> Coupling
+```
+
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
+
+**Axis, range, and ratio accessors:**
+
+```
+fn axis(j: Prismatic) -> Vector3<Dimensionless>
+fn range(j: Prismatic) -> Range<Length>
+fn axis(j: Revolute) -> Axis
+fn range(j: Revolute) -> Range<Angle>
+fn ratio(j: Coupling) -> Real
+fn offset(j: Coupling) -> Length
+fn transform_at(j: Prismatic, v: Length) -> Transform<3>
+fn transform_at(j: Revolute, v: Angle) -> Transform<3>
+fn transform_at(j: Coupling, v: Real) -> Transform<3>
+```
+
+### 13.2 `std.mechanism.builder`
+
+`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a `(Mechanism, BodyId)` pair.
+
+```
+fn mechanism() -> Mechanism
+fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world, pose: Transform<3> = transform3_identity) -> (Mechanism, BodyId)
+```
+
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value.
+
+**Closed-chain detection.** `mechanism()` builds a directed acyclic graph (DAG) of bodies connected through joints. If any body is reachable via two distinct joint paths, the compiler emits `error[E_KINEMATIC_CLOSED_CHAIN]`, naming both paths in the diagnostic:
+
+```
+error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
+  --> mechanism build site
+  |
+  | path 1: world -> joint_a -> joint_b -> body
+  | path 2: world -> joint_c -> body
+```
+
+Closed chains are a v0.1 error; v0.2 introduces a cyclic solver.
+
+### 13.3 `std.mechanism.snapshot`
+
+`snapshot` evaluates forward kinematics for a set of joint-value bindings, producing a concrete configuration with world-frame transforms for every body.
+
+```
+fn snapshot(m: Mechanism, bindings: List<(Joint, Real)>) -> Snapshot
+```
+
+Each entry in `bindings` assigns a value to a joint (the unit interpretation is type-dependent: `Length` for `Prismatic`, `Angle` for `Revolute`, dimensionless `Real` scaled by `ratio` for `Coupling`). Joints absent from `bindings` take their range midpoint.
+
+**Snapshot accessors:**
+
+```
+fn bodies(s: Snapshot) -> List<BodyId>
+fn transform_of(s: Snapshot, body: BodyId) -> Transform<3>
+fn center_of_mass(s: Snapshot, densities: Map<BodyId, Density> = undef) -> Point3<Length>
+fn bounding_box(s: Snapshot) -> BoundingBox
+```
+
+`center_of_mass` with no `densities` argument uses uniform density across all bodies. `bounding_box` returns the axis-aligned bounding box of all body geometry in the snapshot, expressed in world coordinates. `BoundingBox` is defined in §3.10. `BodyId` is the opaque identifier returned by `.body()` (§13.2).
+
+### 13.4 `std.mechanism.sweep`
+
+`sweep` and `sweep_grid` produce lists of snapshots by varying one or more joints over a range.
+
+```
+fn sweep(m: Mechanism, joint: Joint, range: Range<Real>, steps: Int) -> List<Snapshot>
+fn sweep_grid(m: Mechanism, dims: List<(Joint, Range<Real>, Int)>) -> List<Snapshot>
+```
+
+`sweep` produces `steps` snapshots evenly spaced over `range`. The first snapshot matches `snapshot(m, [(joint, range.start)])` and the last matches `snapshot(m, [(joint, range.end)])`. All joints not mentioned take their range midpoint.
+
+`sweep_grid` computes the cross-product of the listed joint ranges in lexicographic order: the last dimension varies fastest. The total snapshot count is the product of all `steps` values.
+
+### 13.5 `std.mechanism.query`
+
+Interference and clearance queries operate on a `Snapshot`, testing OCCT BREP geometry of placed bodies.
+
+```
+fn interferes(s: Snapshot) -> List<(BodyId, BodyId)>
+fn interferes_with(s: Snapshot, a: BodyId, b: BodyId) -> Bool
+fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
+```
+
+`interferes` returns all body pairs whose OCCT BREP intersection is non-empty, subject to a configurable tolerance. Excluded by default: pairs where one body is the immediate joint-frame parent of the other (they share an edge by construction), and self-pairs.
+
+`interferes_with` is the targeted scalar form — returns `true` iff the BREP intersection of `a` and `b` is non-empty.
+
+`min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
+
+### 13.6 Worked examples
+
+The two examples below are the primary acceptance-test drivers for `std.mechanism`. Both are reproduced verbatim from `docs/prds/kinematic-constraints.md`.
+
+**Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
+
+```reify
+fn toolchanger_dock_check() -> Bool {
+    // Two prismatic joints, declared as stdlib values.
+    let y_axis = prismatic(axis: Y_HAT, range: 0mm .. 800mm);
+    let x_axis = prismatic(axis: X_HAT, range: 0mm .. 500mm);
+
+    // Mechanism assembly: bodies bound to joint frames.
+    let m = mechanism()
+        .body(frame_solid(), at: world)
+        .body(gantry_solid(), at: y_axis)
+        .body(toolhead_solid(), at: x_axis, parent: y_axis)
+        .body(parked_tool_solid(), at: world, pose: dock_pose);
+
+    // Sweep the head over its dock-approach path.
+    let snapshots = sweep(m, x_axis, 0mm .. 500mm, steps: 50);
+
+    // Interference query — toolhead must not collide with parked tool
+    // anywhere along the path except at the final dock pose.
+    let collisions = snapshots.map(|s| interferes(s));
+    forall i in 0..50 - 1: collisions[i].is_empty()
+}
+```
+
+**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary as the toolhead traverses its range.
+
+```reify
+fn counter_mass_balance() -> Bool {
+    let x_axis = prismatic(axis: X_HAT, range: 0mm .. 500mm);
+    // Counter-mass tracks -1× the head along the same X.
+    let cm_axis = couple(x_axis, ratio: -1.0);
+
+    let m = mechanism()
+        .body(toolhead_solid(), at: x_axis)
+        .body(counter_mass_solid(), at: cm_axis);
+
+    // At every position along the sweep, the system COM must stay fixed.
+    let snapshots = sweep(m, x_axis, 0mm .. 500mm, steps: 11);
+    let coms = snapshots.map(|s| s.center_of_mass());
+    forall pair in coms.windows(2): (pair[1] - pair[0]).norm() < 0.1mm
+}
+```
+
+See `docs/prds/kinematic-constraints.md` for the full specification, acceptance criteria, and task breakdown.
