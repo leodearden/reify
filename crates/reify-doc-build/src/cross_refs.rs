@@ -7,48 +7,50 @@
 //! The [`reify_doc::cross_refs::CrossRefs`] type is defined in `reify-doc`; this
 //! module only provides the function that constructs it from compiled templates.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use reify_compiler::TopologyTemplate;
 use reify_doc::cross_refs::CrossRefs;
 
 /// Build cross-reference indices from a slice of compiled topology templates.
 ///
 /// Both index maps use [`std::collections::BTreeMap`] for deterministic key order.
-/// Inner `Vec<String>` values are sorted alphabetically and deduplicated after
-/// population to guarantee a stable, canonical output regardless of input order.
+/// Internally accumulates conformer and container names into [`BTreeSet`]s, which
+/// provide structural deduplication and deterministic (alphabetical) ordering in a
+/// single pass.  The sets are materialised to `Vec<String>` at the public boundary
+/// so the [`CrossRefs`] contract is preserved.
 pub fn build_cross_refs(templates: &[TopologyTemplate]) -> CrossRefs {
-    let mut result = CrossRefs::default();
+    let mut trait_acc: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut entity_acc: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for template in templates {
         // trait → conformers index
         for trait_name in &template.trait_bounds {
-            result
-                .trait_to_conformers
+            trait_acc
                 .entry(trait_name.clone())
                 .or_default()
-                .push(template.name.clone());
+                .insert(template.name.clone());
         }
 
         // entity → containers index
         for sub in &template.sub_components {
-            result
-                .entity_to_containers
+            entity_acc
                 .entry(sub.structure_name.clone())
                 .or_default()
-                .push(template.name.clone());
+                .insert(template.name.clone());
         }
     }
 
-    // Post-process: sort + dedup inner vecs for deterministic output.
-    for conformers in result.trait_to_conformers.values_mut() {
-        conformers.sort();
-        conformers.dedup();
+    CrossRefs {
+        trait_to_conformers: trait_acc
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect(),
+        entity_to_containers: entity_acc
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect(),
     }
-    for containers in result.entity_to_containers.values_mut() {
-        containers.sort();
-        containers.dedup();
-    }
-
-    result
 }
 
 #[cfg(test)]
