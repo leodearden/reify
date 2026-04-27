@@ -19,6 +19,75 @@ fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
     (structure.members.clone(), module.errors.clone())
 }
 
+/// step-3: Parse `forall v in vents: chain v.out -> hub.a -> hub.b`
+/// -> MemberDecl::ForallConnect with Chain body (3 elements).
+#[test]
+fn parse_forall_chain() {
+    let source = r#"
+structure S {
+    forall v in vents: chain v.out -> hub.a -> hub.b
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 1, "expected exactly one member");
+
+    let decl = match &members[0] {
+        MemberDecl::ForallConnect(d) => d,
+        other => panic!("expected ForallConnect, got {:?}", other),
+    };
+
+    assert_eq!(decl.variable, "v");
+    assert!(
+        matches!(&decl.collection.kind, ExprKind::Ident(n) if n == "vents"),
+        "expected collection Ident(vents), got {:?}",
+        decl.collection.kind
+    );
+
+    let chain = match &decl.body {
+        ForallConnectBody::Chain(c) => c,
+        other => panic!("expected ForallConnectBody::Chain, got {:?}", other),
+    };
+
+    assert_eq!(chain.elements.len(), 3, "expected 3 chain elements");
+
+    // element 0: v.out
+    match &chain.elements[0].kind {
+        ExprKind::MemberAccess { object, member } => {
+            assert!(
+                matches!(object.kind, ExprKind::Ident(ref n) if n == "v"),
+                "expected elem[0] object Ident(v)"
+            );
+            assert_eq!(member, "out");
+        }
+        other => panic!("expected MemberAccess for elem[0], got {:?}", other),
+    }
+
+    // element 1: hub.a
+    match &chain.elements[1].kind {
+        ExprKind::MemberAccess { object, member } => {
+            assert!(
+                matches!(object.kind, ExprKind::Ident(ref n) if n == "hub"),
+                "expected elem[1] object Ident(hub)"
+            );
+            assert_eq!(member, "a");
+        }
+        other => panic!("expected MemberAccess for elem[1], got {:?}", other),
+    }
+
+    // element 2: hub.b
+    match &chain.elements[2].kind {
+        ExprKind::MemberAccess { object, member } => {
+            assert!(
+                matches!(object.kind, ExprKind::Ident(ref n) if n == "hub"),
+                "expected elem[2] object Ident(hub)"
+            );
+            assert_eq!(member, "b");
+        }
+        other => panic!("expected MemberAccess for elem[2], got {:?}", other),
+    }
+}
+
 /// step-1: Parse `forall v in vents: connect v.inlet -> housing.air_channel`
 /// -> MemberDecl::ForallConnect with Connect body.
 #[test]
