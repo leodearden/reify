@@ -300,7 +300,7 @@ std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double dist
 // --- Transforms ---
 
 std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, double dy, double dz) {
-    try {
+    return wrap_occt_call("translate_shape", [&]() {
         gp_Trsf trsf;
         trsf.SetTranslation(gp_Vec(dx, dy, dz));
         BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
@@ -311,17 +311,11 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT translate_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT translate_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT translate_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad) {
-    try {
+    return wrap_occt_call("rotate_shape", [&]() {
         gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(ax, ay, az));
         gp_Trsf trsf;
         trsf.SetRotation(axis, angle_rad);
@@ -333,17 +327,11 @@ std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, doubl
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT rotate_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, double cx, double cy, double cz) {
-    try {
+    return wrap_occt_call("scale_shape", [&]() {
         gp_Trsf trsf;
         trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
         BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
@@ -354,20 +342,14 @@ std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, do
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT scale_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT scale_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT scale_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
     double px, double py, double pz,
     double ax, double ay, double az,
     double angle_rad) {
-    try {
+    return wrap_occt_call("rotate_around_shape", [&]() {
         // gp_Ax1 defines an axis through a point with a direction.
         // trsf.SetRotation(axis, angle) then rotates around that axis,
         // correctly handling the non-origin pivot point.
@@ -382,13 +364,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_around_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_around_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT rotate_around_shape: unknown C++ exception");
-    }
+    });
 }
 
 // --- Mirror / Pattern ---
@@ -396,7 +372,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
 std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
     double ox, double oy, double oz,
     double nx, double ny, double nz) {
-    try {
+    return wrap_occt_call("mirror_shape", [&]() {
         gp_Ax2 mirror_plane(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz));
         gp_Trsf trsf;
         trsf.SetMirror(mirror_plane);
@@ -408,19 +384,13 @@ std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT mirror_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT mirror_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT mirror_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
     double dx, double dy, double dz,
     uint32_t count, double spacing) {
-    try {
+    return wrap_occt_call("linear_pattern", [&]() {
         if (count < 1) {
             throw std::runtime_error("linear_pattern: count must be >= 1");
         }
@@ -454,13 +424,7 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT linear_pattern: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
@@ -468,7 +432,7 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
     uint32_t count1, double spacing1,
     double dx2, double dy2, double dz2,
     uint32_t count2, double spacing2) {
-    try {
+    return wrap_occt_call("linear_pattern_2d", [&]() {
         if (count1 < 1) {
             throw std::runtime_error("linear_pattern_2d: count1 must be >= 1");
         }
@@ -520,20 +484,14 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern_2d: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern_2d: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT linear_pattern_2d: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ox, double oy, double oz,
     double ax, double ay, double az,
     uint32_t count, double total_angle) {
-    try {
+    return wrap_occt_call("circular_pattern", [&]() {
         if (count < 1) {
             throw std::runtime_error("circular_pattern: count must be >= 1");
         }
@@ -561,18 +519,12 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT circular_pattern: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT circular_pattern: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT circular_pattern: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms) {
-    try {
+    return wrap_occt_call("arbitrary_pattern", [&]() {
         if (num_transforms == 0) {
             throw std::runtime_error("arbitrary_pattern: num_transforms must be > 0");
         }
@@ -605,13 +557,7 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT arbitrary_pattern: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT arbitrary_pattern: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT arbitrary_pattern: unknown C++ exception");
-    }
+    });
 }
 
 // --- Thicken / Shell ---
