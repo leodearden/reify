@@ -152,12 +152,9 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
-    let queries: Vec<GeometryQuery> = faces
-        .iter()
-        .map(|id| GeometryQuery::SurfaceArea(*id))
-        .collect();
-    let values = kernel.query_many(&queries)?;
-    check_query_many_len("faces_by_area", queries.len(), values.len())?;
+    let values = query_per_subshape(kernel, &faces, "faces_by_area", |id| {
+        GeometryQuery::SurfaceArea(id)
+    })?;
     let mut out = Vec::with_capacity(faces.len());
     for (id, value) in faces.iter().zip(values) {
         let area = expect_real("SurfaceArea", *id, value)?;
