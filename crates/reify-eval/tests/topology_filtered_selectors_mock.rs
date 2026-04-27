@@ -192,3 +192,22 @@ fn faces_by_normal_anti_parallel_target_is_rejected() {
         "anti-parallel face (-z normal, +z target) must be rejected even at 0.1 rad tolerance"
     );
 }
+
+#[test]
+fn faces_by_normal_zero_target_returns_query_failed() {
+    // normalize3 rejects vectors with magnitude below f64::EPSILON; the selector
+    // must surface a QueryFailed before touching the kernel at all.
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-zero and finite"),
+                "error should mention 'non-zero and finite', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed), got {:?}", other),
+    }
+}
