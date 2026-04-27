@@ -467,6 +467,58 @@ impl CacheStore {
             None
         }
     }
+
+    /// Insert a synthetic cache entry for a Realization node so that tests can
+    /// simulate state that `engine_build.rs` would normally create at
+    /// `build()` / `check()` time.
+    ///
+    /// ## Contract
+    ///
+    /// **What callers may depend on:**
+    /// - The entry exists under `NodeId::Realization(rid)` immediately after
+    ///   this call returns.
+    /// - `donate_warm_state(&NodeId::Realization(rid), …)` returns `true`
+    ///   (the entry is present, so warm state can be attached to it).
+    ///
+    /// **What callers must NOT depend on:**
+    /// - The specific `CachedResult` variant or any field's exact value.
+    ///   These are placeholders that may evolve as the cache schema changes.
+    ///   Tests that need to inspect the result payload should use the normal
+    ///   eval path instead.
+    ///
+    /// ## Why this exists
+    ///
+    /// `engine_build.rs` creates Realization cache entries on demand during
+    /// `build()` / `check()`, not during `edit_source()`.  Tests that exercise
+    /// the warm-state donation hook for Realization nodes must therefore
+    /// synthesize an entry before calling `edit_source`.  This helper
+    /// centralizes that synthesis so future schema changes (`CachedResult`
+    /// gaining a new variant, `NodeCache::new` gaining a parameter, etc.)
+    /// produce a single compile error here rather than silent breakage in
+    /// scattered test code.
+    ///
+    /// ## When to retire
+    ///
+    /// Once `engine_build.rs` or another engine path creates Realization cache
+    /// entries during `edit_source`, callers can switch to the normal eval path
+    /// and this helper becomes dead code.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn insert_synthetic_realization_entry(&mut self, rid: &RealizationNodeId) {
+        let node = NodeId::Realization(rid.clone());
+        self.put(
+            node,
+            NodeCache::new(
+                CachedResult::GeometryHandle(GeometryHandleId(0)),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(0),
+            ),
+        );
+    }
 }
 
 /// Compute the input hash for a value cell expression.
