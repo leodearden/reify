@@ -21,8 +21,11 @@
 use reify_compiler::geometry_traits_inference::{
     GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_modify,
     combine_pattern, combine_sweep, combine_transform, combine_union, infer_curve, infer_primitive,
+    infer_traits_for_op,
 };
-use reify_compiler::{CurveKind, PrimitiveKind};
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind,
+};
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
 
@@ -306,4 +309,50 @@ fn infer_curve_kind_yields_all_three_traits() {
             kind
         );
     }
+}
+
+// ─── infer_traits_for_op — walk Step-chain in op array ──────────────────────
+
+/// `infer_traits_for_op` walks a `GeomRef::Step` chain across the op array.
+/// `Boolean::Union` of two Box primitives propagates to `bounded_only` per
+/// the Boolean rule (Connected and Convex dropped).
+#[test]
+fn infer_traits_for_op_walks_union_of_two_boxes() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        },
+    ];
+    assert_eq!(infer_traits_for_op(2, &ops), InferredTraits::bounded_only());
+}
+
+/// `Modify::Fillet` of a Box primitive propagates to `bounded_connected`
+/// per `combine_modify` (Convex dropped, Bounded+Connected preserved).
+#[test]
+fn infer_traits_for_op_walks_modify_of_box() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Modify {
+            kind: ModifyKind::Fillet,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(
+        infer_traits_for_op(1, &ops),
+        InferredTraits::bounded_connected()
+    );
 }
