@@ -1092,8 +1092,8 @@ structure S {
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("sub-component") || d.message.contains("references unknown structure")),
-            "sub_component_unknown: expected a diagnostic containing 'sub-component' or \
+                .any(|d| d.message.contains("sub-component") && d.message.contains("references unknown structure")),
+            "sub_component_unknown: expected a diagnostic containing both 'sub-component' and \
              'references unknown structure'; got: {:#?}",
             diags
         );
