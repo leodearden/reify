@@ -1030,4 +1030,55 @@ mod tests {
             WarmStatePool::MAX_BUFFERED_EVENTS
         );
     }
+
+    /// Assert the release-build auto-trim: after donating more than `MAX_BUFFERED_EVENTS`
+    /// events without draining, the buffer stays bounded and the most-recent events
+    /// are preserved (oldest are discarded).
+    ///
+    /// # Why `#[cfg(not(debug_assertions))]`
+    /// In debug builds, `push_event`'s `debug_assert!` fires at the cap and panics
+    /// before the trim path is reached.  This test covers the release-mode path
+    /// exercised by the orchestrator's `cargo test -p reify-eval --release` pass.
+    ///
+    /// # What "keep newest" means
+    /// The auto-trim drops the oldest half of the buffer, so after overflow the last
+    /// event in `drain_events()` references the most-recently donated node.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn events_buffer_auto_trims_to_keep_recent_events_when_engine_never_drains() {
+        let mut pool = WarmStatePool::unlimited();
+
+        let total = WarmStatePool::MAX_BUFFERED_EVENTS + 100;
+        let mut last_node = NodeId::Value(reify_types::ValueCellId::new("T", "n0"));
+        for i in 0..total {
+            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+            last_node = node.clone();
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+
+        let events = pool.drain_events();
+
+        // (a) Buffer stayed bounded.
+        assert!(
+            events.len() <= WarmStatePool::MAX_BUFFERED_EVENTS,
+            "auto-trim: expected at most {} events after {} donations, got {}",
+            WarmStatePool::MAX_BUFFERED_EVENTS,
+            total,
+            events.len()
+        );
+
+        // (b) The last event references the most-recently donated node (newest kept).
+        let last_event_node = match events.last() {
+            Some(WarmPoolEvent::Donated { node_id, .. }) => node_id.clone(),
+            other => panic!(
+                "auto-trim: expected last event to be Donated, got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            last_event_node, last_node,
+            "auto-trim must keep newest events and discard oldest; \
+             last event should reference the final donated node"
+        );
+    }
 }
