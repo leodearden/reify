@@ -505,6 +505,73 @@ pub(crate) fn diff_realizations(
     })
 }
 
+/// Drop-guard for the `pending_warm_seeds` staging map used in `Engine::edit_source`
+/// between steps (4c) and (14b).
+///
+/// # Safety contract
+///
+/// `WarmStatePool::checkout` has take semantics — once an entry is removed from the
+/// pool it cannot be recovered except by re-donation.  The original code held the
+/// checked-out entries in a plain `HashMap`, meaning that any early-return (`?`),
+/// `return Err(...)`, or panic between (4c) and (14b) would silently discard state
+/// that was already taken from the pool.
+///
+/// This guard fixes that: it holds both the staging map **and** a `&mut WarmStatePool`
+/// reborrow.  On `Drop` it drains `self.map` and re-donates every surviving entry to
+/// `self.pool`, ensuring recoverability regardless of how the enclosing scope exits.
+///
+/// On the success path, call [`drain_into_cache_or_repool`](Self::drain_into_cache_or_repool)
+/// before the guard goes out of scope.  That method empties `self.map` so the natural
+/// `Drop` is a no-op (no double-donation).
+///
+/// # Borrow-checker note
+///
+/// The guard holds `&'a mut WarmStatePool` but no other `Engine` field.  Rust's
+/// disjoint-field borrow rules therefore allow the caller to hold simultaneous
+/// `&mut self.cache`, `&mut self.solver`, etc. while the guard is live.  Step (9)'s
+/// `donate_removed_warm_state` calls use [`pool_mut`](Self::pool_mut) to obtain a
+/// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
+/// directly.
+struct PendingWarmSeedsGuard<'a> {
+    map: HashMap<NodeId, reify_types::OpaqueState>,
+    pool: &'a mut WarmStatePool,
+}
+
+impl<'a> PendingWarmSeedsGuard<'a> {
+    /// Create a new guard wrapping `pool`.  The staging map starts empty.
+    fn new(pool: &'a mut WarmStatePool) -> Self {
+        Self {
+            map: HashMap::new(),
+            pool,
+        }
+    }
+
+    /// Insert a checked-out entry into the staging map.
+    fn insert(&mut self, nid: NodeId, state: reify_types::OpaqueState) {
+        self.map.insert(nid, state);
+    }
+
+    /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
+    /// the guard is live (e.g. step (9)'s `donate_removed_warm_state`).
+    fn pool_mut(&mut self) -> &mut WarmStatePool {
+        self.pool
+    }
+}
+
+impl Drop for PendingWarmSeedsGuard<'_> {
+    /// Re-donate all remaining staged entries back to the pool.
+    ///
+    /// This is the early-return / panic safety net: if `drain_into_cache_or_repool`
+    /// was already called (success path), `self.map` is empty and this is a no-op.
+    /// Otherwise every surviving entry is re-donated so the pool can recover it on
+    /// the next `edit_source` call.
+    fn drop(&mut self) {
+        for (nid, state) in self.map.drain() {
+            self.pool.donate(nid, state);
+        }
+    }
+}
+
 /// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap` and
 /// attempt to checkout warm state from `pool`. On `Some(state)`, insert into
 /// `sink`; on `None` (absent or LRU-evicted), the node falls through with
@@ -3780,6 +3847,7 @@ mod tests {
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
         use reify_types::OpaqueState;
+        use super::PendingWarmSeedsGuard;
 
         let mut pool = WarmStatePool::new(1024);
         assert_eq!(pool.used_bytes(), 0);
