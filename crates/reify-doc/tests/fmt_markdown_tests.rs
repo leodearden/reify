@@ -696,6 +696,46 @@ fn purpose_body_renders_direction_and_expression() {
     );
 }
 
+/// Purpose body uses safe inline-code fencing when `expr_repr` contains a
+/// literal backtick in the middle.  No leading/trailing backtick → no pad.
+/// `max_consecutive_backticks = 1` → fence_len = 2.
+#[test]
+fn purpose_body_uses_safe_inline_code_fence() {
+    // "minimize `area` + slack": one internal backtick run (length 1), no
+    // leading/trailing backtick → fence_len = 2, needs_pad = false.
+    let expr_repr = "minimize `area` + slack";
+    let item = ItemDoc::Purpose {
+        name: "min_area".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        expr_repr: expr_repr.into(),
+        direction: "minimize".into(),
+    };
+    let out = render_one_item(item);
+
+    // (a) Verbatim value must appear.
+    assert!(out.contains(expr_repr), "expr_repr not verbatim:\n{out}");
+
+    // (b) Single-backtick form: "**Expression:** `minimize `area` + slack`".
+    // The leading `**Expression:** ` prefix makes this unambiguous — the safe
+    // double-fence form starts with "``" after the space, not "`m".
+    let bad_form = format!("**Expression:** `{expr_repr}`");
+    assert!(
+        !out.contains(&bad_form),
+        "output uses single-backtick form:\n{out}"
+    );
+
+    // (c) Correct double-fence form (no pad — value neither starts nor ends
+    // with a backtick).
+    let fenced = format!("**Expression:** ``{expr_repr}``");
+    assert!(
+        out.contains(&fenced),
+        "Expression line not correctly fenced (`{fenced}`):\n{out}"
+    );
+}
+
 /// Unit variant emits `**Base:** \`{base_unit}\`` and
 /// `**Scale:** \`{scale}\`` lines.
 #[test]
