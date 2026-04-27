@@ -23,3 +23,7 @@ test-support = []
 [dev-dependencies]
 reify-test-support.workspace = true
 tokio = { workspace = true, features = ["time"] }
+# Enable test-instrumentation-gated accessors (e.g. Engine::last_param_override_type_kind_rejections)
+# for the inline #[cfg(test)] mod tests; mirrors the self-dev-dep pattern in crates/reify-eval/Cargo.toml.
+# Cargo unifies features only during dev/test builds — production builds are unaffected.
+reify-eval = { workspace = true, features = ["test-instrumentation"] }
