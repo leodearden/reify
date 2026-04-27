@@ -2503,6 +2503,13 @@ impl Engine {
         //       recoverable on a subsequent topology event. When those
         //       variants gain edit-time cache entries the donate-back
         //       path simply stops triggering.
+        //
+        //       Note that re-donation refreshes the entry's LRU access
+        //       time. This is acceptable for the current Constraint /
+        //       Realization paths because they're rare and bounded; if a
+        //       future variant routinely round-trips without a cache
+        //       consumer, switch this branch to a `donate_preserving_lru`
+        //       variant or push a "lru-stamp restore" through the pool API.
         for (nid, state) in pending_warm_seeds.drain() {
             if self.cache.get(&nid).is_some() {
                 self.cache.donate_warm_state(&nid, state);
