@@ -520,4 +520,89 @@ mod tests {
             "Tensor<2,3,Real>→Matrix<3,3,Real> composition should produce zero diagnostics (Rule 3)"
         );
     }
+
+    // ── Task 2343 step-1: collect_composed_field_dependencies extracts ────────
+    //   field-name FunctionCall references from a composed lambda body.
+    //
+    // Pins the contract used by `phase_augment_composed_captures` to seed the
+    // composed lambda's `captures` Vec with the field cell IDs it transitively
+    // reads — so that `extract_dependency_trace(composed_expr)` surfaces those
+    // deps via the existing `Lambda { captures, .. }` arm of
+    // `collect_value_refs_inner` in reify-types/src/expr.rs.
+
+    /// Synthetic composed-style expr `outer(inner(dummy))` and a registry
+    /// containing both `inner` and `outer` as fields: helper returns both
+    /// their `__field.<name>` cell IDs (deduplicated, order-independent).
+    #[test]
+    fn collect_composed_field_dependencies_finds_both_field_refs() {
+        let inner = make_field("inner", Type::Real, Type::Real);
+        let outer = make_field("outer", Type::Real, Type::Real);
+        let expr = make_composition_expr("outer", "inner");
+        let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
+        registry.insert("inner", &inner);
+        registry.insert("outer", &outer);
+
+        let deps = collect_composed_field_dependencies(&expr, &registry);
+
+        let inner_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "inner");
+        let outer_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "outer");
+        assert_eq!(
+            deps.len(),
+            2,
+            "expected exactly 2 field deps (inner, outer), got: {:?}",
+            deps
+        );
+        assert!(
+            deps.contains(&inner_id),
+            "deps should contain __field.inner, got: {:?}",
+            deps
+        );
+        assert!(
+            deps.contains(&outer_id),
+            "deps should contain __field.outer, got: {:?}",
+            deps
+        );
+    }
+
+    /// Repeated FunctionCall to the same registered field deduplicates to a
+    /// single entry. Pins the HashSet-based dedup contract.
+    #[test]
+    fn collect_composed_field_dependencies_deduplicates_repeated_refs() {
+        // Build `outer(outer(dummy))` — a self-nested call with the same
+        // outer name appearing twice. Even when the inner call resolves to
+        // the same field, the helper emits a single dep entry.
+        let outer = make_field("outer", Type::Real, Type::Real);
+        let expr = make_composition_expr("outer", "outer");
+        let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
+        registry.insert("outer", &outer);
+
+        let deps = collect_composed_field_dependencies(&expr, &registry);
+
+        let outer_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "outer");
+        assert_eq!(
+            deps.len(),
+            1,
+            "duplicate FunctionCall(outer) refs should dedupe to 1, got: {:?}",
+            deps
+        );
+        assert!(
+            deps.contains(&outer_id),
+            "deps should contain __field.outer, got: {:?}",
+            deps
+        );
+    }
+
+    /// FunctionCall whose name is NOT in the registry produces no dep.
+    /// Distinguishes field-call references from ordinary stdlib/user-fn calls.
+    #[test]
+    fn collect_composed_field_dependencies_ignores_non_field_calls() {
+        let expr = make_composition_expr("sin", "cos"); // neither is a field
+        let registry: HashMap<&str, &CompiledField> = HashMap::new();
+        let deps = collect_composed_field_dependencies(&expr, &registry);
+        assert!(
+            deps.is_empty(),
+            "non-field FunctionCalls should produce no deps, got: {:?}",
+            deps
+        );
+    }
 }
