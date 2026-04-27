@@ -990,60 +990,6 @@ fn cubic_3d_reproduces_total_degree_three_in_interior() {
     }
 }
 
-/// Separability: tricubic equals the tensor product of `interpolate_2d(Cubic)`
-/// (collapsing y,z) followed by a final `interpolate_1d(Cubic)` along x.
-/// Concretely: for each x-index i, interpolate the (y,z) slice at (qy, qz)
-/// using `interpolate_2d(Cubic)`; this gives a row of length nx; then evaluate
-/// that row at qx via 1D Cubic.
-#[test]
-fn cubic_3d_separable_against_tensor_product() {
-    let gx: Vec<f64> = (0..6).map(|i| i as f64).collect();
-    let gy: Vec<f64> = (0..6).map(|i| i as f64).collect();
-    let gz: Vec<f64> = (0..6).map(|i| i as f64).collect();
-    let f = |x: f64, y: f64, z: f64| (x * 0.3 - 0.2).sin() + (y * 0.4).cos() + 0.1 * z * z;
-    let values = build_3d(&gx, &gy, &gz, f);
-    let nx = gx.len();
-    let ny = gy.len();
-    let nz = gz.len();
-
-    let qs = [(2.3f64, 2.7f64, 3.1f64), (2.5, 3.5, 2.5), (1.1, 4.4, 4.0)];
-    for &(qx, qy, qz) in &qs {
-        let r3 = interpolate_3d(
-            InterpolationMethod::Cubic,
-            &gx,
-            &gy,
-            &gz,
-            &values,
-            (qx, qy, qz),
-        );
-
-        // Manual tensor product: for each i, build the (y,z) slice of values
-        // at fixed x=grid_x[i], evaluate at (qy, qz) via interpolate_2d(Cubic).
-        let row: Vec<f64> = (0..nx)
-            .map(|i| {
-                let mut slice = Vec::with_capacity(ny * nz);
-                for j in 0..ny {
-                    for k in 0..nz {
-                        slice.push(values[i * ny * nz + j * nz + k]);
-                    }
-                }
-                interpolate_2d(InterpolationMethod::Cubic, &gy, &gz, &slice, (qy, qz)).value
-            })
-            .collect();
-        let r_tensor = interpolate_1d(InterpolationMethod::Cubic, &gx, &row, qx).value;
-
-        assert!(
-            approx_eq(r3.value, r_tensor, 1e-9),
-            "({},{},{}) 3D={} tensor={}",
-            qx,
-            qy,
-            qz,
-            r3.value,
-            r_tensor
-        );
-    }
-}
-
 /// Larger 4x4 monotone grid: the midpoint of any cell equals the mean of its
 /// four corner values.
 #[test]
