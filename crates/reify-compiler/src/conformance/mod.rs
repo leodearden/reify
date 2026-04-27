@@ -3755,5 +3755,10 @@ mod tests {
             "expected exactly one label attached at the supplied span"
         );
         assert_eq!(d.labels[0].span, span);
+        assert_eq!(
+            d.labels[0].message,
+            "geometry argument 'g' is not Connected",
+            "label-text wording contract for trait_violation helper"
+        );
     }
 }
