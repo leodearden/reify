@@ -68,6 +68,26 @@ impl OcctKernel {
     ) -> Result<TopologyCacheBuildCounts, GeometryError> {
         Err(GeometryError::InvalidReference(handle))
     }
+
+    /// Stub topology-extraction selector — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernel::extract_edges` signature
+    /// so call sites compile under both `has_occt` and `!has_occt`.
+    pub fn extract_edges(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub topology-extraction selector — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernel::extract_faces` signature
+    /// so call sites compile under both `has_occt` and `!has_occt`.
+    pub fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
 }
 
 impl Default for OcctKernel {
@@ -160,6 +180,24 @@ impl GeometryKernel for OcctKernelHandle {
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
+    }
+
+    /// Override the trait default to surface the OCCT-unavailable message
+    /// (matches the inherent stub `OcctKernel::extract_edges`).
+    fn extract_edges(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Override the trait default to surface the OCCT-unavailable message
+    /// (matches the inherent stub `OcctKernel::extract_faces`).
+    fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 }
 
