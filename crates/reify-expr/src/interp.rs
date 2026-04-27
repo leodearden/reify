@@ -343,9 +343,14 @@ pub fn interpolate_2d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::NearestNeighbor => unreachable!(
-            "InterpolationMethod::NearestNeighbor 2D not yet implemented"
-        ),
+        InterpolationMethod::NearestNeighbor => {
+            let i = nearest_index_on_axis(grid_x, query.0);
+            let j = nearest_index_on_axis(grid_y, query.1);
+            InterpolationResult {
+                value: values[index_2d(i, j, grid_y.len())],
+                diagnostics: Vec::new(),
+            }
+        }
         InterpolationMethod::Cubic => unreachable!(
             "InterpolationMethod::Cubic 2D not yet implemented"
         ),
