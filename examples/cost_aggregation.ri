@@ -1,0 +1,49 @@
+// Example: Cost aggregation via the Money-dimension stdlib idiom (PRD §5).
+//
+// See `docs/prds/money-dimension.md` §202–245 for the design rationale.
+//
+// The pattern:
+//   1. Each line item conforms to `Costed : Buy` (in std/io). The trait
+//      requires `param quantity_produced : Real` on top of Buy's procurement
+//      params (supplier, part_number, unit_cost, lead_time) and exposes a
+//      `let line_cost : Money = unit_cost * quantity_produced` default.
+//   2. The assembly aggregates per-line `line_cost`s into `total_cost`
+//      using the dimension-preserving list-`.sum` builtin:
+//      `[self.bolts.line_cost, self.mounts.line_cost].sum : Scalar<Money>`.
+//
+// Concrete totals locked by tests:
+//   CapScrew    : 0.12 USD * 24.0 = 2.88 USD
+//   MotorMount  : 8.50 USD *  4.0 = 34.00 USD
+//   AssemblyBOM : sum                = 36.88 USD
+
+// ── Line item 1: CapScrew (a McMaster-Carr fastener) ────────────────────────
+
+structure def CapScrew : Costed {
+    param supplier          : String = "McMaster-Carr"
+    param part_number       : String = "91251A190"
+    param unit_cost         : Money  = 0.12USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 24.0
+}
+
+// ── Line item 2: MotorMount (an aluminium machined bracket) ─────────────────
+
+structure def MotorMount : Costed {
+    param supplier          : String = "Misumi"
+    param part_number       : String = "BNVAS25-30"
+    param unit_cost         : Money  = 8.50USD
+    param lead_time         : Time   = 72h
+    param quantity_produced : Real   = 4.0
+}
+
+// ── BOM-style assembly: aggregate per-line costs into a total ───────────────
+
+structure def AssemblyBOM {
+    sub bolts  = CapScrew()
+    sub mounts = MotorMount()
+
+    // Collect per-line costs, then sum.  `.sum` over a List<Scalar<Money>>
+    // preserves the Money dimension and produces a Scalar<Money> total.
+    let line_costs              = [self.bolts.line_cost, self.mounts.line_cost]
+    let total_cost : Money      = line_costs.sum
+}
