@@ -507,6 +507,13 @@ structure def Wire : ElectricallyConductive {
     assert_constraint_op(template, "volume", BinOp::Gt);
     // ElectricallyConductive's own `electrical_conductivity > 0`.
     assert_constraint_op(template, "electrical_conductivity", BinOp::Gt);
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "expected exactly 2 constraints from ElectricallyConductive+Physical+MaterialSpec \
+         (volume > 0, electrical_conductivity > 0), got {}",
+        template.constraints.len()
+    );
 }
 
 /// Same-module conformance: a structure conforming to ElasticallyDeformable
