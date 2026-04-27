@@ -2370,7 +2370,8 @@ mod tests {
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
     use super::{
-        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, reelaborate_guarded_group,
+        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged,
+        phase3_take_guard_val, reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
@@ -3278,5 +3279,38 @@ mod tests {
         let needs =
             group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
         assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
+    }
+
+    /// When guard_cell IS present in `values`, `phase3_take_guard_val` returns
+    /// `Some` with the stored value.
+    ///
+    /// This is the normal Phase 3 path: the guard cell was evaluated and lives
+    /// in the local value map; Phase 3 proceeds with the retrieved guard value.
+    #[test]
+    fn phase3_take_guard_val_returns_some_when_guard_cell_present() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+
+        let result = phase3_take_guard_val(&values, &guard_cell);
+        assert_eq!(result, Some(Value::Bool(true)));
+    }
+
+    /// When guard_cell is ABSENT from `values`, `phase3_take_guard_val` returns
+    /// `None`.
+    ///
+    /// This is the defensive-skip path (task 2229): `group_needs_phase3` can
+    /// return `true` via its absent-guard arm (`old_guard_val.is_some()` when
+    /// the guard cell is missing from `values`). Callers wrap
+    /// `phase3_take_guard_val` in `let Some(guard_val) = ... else { continue; }`
+    /// to skip the group defensively rather than panic, matching the behaviour
+    /// already established in `edit_source` Phase 3.
+    #[test]
+    fn phase3_take_guard_val_returns_none_when_guard_cell_absent() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let values = ValueMap::default(); // guard_cell absent
+
+        let result = phase3_take_guard_val(&values, &guard_cell);
+        assert_eq!(result, None);
     }
 }
