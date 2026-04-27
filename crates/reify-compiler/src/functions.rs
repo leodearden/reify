@@ -273,6 +273,14 @@ pub(crate) fn compile_field(
             }
         }
         reify_syntax::FieldSource::Sampled { config } => {
+            // Intentional asymmetry with the Imported arm below: we walk and compile
+            // the config block before emitting the deferral diagnostic so that
+            // (a) any malformed config expressions surface secondary diagnostics
+            // rather than being silently dropped, and (b) the resulting
+            // `CompiledFieldSource::Sampled { config }` is well-formed — keeping
+            // the `engine_eval.rs` Undef defence-in-depth arm reachable and the
+            // content-hash at lines below stable.  The compiled config is otherwise
+            // dead at runtime (engine_eval returns Undef for Sampled).
             let compiled_config: Vec<(String, CompiledExpr)> = config
                 .iter()
                 .map(|(key, val_expr)| {
