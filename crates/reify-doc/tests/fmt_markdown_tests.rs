@@ -4,6 +4,7 @@
 //! `fmt_markdown.rs` so that golden snapshots can be loaded via `include_str!` from
 //! sibling `tests/snapshots/` files without polluting the library binary.
 
+use reify_doc::cross_refs::CrossRefs;
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
 use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc,
@@ -25,6 +26,15 @@ fn render_one_item(item: ItemDoc) -> String {
 /// Helper: render the model in single-file mode and unwrap to `String`.
 fn render_single(model: &DocModel) -> String {
     match render_markdown(model, None, &MarkdownOptions::default()) {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(_) => panic!("expected Single output"),
+    }
+}
+
+/// Helper: render the model in single-file mode with a CrossRefs and unwrap to
+/// `String`.
+fn render_single_with_xrefs(model: &DocModel, xrefs: &CrossRefs) -> String {
+    match render_markdown(model, Some(xrefs), &MarkdownOptions::default()) {
         MarkdownOutput::Single(s) => s,
         MarkdownOutput::Split(_) => panic!("expected Single output"),
     }
@@ -751,6 +761,124 @@ fn optimized_annotation_emits_italic_note() {
     assert!(
         out.contains("*Optimized: `area`*"),
         "optimized italic note missing:\n{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-refs ("Conforms to" / "Used by")
+// ---------------------------------------------------------------------------
+
+/// Given a Structure "Bolt" and a CrossRefs whose `trait_to_conformers` maps
+/// "Fastener" → ["Bolt"], the Bolt section renders `### Conforms to` followed
+/// by `- [\`Fastener\`](#Fastener)`.
+#[test]
+fn cross_refs_conforms_to_renders_for_structure() {
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![bolt],
+            ..Default::default()
+        }],
+    };
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .trait_to_conformers
+        .insert("Fastener".into(), vec!["Bolt".into()]);
+    let out = render_single_with_xrefs(&model, &xrefs);
+
+    assert!(
+        out.contains("### Conforms to"),
+        "Conforms to H3 missing:\n{out}"
+    );
+    assert!(
+        out.contains("- [`Fastener`](#Fastener)"),
+        "Fastener anchor link missing:\n{out}"
+    );
+}
+
+/// Given an Occurrence "MCU" and a CrossRefs whose `entity_to_containers` maps
+/// "MCU" → ["Board"], the MCU section renders `### Used by` followed by
+/// `- [\`Board\`](#Board)`.
+#[test]
+fn cross_refs_used_by_renders_for_occurrence() {
+    let mcu = ItemDoc::Occurrence {
+        name: "MCU".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![mcu],
+            ..Default::default()
+        }],
+    };
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .entity_to_containers
+        .insert("MCU".into(), vec!["Board".into()]);
+    let out = render_single_with_xrefs(&model, &xrefs);
+
+    assert!(
+        out.contains("### Used by"),
+        "Used by H3 missing:\n{out}"
+    );
+    assert!(
+        out.contains("- [`Board`](#Board)"),
+        "Board anchor link missing:\n{out}"
+    );
+}
+
+/// When `cross_refs` is `None` (or empty), neither "Conforms to" nor "Used by"
+/// sections are emitted.
+#[test]
+fn cross_refs_omitted_when_absent_or_empty() {
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![bolt],
+            ..Default::default()
+        }],
+    };
+    // Case (a): None.
+    let none_out = render_single(&model);
+    assert!(
+        !none_out.contains("### Conforms to"),
+        "Conforms to should be absent when xrefs=None:\n{none_out}"
+    );
+    assert!(
+        !none_out.contains("### Used by"),
+        "Used by should be absent when xrefs=None:\n{none_out}"
+    );
+
+    // Case (b): Empty CrossRefs.
+    let empty_out = render_single_with_xrefs(&model, &CrossRefs::default());
+    assert!(
+        !empty_out.contains("### Conforms to"),
+        "Conforms to should be absent when xrefs empty:\n{empty_out}"
+    );
+    assert!(
+        !empty_out.contains("### Used by"),
+        "Used by should be absent when xrefs empty:\n{empty_out}"
     );
 }
 
