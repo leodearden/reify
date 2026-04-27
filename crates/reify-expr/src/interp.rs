@@ -36,6 +36,10 @@
 //! extrapolation). This avoids cascading `NaN`/`Undef` into downstream field
 //! arithmetic, matches typical engineering-CAD field behaviour, and keeps
 //! cubic from producing wildly off values via linear extrapolation.
+//!
+//! NaN queries propagate to a NaN value with no diagnostics; this is the
+//! IEEE 754 NaN-poisoning convention and matches the silent treatment of
+//! out-of-range queries.
 
 use reify_types::{Diagnostic, DiagnosticCode};
 
@@ -548,6 +552,9 @@ fn index_3d(i: usize, j: usize, k: usize, ny: usize, nz: usize) -> usize {
 /// (constant extrapolation). `Rbf`/`Kriging` fall back to `Linear` and emit a
 /// single deferred-method warning.
 ///
+/// If any component of `query` is NaN, returns a NaN value with no diagnostics
+/// (IEEE 754 NaN-poisoning convention: any-component-NaN poisons the result).
+///
 /// Panics if any axis has fewer than 2 points or `values.len()` does not match
 /// `grid_x.len() * grid_y.len() * grid_z.len()`.
 pub fn interpolate_3d(
@@ -579,6 +586,12 @@ pub fn interpolate_3d(
         grid_y.len(),
         grid_z.len()
     );
+    if query.0.is_nan() || query.1.is_nan() || query.2.is_nan() {
+        return InterpolationResult {
+            value: f64::NAN,
+            diagnostics: Vec::new(),
+        };
+    }
 
     match method {
         InterpolationMethod::Linear => {
