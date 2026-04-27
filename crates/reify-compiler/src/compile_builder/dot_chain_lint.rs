@@ -431,7 +431,6 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_syntax::{Expr, ExprKind};
     use reify_types::SourceSpan;
 
     /// Hitting the `MAX_EXPR_DEPTH` guard inside `walk_expr_depth` must fire
@@ -445,16 +444,19 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "MAX_EXPR_DEPTH")]
     fn walk_expr_depth_exceeding_max_depth_panics_in_debug_builds() {
-        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 2 layers of UnOp.
+        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of UnOp.
         // walk_expr_depth recurses via UnOp.operand (one frame per layer),
-        // so the (MAX_EXPR_DEPTH + 1)-th call satisfies depth > MAX_EXPR_DEPTH
-        // and trips the debug_assert! we are about to add.
+        // so the outermost wrapper is visited at depth 0, the innermost at
+        // depth MAX_EXPR_DEPTH (= 256, not yet tripped), and the leaf
+        // NumberLiteral is then called at depth MAX_EXPR_DEPTH + 1 (= 257)
+        // which satisfies `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
+        // This is the minimum wrapper count that trips the guard.
         let span = SourceSpan::empty(0);
         let mut expr = Expr {
             kind: ExprKind::NumberLiteral(0.0),
             span,
         };
-        for _ in 0..(MAX_EXPR_DEPTH + 2) {
+        for _ in 0..(MAX_EXPR_DEPTH + 1) {
             expr = Expr {
                 kind: ExprKind::UnOp {
                     op: "-".to_string(),
