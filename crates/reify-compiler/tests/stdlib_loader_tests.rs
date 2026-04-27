@@ -1,13 +1,14 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
 use reify_compiler::stdlib_loader;
+use reify_syntax::Pragma;
 use reify_test_support::{
     CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
     steel_elastic_source, steel_strong_source,
 };
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash,
-    ModulePath, Type,
+    ModulePath, SourceSpan, Type,
 };
 
 /// Recursively collect ValueRef member names from a compiled expression tree.
@@ -208,6 +209,55 @@ fn std_units_module_has_expected_units() {
     let s = units_module.units.iter().find(|u| u.name == "s").unwrap();
     assert_eq!(s.dimension, reify_types::DimensionVector::TIME);
     assert!((s.factor - 1.0).abs() < 1e-12);
+}
+
+// ─── step-2492: bidirectional #no_prelude invariant ─────────────────
+
+/// Synthetic fixture: a non-bootstrap module (`std/materials/thermal`) that
+/// incorrectly carries `#no_prelude` must cause the bidirectional invariant
+/// helper to panic, naming the offending path in the panic message.
+///
+/// This exercises the *inverse* direction of the invariant: any module whose
+/// path is NOT in the bootstrap `targets` list must NOT carry `#no_prelude`.
+/// The `#[should_panic(expected = "std/materials/thermal")]` attribute pins
+/// that the panic message names the offending path (substring match — wording
+/// tolerant), satisfying TDD's "test fails first" requirement by failing to
+/// compile until `assert_no_prelude_pragma_invariant_bidirectional` exists.
+#[test]
+#[should_panic(expected = "std/materials/thermal")]
+fn non_bootstrap_module_with_no_prelude_pragma_panics() {
+    let no_prelude = Pragma {
+        name: "no_prelude".to_string(),
+        args: vec![],
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Build a synthetic module set: std/units (bootstrap, pragma OK) plus
+    // std/materials/thermal (non-bootstrap, pragma is the planted violation).
+    let mut units_module = CompiledModuleBuilder::new(
+        ModulePath::from_dotted("std.units").unwrap(),
+    )
+    .build();
+    units_module.pragmas.push(no_prelude.clone());
+
+    let mut thermal_module = CompiledModuleBuilder::new(
+        ModulePath::from_dotted("std.materials.thermal").unwrap(),
+    )
+    .build();
+    thermal_module.pragmas.push(no_prelude);
+
+    let modules = vec![units_module, thermal_module];
+
+    let targets = [
+        "std/units",
+        "std/materials/mechanical",
+        "std/analysis",
+        "std/tolerancing",
+    ];
+
+    // Must panic naming "std/materials/thermal" because thermal is not a
+    // bootstrap target yet carries #no_prelude.
+    assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
 }
 
 // ─── step-2322: prelude bootstrap modules carry #no_prelude pragma ──
