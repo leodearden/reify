@@ -1088,4 +1088,48 @@ mod tests {
              last event should reference the final donated node"
         );
     }
+
+    /// Assert the once-per-session warn: a single `tracing::warn!` is emitted the
+    /// first time the auto-trim fires on a given pool instance, and subsequent trim
+    /// rounds on the same pool are silent.
+    ///
+    /// # Why `#[cfg(not(debug_assertions))]`
+    /// In debug builds, `push_event`'s `debug_assert!` fires at the cap, so the
+    /// auto-trim and warn paths are never reached.  This test covers the release-mode
+    /// path exercised by the orchestrator's `cargo test -p reify-eval --release` pass.
+    ///
+    /// # "Per-pool-instance" scoping
+    /// Each pool gets its own `auto_trim_warned: bool` field, so distinct pools each
+    /// emit their first-overflow warn independently.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn events_buffer_emits_tracing_warn_once_per_session_on_overflow() {
+        use std::sync::atomic::Ordering;
+        use reify_test_support::CountingSubscriberBuilder;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::warm_pool")
+            .build();
+        let warn_count = counters[&tracing::Level::WARN].clone();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut pool = WarmStatePool::unlimited();
+
+            // Donate enough events to overflow at least twice.
+            for i in 0..(WarmStatePool::MAX_BUFFERED_EVENTS * 2 + 100) {
+                let node =
+                    NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+                pool.donate(node, OpaqueState::new(0u8, 1));
+            }
+        });
+
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            1,
+            "warn-once-per-session: expected exactly 1 WARN from reify_eval::warm_pool \
+             when the events buffer overflows multiple times on the same pool instance; \
+             subsequent overflows must be silent"
+        );
+    }
 }
