@@ -8,7 +8,18 @@ use crate::model::DocModel;
 ///
 /// When `compact == false`, output is pretty-printed (multi-line, two-space
 /// indentation) via [`serde_json::to_string_pretty`].  When `compact == true`,
-/// output is the single-line `serde_json::to_string` form.
+/// output is the single-line `serde_json::to_string` form.  Field naming is
+/// `snake_case` throughout (enforced upstream by `#[serde(rename_all =
+/// "snake_case")]` on the [`DocModel`] graph and by `#[serde(tag = "kind",
+/// rename_all = "snake_case")]` on `ItemDoc`).
+///
+/// # Schema stability
+///
+/// The on-the-wire schema is the [`DocModel`] definition itself.  Per the
+/// `reify-doc` PRD (`docs/prds/reify-doc-tool.md` §"JSON"), downstream
+/// consumers can rely on the schema being **stable across v0.1 patch
+/// releases**.  There is **no backward-compat promise across v0.1 → v0.2** —
+/// the source `#version` pragma is the signal that consumers should re-pin.
 ///
 /// # Panics
 ///
