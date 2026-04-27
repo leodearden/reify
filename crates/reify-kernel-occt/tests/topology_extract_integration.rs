@@ -81,6 +81,50 @@ fn extract_edges_handles_have_edge_repr_kind() {
 }
 
 #[test]
+fn extract_faces_box_returns_six_distinct_face_handles() {
+    let (mut kernel, box_id) = box_kernel(10.0, 20.0, 30.0);
+
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces on a valid box should succeed");
+
+    assert_eq!(
+        faces.len(),
+        6,
+        "a 10x20x30 box has exactly 6 unique faces, got {}",
+        faces.len()
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for id in &faces {
+        assert_ne!(
+            *id, box_id,
+            "extracted face handle must differ from the source box handle"
+        );
+        assert_ne!(
+            *id,
+            GeometryHandleId::INVALID,
+            "extracted face handle must not be the INVALID sentinel"
+        );
+        assert!(
+            seen.insert(*id),
+            "duplicate face handle id {:?} in extract_faces result",
+            id
+        );
+        let repr = kernel
+            .repr_of(*id)
+            .unwrap_or_else(|| panic!("repr_of({:?}) returned None for an extracted face", id));
+        assert_eq!(
+            repr,
+            ReprKind::Face,
+            "extracted face handle {:?} should have ReprKind::Face, got {:?}",
+            id,
+            repr
+        );
+    }
+}
+
+#[test]
 fn extract_edges_invalid_handle_returns_invalid_reference() {
     // Fresh kernel — no shapes registered, so handle id 999 is unknown.
     let mut kernel = OcctKernel::new();
