@@ -12,16 +12,25 @@
 //! (`reify_kernel_occt::OCCT_AVAILABLE == false`), matching the established
 //! reify-eval convention (the `has_occt` cfg is only set inside
 //! reify-kernel-occt's own build script and is not visible here).
+//!
+//! `OcctKernelHandle` is used (not `OcctKernel`) because the selectors are
+//! generic over `K: GeometryKernel`, and only `OcctKernelHandle` implements
+//! that trait — `OcctKernel` exposes its operations as inherent methods.
 
 use reify_eval::topology_selectors;
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{GeometryHandleId, GeometryOp, Value};
 
-/// Helper: build a kernel containing one box of the given mm dimensions
-/// (converted to SI metres at the kernel boundary so length filters operate
-/// in m and area filters in m²) and return the kernel + its handle id.
-fn box_kernel(width_mm: f64, height_mm: f64, depth_mm: f64) -> (OcctKernel, GeometryHandleId) {
-    let mut kernel = OcctKernel::new();
+/// Helper: spawn a kernel handle, build a single box of the given mm
+/// dimensions (converted to SI metres at the kernel boundary so length
+/// filters operate in m and area filters in m²), and return the handle +
+/// its box id.
+fn box_handle(
+    width_mm: f64,
+    height_mm: f64,
+    depth_mm: f64,
+) -> (OcctKernelHandle, GeometryHandleId) {
+    let kernel = OcctKernelHandle::spawn();
     let h = kernel
         .execute(&GeometryOp::Box {
             width: Value::Real(width_mm * 1e-3),
@@ -45,7 +54,7 @@ fn edges_by_length_box_10x20x30_filters_to_x_axis_edges() {
     //   - 4 edges of length 30mm (= 0.030 m)
     //
     // Filtering by [9.5e-3, 10.5e-3] m must select exactly the four x-edges.
-    let (mut kernel, box_id) = box_kernel(10.0, 20.0, 30.0);
+    let (mut kernel, box_id) = box_handle(10.0, 20.0, 30.0);
 
     let result = topology_selectors::edges_by_length(&mut kernel, box_id, 9.5e-3, 10.5e-3)
         .expect("edges_by_length on a valid box should succeed");
