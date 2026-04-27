@@ -138,6 +138,106 @@ fn shared_edges_caches_edge_map_and_reuses_face_map_built_by_adjacent_faces() {
     );
 }
 
+// STRONG-EXCEPTION-GUARANTEE:
+//
+// The cache slot and build counter MUST advance atomically — either both update
+// on a successful MapShapes / MapShapesAndAncestors call, or neither updates on
+// a throw.  The lazy accessors must build into a local `unique_ptr` and only
+// move it into the slot after MapShapes returns successfully; otherwise a throw
+// would leave the slot non-null with an empty map while the counter stays 0,
+// masking the failure on every subsequent call (the non-null slot is treated as
+// "already built" and the empty map is returned forever).
+//
+// This test pins the observable half of that contract: counters advance
+// atomically with slot population on the happy path.  The throw path cannot be
+// exercised from the public FFI surface (OCCT only throws on OOM or in-memory
+// topology corruption, neither of which is reproducible here), so the invariant
+// for the throw path is enforced by code review and the inline
+// STRONG-EXCEPTION-GUARANTEE comments in occt_wrapper.cpp / occt_wrapper.h.
+
+/// All three lazy cache slots — face_map, edge_map, and edge_face_map — must
+/// advance their paired build counters atomically: each counter increments from
+/// 0 to 1 on the first call that populates the slot, then stays at 1 forever.
+/// Re-invoking the same queries many times must not increment any counter above 1.
+///
+/// This is the observable part of the strong-exception-guarantee contract:
+/// slot and counter are coupled — neither side advances unless MapShapes
+/// completes successfully.
+#[test]
+fn lazy_slots_advance_atomically_with_counters() {
+    let (kernel, box_id) = box_kernel();
+
+    // (1) Fresh shape — no slot has been built yet.
+    let counts = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts,
+        TopologyCacheBuildCounts {
+            face_map_builds: 0,
+            edge_map_builds: 0,
+            edge_face_map_builds: 0,
+        },
+        "step 1: fresh shape — expected (0,0,0), got {:?}",
+        counts
+    );
+
+    // (2) One AdjacentFaces call — populates face_map and edge_face_map only.
+    query_adjacent_faces(&kernel, box_id, 0);
+
+    let counts = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 0,
+            edge_face_map_builds: 1,
+        },
+        "step 2: after AdjacentFaces — expected (1,0,1), got {:?}",
+        counts
+    );
+
+    // (3) One SharedEdges call — populates edge_map; face_map already cached.
+    query_shared_edges(&kernel, box_id, 0, 1);
+
+    let counts = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 1,
+            edge_face_map_builds: 1,
+        },
+        "step 3: after SharedEdges — expected (1,1,1), got {:?}",
+        counts
+    );
+
+    // (4) All three slots are now warm.  Repeating queries must NOT increment
+    //     any counter — the caches must be reused, not rebuilt.
+    for _ in 0..5 {
+        query_adjacent_faces(&kernel, box_id, 0);
+        query_shared_edges(&kernel, box_id, 0, 1);
+    }
+
+    let counts = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 1,
+            edge_face_map_builds: 1,
+        },
+        "step 4: after 5 repeated rounds — counters must remain (1,1,1), got {:?}",
+        counts
+    );
+}
+
 /// After calling `AdjacentFaces` for every face of a 10×10×10 box (6 calls
 /// total), the face_map and edge_face_map caches should each have been built
 /// exactly once, and the edge_map should remain untouched (adjacent_faces
