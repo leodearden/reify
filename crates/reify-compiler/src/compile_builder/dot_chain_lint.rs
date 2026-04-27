@@ -475,6 +475,7 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
         ExprKind::Ident(name) => name.clone(),
         ExprKind::EnumAccess { type_name, variant } => format!("{type_name}.{variant}"),
         ExprKind::IndexAccess { .. } => "_[\u{2026}]".to_string(),
+        ExprKind::FunctionCall { .. } => "_(\u{2026})".to_string(),
         _ => "<expr>".to_string(),
     };
 
