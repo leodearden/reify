@@ -1774,10 +1774,15 @@ impl Engine {
                         &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                     );
 
-                    // Reuse the trace already built by detect_let_cycle; fall back to
-                    // recomputing only if the cell was not in the trace map (defensive).
+                    // Reuse the trace already built by detect_let_cycle. The lookup is
+                    // structurally guaranteed to succeed: detect_let_cycle constructs
+                    // let_traces from let_cells, and topological_sort (Kahn's algorithm)
+                    // emits sorted_lets ⊆ let_traces.keys(). An invariant violation here
+                    // would indicate detect_let_cycle was modified to drop entries while
+                    // still returning them in sorted_lets — surface that loud rather than
+                    // mask it with a defensive recomputation.
                     let trace = let_traces.get(&node_id).cloned()
-                        .unwrap_or_else(|| extract_dependency_trace(expr));
+                        .expect("sorted_lets ⊆ let_traces.keys() by detect_let_cycle invariant");
 
                     let cached_result =
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
