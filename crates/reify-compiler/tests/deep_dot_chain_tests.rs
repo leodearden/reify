@@ -572,3 +572,116 @@ structure S {
         "MemberDecl::Let.annotations[*].args",
     );
 }
+
+/// Position 18: `Declaration::Function.annotations[*].args` — deep chain
+/// inside an annotation arg on a function declaration.
+///
+/// The function body deliberately contains NO deep chain (result_expr = `w`,
+/// a single ident) so the asserted count of 1 isolates the warning to the
+/// annotation-arg position. Covers the `Function` arm in `walk_declaration`.
+#[test]
+fn walker_visits_function_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+fn my_fn(w: Real) -> Real { w }
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Function.annotations[*].args",
+    );
+}
+
+/// Position 19: `Declaration::Field.annotations[*].args` — deep chain inside
+/// an annotation arg on a field definition.
+///
+/// The field source (`analytical { |p| p }`) deliberately contains NO deep
+/// chain (lambda body = single ident `p`) so the asserted count of 1 isolates
+/// the warning to the annotation-arg position. Covers the `Field` arm in
+/// `walk_declaration`.
+#[test]
+fn walker_visits_field_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+field def my_field : Real -> Real { source = analytical { |p| p } }
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Field.annotations[*].args",
+    );
+}
+
+/// Position 20: `Declaration::Unit.annotations[*].args` — deep chain inside
+/// an annotation arg on a unit declaration.
+///
+/// The unit has no conversion expression so the asserted count of 1 isolates
+/// the warning to the annotation-arg position. Covers the `Unit` arm in
+/// `walk_declaration`.
+#[test]
+fn walker_visits_unit_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+unit meter : Length
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Unit.annotations[*].args",
+    );
+}
+
+/// Position 21: `Declaration::Enum.annotations[*].args` — deep chain inside
+/// an annotation arg on an enum declaration.
+///
+/// Enum bodies carry no embedded expressions; the asserted count of 1
+/// isolates the warning to the annotation-arg position. This was a
+/// previously no-op arm in `walk_declaration` (no body expressions) that now
+/// calls `walk_annotations`. Covers the `Enum` arm in `walk_declaration`.
+#[test]
+fn walker_visits_enum_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+enum Dir { In, Out }
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Enum.annotations[*].args",
+    );
+}
+
+/// Position 22: `Declaration::Import.annotations[*].args` — deep chain
+/// inside an annotation arg on an import declaration.
+///
+/// Import declarations carry no embedded expressions; the asserted count of 1
+/// isolates the warning to the annotation-arg position. This was a previously
+/// no-op arm in `walk_declaration` that now calls `walk_annotations`. Covers
+/// the `Import` arm in `walk_declaration`.
+#[test]
+fn walker_visits_import_decl_annotation_arg() {
+    let source = r#"@deprecated(a.b.c.d.e) import std.math"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Import.annotations[*].args",
+    );
+}
+
+/// Position 23: `Declaration::TypeAlias.annotations[*].args` — deep chain
+/// inside an annotation arg on a type alias declaration.
+///
+/// The alias body (`Force / Area`) is a BinOp over two idents with no deep
+/// chain, so the asserted count of 1 isolates the warning to the annotation-
+/// arg position. This was a previously no-op arm in `walk_declaration` that
+/// now calls `walk_annotations`. Covers the `TypeAlias` arm in
+/// `walk_declaration`.
+#[test]
+fn walker_visits_type_alias_decl_annotation_arg() {
+    let source = r#"@deprecated(a.b.c.d.e) type Pressure = Force / Area"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::TypeAlias.annotations[*].args",
+    );
+}
