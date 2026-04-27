@@ -71,6 +71,21 @@ fn doc_compile_error_exits_one_with_stderr() {
 }
 
 #[test]
+fn doc_missing_file_exits_one() {
+    let (status, stdout, stderr) = run_doc(&["nonexistent_file_2361.ri"]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "missing file must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error reading"),
+        "stderr should contain 'Error reading' for missing file, got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
