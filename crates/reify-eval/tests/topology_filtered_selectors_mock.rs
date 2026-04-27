@@ -292,3 +292,58 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
         result
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// edges_at_height
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn edges_at_height_z_window_inclusive_at_endpoints() {
+    // Predicate: (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m
+    // (both endpoints inclusive via <=).
+    //
+    // Layout (all edges are horizontal so zmin == zmax):
+    //   e_low       z = 0.000   (exactly tol below target when tol = 0.005)
+    //   e_at_target z = 0.005   (on the target plane)
+    //   e_high      z = 0.010   (exactly tol above target when tol = 0.005)
+    let parent = GeometryHandleId(1);
+    let e_low = GeometryHandleId(2);
+    let e_at_target = GeometryHandleId(3);
+    let e_high = GeometryHandleId(4);
+
+    let bbox_json = |z: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
+              \"xmax\":1.0,\"ymax\":1.0,\"zmax\":{z}}}",
+            z = z
+        ))
+    };
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e_low, e_at_target, e_high])
+        .with_bbox_result(e_low, bbox_json(0.000))
+        .with_bbox_result(e_at_target, bbox_json(0.005))
+        .with_bbox_result(e_high, bbox_json(0.010));
+
+    // Full tolerance tol=0.005 — both boundary edges are exactly at distance
+    // tol from the target plane, so the <= predicate must include them.
+    let all =
+        topology_selectors::edges_at_height(&mut kernel, parent, 0.005, 0.005)
+            .expect("edges_at_height should succeed with tol=0.005");
+    assert_eq!(
+        all,
+        vec![e_low, e_at_target, e_high],
+        "all three edges should be included when tol equals their z-distance from target"
+    );
+
+    // Tighter tolerance tol=0.0049 — boundary edges are now just outside the
+    // window (0.005 > 0.0049) and only the on-target edge survives.
+    let at_target_only =
+        topology_selectors::edges_at_height(&mut kernel, parent, 0.005, 0.0049)
+            .expect("edges_at_height should succeed with tol=0.0049");
+    assert_eq!(
+        at_target_only,
+        vec![e_at_target],
+        "only the on-target edge should survive when tol=0.0049 is just below the z-distance"
+    );
+}
