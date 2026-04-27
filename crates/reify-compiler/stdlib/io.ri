@@ -15,6 +15,17 @@
 //   3. Provenance is declared before trait Input so that `Input.provenance :
 //      Provenance` resolves through the structure-name set in the pre-pass.
 
+// ── Enumerations ─────────────────────────────────────────────────────────────
+
+// Why a part was removed from the design scope.
+enum DiscardReason { Offcut, Scrap, FailedInspection, Waste }
+
+// How a discarded part is disposed of.
+enum DisposalMethod { Recycle, Landfill, Reprocess }
+
+// The file or display format for an output sink.
+enum OutputFormat { STEP, STL, ThreeMF, Display }
+
 // ── Marker traits ────────────────────────────────────────────────────────────
 
 // Something enters design scope — raw stock, a purchased component, or an
