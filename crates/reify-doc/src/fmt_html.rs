@@ -11,7 +11,7 @@
 //! subsection for `@test`-annotated items.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::DocModel;
+use crate::model::{AnnotationDoc, DocModel, ItemDoc};
 
 /// Render a [`DocModel`] as one self-contained HTML5 document.
 ///
@@ -51,6 +51,9 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
         if let Some(doc) = module.doc.as_deref() {
             emit_paragraphs(&mut out, doc);
         }
+        for item in &module.items {
+            render_item(&mut out, item);
+        }
     }
 
     out.push_str("</body>\n");
@@ -87,6 +90,114 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
+}
+
+/// Render a single `ItemDoc` to `out` as `<section id="{name}">…</section>`.
+///
+/// Emits the `<h2>` heading using the visibility/keyword/name convention
+/// inherited from `fmt_markdown::item_keyword`.
+fn render_item(out: &mut String, item: &ItemDoc) {
+    let name = item_name(item);
+    let kw = item_keyword(item);
+    let vis = if item_is_pub(item) { "pub " } else { "" };
+
+    out.push_str("<section id=\"");
+    out.push_str(&html_escape(name));
+    out.push_str("\">\n");
+    out.push_str("<h2>");
+    out.push_str(vis);
+    out.push_str(kw);
+    out.push(' ');
+    out.push_str(&html_escape(name));
+    out.push_str("</h2>\n");
+    out.push_str("</section>\n");
+}
+
+/// Reify-source keyword displayed in the H2 heading for each `ItemDoc` variant.
+///
+/// Matches the conventions in `fmt_markdown::item_keyword` so the two
+/// formatters present the same surface vocabulary.  Differences from the
+/// JSON kind tag: `Field → "let"`, `TypeAlias → "type"`,
+/// `ConstraintDef → "constraint"`.
+fn item_keyword(item: &ItemDoc) -> &'static str {
+    match item {
+        ItemDoc::Structure { .. } => "structure",
+        ItemDoc::Occurrence { .. } => "occurrence",
+        ItemDoc::Trait { .. } => "trait",
+        ItemDoc::Function { .. } => "fn",
+        ItemDoc::Field { .. } => "let",
+        ItemDoc::Purpose { .. } => "purpose",
+        ItemDoc::Enum { .. } => "enum",
+        ItemDoc::Unit { .. } => "unit",
+        ItemDoc::TypeAlias { .. } => "type",
+        ItemDoc::ConstraintDef { .. } => "constraint",
+    }
+}
+
+/// Lookup the `name` field of any `ItemDoc` variant.
+fn item_name(item: &ItemDoc) -> &str {
+    match item {
+        ItemDoc::Structure { name, .. }
+        | ItemDoc::Occurrence { name, .. }
+        | ItemDoc::Trait { name, .. }
+        | ItemDoc::Function { name, .. }
+        | ItemDoc::Field { name, .. }
+        | ItemDoc::Purpose { name, .. }
+        | ItemDoc::Enum { name, .. }
+        | ItemDoc::Unit { name, .. }
+        | ItemDoc::TypeAlias { name, .. }
+        | ItemDoc::ConstraintDef { name, .. } => name,
+    }
+}
+
+/// Lookup the `is_pub` field of any `ItemDoc` variant.
+fn item_is_pub(item: &ItemDoc) -> bool {
+    match item {
+        ItemDoc::Structure { is_pub, .. }
+        | ItemDoc::Occurrence { is_pub, .. }
+        | ItemDoc::Trait { is_pub, .. }
+        | ItemDoc::Function { is_pub, .. }
+        | ItemDoc::Field { is_pub, .. }
+        | ItemDoc::Purpose { is_pub, .. }
+        | ItemDoc::Enum { is_pub, .. }
+        | ItemDoc::Unit { is_pub, .. }
+        | ItemDoc::TypeAlias { is_pub, .. }
+        | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub,
+    }
+}
+
+/// Lookup the optional doc-comment of any `ItemDoc` variant.
+#[allow(dead_code)]
+fn item_doc(item: &ItemDoc) -> Option<&str> {
+    match item {
+        ItemDoc::Structure { doc, .. }
+        | ItemDoc::Occurrence { doc, .. }
+        | ItemDoc::Trait { doc, .. }
+        | ItemDoc::Function { doc, .. }
+        | ItemDoc::Field { doc, .. }
+        | ItemDoc::Purpose { doc, .. }
+        | ItemDoc::Enum { doc, .. }
+        | ItemDoc::Unit { doc, .. }
+        | ItemDoc::TypeAlias { doc, .. }
+        | ItemDoc::ConstraintDef { doc, .. } => doc.as_deref(),
+    }
+}
+
+/// Lookup the annotations attached to any `ItemDoc` variant.
+#[allow(dead_code)]
+fn item_annotations(item: &ItemDoc) -> &[AnnotationDoc] {
+    match item {
+        ItemDoc::Structure { annotations, .. }
+        | ItemDoc::Occurrence { annotations, .. }
+        | ItemDoc::Trait { annotations, .. }
+        | ItemDoc::Function { annotations, .. }
+        | ItemDoc::Field { annotations, .. }
+        | ItemDoc::Purpose { annotations, .. }
+        | ItemDoc::Enum { annotations, .. }
+        | ItemDoc::Unit { annotations, .. }
+        | ItemDoc::TypeAlias { annotations, .. }
+        | ItemDoc::ConstraintDef { annotations, .. } => annotations,
+    }
 }
 
 /// Mirrors the iteration logic of [`crate::fmt_markdown::emit_paragraphs`].
