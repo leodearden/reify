@@ -1007,4 +1007,32 @@ mod tests {
             other => panic!("expected QueryFailed, got {:?}", other),
         }
     }
+
+    #[test]
+    fn query_per_subshape_accepts_shared_kernel_reference() {
+        // Proves that query_per_subshape accepts &K (shared reference).
+        // `let kernel` (NOT `let mut kernel`) means we can only form &kernel,
+        // not &mut kernel. Before the signature change (kernel: &mut K) this
+        // test fails to compile (E0308). After the change (kernel: &K) it
+        // compiles and verifies the helper still returns correct values through
+        // a shared reference (query_many is &self; counters use AtomicUsize).
+        let edge_ids = vec![GeometryHandleId(1101), GeometryHandleId(1102)];
+        let kernel = CountingKernel::new()
+            .with_response(GeometryHandleId(1101), Value::Real(0.001))
+            .with_response(GeometryHandleId(1102), Value::Real(0.002));
+
+        let values = query_per_subshape(
+            &kernel,
+            &edge_ids,
+            "shared_ref_test",
+            GeometryQuery::EdgeLength,
+        )
+        .expect("query_per_subshape should succeed with a shared kernel reference");
+
+        assert_eq!(
+            values,
+            vec![Value::Real(0.001), Value::Real(0.002)],
+            "helper must return values aligned with input ids through a shared reference"
+        );
+    }
 }
