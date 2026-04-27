@@ -1392,32 +1392,29 @@ mod tests {
         assert_eq!(resolve_enum_type("Direction", &[]), None);
     }
 
-    /// Regression lock: the unknown-name diagnostic message for `resolve_dimension_type`
-    /// must list every name from `reify_types::NAMED_DIMENSIONS` plus `"Dimensionless"`,
-    /// with no extras or omissions.
+    /// Regression lock: the unknown-name diagnostic for `resolve_dimension_type` must expose
+    /// every name from `reify_types::NAMED_DIMENSIONS` plus `"Dimensionless"` as a structured
+    /// `candidates` field, with no extras or omissions.
     ///
-    /// Uses exact set-membership rather than substring `contains` to avoid false positives
-    /// where one name is a substring of another (e.g. "Angle" ⊂ "SolidAngle",
-    /// "MagneticFlux" ⊂ "MagneticFluxDensity").
+    /// The `candidates` field is a machine-readable `Vec<String>` asserted via exact
+    /// set-membership — decoupled from the human-readable prose. A future reword of the message
+    /// (e.g. `"expected one of: A, B"` or `"valid names are A, B"`) cannot silently bypass this
+    /// assertion because it no longer parses prose at all.
     ///
-    /// This locks in the "diagnostic message is derived from the shared table" property.
-    /// If a future change hardcodes the message again (re-introducing drift), this test fails.
+    /// The prose message is checked only for shape (error-kind phrase + offending identifier),
+    /// never parsed for the names list.
     #[test]
     fn resolve_dimension_type_unknown_diagnostic_lists_all_named_dimensions() {
         let te = named_type_expr("Foo");
         let mut diagnostics = Vec::new();
         let _ = resolve_dimension_type(&te, &mut diagnostics);
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        let message = &diagnostics[0].message;
+        let diag = &diagnostics[0];
 
-        // The message format is: "unknown dimension type 'Foo': expected one of A, B, C, ..."
-        // Extract everything after "expected one of " and split on ", " for exact membership check.
-        let listed_names: std::collections::HashSet<&str> = message
-            .split("expected one of ")
-            .nth(1)
-            .expect("diagnostic message should contain 'expected one of'")
-            .split(", ")
-            .collect();
+        // Structural assertion: the candidate set carries the names list as a
+        // machine-readable Vec<String>, decoupled from the human-readable prose.
+        let listed_names: std::collections::HashSet<&str> =
+            diag.candidates.iter().map(String::as_str).collect();
 
         let expected_names: std::collections::HashSet<&str> = reify_types::NAMED_DIMENSIONS
             .iter()
@@ -1428,7 +1425,22 @@ mod tests {
         assert_eq!(
             listed_names,
             expected_names,
-            "diagnostic message listed names do not exactly match NAMED_DIMENSIONS + Dimensionless"
+            "diagnostic.candidates does not exactly match NAMED_DIMENSIONS + Dimensionless"
+        );
+
+        // Soft prose-shape check: the message should still be informative — name the
+        // kind of error and the offending identifier — but we no longer parse the
+        // names list out of it. A future reword (e.g. "expected one of: …" or
+        // "valid names are …") cannot silently bypass the candidate-set assertion.
+        assert!(
+            diag.message.contains("unknown dimension type"),
+            "diagnostic prose should describe the error kind; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("'Foo'"),
+            "diagnostic prose should name the offending identifier; got: {}",
+            diag.message
         );
     }
 }
