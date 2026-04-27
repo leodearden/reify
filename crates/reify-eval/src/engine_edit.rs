@@ -3875,4 +3875,55 @@ mod tests {
             "payload must be preserved through the drop re-donation"
         );
     }
+
+    /// `drain_into_cache_or_repool` empties `self.map` so the subsequent
+    /// natural `Drop` is a no-op (regression against double-donation).
+    ///
+    /// When neither entry has a matching cache entry, the drain re-donates
+    /// both to the pool.  After the guard goes out of scope `Drop` fires with
+    /// an empty map and does nothing, so `pool.used_bytes()` equals the sum
+    /// of the two original sizes (not double).
+    #[test]
+    fn pending_warm_seeds_guard_drain_into_cache_or_repool_makes_drop_inert() {
+        use crate::cache::{CacheStore, NodeId};
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::{ConstraintNodeId, OpaqueState};
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(4096);
+        let mut cache = CacheStore::new();
+
+        let val_nid = NodeId::Value(ValueCellId::new("T", "v"));
+        let con_nid = NodeId::Constraint(ConstraintNodeId::new("T", 0));
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(val_nid.clone(), OpaqueState::new(0xAAu8, 100));
+            pending.insert(con_nid.clone(), OpaqueState::new(0xBBu8, 50));
+            // Neither node has a cache entry → drain MUST re-donate both to pool.
+            pending.drain_into_cache_or_repool(&mut cache);
+            // Guard drops here with an empty map → Drop is a no-op.
+        }
+
+        assert_eq!(
+            pool.used_bytes(),
+            150,
+            "drain must donate each entry exactly once (no double-donation)"
+        );
+        assert_eq!(pool.len(), 2, "pool must have exactly 2 entries");
+        assert_eq!(
+            pool.checkout(&val_nid)
+                .expect("val entry must be in pool")
+                .downcast::<u8>(),
+            Some(0xAA),
+            "Value payload preserved"
+        );
+        assert_eq!(
+            pool.checkout(&con_nid)
+                .expect("constraint entry must be in pool")
+                .downcast::<u8>(),
+            Some(0xBB),
+            "Constraint payload preserved"
+        );
+    }
 }
