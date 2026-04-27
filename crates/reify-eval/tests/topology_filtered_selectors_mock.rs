@@ -167,3 +167,28 @@ fn faces_by_normal_exactly_aligned_face_at_zero_tolerance_is_accepted() {
         .expect("faces_by_normal should succeed for aligned face");
     assert_eq!(result, vec![face], "exactly-aligned face must be accepted at zero tolerance");
 }
+
+#[test]
+fn faces_by_normal_anti_parallel_target_is_rejected() {
+    // faces_by_normal is orientation-aware: a face whose normal is anti-parallel
+    // to the target (180° off) must be rejected even at a generous tolerance,
+    // distinguishing it from edges_parallel_to which accepts anti-parallel.
+    let parent = GeometryHandleId(1);
+    let face = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".into()), // -z normal
+        );
+
+    // Target is +z; tolerance 0.1 rad; anti-parallel -z is ~π rad away → rejected.
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1)
+        .expect("faces_by_normal should succeed");
+    assert_eq!(
+        result,
+        vec![],
+        "anti-parallel face (-z normal, +z target) must be rejected even at 0.1 rad tolerance"
+    );
+}
