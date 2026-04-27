@@ -569,6 +569,38 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a CenterOfMass query result for a specific handle and density.
+    ///
+    /// Matches `GeometryQuery::CenterOfMass { handle, density }` where `density`
+    /// must be exactly the same value (bits-equal) as provided here.
+    ///
+    /// For uniform-density bodies the center of mass equals the geometric centroid
+    /// so the expected `value` is typically a JSON-encoded `{"x":_,"y":_,"z":_}`
+    /// string, identical to what the `Centroid` variant returns.
+    ///
+    /// # Panics (debug)
+    /// Panics if `density` is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
+    pub fn with_center_of_mass_result(
+        mut self,
+        handle: GeometryHandleId,
+        density: f64,
+        value: Value,
+    ) -> Self {
+        debug_assert!(
+            !density.is_nan(),
+            "CenterOfMass density NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
+        );
+        self.typed_queries.insert(
+            QueryKey::CenterOfMass {
+                handle,
+                density_bits: density.to_bits(),
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure an InertiaTensor query result for a specific handle and density.
     ///
     /// Matches `GeometryQuery::InertiaTensor { handle, density }` where `density`
