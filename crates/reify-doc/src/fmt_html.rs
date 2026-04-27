@@ -51,6 +51,8 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
         if let Some(doc) = module.doc.as_deref() {
             emit_paragraphs(&mut out, doc);
         }
+        let non_tests: Vec<&ItemDoc> = module.items.iter().collect();
+        render_toc(&mut out, &non_tests);
         for item in &module.items {
             render_item(&mut out, item);
         }
@@ -90,6 +92,68 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
+}
+
+/// Stable group label for the TOC.  "Constants" buckets the long tail of
+/// value-like declarations (Field, Unit, TypeAlias, ConstraintDef, Purpose)
+/// per the PRD's six-group TOC.  Mirrors `fmt_markdown::item_group`.
+fn item_group(item: &ItemDoc) -> &'static str {
+    match item {
+        ItemDoc::Trait { .. } => "Traits",
+        ItemDoc::Structure { .. } => "Structures",
+        ItemDoc::Occurrence { .. } => "Occurrences",
+        ItemDoc::Enum { .. } => "Enums",
+        ItemDoc::Function { .. } => "Functions",
+        ItemDoc::Field { .. }
+        | ItemDoc::Unit { .. }
+        | ItemDoc::TypeAlias { .. }
+        | ItemDoc::ConstraintDef { .. }
+        | ItemDoc::Purpose { .. } => "Constants",
+    }
+}
+
+/// Render the table of contents inside `<nav>` with a `<h2>Contents</h2>`
+/// heading and one `<h3>{Group}</h3>` plus alphabetically-sorted
+/// `<li><a href="#name">name</a></li>` per non-empty group.  No-op when
+/// `items` is empty.
+fn render_toc(out: &mut String, items: &[&ItemDoc]) {
+    if items.is_empty() {
+        return;
+    }
+    // Fixed group order matching the PRD spec.
+    const GROUPS: &[&str] = &[
+        "Traits",
+        "Structures",
+        "Occurrences",
+        "Enums",
+        "Functions",
+        "Constants",
+    ];
+    out.push_str("<nav>\n");
+    out.push_str("<h2>Contents</h2>\n");
+    for &group in GROUPS {
+        let mut in_group: Vec<&&ItemDoc> =
+            items.iter().filter(|i| item_group(i) == group).collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        in_group.sort_by(|a, b| item_name(a).cmp(item_name(b)));
+        out.push_str("<h3>");
+        out.push_str(group);
+        out.push_str("</h3>\n");
+        out.push_str("<ul>\n");
+        for it in in_group {
+            let n = item_name(it);
+            let escaped = html_escape(n);
+            out.push_str("<li><a href=\"#");
+            out.push_str(&escaped);
+            out.push_str("\">");
+            out.push_str(&escaped);
+            out.push_str("</a></li>\n");
+        }
+        out.push_str("</ul>\n");
+    }
+    out.push_str("</nav>\n");
 }
 
 /// Render a single `ItemDoc` to `out` as `<section id="{name}">…</section>`.
