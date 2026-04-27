@@ -633,9 +633,15 @@ impl Engine {
         // — until then the two predicates must stay behaviourally identical.
         self.prune_param_overrides_against(&snapshot.graph);
 
-        // Build dependency structures from the graph
-        let reverse_index = ReverseDependencyIndex::build_from_graph(&snapshot.graph);
-        let trace_map = crate::deps::build_trace_map(&snapshot.graph);
+        // Build dependency structures from the graph plus the module's
+        // composed fields. Field-to-field deps land via the augmented
+        // `Lambda { captures, .. }` injected by the compiler's
+        // `phase_augment_composed_captures` post-pass.
+        let reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
+            &snapshot.graph,
+            &module.fields,
+        );
+        let trace_map = crate::deps::build_trace_map_and_fields(&snapshot.graph, &module.fields);
 
         // Set up demand registry: demand all value cells, constraints, and
         // realizations, then rebuild the cone. Shared helper keeps this in

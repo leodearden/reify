@@ -1386,13 +1386,19 @@ impl Engine {
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
 
-        // (3) Rebuild dependency structures against the NEW graph. Full
-        //     rebuild is O(nodes · avg_trace_size), matching cold eval(); see
-        //     the design-decision rationale in plan.json for why we don't
-        //     patch in place.
-        let new_reverse_index =
-            crate::deps::ReverseDependencyIndex::build_from_graph(&new_snapshot.graph);
-        let new_trace_map = crate::deps::build_trace_map(&new_snapshot.graph);
+        // (3) Rebuild dependency structures against the NEW graph plus the
+        //     module's composed fields. Full rebuild is O(nodes · avg_trace_size),
+        //     matching cold eval(); see the design-decision rationale in
+        //     plan.json for why we don't patch in place. Composed-field deps
+        //     are surfaced through the augmented `Lambda { captures, .. }`
+        //     injected by the compiler's `phase_augment_composed_captures`
+        //     post-pass — see `deps.rs::build_from_graph_and_fields`.
+        let new_reverse_index = crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
+            &new_snapshot.graph,
+            &module.fields,
+        );
+        let new_trace_map =
+            crate::deps::build_trace_map_and_fields(&new_snapshot.graph, &module.fields);
 
         // Shared demand-seeding helper with Engine::eval — see
         // `build_demand_for_graph` for the per-kind initialization.

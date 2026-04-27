@@ -82,11 +82,31 @@ impl ReverseDependencyIndex {
 
     /// Build a reverse dependency index from an EvaluationGraph.
     ///
-    /// Iterates all value cells (extracting deps from default_expr),
-    /// constraints (extracting deps from expr), and realizations
-    /// (extracting deps from operation args).
+    /// Thin wrapper over [`build_from_graph_and_fields`] with an empty
+    /// fields slice. Preserved for callers (e.g. tests) that have no
+    /// access to `module.fields`. Production paths in `engine_eval.rs`,
+    /// `engine_edit.rs`, and `engine_purposes.rs` use the `_and_fields`
+    /// variant so composed-field deps are registered alongside template
+    /// deps.
     pub fn build_from_graph(graph: &crate::graph::EvaluationGraph) -> Self {
-        use reify_compiler::ValueCellKind;
+        Self::build_from_graph_and_fields(graph, &[])
+    }
+
+    /// Build a reverse dependency index from an EvaluationGraph plus a
+    /// fields slice.
+    ///
+    /// Iterates all value cells (extracting deps from default_expr),
+    /// constraints (extracting deps from expr), realizations (extracting
+    /// deps from operation args), and finally each composed field — for
+    /// which `extract_dependency_trace` surfaces the augmented
+    /// `Lambda { captures, .. }` deps injected by the compiler's
+    /// `phase_augment_composed_captures` post-pass.
+    pub fn build_from_graph_and_fields(
+        graph: &crate::graph::EvaluationGraph,
+        fields: &[reify_compiler::CompiledField],
+    ) -> Self {
+        use reify_compiler::{CompiledFieldSource, ValueCellKind};
+        use reify_types::FIELD_ENTITY_PREFIX;
 
         let mut index = Self::new();
 
@@ -129,16 +149,53 @@ impl ReverseDependencyIndex {
             }
         }
 
+        // Composed fields: extract deps from the lambda expression — the
+        // compiler post-pass `phase_augment_composed_captures` already
+        // injected `__field.<name>` cells into the lambda's `captures`,
+        // so `extract_dependency_trace` surfaces them via the standard
+        // `Lambda { captures, .. }` arm.
+        for field in fields {
+            if let CompiledFieldSource::Composed { expr } = &field.source {
+                let trace = extract_dependency_trace(expr);
+                let field_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
+                let node_id = NodeId::Value(field_cell);
+                for cell in &trace.reads {
+                    index.add(cell.clone(), node_id.clone());
+                }
+            }
+        }
+
         index
     }
 }
 
 /// Build a forward dependency trace map for all nodes in the graph.
 ///
+/// Thin wrapper over [`build_trace_map_and_fields`] with an empty fields slice.
+/// Preserved for callers (e.g. tests, dirty.rs, engine_purposes.rs) that have no
+/// access to `module.fields`. Production paths in `engine_eval.rs` and
+/// `engine_edit.rs` use the `_and_fields` variant so composed-field traces
+/// are registered alongside template traces.
+pub fn build_trace_map(graph: &crate::graph::EvaluationGraph) -> HashMap<NodeId, DependencyTrace> {
+    build_trace_map_and_fields(graph, &[])
+}
+
+/// Build a forward dependency trace map for all nodes in the graph plus
+/// any composed fields supplied via `fields`.
+///
 /// Returns a HashMap<NodeId, DependencyTrace> that maps each node to
 /// the set of ValueCellIds it reads. Used by topological sort and demand cone.
-pub fn build_trace_map(graph: &crate::graph::EvaluationGraph) -> HashMap<NodeId, DependencyTrace> {
-    use reify_compiler::ValueCellKind;
+///
+/// Composed fields are keyed by `NodeId::Value(ValueCellId(FIELD_ENTITY_PREFIX, name))`,
+/// matching the cell IDs registered in `Snapshot::values` by the field elaboration
+/// loop in `engine_eval.rs`. The trace surfaces the augmented `Lambda { captures, .. }`
+/// deps injected by the compiler's `phase_augment_composed_captures` post-pass.
+pub fn build_trace_map_and_fields(
+    graph: &crate::graph::EvaluationGraph,
+    fields: &[reify_compiler::CompiledField],
+) -> HashMap<NodeId, DependencyTrace> {
+    use reify_compiler::{CompiledFieldSource, ValueCellKind};
+    use reify_types::FIELD_ENTITY_PREFIX;
 
     let mut traces = HashMap::new();
 
@@ -170,6 +227,18 @@ pub fn build_trace_map(graph: &crate::graph::EvaluationGraph) -> HashMap<NodeId,
             reads: res_node.auto_params.clone(),
         };
         traces.insert(NodeId::Resolution(res_node.id.clone()), trace);
+    }
+
+    // Composed fields: surface the augmented `Lambda { captures, .. }` deps
+    // (set by the compiler post-pass `phase_augment_composed_captures`) under
+    // the `NodeId::Value(__field.<name>)` key, matching how the elaboration
+    // loop in `engine_eval.rs` keys field cells in `snapshot.values`.
+    for field in fields {
+        if let CompiledFieldSource::Composed { expr } = &field.source {
+            let trace = extract_dependency_trace(expr);
+            let field_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
+            traces.insert(NodeId::Value(field_cell), trace);
+        }
     }
 
     traces
