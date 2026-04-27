@@ -238,6 +238,14 @@ struct GuardedParamCtx<'a> {
     functions: &'a [CompiledFunction],
     meta_map: &'a HashMap<String, HashMap<String, String>>,
     version: VersionId,
+    /// Mutable reference into `Engine::last_param_override_type_kind_rejections`.
+    /// Incremented by `emit_param_override_rejection_warning` for the `TypeKindMismatch` arm.
+    /// Disjoint borrow of a separate Engine field — coexists with the `journal`
+    /// and `cache` mutable borrows above.
+    type_kind_counter: &'a mut usize,
+    /// Mutable reference into `Engine::last_param_override_dimension_rejections`.
+    /// Incremented by `emit_param_override_rejection_warning` for the `ScalarDimensionMismatch` arm.
+    dimension_counter: &'a mut usize,
 }
 
 /// Emit a `cache.record_evaluation` + journal `Completed` event pair for a
@@ -418,15 +426,19 @@ fn emit_param_override_rejection_warning(
     cell_type: &reify_types::Type,
     override_val: &Value,
     rejection: &ParamOverrideRejection,
+    type_kind_counter: &mut usize,
+    dimension_counter: &mut usize,
 ) {
     match rejection {
         ParamOverrideRejection::TypeKindMismatch => {
+            *type_kind_counter += 1;
             diagnostics.push(Diagnostic::warning(format!(
                 "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
                 cell_id, cell_type, override_val
             )));
         }
         ParamOverrideRejection::ScalarDimensionMismatch { expected, got } => {
+            *dimension_counter += 1;
             diagnostics.push(Diagnostic::warning(format!(
                 "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
                 cell_id, expected, got
@@ -512,6 +524,8 @@ fn eval_guarded_group_param_cell(
                     &cell.cell_type,
                     v,
                     rejection,
+                    ctx.type_kind_counter,
+                    ctx.dimension_counter,
                 );
                 None
             }
@@ -602,6 +616,12 @@ impl Engine {
 
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
+
+        // Reset per-call test-instrumentation counters. These are always-present
+        // fields (no cfg-gate) so the resets need no conditional compilation.
+        self.last_param_override_type_kind_rejections = 0;
+        self.last_param_override_dimension_rejections = 0;
+        self.last_sub_component_unknown_structure_errors = 0;
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
         let snapshot_id = self.next_snapshot_id;
@@ -794,6 +814,8 @@ impl Engine {
                                     &cell.cell_type,
                                     v,
                                     rejection,
+                                    &mut self.last_param_override_type_kind_rejections,
+                                    &mut self.last_param_override_dimension_rejections,
                                 );
                                 None
                             }
@@ -937,6 +959,8 @@ impl Engine {
                     functions: &functions,
                     meta_map: &self.meta_map,
                     version,
+                    type_kind_counter: &mut self.last_param_override_type_kind_rejections,
+                    dimension_counter: &mut self.last_param_override_dimension_rejections,
                 };
 
                 // Evaluate members (active when guard is true)
@@ -1049,6 +1073,7 @@ impl Engine {
                 let child_template = match find_template(&module.templates, &sub.structure_name) {
                     Some(t) => t,
                     None => {
+                        self.last_sub_component_unknown_structure_errors += 1;
                         diagnostics.push(Diagnostic::error(format!(
                             "sub-component \"{}\" references unknown structure \"{}\"",
                             sub.name, sub.structure_name
@@ -1415,6 +1440,11 @@ impl Engine {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let mut stats = CacheStats::default();
 
+        // Reset per-call test-instrumentation counters (same as eval()).
+        self.last_param_override_type_kind_rejections = 0;
+        self.last_param_override_dimension_rejections = 0;
+        self.last_sub_component_unknown_structure_errors = 0;
+
         // Build meta_map from module templates (same logic as eval()).
         // This ensures MetaAccess expressions resolve correctly even when
         // eval_cached is called without a prior eval().
@@ -1549,6 +1579,8 @@ impl Engine {
                             &cell.cell_type,
                             override_val,
                             rej,
+                            &mut self.last_param_override_type_kind_rejections,
+                            &mut self.last_param_override_dimension_rejections,
                         );
                     }
 
@@ -1797,6 +1829,7 @@ impl Engine {
             // this is lookup-only by design (see design decision in plan).
             for sub in &template.sub_components {
                 if find_template(&module.templates, &sub.structure_name).is_none() {
+                    self.last_sub_component_unknown_structure_errors += 1;
                     diagnostics.push(Diagnostic::error(format!(
                         "sub-component \"{}\" references unknown structure \"{}\"",
                         sub.name, sub.structure_name

@@ -278,6 +278,36 @@ pub struct Engine {
     /// role (task 2170).
     #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
+    /// Count of param-override rejections due to `TypeKindMismatch` during the
+    /// most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
+    /// of each call. Incremented inside `emit_param_override_rejection_warning`
+    /// for the `TypeKindMismatch` arm.
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_param_override_type_kind_rejections()` in `engine_admin.rs`.
+    /// The field itself is always present (module-private, no `pub`) so that
+    /// writer sites in `engine_eval.rs` need no cfg-gating.
+    last_param_override_type_kind_rejections: usize,
+    /// Count of param-override rejections due to `ScalarDimensionMismatch` during
+    /// the most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
+    /// of each call. Incremented inside `emit_param_override_rejection_warning`
+    /// for the `ScalarDimensionMismatch` arm.
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_param_override_dimension_rejections()` in `engine_admin.rs`.
+    /// The field itself is always present (module-private, no `pub`) so that
+    /// writer sites in `engine_eval.rs` need no cfg-gating.
+    last_param_override_dimension_rejections: usize,
+    /// Count of sub-component elaboration errors due to an unknown structure
+    /// reference during the most recent `eval()` or `eval_cached()` call.
+    /// Reset to 0 at the start of each call. Incremented directly at both
+    /// writer sites in `engine_eval.rs` (eval path and eval_cached path).
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_sub_component_unknown_structure_errors()` in `engine_admin.rs`.
+    /// The field itself is always present (module-private, no `pub`) so that
+    /// writer sites in `engine_eval.rs` need no cfg-gating.
+    last_sub_component_unknown_structure_errors: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.
