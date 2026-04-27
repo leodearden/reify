@@ -13,7 +13,7 @@
 mod common;
 
 use reify_compiler::{DefaultKind, RequirementKind, stdlib_loader};
-use reify_types::{DimensionVector, Severity, Type};
+use reify_types::{DimensionVector, ModulePath, Severity, Type};
 
 // ─── Helper: locate the std/io module ────────────────────────────────────────
 
@@ -205,5 +205,84 @@ structure def CapScrew : Costed {
         Type::Scalar { dimension: DimensionVector::MONEY },
         "CapScrew.line_cost should have type Scalar<MONEY>, got {:?}",
         line_cost_cell.cell_type
+    );
+}
+
+// ─── step-9: examples/cost_aggregation.ri compiles clean under stdlib ────────
+
+/// The canonical example file `examples/cost_aggregation.ri` must parse,
+/// compile under the stdlib prelude with zero Error diagnostics, and expose
+/// an `AssemblyBOM` template carrying a `total_cost` cell of type
+/// `Scalar<MONEY>`.
+///
+/// Mirrors the `m5_purpose_example_compiles_under_stdlib_with_zero_errors`
+/// pattern (`purpose_compile_tests.rs:719-755`): CARGO_MANIFEST_DIR-anchored
+/// path, `read_to_string` with explicit panic, `parse` + assert no parse
+/// errors, `compile_with_stdlib` + filter to Severity::Error, assert empty.
+///
+/// RED before step-10: the example file does not exist; `read_to_string`
+/// panics with "failed to read examples/cost_aggregation.ri".
+#[test]
+fn cost_aggregation_example_compiles_under_stdlib_with_zero_errors() {
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/cost_aggregation.ri"
+    );
+    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+        "failed to read examples/cost_aggregation.ri — check CARGO_MANIFEST_DIR resolution",
+    );
+
+    let parsed = reify_syntax::parse(&src, ModulePath::single("cost_aggregation"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in cost_aggregation.ri: {:?}",
+        parsed.errors
+    );
+
+    let module = reify_compiler::compile_with_stdlib(&parsed);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics compiling cost_aggregation.ri under stdlib, got:\n{:#?}",
+        errors
+    );
+
+    let assembly = module
+        .templates
+        .iter()
+        .find(|t| t.name == "AssemblyBOM")
+        .unwrap_or_else(|| {
+            panic!(
+                "AssemblyBOM template should be present in compiled cost_aggregation.ri; \
+                 found templates: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+
+    let total_cost_cell = assembly
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "total_cost")
+        .unwrap_or_else(|| {
+            panic!(
+                "AssemblyBOM should carry a 'total_cost' value cell; found cells: {:?}",
+                assembly
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        total_cost_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::MONEY },
+        "AssemblyBOM.total_cost should have type Scalar<MONEY>, got {:?}",
+        total_cost_cell.cell_type
     );
 }
