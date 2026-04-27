@@ -258,3 +258,21 @@ fn edges_parallel_to_anti_parallel_tangent_is_accepted() {
         "anti-parallel tangent (-x) must be accepted when axis is +x (orientation-agnostic)"
     );
 }
+
+#[test]
+fn edges_parallel_to_zero_axis_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [0.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-zero and finite"),
+                "error should mention 'non-zero and finite', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for zero axis, got {:?}", other),
+    }
+}
