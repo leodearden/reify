@@ -48,13 +48,7 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let (
-        inferred_let_exprs,
-        pass1_skipped,
-        pass1_param_skipped,
-        pass2_skipped,
-        pass2_compile_errors,
-    ) = check_phase_pre_register_default_types(
+    let pre = check_phase_pre_register_default_types(
         &ctx,
         &structure_all_members,
         structure.name,
@@ -66,11 +60,11 @@ pub(crate) fn check_trait_conformance(
 
     let available_defaults = check_phase_build_available_defaults_map(
         &ctx,
-        &inferred_let_exprs,
-        &pass1_skipped,
-        &pass1_param_skipped,
-        &pass2_skipped,
-        &pass2_compile_errors,
+        &pre.inferred_let_exprs,
+        &pre.pass1_skipped,
+        &pre.pass1_param_skipped,
+        &pre.pass2_skipped,
+        &pre.pass2_compile_errors,
     );
 
     check_phase_check_members_against_requirements(
@@ -87,11 +81,11 @@ pub(crate) fn check_trait_conformance(
         structure,
         &structure_all_members,
         &structure_constraint_labels,
-        inferred_let_exprs,
-        &pass1_skipped,
-        &pass1_param_skipped,
-        &pass2_skipped,
-        &pass2_compile_errors,
+        pre.inferred_let_exprs,
+        &pre.pass1_skipped,
+        &pre.pass1_param_skipped,
+        &pre.pass2_skipped,
+        &pre.pass2_compile_errors,
         scope,
         value_cells,
         constraints,
@@ -1052,13 +1046,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         // --- Phase 3: pre-register default types ---
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let pre = check_phase_pre_register_default_types(
             &ctx,
             &structure_all_members,
             "S",
@@ -1071,21 +1059,21 @@ mod tests {
         // Sanity: pass2_skipped must contain "x" for the guard path to be exercised.
         // If this fails, the fixture is misconfigured and would not test the guard at all.
         assert!(
-            pass2_skipped.contains("x"),
+            pre.pass2_skipped.contains("x"),
             "Fixture sanity failed: expected 'x' in pass2_skipped after Pass 2 found its scope \
              slot already claimed by the annotated Let; the guard path would not be exercised. \
              Got pass2_skipped = {:?}",
-            pass2_skipped
+            pre.pass2_skipped
         );
 
         // --- Phase 4: build available defaults map ---
         let available_defaults = check_phase_build_available_defaults_map(
             &ctx,
-            &inferred_let_exprs,
-            &pass1_skipped,
-            &pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
+            &pre.inferred_let_exprs,
+            &pre.pass1_skipped,
+            &pre.pass1_param_skipped,
+            &pre.pass2_skipped,
+            &pre.pass2_compile_errors,
         );
 
         // --- Phase 5: check members against requirements (no structure members) ---
@@ -1709,7 +1697,7 @@ mod tests {
     /// Verifies that the helper registers an annotated Param default into the scope
     /// (Pass 1) and returns empty caches (no unannotated Let defaults to process).
     /// This test fails to compile until the helper exists (TDD compile-tripwire) and
-    /// pins the helper's return type signature.
+    /// pins the helper's `PreRegisterOutput` return type.
     #[test]
     fn check_phase_pre_register_default_types_registers_annotated_param_into_scope() {
         let param_decl = reify_syntax::ParamDecl {
@@ -1737,13 +1725,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1759,31 +1741,31 @@ mod tests {
             diagnostics
         );
         assert!(
-            inferred_let_exprs.is_empty(),
+            out.inferred_let_exprs.is_empty(),
             "Expected no inferred_let_exprs for a param-only context"
         );
         // Negative control: a param-only fixture must never populate pass1_skipped
         // (no annotated-Let losers can exist without an annotated Let in ctx.defaults).
         assert!(
-            pass1_skipped.is_empty(),
+            out.pass1_skipped.is_empty(),
             "Expected pass1_skipped to be empty for a param-only context; \
              got: {:?}",
-            pass1_skipped
+            out.pass1_skipped
         );
         // Negative control: a param-only fixture (single Param, no competing annotated Let)
         // must never populate pass1_param_skipped (no Param can lose without a prior annotated Let).
         assert!(
-            pass1_param_skipped.is_empty(),
+            out.pass1_param_skipped.is_empty(),
             "Expected pass1_param_skipped to be empty for a param-only context; \
              got: {:?}",
-            pass1_param_skipped
+            out.pass1_param_skipped
         );
         assert!(
-            pass2_skipped.is_empty(),
+            out.pass2_skipped.is_empty(),
             "Expected no pass2_skipped for a param-only context"
         );
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected no pass2_compile_errors for a param-only context"
         );
         // Verify "x" was registered in scope: a second register_if_absent call for "x"
@@ -1833,13 +1815,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1858,33 +1834,33 @@ mod tests {
         // pass1_skipped (no annotated-Let loser can exist without a competing
         // annotated default earlier in ctx.defaults).
         assert!(
-            pass1_skipped.is_empty(),
+            out.pass1_skipped.is_empty(),
             "Expected pass1_skipped to be empty for a unannotated-let-only context; \
              got: {:?}",
-            pass1_skipped
+            out.pass1_skipped
         );
         // Negative control: an unannotated-Let-only fixture (no Param, no annotated Let)
         // must never populate pass1_param_skipped.
         assert!(
-            pass1_param_skipped.is_empty(),
+            out.pass1_param_skipped.is_empty(),
             "Expected pass1_param_skipped to be empty for an unannotated-let-only context; \
              got: {:?}",
-            pass1_param_skipped
+            out.pass1_param_skipped
         );
         assert!(
-            pass2_skipped.is_empty(),
+            out.pass2_skipped.is_empty(),
             "Expected no pass2_skipped when no scope collision occurred"
         );
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected no pass2_compile_errors for a successful compilation"
         );
         assert!(
-            inferred_let_exprs.contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
+            out.inferred_let_exprs.contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
             "Expected composite key ('y', Let) in inferred_let_exprs after Pass 2 compiled the unannotated let"
         );
         assert_eq!(
-            inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
+            out.inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
             Type::Real,
             "Expected Type::Real for a floating-point number literal 2.5"
         );
@@ -1952,13 +1928,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1970,33 +1940,33 @@ mod tests {
 
         // The collision must be recorded in pass2_skipped, not the expression cache.
         assert!(
-            inferred_let_exprs.is_empty(),
+            out.inferred_let_exprs.is_empty(),
             "Expected inferred_let_exprs to be empty when Pass 2 finds a scope collision; \
              got: {:?}",
-            inferred_let_exprs.keys().collect::<Vec<_>>()
+            out.inferred_let_exprs.keys().collect::<Vec<_>>()
         );
         assert!(
-            pass2_skipped.contains("x"),
+            out.pass2_skipped.contains("x"),
             "Expected 'x' in pass2_skipped after Pass 2 found its scope slot already claimed"
         );
         // Negative control: an unannotated Let losing to a Param goes into pass2_skipped,
         // NOT pass1_skipped. The two sets are mutually exclusive by cell_type predicate.
         assert!(
-            pass1_skipped.is_empty(),
+            out.pass1_skipped.is_empty(),
             "Expected pass1_skipped to be empty: the unannotated-Let loser is recorded in \
              pass2_skipped, not pass1_skipped; got: {:?}",
-            pass1_skipped
+            out.pass1_skipped
         );
         // Negative control: unannotated Let losing to a Param must not populate
         // pass1_param_skipped (only Param losers to an annotated Let go there).
         assert!(
-            pass1_param_skipped.is_empty(),
+            out.pass1_param_skipped.is_empty(),
             "Expected pass1_param_skipped to be empty: the unannotated-Let loser goes into \
              pass2_skipped, not pass1_param_skipped; got: {:?}",
-            pass1_param_skipped
+            out.pass1_param_skipped
         );
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected no pass2_compile_errors for a successful compilation"
         );
     }
@@ -2026,10 +1996,6 @@ mod tests {
     /// - `inferred_let_exprs.is_empty()`: no expression compiled (annotated Lets skip Pass 2).
     /// - `pass2_compile_errors.is_empty()`: no compile errors (no Pass 2 expressions attempted).
     /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
-    ///
-    /// **COMPILE-TRIPWIRE**: this test fails to compile until step-3 changes
-    /// `check_phase_pre_register_default_types` to return a 4-tuple
-    /// `(inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors)`.
     #[test]
     fn check_phase_pre_register_default_types_records_collision_in_pass1_skipped() {
         let param_decl = reify_syntax::ParamDecl {
@@ -2085,16 +2051,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
-        // return type from (HashMap, HashSet, HashSet, HashSet) to
-        // (HashMap, HashSet, HashSet, HashSet, HashSet), adding pass1_param_skipped.
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            _pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -2106,30 +2063,30 @@ mod tests {
 
         // The annotated-Let loser must be recorded in pass1_skipped.
         assert!(
-            pass1_skipped.contains("x"),
+            out.pass1_skipped.contains("x"),
             "Expected 'x' in pass1_skipped after Pass 1 found the annotated Let's scope slot \
              already claimed by the Param; got pass1_skipped = {:?}",
-            pass1_skipped
+            out.pass1_skipped
         );
         // No unannotated Let reached Pass 2, so pass2_skipped must be empty.
         assert!(
-            pass2_skipped.is_empty(),
+            out.pass2_skipped.is_empty(),
             "Expected pass2_skipped to be empty — no unannotated Let was processed; \
              got: {:?}",
-            pass2_skipped
+            out.pass2_skipped
         );
         // No expression was compiled (annotated Lets skip Pass 2).
         assert!(
-            inferred_let_exprs.is_empty(),
+            out.inferred_let_exprs.is_empty(),
             "Expected inferred_let_exprs to be empty — annotated Lets do not go through \
              Pass 2 inference; got: {:?}",
-            inferred_let_exprs.keys().collect::<Vec<_>>()
+            out.inferred_let_exprs.keys().collect::<Vec<_>>()
         );
         // No compile-error names (no Pass 2 compilation was attempted).
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected pass2_compile_errors to be empty; got: {:?}",
-            pass2_compile_errors
+            out.pass2_compile_errors
         );
         // register_if_absent conflicts are debug-log only — no diagnostic emitted.
         assert!(
@@ -2165,10 +2122,6 @@ mod tests {
     /// - `pass2_compile_errors.is_empty()`: no compile errors (no Pass 2 expressions attempted).
     /// - `inferred_let_exprs.is_empty()`: no expression cached (annotated Lets skip Pass 2).
     /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
-    ///
-    /// **COMPILE-TRIPWIRE**: this test fails to compile until step-2 changes
-    /// `check_phase_pre_register_default_types` to return a 5-tuple
-    /// `(inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors)`.
     #[test]
     fn check_phase_pre_register_default_types_records_collision_in_pass1_param_skipped() {
         // Annotated Let: cell_type = Some(Type::length()) — wins the scope slot first.
@@ -2224,15 +2177,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
-        // return type to (HashMap, HashSet, HashSet, HashSet, HashSet).
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -2244,37 +2189,37 @@ mod tests {
 
         // The Param loser must be recorded in pass1_param_skipped.
         assert!(
-            pass1_param_skipped.contains("x"),
+            out.pass1_param_skipped.contains("x"),
             "Expected 'x' in pass1_param_skipped after Pass 1 found the Param's scope slot \
              already claimed by the annotated Let; got pass1_param_skipped = {:?}",
-            pass1_param_skipped
+            out.pass1_param_skipped
         );
         // No annotated-Let loser in this direction, so pass1_skipped must be empty.
         assert!(
-            pass1_skipped.is_empty(),
+            out.pass1_skipped.is_empty(),
             "Expected pass1_skipped to be empty — the annotated Let won (not lost); \
              got: {:?}",
-            pass1_skipped
+            out.pass1_skipped
         );
         // No unannotated Let reached Pass 2, so pass2_skipped must be empty.
         assert!(
-            pass2_skipped.is_empty(),
+            out.pass2_skipped.is_empty(),
             "Expected pass2_skipped to be empty — no unannotated Let was processed; \
              got: {:?}",
-            pass2_skipped
+            out.pass2_skipped
         );
         // No compile-error names (no Pass 2 compilation was attempted).
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected pass2_compile_errors to be empty; got: {:?}",
-            pass2_compile_errors
+            out.pass2_compile_errors
         );
         // No expression was compiled (annotated Lets skip Pass 2).
         assert!(
-            inferred_let_exprs.is_empty(),
+            out.inferred_let_exprs.is_empty(),
             "Expected inferred_let_exprs to be empty — annotated Lets do not go through \
              Pass 2 inference; got: {:?}",
-            inferred_let_exprs.keys().collect::<Vec<_>>()
+            out.inferred_let_exprs.keys().collect::<Vec<_>>()
         );
         // register_if_absent conflicts are debug-log only — no diagnostic emitted.
         assert!(
@@ -2341,13 +2286,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (
-            inferred_let_exprs,
-            _pass1_skipped,
-            _pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -2374,31 +2313,31 @@ mod tests {
 
         // (b) The warning must NOT be classified as a compile failure.
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected pass2_compile_errors to be empty — a Warning-only compile_expr result \
              must be treated as success; got: {:?}",
-            pass2_compile_errors
+            out.pass2_compile_errors
         );
 
         // pass2_skipped should also be empty (no scope-slot collision).
         assert!(
-            pass2_skipped.is_empty(),
+            out.pass2_skipped.is_empty(),
             "Expected pass2_skipped to be empty; got: {:?}",
-            pass2_skipped
+            out.pass2_skipped
         );
 
         // (c) The compiled expression must be cached in inferred_let_exprs.
         assert!(
-            inferred_let_exprs.contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
+            out.inferred_let_exprs.contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
             "Expected composite key ('x', Let) in inferred_let_exprs — Pass 2 must cache \
              the compiled expression even when compile_expr emitted a Warning; \
              got keys: {:?}",
-            inferred_let_exprs.keys().collect::<Vec<_>>()
+            out.inferred_let_exprs.keys().collect::<Vec<_>>()
         );
 
         // (d) The cached expression has the expected inferred type for an empty list literal.
         assert_eq!(
-            inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
+            out.inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
             Type::List(Box::new(Type::Real)),
             "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
         );
