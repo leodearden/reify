@@ -7,8 +7,49 @@
 //! - [`render_markdown`] — the single entry point that dispatches on
 //!   [`MarkdownOptions::split`] to either single-file or split-file rendering.
 
+use std::collections::BTreeMap;
+
 use crate::cross_refs::CrossRefs;
 use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
+
+/// A `CrossRefs` plus a precomputed *inverse* map from conformer name to the
+/// list of traits the conformer implements.
+///
+/// `CrossRefs::trait_to_conformers` answers "for trait T, which items conform?";
+/// the inverse `conformer_to_traits` answers "for item N, which traits does it
+/// conform to?".  Building the inverse once at the entry point of
+/// [`render_single`] / [`render_split`] turns the per-item "Conforms to" lookup
+/// from an O(traits × avg_conformers) scan into a single O(log N) BTreeMap
+/// lookup.  See suggestion #3 in the reviewer's amendment notes.
+struct CrossRefIndex<'a> {
+    cross_refs: &'a CrossRefs,
+    /// Inverse of `cross_refs.trait_to_conformers`.  Each value list is
+    /// sorted and deduplicated so the rendered `### Conforms to` bullet list
+    /// is deterministic without per-item resorting.
+    conformer_to_traits: BTreeMap<&'a str, Vec<&'a str>>,
+}
+
+impl<'a> CrossRefIndex<'a> {
+    fn new(cross_refs: &'a CrossRefs) -> Self {
+        let mut conformer_to_traits: BTreeMap<&'a str, Vec<&'a str>> = BTreeMap::new();
+        for (trait_name, conformers) in &cross_refs.trait_to_conformers {
+            for conformer in conformers {
+                conformer_to_traits
+                    .entry(conformer.as_str())
+                    .or_default()
+                    .push(trait_name.as_str());
+            }
+        }
+        for v in conformer_to_traits.values_mut() {
+            v.sort();
+            v.dedup();
+        }
+        Self {
+            cross_refs,
+            conformer_to_traits,
+        }
+    }
+}
 
 /// Knobs controlling how the formatter emits Markdown.
 ///
@@ -48,15 +89,16 @@ pub fn render_markdown(
     cross_refs: Option<&CrossRefs>,
     opts: &MarkdownOptions,
 ) -> MarkdownOutput {
+    let xref_index = cross_refs.map(CrossRefIndex::new);
     if opts.split {
-        MarkdownOutput::Split(render_split(model, cross_refs))
+        MarkdownOutput::Split(render_split(model, xref_index.as_ref()))
     } else {
-        MarkdownOutput::Single(render_single(model, cross_refs))
+        MarkdownOutput::Single(render_single(model, xref_index.as_ref()))
     }
 }
 
 /// Build the single-file concatenated Markdown body.
-fn render_single(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
+fn render_single(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> String {
     let mut out = String::new();
     for module in &model.modules {
         // Module H1 header.
@@ -77,12 +119,12 @@ fn render_single(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
         // Table of contents — sits between the H1/doc and the first item H2.
         render_toc(&mut out, &non_tests);
         for item in &non_tests {
-            render_item(&mut out, item, cross_refs);
+            render_item(&mut out, item, xrefs);
         }
         if !tests.is_empty() {
             out.push_str("## Tests\n\n");
             for item in &tests {
-                render_item(&mut out, item, cross_refs);
+                render_item(&mut out, item, xrefs);
             }
         }
     }
@@ -155,9 +197,9 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
 ///
 /// Splits the input on blank lines (one or more `\n\n` sequences) and writes
 /// each non-empty paragraph followed by a blank line, so the next thing emitted
-/// after the call starts on a fresh paragraph.
+/// after the call starts on a fresh paragraph.  All-whitespace input leaves the
+/// buffer untouched so we don't produce dangling blank lines.
 fn emit_paragraphs(out: &mut String, doc: &str) {
-    let mut wrote_any = false;
     for paragraph in doc.split("\n\n") {
         let p = paragraph.trim();
         if p.is_empty() {
@@ -165,11 +207,7 @@ fn emit_paragraphs(out: &mut String, doc: &str) {
         }
         out.push_str(p);
         out.push_str("\n\n");
-        wrote_any = true;
     }
-    // If the doc was all whitespace, leave the buffer untouched so we don't
-    // produce dangling blank lines.
-    let _ = wrote_any;
 }
 
 /// Language keyword displayed in the H2 heading for each `ItemDoc` variant.
@@ -285,8 +323,8 @@ fn unquote(s: &str) -> &str {
 ///
 /// Emits the H2 heading with explicit anchor, optional annotation callouts,
 /// the doc paragraphs, the kind-specific body, then optional cross-reference
-/// sections derived from `cross_refs`.
-fn render_item(out: &mut String, item: &ItemDoc, cross_refs: Option<&CrossRefs>) {
+/// sections derived from `xrefs` (the precomputed [`CrossRefIndex`]).
+fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_>>) {
     let name = item_name(item);
     let kw = item_keyword(item);
     let vis = if item_is_pub(item) { "pub " } else { "" };
@@ -367,29 +405,27 @@ fn render_item(out: &mut String, item: &ItemDoc, cross_refs: Option<&CrossRefs>)
 
     // Cross-reference sections, if any. Looks up `name` in both inverted
     // indices and emits "Conforms to" / "Used by" bullets when populated.
-    render_cross_refs(out, name, cross_refs);
+    render_cross_refs(out, name, xrefs);
 }
 
-/// Render the `### Conforms to` and `### Used by` sections from `cross_refs`,
+/// Render the `### Conforms to` and `### Used by` sections from `xrefs`,
 /// keyed on this item's name.  Each section is emitted only when its bullet
 /// list is non-empty.  Bullet entries are sorted, deduplicated anchor links.
-fn render_cross_refs(out: &mut String, name: &str, cross_refs: Option<&CrossRefs>) {
-    let Some(xrefs) = cross_refs else {
+///
+/// "Conforms to" reads from `xrefs.conformer_to_traits` — the precomputed
+/// inverse of `trait_to_conformers` — so each lookup is O(log N) instead of
+/// the O(traits × avg_conformers) scan a naive renderer would perform.
+fn render_cross_refs(out: &mut String, name: &str, xrefs: Option<&CrossRefIndex<'_>>) {
+    let Some(xrefs) = xrefs else {
         return;
     };
-    // Conforms to: scan trait_to_conformers, collect every trait whose
-    // conformer list contains this item's name.
-    let mut conforms: Vec<&str> = xrefs
-        .trait_to_conformers
-        .iter()
-        .filter(|(_, conformers)| conformers.iter().any(|c| c == name))
-        .map(|(trait_name, _)| trait_name.as_str())
-        .collect();
-    conforms.sort();
-    conforms.dedup();
-    if !conforms.is_empty() {
+    // Conforms to: direct lookup in the precomputed inverse index. The list is
+    // already sorted + deduplicated when CrossRefIndex was built.
+    if let Some(traits) = xrefs.conformer_to_traits.get(name)
+        && !traits.is_empty()
+    {
         out.push_str("### Conforms to\n\n");
-        for t in conforms {
+        for t in traits {
             out.push_str("- [`");
             out.push_str(t);
             out.push_str("`](#");
@@ -400,7 +436,7 @@ fn render_cross_refs(out: &mut String, name: &str, cross_refs: Option<&CrossRefs
     }
 
     // Used by: direct lookup in entity_to_containers.
-    if let Some(containers) = xrefs.entity_to_containers.get(name)
+    if let Some(containers) = xrefs.cross_refs.entity_to_containers.get(name)
         && !containers.is_empty()
     {
         let mut sorted: Vec<&str> = containers.iter().map(|s| s.as_str()).collect();
@@ -434,10 +470,39 @@ fn render_trait_members(out: &mut String, members: &[String]) {
 
 /// Render a fenced `reify` code block containing a `Function`'s rendered
 /// signature.
+///
+/// The fence length is the shortest valid one — at least three backticks, and
+/// at least one more than the longest run of consecutive backticks inside the
+/// signature.  Mirrors the trick `pulldown-cmark` uses so a signature
+/// containing a literal triple-backtick (e.g. inside a string-literal default)
+/// can't terminate the fence early.
 fn render_function_signature(out: &mut String, signature: &str) {
-    out.push_str("```reify\n");
+    let fence_len = (max_consecutive_backticks(signature) + 1).max(3);
+    let fence: String = "`".repeat(fence_len);
+    out.push_str(&fence);
+    out.push_str("reify\n");
     out.push_str(signature);
-    out.push_str("\n```\n\n");
+    out.push('\n');
+    out.push_str(&fence);
+    out.push_str("\n\n");
+}
+
+/// Count the longest run of consecutive backtick characters in `s`.  Returns
+/// `0` when `s` contains no backticks.
+fn max_consecutive_backticks(s: &str) -> usize {
+    let mut max = 0usize;
+    let mut cur = 0usize;
+    for ch in s.chars() {
+        if ch == '`' {
+            cur += 1;
+            if cur > max {
+                max = cur;
+            }
+        } else {
+            cur = 0;
+        }
+    }
+    max
 }
 
 /// Render the `### Variants` bullet list for an `Enum`. No-op when empty.
@@ -504,9 +569,28 @@ fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
 ///
 /// `|` characters are backslash-escaped (otherwise they'd be parsed as a
 /// column boundary) and embedded newlines collapse to a single space so the
-/// row stays on one line.
+/// row stays on one line.  This helper is for *plain-text* cells; cells
+/// rendered as inline code must go through [`md_inline_code_cell`] so literal
+/// backticks in the value don't terminate the surrounding code-span fence.
 fn md_cell_escape(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
+}
+
+/// Wrap `s` in a Markdown inline-code span suitable for use as a table cell.
+///
+/// Picks the shortest backtick fence that doesn't appear in `s` (so a value
+/// containing a literal backtick still renders as a single span instead of
+/// terminating the fence early) and pads with a space when `s` starts or ends
+/// with a backtick — both standard CommonMark inline-code conventions.
+/// Pipes / newlines inside `s` are escaped via [`md_cell_escape`] for the same
+/// reason as plain-text cells.
+fn md_inline_code_cell(s: &str) -> String {
+    let escaped = md_cell_escape(s);
+    let fence_len = max_consecutive_backticks(&escaped) + 1;
+    let fence: String = "`".repeat(fence_len);
+    let needs_pad = escaped.starts_with('`') || escaped.ends_with('`');
+    let space = if needs_pad { " " } else { "" };
+    format!("{fence}{space}{escaped}{space}{fence}")
 }
 
 /// Render the `### Parameters` GFM table.  No-op when `params` is empty.
@@ -519,7 +603,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
     out.push_str("| --- | --- | --- | --- | --- |\n");
     for p in params {
         let default_cell = match p.default_repr.as_deref() {
-            Some(d) => format!("`{}`", md_cell_escape(d)),
+            Some(d) => md_inline_code_cell(d),
             None => "—".to_string(),
         };
         // Description = doc text + optional `*hint: <solver_hint arg>*` suffix.
@@ -533,11 +617,11 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
             description.push_str(hint_arg);
             description.push('*');
         }
-        out.push_str("| `");
-        out.push_str(&md_cell_escape(&p.name));
-        out.push_str("` | `");
-        out.push_str(&md_cell_escape(&p.type_repr));
-        out.push_str("` | ");
+        out.push_str("| ");
+        out.push_str(&md_inline_code_cell(&p.name));
+        out.push_str(" | ");
+        out.push_str(&md_inline_code_cell(&p.type_repr));
+        out.push_str(" | ");
         // Dimension is not exposed on ParamDoc today; emit em-dash placeholder.
         out.push('—');
         out.push_str(" | ");
@@ -608,15 +692,15 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     out.push_str("| --- | --- | --- | --- | --- |\n");
     for p in ports {
         // Kind column has no PortDoc field today; emit em-dash placeholder.
-        out.push_str("| `");
-        out.push_str(&md_cell_escape(&p.name));
-        out.push_str("` | ");
+        out.push_str("| ");
+        out.push_str(&md_inline_code_cell(&p.name));
+        out.push_str(" | ");
         out.push('—');
         out.push_str(" | ");
         out.push_str(&md_cell_escape(&p.direction));
-        out.push_str(" | `");
-        out.push_str(&md_cell_escape(&p.type_name));
-        out.push_str("` | ");
+        out.push_str(" | ");
+        out.push_str(&md_inline_code_cell(&p.type_name));
+        out.push_str(" | ");
         // Description: derived from members list, if present.
         if p.members.is_empty() {
             out.push('—');
@@ -673,7 +757,7 @@ fn item_filename(item: &ItemDoc, module_prefix: Option<&str>) -> String {
 ///
 /// Always emits at least the `index.md` placeholder, so callers can rely on
 /// its presence.
-fn render_split(model: &DocModel, cross_refs: Option<&CrossRefs>) -> Vec<(String, String)> {
+fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(String, String)> {
     let mut files: Vec<(String, String)> = Vec::new();
     let multi_module = model.modules.len() > 1;
 
@@ -718,7 +802,7 @@ fn render_split(model: &DocModel, cross_refs: Option<&CrossRefs>) -> Vec<(String
             body.push_str("[← Index](");
             body.push_str(back);
             body.push_str(")\n\n");
-            render_item(&mut body, item, cross_refs);
+            render_item(&mut body, item, xrefs);
             files.push((item_filename(item, module_prefix), body));
         }
     }
