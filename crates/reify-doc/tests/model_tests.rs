@@ -68,6 +68,71 @@ fn build_fixture() -> DocModel {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
+/// Assert that doc strings from item declarations flow into their `ItemDoc.doc` field.
+///
+/// Walks `modules[0].items` and verifies the doc string for each of the four
+/// named items in the fixture: Physical (Trait), Bolt (Structure), Grade (Enum),
+/// safety_factor (Function).
+///
+/// TODO(build_doc_model): Once the lowering pass lands, replace `build_fixture()`
+/// with `build_doc_model(&compiled_module)`. The assertion logic itself stays the
+/// same — it tests the contract, not the construction path.
+#[test]
+fn doc_strings_flow_into_item_doc() {
+    let model = build_fixture();
+    let items = &model.modules[0].items;
+
+    // Physical — Trait
+    let physical = items.iter().find(|i| matches!(i, ItemDoc::Trait { name, .. } if name == "Physical"));
+    let physical = physical.expect("Trait 'Physical' not found in fixture");
+    match physical {
+        ItemDoc::Trait { doc, .. } => assert_eq!(
+            doc.as_deref(),
+            Some("Trait for objects with a measurable mass."),
+            "Physical doc mismatch"
+        ),
+        _ => unreachable!(),
+    }
+
+    // Bolt — Structure
+    let bolt = items.iter().find(|i| matches!(i, ItemDoc::Structure { name, .. } if name == "Bolt"));
+    let bolt = bolt.expect("Structure 'Bolt' not found in fixture");
+    match bolt {
+        ItemDoc::Structure { doc, .. } => assert_eq!(
+            doc.as_deref(),
+            Some("A standard fastening bolt conforming to Physical."),
+            "Bolt doc mismatch"
+        ),
+        _ => unreachable!(),
+    }
+
+    // Grade — Enum
+    let grade = items.iter().find(|i| matches!(i, ItemDoc::Enum { name, .. } if name == "Grade"));
+    let grade = grade.expect("Enum 'Grade' not found in fixture");
+    match grade {
+        ItemDoc::Enum { doc, .. } => assert_eq!(
+            doc.as_deref(),
+            Some("Material grade classification."),
+            "Grade doc mismatch"
+        ),
+        _ => unreachable!(),
+    }
+
+    // safety_factor — Function
+    let sf = items
+        .iter()
+        .find(|i| matches!(i, ItemDoc::Function { name, .. } if name == "safety_factor"));
+    let sf = sf.expect("Function 'safety_factor' not found in fixture");
+    match sf {
+        ItemDoc::Function { doc, .. } => assert_eq!(
+            doc.as_deref(),
+            Some("Safety factor for real-valued loads."),
+            "safety_factor doc mismatch"
+        ),
+        _ => unreachable!(),
+    }
+}
+
 /// Assert the fixture module path and top-level doc-comment are correct.
 ///
 /// TODO(build_doc_model): This test will require no changes once `build_doc_model`
