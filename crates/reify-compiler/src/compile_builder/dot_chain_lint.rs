@@ -322,7 +322,11 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 walk_expr_depth(a, diagnostics, next);
             }
         }
-        ExprKind::Conditional { condition, then_branch, else_branch } => {
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             walk_expr_depth(condition, diagnostics, next);
             walk_expr_depth(then_branch, diagnostics, next);
             walk_expr_depth(else_branch, diagnostics, next);
@@ -354,7 +358,11 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
             }
         }
         ExprKind::Lambda { body, .. } => walk_expr_depth(body, diagnostics, next),
-        ExprKind::Quantifier { collection, predicate, .. } => {
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
             walk_expr_depth(collection, diagnostics, next);
             walk_expr_depth(predicate, diagnostics, next);
         }
@@ -433,90 +441,317 @@ mod tests {
     use super::*;
     use reify_types::SourceSpan;
 
-    /// Hitting the `MAX_EXPR_DEPTH` guard inside `walk_expr_depth` must fire
-    /// the `debug_assert!` so debug/test builds catch a regression that
-    /// produces pathologically deep ASTs (fuzzer input, upstream parser bug)
-    /// instead of silently truncating dot-chain lint coverage.
+    /// Table-driven depth-guard test: asserts that every structural-recursion arm
+    /// in `walk_expr_depth` correctly forwards `next = depth + 1` to child nodes.
     ///
-    /// Release builds keep the silent-return fast-path — the assert compiles
-    /// out — so this test is gated on `debug_assertions`.
+    /// A regression that accidentally passes `depth` (unchanged) instead of `next`
+    /// in any single arm would silently truncate dot-chain lint coverage on that
+    /// subtree. This test loops over all `(variant, target-field)` pairs so that a
+    /// failing arm surfaces as a named `ArmKind` in the test output rather than a
+    /// generic "walked silently" failure.
+    ///
+    /// `MemberAccess` is excluded: its iterative `while let` chain walk does NOT
+    /// increment `depth` per layer (one frame regardless of N segments). Its only
+    /// depth-incrementing call is the trailing `walk_expr_depth(cursor, ..., next)`
+    /// on the leaf root — a different shape than the structural-recursion arms here.
+    ///
+    /// Depth arithmetic: outermost wrapper at depth 0, innermost at depth
+    /// `MAX_EXPR_DEPTH`, leaf `NumberLiteral` called at `MAX_EXPR_DEPTH + 1` (= 257)
+    /// — satisfies `depth > MAX_EXPR_DEPTH` and fires the `debug_assert!`.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "MAX_EXPR_DEPTH")]
-    fn walk_expr_depth_exceeding_max_depth_panics_in_debug_builds() {
-        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of UnOp.
-        // walk_expr_depth recurses via UnOp.operand (one frame per layer),
-        // so the outermost wrapper is visited at depth 0, the innermost at
-        // depth MAX_EXPR_DEPTH (= 256, not yet tripped), and the leaf
-        // NumberLiteral is then called at depth MAX_EXPR_DEPTH + 1 (= 257)
-        // which satisfies `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
-        // This is the minimum wrapper count that trips the guard.
-        let span = SourceSpan::empty(0);
-        let mut expr = Expr {
-            kind: ExprKind::NumberLiteral(0.0),
-            span,
-        };
-        for _ in 0..(MAX_EXPR_DEPTH + 1) {
-            expr = Expr {
-                kind: ExprKind::UnOp {
-                    op: "-".to_string(),
-                    operand: Box::new(expr),
-                },
-                span,
-            };
+    fn walk_expr_depth_panics_for_every_recursion_arm() {
+        #[derive(Debug, Clone, Copy)]
+        enum ArmKind {
+            UnOp,
+            BinOpLeft,
+            BinOpRight,
+            FunctionCallFirstArg,
+            ConditionalCondition,
+            ConditionalThen,
+            ConditionalElse,
+            ListLiteralFirst,
+            SetLiteralFirst,
+            MapLiteralFirstKey,
+            MapLiteralFirstValue,
+            IndexAccessObject,
+            IndexAccessIndex,
+            MatchScrutinee,
+            MatchFirstArmBody,
+            LambdaBody,
+            QuantifierCollection,
+            QuantifierPredicate,
+            AdHocSelectorBase,
+            AdHocSelectorFirstArg,
+            QualifiedAccessQualifier,
+            InstanceQualifiedAccessObject,
+            InstanceQualifiedAccessQualified,
+            RangeLower,
+            RangeUpper,
+            // Second-element entries for variadic arms: guards against a
+            // regression where only the first iteration of a for-loop forwards
+            // `next` while subsequent iterations capture the wrong variable.
+            FunctionCallSecondArg,
+            ListLiteralSecond,
+            SetLiteralSecond,
+            MapLiteralSecondKey,
+            MapLiteralSecondValue,
+            AdHocSelectorSecondArg,
+            MatchSecondArmBody,
         }
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        walk_expr(&expr, &mut diagnostics);
-    }
 
-    /// Representative *second-variant* depth-guard test: where
-    /// `walk_expr_depth_exceeding_max_depth_panics_in_debug_builds` (above)
-    /// exercises the `UnOp` single-child recursion arm, this test exercises the
-    /// `BinOp` two-child recursion arm.
-    ///
-    /// What this test pins: the BinOp arm in `walk_expr_depth` walks its `left`
-    /// child with `next` (= `depth + 1`) rather than the unchanged `depth`. If a
-    /// refactor of the BinOp arm accidentally passes `depth` instead of `next`,
-    /// the guard at `depth > MAX_EXPR_DEPTH` would never fire for BinOp sub-trees,
-    /// silently truncating dot-chain lint coverage; this test catches that
-    /// regression.
-    ///
-    /// Scope: this test only pins BinOp.left's depth-forwarding. It does not
-    /// cover other recursion arms (Conditional, FunctionCall.args, Match, Lambda,
-    /// list/map/set literals, IndexAccess, Quantifier, etc.); a future arm that
-    /// omits `next` would not be caught by either this test or the UnOp test.
-    ///
-    /// Depth arithmetic (same as the UnOp test): the outermost BinOp wrapper is
-    /// visited at depth 0, the innermost at depth MAX_EXPR_DEPTH (= 256, not yet
-    /// tripped), and the leaf NumberLiteral at the bottom of the `left` chain is
-    /// called at depth MAX_EXPR_DEPTH + 1 (= 257), which satisfies
-    /// `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "MAX_EXPR_DEPTH")]
-    fn walk_expr_depth_exceeding_max_depth_panics_via_binop_recursion() {
-        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of BinOp.
-        // The deep recursion path runs through the `left` operand; `right` is a
-        // fresh shallow leaf at each layer and never trips the guard.
-        let span = SourceSpan::empty(0);
-        let mut expr = Expr {
-            kind: ExprKind::NumberLiteral(0.0),
-            span,
-        };
-        for _ in 0..(MAX_EXPR_DEPTH + 1) {
-            expr = Expr {
-                kind: ExprKind::BinOp {
-                    op: "+".to_string(),
-                    left: Box::new(expr),
-                    right: Box::new(Expr {
-                        kind: ExprKind::NumberLiteral(1.0),
-                        span,
-                    }),
+        fn shallow_leaf(span: SourceSpan) -> Expr {
+            Expr {
+                kind: ExprKind::NumberLiteral(0.0),
+                span,
+            }
+        }
+
+        fn wrap_in_arm(arm: ArmKind, leaf: Expr, span: SourceSpan) -> Expr {
+            use reify_syntax::{MatchArm, QuantifierKind};
+            let kind = match arm {
+                ArmKind::UnOp => ExprKind::UnOp {
+                    op: "-".to_string(),
+                    operand: Box::new(leaf),
                 },
+                ArmKind::BinOpLeft => ExprKind::BinOp {
+                    op: "+".to_string(),
+                    left: Box::new(leaf),
+                    right: Box::new(shallow_leaf(span)),
+                },
+                ArmKind::BinOpRight => ExprKind::BinOp {
+                    op: "+".to_string(),
+                    left: Box::new(shallow_leaf(span)),
+                    right: Box::new(leaf),
+                },
+                ArmKind::FunctionCallFirstArg => ExprKind::FunctionCall {
+                    name: "f".to_string(),
+                    args: vec![leaf],
+                },
+                ArmKind::ConditionalCondition => ExprKind::Conditional {
+                    condition: Box::new(leaf),
+                    then_branch: Box::new(shallow_leaf(span)),
+                    else_branch: Box::new(shallow_leaf(span)),
+                },
+                ArmKind::ConditionalThen => ExprKind::Conditional {
+                    condition: Box::new(shallow_leaf(span)),
+                    then_branch: Box::new(leaf),
+                    else_branch: Box::new(shallow_leaf(span)),
+                },
+                ArmKind::ConditionalElse => ExprKind::Conditional {
+                    condition: Box::new(shallow_leaf(span)),
+                    then_branch: Box::new(shallow_leaf(span)),
+                    else_branch: Box::new(leaf),
+                },
+                ArmKind::ListLiteralFirst => ExprKind::ListLiteral(vec![leaf]),
+                ArmKind::SetLiteralFirst => ExprKind::SetLiteral(vec![leaf]),
+                ArmKind::MapLiteralFirstKey => {
+                    ExprKind::MapLiteral(vec![(leaf, shallow_leaf(span))])
+                }
+                ArmKind::MapLiteralFirstValue => {
+                    ExprKind::MapLiteral(vec![(shallow_leaf(span), leaf)])
+                }
+                ArmKind::IndexAccessObject => ExprKind::IndexAccess {
+                    object: Box::new(leaf),
+                    index: Box::new(shallow_leaf(span)),
+                },
+                ArmKind::IndexAccessIndex => ExprKind::IndexAccess {
+                    object: Box::new(shallow_leaf(span)),
+                    index: Box::new(leaf),
+                },
+                ArmKind::MatchScrutinee => ExprKind::Match {
+                    discriminant: Box::new(leaf),
+                    arms: vec![MatchArm {
+                        patterns: vec![],
+                        body: shallow_leaf(span),
+                        span,
+                    }],
+                },
+                ArmKind::MatchFirstArmBody => ExprKind::Match {
+                    discriminant: Box::new(shallow_leaf(span)),
+                    arms: vec![MatchArm {
+                        patterns: vec![],
+                        body: leaf,
+                        span,
+                    }],
+                },
+                ArmKind::LambdaBody => ExprKind::Lambda {
+                    params: vec![],
+                    body: Box::new(leaf),
+                },
+                ArmKind::QuantifierCollection => ExprKind::Quantifier {
+                    kind: QuantifierKind::ForAll,
+                    variable: "x".into(),
+                    collection: Box::new(leaf),
+                    predicate: Box::new(shallow_leaf(span)),
+                },
+                ArmKind::QuantifierPredicate => ExprKind::Quantifier {
+                    kind: QuantifierKind::ForAll,
+                    variable: "x".into(),
+                    collection: Box::new(shallow_leaf(span)),
+                    predicate: Box::new(leaf),
+                },
+                ArmKind::AdHocSelectorBase => ExprKind::AdHocSelector {
+                    base: Box::new(leaf),
+                    selector: "_".into(),
+                    args: vec![],
+                },
+                ArmKind::AdHocSelectorFirstArg => ExprKind::AdHocSelector {
+                    base: Box::new(shallow_leaf(span)),
+                    selector: "_".into(),
+                    args: vec![leaf],
+                },
+                ArmKind::QualifiedAccessQualifier => ExprKind::QualifiedAccess {
+                    qualifier: Box::new(leaf),
+                    member: "m".to_string(),
+                },
+                ArmKind::InstanceQualifiedAccessObject => ExprKind::InstanceQualifiedAccess {
+                    object: Box::new(leaf),
+                    qualified: Box::new(shallow_leaf(span)),
+                },
+                ArmKind::InstanceQualifiedAccessQualified => ExprKind::InstanceQualifiedAccess {
+                    object: Box::new(shallow_leaf(span)),
+                    qualified: Box::new(leaf),
+                },
+                ArmKind::RangeLower => ExprKind::Range {
+                    lower: Some(Box::new(leaf)),
+                    upper: Some(Box::new(shallow_leaf(span))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+                ArmKind::RangeUpper => ExprKind::Range {
+                    lower: Some(Box::new(shallow_leaf(span))),
+                    upper: Some(Box::new(leaf)),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+                ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
+                    name: "f".to_string(),
+                    args: vec![shallow_leaf(span), leaf],
+                },
+                ArmKind::ListLiteralSecond => {
+                    ExprKind::ListLiteral(vec![shallow_leaf(span), leaf])
+                }
+                ArmKind::SetLiteralSecond => {
+                    ExprKind::SetLiteral(vec![shallow_leaf(span), leaf])
+                }
+                ArmKind::MapLiteralSecondKey => ExprKind::MapLiteral(vec![
+                    (shallow_leaf(span), shallow_leaf(span)),
+                    (leaf, shallow_leaf(span)),
+                ]),
+                ArmKind::MapLiteralSecondValue => ExprKind::MapLiteral(vec![
+                    (shallow_leaf(span), shallow_leaf(span)),
+                    (shallow_leaf(span), leaf),
+                ]),
+                ArmKind::AdHocSelectorSecondArg => ExprKind::AdHocSelector {
+                    base: Box::new(shallow_leaf(span)),
+                    selector: "_".into(),
+                    args: vec![shallow_leaf(span), leaf],
+                },
+                ArmKind::MatchSecondArmBody => ExprKind::Match {
+                    discriminant: Box::new(shallow_leaf(span)),
+                    arms: vec![
+                        MatchArm {
+                            patterns: vec![],
+                            body: shallow_leaf(span),
+                            span,
+                        },
+                        MatchArm {
+                            patterns: vec![],
+                            body: leaf,
+                            span,
+                        },
+                    ],
+                },
+            };
+            Expr { kind, span }
+        }
+
+        let span = SourceSpan::empty(0);
+        let arms = [
+            ArmKind::UnOp,
+            ArmKind::BinOpLeft,
+            ArmKind::BinOpRight,
+            ArmKind::FunctionCallFirstArg,
+            ArmKind::ConditionalCondition,
+            ArmKind::ConditionalThen,
+            ArmKind::ConditionalElse,
+            ArmKind::ListLiteralFirst,
+            ArmKind::SetLiteralFirst,
+            ArmKind::MapLiteralFirstKey,
+            ArmKind::MapLiteralFirstValue,
+            ArmKind::IndexAccessObject,
+            ArmKind::IndexAccessIndex,
+            ArmKind::MatchScrutinee,
+            ArmKind::MatchFirstArmBody,
+            ArmKind::LambdaBody,
+            ArmKind::QuantifierCollection,
+            ArmKind::QuantifierPredicate,
+            ArmKind::AdHocSelectorBase,
+            ArmKind::AdHocSelectorFirstArg,
+            ArmKind::QualifiedAccessQualifier,
+            ArmKind::InstanceQualifiedAccessObject,
+            ArmKind::InstanceQualifiedAccessQualified,
+            ArmKind::RangeLower,
+            ArmKind::RangeUpper,
+            ArmKind::FunctionCallSecondArg,
+            ArmKind::ListLiteralSecond,
+            ArmKind::SetLiteralSecond,
+            ArmKind::MapLiteralSecondKey,
+            ArmKind::MapLiteralSecondValue,
+            ArmKind::AdHocSelectorSecondArg,
+            ArmKind::MatchSecondArmBody,
+        ];
+        for arm in arms {
+            // Sanity pass: a single-layer wrap must NOT panic. Guards against
+            // `wrap_in_arm` silently constructing a broken or depth-saturated
+            // AST, which would make the depth-saturation assertion below
+            // trivially vacuous (or erroneously attribute a construction panic
+            // to a missing `next` forward).
+            let shallow_wrapped = wrap_in_arm(arm, shallow_leaf(span), span);
+            let sanity = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                walk_expr(&shallow_wrapped, &mut diagnostics);
+            }));
+            assert!(
+                sanity.is_ok(),
+                "arm {:?} panicked on a single-layer (depth-1) wrap — \
+                 wrap_in_arm may construct a broken AST or a leaf-equivalent node",
+                arm
+            );
+
+            let mut expr = Expr {
+                kind: ExprKind::NumberLiteral(0.0),
                 span,
             };
+            for _ in 0..(MAX_EXPR_DEPTH + 1) {
+                expr = wrap_in_arm(arm, expr, span);
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                walk_expr(&expr, &mut diagnostics);
+            }));
+            match result {
+                Ok(_) => panic!(
+                    "arm {:?} did NOT trip MAX_EXPR_DEPTH guard — depth was not forwarded",
+                    arm
+                ),
+                Err(payload) => {
+                    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        String::new()
+                    };
+                    assert!(
+                        msg.contains("MAX_EXPR_DEPTH"),
+                        "arm {:?} panicked but message {:?} did not mention MAX_EXPR_DEPTH",
+                        arm,
+                        msg
+                    );
+                }
+            }
         }
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        walk_expr(&expr, &mut diagnostics);
     }
 }
