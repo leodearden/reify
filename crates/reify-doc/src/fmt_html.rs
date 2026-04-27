@@ -175,6 +175,31 @@ fn render_item(out: &mut String, item: &ItemDoc) {
     out.push_str(&html_escape(name));
     out.push_str("</h2>\n");
 
+    // Annotation-driven prefix sections, emitted BETWEEN the heading and the
+    // doc-comment paragraphs so the most operationally significant tags appear
+    // first to the reader.  Mirrors `fmt_markdown::render_item`'s ordering.
+    let anns = item_annotations(item);
+    if let Some(dep) = find_annotation(anns, "deprecated") {
+        let msg = dep.args.first().map(|s| unquote(s)).unwrap_or("");
+        out.push_str("<aside class=\"deprecated\"><strong>Deprecated:</strong>");
+        if !msg.is_empty() {
+            out.push(' ');
+            out.push_str(&html_escape(msg));
+        }
+        out.push_str("</aside>\n");
+    }
+    if let Some(opt) = find_annotation(anns, "optimized") {
+        let target = opt.args.first().map(|s| unquote(s)).unwrap_or("");
+        out.push_str("<p class=\"optimized\"><em>Optimized: <code>");
+        out.push_str(&html_escape(target));
+        out.push_str("</code></em></p>\n");
+    }
+
+    // Item-level doc paragraphs (split on blank lines, emitted as `<p>...</p>`).
+    if let Some(doc) = item_doc(item) {
+        emit_paragraphs(out, doc);
+    }
+
     // Kind-specific body.
     match item {
         ItemDoc::Structure { params, ports, constraints, meta, .. }
@@ -215,7 +240,6 @@ fn render_item(out: &mut String, item: &ItemDoc) {
 
 /// Find the first annotation matching `name` in `anns`. Returns `None` if no
 /// such annotation exists.  Mirrors `fmt_markdown::find_annotation`.
-#[allow(dead_code)]
 fn find_annotation<'a>(
     anns: &'a [AnnotationDoc],
     name: &str,
@@ -225,7 +249,6 @@ fn find_annotation<'a>(
 
 /// Strip surrounding `"`s from a rendered string-literal annotation argument.
 /// Mirrors `fmt_markdown::unquote`.
-#[allow(dead_code)]
 fn unquote(s: &str) -> &str {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         &s[1..s.len() - 1]
