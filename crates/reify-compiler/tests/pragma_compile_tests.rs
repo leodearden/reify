@@ -1640,3 +1640,41 @@ fn solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none() {
         );
     }
 }
+
+/// Multiple module-level `#solver` pragmas: first wins, the second emits
+/// exactly one warning indicating it is ignored. Mirrors
+/// `multiple_module_level_precision_pragmas_first_wins`.
+#[test]
+fn multiple_module_level_solver_pragmas_first_wins() {
+    let module = compile_source(
+        "#solver(libslvs)\n#solver(argmin)\nstructure S { param x : Real }",
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for first-wins");
+    assert_eq!(
+        solver_pragma.name, "libslvs",
+        "expected solver_pragma.name == \"libslvs\" (first wins)"
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("ignored") || m.contains("first wins") || m.contains("subsequent")
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning for subsequent #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
