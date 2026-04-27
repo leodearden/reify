@@ -220,47 +220,20 @@ impl DimensionVector {
     /// Return the canonical user-facing name for this dimension, if it matches
     /// exactly one of the named singleton constants.
     ///
-    /// Returns `Some("Money")`, `Some("Force")`, etc. for each named singleton
-    /// defined on `DimensionVector` (mirroring the names accepted by
-    /// `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs`).
+    /// Performs a linear scan over [`NAMED_DIMENSIONS`], the single source-of-truth
+    /// table shared with `resolve_dimension_type` in
+    /// `crates/reify-compiler/src/type_resolution.rs`.
+    ///
+    /// Returns `Some("Money")`, `Some("Force")`, etc. for each named singleton in the table.
     ///
     /// Returns `None` for:
-    /// - `DIMENSIONLESS` — already self-explanatory; callers handle it specially.
+    /// - `DIMENSIONLESS` — intentionally excluded from the table; callers handle it specially.
     /// - Composite/derived dimensions that are not in the named set (e.g. `MONEY/MASS`).
     pub fn canonical_name(&self) -> Option<&'static str> {
-        match *self {
-            DimensionVector::LENGTH => Some("Length"),
-            DimensionVector::MASS => Some("Mass"),
-            DimensionVector::TIME => Some("Time"),
-            DimensionVector::CURRENT => Some("Current"),
-            DimensionVector::TEMPERATURE => Some("Temperature"),
-            DimensionVector::AMOUNT_OF_SUBSTANCE => Some("AmountOfSubstance"),
-            DimensionVector::LUMINOUS_INTENSITY => Some("LuminousIntensity"),
-            DimensionVector::ANGLE => Some("Angle"),
-            DimensionVector::SOLID_ANGLE => Some("SolidAngle"),
-            DimensionVector::MONEY => Some("Money"),
-            DimensionVector::AREA => Some("Area"),
-            DimensionVector::VOLUME => Some("Volume"),
-            DimensionVector::FREQUENCY => Some("Frequency"),
-            DimensionVector::FORCE => Some("Force"),
-            DimensionVector::ENERGY => Some("Energy"),
-            DimensionVector::POWER => Some("Power"),
-            DimensionVector::PRESSURE => Some("Pressure"),
-            DimensionVector::VOLTAGE => Some("Voltage"),
-            DimensionVector::CHARGE => Some("Charge"),
-            DimensionVector::CAPACITANCE => Some("Capacitance"),
-            DimensionVector::RESISTANCE => Some("Resistance"),
-            DimensionVector::CONDUCTANCE => Some("Conductance"),
-            DimensionVector::INDUCTANCE => Some("Inductance"),
-            DimensionVector::MAGNETIC_FLUX => Some("MagneticFlux"),
-            DimensionVector::MAGNETIC_FLUX_DENSITY => Some("MagneticFluxDensity"),
-            DimensionVector::LUMINOUS_FLUX => Some("LuminousFlux"),
-            DimensionVector::ILLUMINANCE => Some("Illuminance"),
-            DimensionVector::ABSORBED_DOSE => Some("AbsorbedDose"),
-            DimensionVector::ANGULAR_VELOCITY => Some("AngularVelocity"),
-            DimensionVector::DYNAMIC_VISCOSITY => Some("DynamicViscosity"),
-            _ => None,
-        }
+        NAMED_DIMENSIONS
+            .iter()
+            .find(|(dim, _)| *dim == *self)
+            .map(|(_, name)| *name)
     }
 
     pub fn is_dimensionless(&self) -> bool {
@@ -354,6 +327,53 @@ pub const FORCE: DimensionVector = {
     v[2] = Rational::new(-2, 1); // time^-2
     DimensionVector(v)
 };
+
+/// Single source-of-truth mapping from named singleton `DimensionVector` constants to their
+/// canonical PascalCase user-facing names.
+///
+/// This table drives both:
+/// - [`DimensionVector::canonical_name`] — dimension → name direction (linear scan forward).
+/// - `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs` — name → dimension
+///   direction (linear scan backward).
+///
+/// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
+/// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
+/// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
+///
+/// The slice contains exactly 30 entries, one per named singleton, in the same order as the
+/// original `canonical_name` match arms (LENGTH .. DYNAMIC_VISCOSITY).
+pub static NAMED_DIMENSIONS: &[(DimensionVector, &'static str)] = &[
+    (DimensionVector::LENGTH, "Length"),
+    (DimensionVector::MASS, "Mass"),
+    (DimensionVector::TIME, "Time"),
+    (DimensionVector::CURRENT, "Current"),
+    (DimensionVector::TEMPERATURE, "Temperature"),
+    (DimensionVector::AMOUNT_OF_SUBSTANCE, "AmountOfSubstance"),
+    (DimensionVector::LUMINOUS_INTENSITY, "LuminousIntensity"),
+    (DimensionVector::ANGLE, "Angle"),
+    (DimensionVector::SOLID_ANGLE, "SolidAngle"),
+    (DimensionVector::MONEY, "Money"),
+    (DimensionVector::AREA, "Area"),
+    (DimensionVector::VOLUME, "Volume"),
+    (DimensionVector::FREQUENCY, "Frequency"),
+    (DimensionVector::FORCE, "Force"),
+    (DimensionVector::ENERGY, "Energy"),
+    (DimensionVector::POWER, "Power"),
+    (DimensionVector::PRESSURE, "Pressure"),
+    (DimensionVector::VOLTAGE, "Voltage"),
+    (DimensionVector::CHARGE, "Charge"),
+    (DimensionVector::CAPACITANCE, "Capacitance"),
+    (DimensionVector::RESISTANCE, "Resistance"),
+    (DimensionVector::CONDUCTANCE, "Conductance"),
+    (DimensionVector::INDUCTANCE, "Inductance"),
+    (DimensionVector::MAGNETIC_FLUX, "MagneticFlux"),
+    (DimensionVector::MAGNETIC_FLUX_DENSITY, "MagneticFluxDensity"),
+    (DimensionVector::LUMINOUS_FLUX, "LuminousFlux"),
+    (DimensionVector::ILLUMINANCE, "Illuminance"),
+    (DimensionVector::ABSORBED_DOSE, "AbsorbedDose"),
+    (DimensionVector::ANGULAR_VELOCITY, "AngularVelocity"),
+    (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
+];
 
 impl fmt::Display for DimensionVector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -816,48 +836,13 @@ mod tests {
 
     /// Full coverage: every named singleton round-trips through `canonical_name`.
     ///
-    /// This table intentionally mirrors `resolve_dimension_type` in
-    /// `crates/reify-compiler/src/type_resolution.rs`. When a new named
-    /// dimension is added to that function, add the matching
-    /// `(DimensionVector, name)` entry here to keep diagnostic enrichment
-    /// from going silently missing (the match default arm returns `None`,
-    /// so a forgotten entry produces no secondary hint label without a test
-    /// failure).
+    /// The test derives its loop from [`super::NAMED_DIMENSIONS`] — the single source-of-truth
+    /// table shared with `resolve_dimension_type`. Adding a new named dimension only requires
+    /// updating `NAMED_DIMENSIONS`; this test and both consuming functions automatically stay in
+    /// sync.
     #[test]
     fn canonical_name_covers_all_named_singletons() {
-        let cases: &[(DimensionVector, &str)] = &[
-            (DimensionVector::LENGTH, "Length"),
-            (DimensionVector::MASS, "Mass"),
-            (DimensionVector::TIME, "Time"),
-            (DimensionVector::CURRENT, "Current"),
-            (DimensionVector::TEMPERATURE, "Temperature"),
-            (DimensionVector::AMOUNT_OF_SUBSTANCE, "AmountOfSubstance"),
-            (DimensionVector::LUMINOUS_INTENSITY, "LuminousIntensity"),
-            (DimensionVector::ANGLE, "Angle"),
-            (DimensionVector::SOLID_ANGLE, "SolidAngle"),
-            (DimensionVector::MONEY, "Money"),
-            (DimensionVector::AREA, "Area"),
-            (DimensionVector::VOLUME, "Volume"),
-            (DimensionVector::FREQUENCY, "Frequency"),
-            (DimensionVector::FORCE, "Force"),
-            (DimensionVector::ENERGY, "Energy"),
-            (DimensionVector::POWER, "Power"),
-            (DimensionVector::PRESSURE, "Pressure"),
-            (DimensionVector::VOLTAGE, "Voltage"),
-            (DimensionVector::CHARGE, "Charge"),
-            (DimensionVector::CAPACITANCE, "Capacitance"),
-            (DimensionVector::RESISTANCE, "Resistance"),
-            (DimensionVector::CONDUCTANCE, "Conductance"),
-            (DimensionVector::INDUCTANCE, "Inductance"),
-            (DimensionVector::MAGNETIC_FLUX, "MagneticFlux"),
-            (DimensionVector::MAGNETIC_FLUX_DENSITY, "MagneticFluxDensity"),
-            (DimensionVector::LUMINOUS_FLUX, "LuminousFlux"),
-            (DimensionVector::ILLUMINANCE, "Illuminance"),
-            (DimensionVector::ABSORBED_DOSE, "AbsorbedDose"),
-            (DimensionVector::ANGULAR_VELOCITY, "AngularVelocity"),
-            (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
-        ];
-        for &(dim, expected) in cases {
+        for &(dim, expected) in super::NAMED_DIMENSIONS {
             assert_eq!(
                 dim.canonical_name(),
                 Some(expected),

@@ -29,7 +29,7 @@ pub use diagnostics::{
     Diagnostic, DiagnosticCode, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity,
     SourceSpan,
 };
-pub use dimension::{DimensionVector, Rational};
+pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
     DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, UnOp,
