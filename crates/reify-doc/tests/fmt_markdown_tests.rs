@@ -5,7 +5,9 @@
 //! sibling `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::{ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc};
+use reify_doc::model::{
+    AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc,
+};
 
 /// Helper: build a single-module model with one item and return the rendered
 /// single-file output.
@@ -693,5 +695,103 @@ fn constraint_def_body_renders_expr() {
     assert!(
         out.contains("`v <= 5.5 V`"),
         "constraint expression missing:\n{out}"
+    );
+}
+
+/// `@deprecated("use Foo instead")` on an item renders a blockquote callout
+/// `> **Deprecated:** use Foo instead` *between* the H2 heading and the
+/// doc-comment paragraph (or kind-specific body).
+#[test]
+fn deprecated_annotation_emits_callout() {
+    let item = ItemDoc::Structure {
+        name: "OldThing".into(),
+        doc: Some("This is the docstring.".into()),
+        is_pub: true,
+        annotations: vec![AnnotationDoc {
+            name: "deprecated".into(),
+            // String-literal arg as rendered from source: leading/trailing `"`s
+            // are part of the printable representation; the formatter strips them.
+            args: vec!["\"use Foo instead\"".into()],
+        }],
+        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(
+        out.contains("> **Deprecated:** use Foo instead"),
+        "deprecated callout missing:\n{out}"
+    );
+    // Order: heading -> callout -> doc paragraph.
+    let h2 = out.find("## ").expect("H2 present");
+    let callout = out.find("> **Deprecated:**").expect("callout present");
+    let doc_p = out.find("This is the docstring.").expect("doc present");
+    assert!(
+        h2 < callout && callout < doc_p,
+        "ordering wrong (h2={h2} callout={callout} doc={doc_p}):\n{out}"
+    );
+}
+
+/// `@optimized("area")` on an item renders an italic note
+/// `*Optimized: \`area\`*`.
+#[test]
+fn optimized_annotation_emits_italic_note() {
+    let item = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![AnnotationDoc {
+            name: "optimized".into(),
+            args: vec!["\"area\"".into()],
+        }],
+        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(
+        out.contains("*Optimized: `area`*"),
+        "optimized italic note missing:\n{out}"
+    );
+}
+
+/// `@solver_hint(discrete_set(standard_bolt_lengths))` on a parameter appends
+/// `*hint: discrete_set(standard_bolt_lengths)*` to that param's Description
+/// cell, after the doc-comment text.
+#[test]
+fn solver_hint_annotation_appends_to_description_cell() {
+    let item = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![ParamDoc {
+            name: "length".into(),
+            doc: Some("Bolt length.".into()),
+            type_repr: "Length".into(),
+            default_repr: None,
+            annotations: vec![AnnotationDoc {
+                name: "solver_hint".into(),
+                // Non-string-literal arg (no surrounding quotes); the rendered
+                // representation is the call expression itself.
+                args: vec!["discrete_set(standard_bolt_lengths)".into()],
+            }],
+        }],
+        ports: vec![], constraints: vec![], sub_components: vec![],
+        realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    // The description cell of `length` must contain both the doc text and the
+    // italic hint suffix.
+    let row = out
+        .lines()
+        .find(|l| l.contains("`length`"))
+        .expect("found length row");
+    assert!(
+        row.contains("Bolt length."),
+        "doc text missing in row: {row}"
+    );
+    assert!(
+        row.contains("*hint: discrete_set(standard_bolt_lengths)*"),
+        "solver_hint italic suffix missing in row: {row}"
     );
 }
