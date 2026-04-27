@@ -192,6 +192,48 @@ fn doc_default_format_is_html_stub() {
 }
 
 #[test]
+fn doc_split_with_json_exits_two() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "json", "--split", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format json --split must exit 2 (usage error).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--split"),
+        "stderr should mention '--split', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("markdown only") || stderr.contains("markdown"),
+        "stderr should explain that --split is markdown-only, got: {stderr}"
+    );
+}
+
+#[test]
+fn doc_split_with_html_exits_two() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "html", "--split", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format html --split must exit 2 (usage error).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--split"),
+        "stderr should mention '--split', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("markdown only") || stderr.contains("markdown"),
+        "stderr should explain that --split is markdown-only, got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
