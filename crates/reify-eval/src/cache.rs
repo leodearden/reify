@@ -2047,6 +2047,40 @@ mod tests {
         );
     }
 
+    // --- CacheStore::set_freshness() tests (task #2326, step-5) ---
+
+    #[test]
+    fn cache_store_set_freshness_returns_false_for_missing_and_writes_for_present() {
+        use reify_types::{ErrorRef, Freshness, VersionId};
+
+        // (a) Missing node → set_freshness returns false and store stays empty (no auto-create).
+        let mut store = CacheStore::new();
+        let missing = NodeId::Value(ValueCellId::new("T", "missing"));
+        let result = store.set_freshness(&missing, Freshness::Intermediate { generation: 1 });
+        assert!(!result, "set_freshness on absent node must return false");
+        assert_eq!(store.len(), 0, "set_freshness must not auto-create a cache entry");
+
+        // (b) Present node → set_freshness returns true.
+        let node = NodeId::Value(ValueCellId::new("T", "present"));
+        store.put(node.clone(), make_test_node_cache(42, 1)); // starts with Freshness::Final
+        let result = store.set_freshness(
+            &node,
+            Freshness::Failed {
+                error: ErrorRef::new("boom"),
+            },
+        );
+        assert!(result, "set_freshness on present node must return true");
+
+        // (c) Round-trip: canonical reader reflects the written value.
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Failed {
+                error: ErrorRef::new("boom"),
+            },
+            "freshness() must read back the value written by set_freshness()"
+        );
+    }
+
     // --- CacheStore::freshness() tests (task #2326, step-3) ---
 
     #[test]
