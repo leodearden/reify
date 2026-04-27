@@ -401,6 +401,12 @@ enum QueryKey {
         handle: GeometryHandleId,
         density_bits: u64,
     },
+    /// EdgeLength keys the (single) edge handle.
+    EdgeLength(GeometryHandleId),
+    /// EdgeTangent keys the (single) edge handle.
+    EdgeTangent(GeometryHandleId),
+    /// FaceNormal keys the (single) face handle.
+    FaceNormal(GeometryHandleId),
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -483,6 +489,11 @@ impl QueryKey {
                     density_bits,
                 }
             }
+            // Edge/face property queries from task 318: hashed by handle alone
+            // (single-handle scalar/vector queries, no extra params to key on).
+            GeometryQuery::EdgeLength(id) => QueryKey::EdgeLength(*id),
+            GeometryQuery::EdgeTangent(id) => QueryKey::EdgeTangent(*id),
+            GeometryQuery::FaceNormal(id) => QueryKey::FaceNormal(*id),
         }
     }
 }
@@ -726,6 +737,9 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::IsOrientable(id) => id,
             GeometryQuery::CenterOfMass { handle, .. } => handle,
             GeometryQuery::InertiaTensor { handle, .. } => handle,
+            GeometryQuery::EdgeLength(id) => id,
+            GeometryQuery::EdgeTangent(id) => id,
+            GeometryQuery::FaceNormal(id) => id,
         };
 
         self.queries

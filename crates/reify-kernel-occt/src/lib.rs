@@ -1058,6 +1058,19 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
+            // The following three variants are wired in steps 14/18/16
+            // respectively. Pre-emptive arms keep the workspace compiling
+            // after the new variants are added in reify-types; they will be
+            // replaced with real FFI dispatches in the impl steps.
+            GeometryQuery::EdgeLength(_) => Err(QueryError::QueryFailed(
+                "EdgeLength query not yet implemented".into(),
+            )),
+            GeometryQuery::EdgeTangent(_) => Err(QueryError::QueryFailed(
+                "EdgeTangent query not yet implemented".into(),
+            )),
+            GeometryQuery::FaceNormal(_) => Err(QueryError::QueryFailed(
+                "FaceNormal query not yet implemented".into(),
+            )),
         }
     }
 
