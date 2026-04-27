@@ -1,5 +1,5 @@
 //! Filtered topology selectors composed over `GeometryKernel::extract_edges`
-//! / `extract_faces` and per-sub-shape `GeometryQuery` reads (task 318).
+//! / `extract_faces` and the batched `GeometryKernel::query_many` path.
 //!
 //! These are pure-Rust functions over `&mut dyn GeometryKernel` (rather than
 //! new `GeometryQuery` variants or new kernel methods) because:
@@ -12,6 +12,14 @@
 //!     this task; the pub Rust API is the boundary and a future task adds
 //!     the language surface.
 //!
+//! Each selector first allocates sub-shape handles, then issues a single
+//! `kernel.query_many(&[...])` call for all per-sub-shape reads, then
+//! applies its predicate (length window, area window, normal cone, edge-
+//! tangent absolute-cosine, bbox-z window) on the returned `Vec<Value>`.
+//! This collapses the actor-channel + FFI hop to O(1) per selector
+//! regardless of sub-shape count, resolving the N+1 round-trip overhead
+//! flagged in the post-merge review of task 318 (see task 2509).
+//!
 //! All returned `Vec<GeometryHandleId>`s preserve the kernel's canonical
 //! sub-shape order (from `TopExp::MapShapes`), filtered to those satisfying
 //! the predicate.
@@ -22,6 +30,50 @@
 //! which also take `angle_rad`).
 
 use reify_types::{GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
+
+/// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
+/// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
+///
+/// `query_label` should be the name of the originating query variant (e.g.
+/// `"EdgeLength"`, `"SurfaceArea"`) so the error message names what the
+/// kernel returned an unexpected payload for. Used by the scalar-window
+/// selectors (`edges_by_length`, `faces_by_area`); `edges_at_height` reads
+/// a JSON BoundingBox payload via a dedicated parser instead.
+fn expect_real(
+    query_label: &'static str,
+    id: GeometryHandleId,
+    value: Value,
+) -> Result<f64, QueryError> {
+    match value {
+        Value::Real(x) => Ok(x),
+        other => Err(QueryError::QueryFailed(format!(
+            "{query_label}({:?}) returned non-real value: {:?}",
+            id, other
+        ))),
+    }
+}
+
+/// Defensive length check shared by every selector. Asserts the kernel
+/// honored the `query_many` length invariant — `values.len() == ids.len()`
+/// — and surfaces `QueryError::QueryFailed` on a mismatch instead of
+/// silently truncating selector results via `zip`'s shorter-of-two
+/// behaviour. The trait default impl and `OcctKernelHandle`'s override
+/// both preserve the invariant; this guards against a misbehaving
+/// third-party impl.
+fn check_query_many_len(
+    selector: &'static str,
+    expected: usize,
+    got: usize,
+) -> Result<(), QueryError> {
+    if expected == got {
+        Ok(())
+    } else {
+        Err(QueryError::QueryFailed(format!(
+            "{selector}: kernel.query_many returned {got} values for {expected} \
+             queries (length invariant violation)"
+        )))
+    }
+}
 
 /// Return the subset of `extract_edges(handle)` whose length lies in
 /// `[min_m, max_m]` (inclusive on both ends).
@@ -43,19 +95,17 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     max_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
+    let queries: Vec<GeometryQuery> = edges
+        .iter()
+        .map(|id| GeometryQuery::EdgeLength(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
+    check_query_many_len("edges_by_length", queries.len(), values.len())?;
     let mut out = Vec::with_capacity(edges.len());
-    for id in edges {
-        let len = match kernel.query(&GeometryQuery::EdgeLength(id))? {
-            Value::Real(l) => l,
-            other => {
-                return Err(QueryError::QueryFailed(format!(
-                    "EdgeLength({:?}) returned non-real value: {:?}",
-                    id, other
-                )));
-            }
-        };
+    for (id, value) in edges.iter().zip(values) {
+        let len = expect_real("EdgeLength", *id, value)?;
         if len >= min_m && len <= max_m {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
@@ -81,19 +131,17 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
+    let queries: Vec<GeometryQuery> = faces
+        .iter()
+        .map(|id| GeometryQuery::SurfaceArea(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
+    check_query_many_len("faces_by_area", queries.len(), values.len())?;
     let mut out = Vec::with_capacity(faces.len());
-    for id in faces {
-        let area = match kernel.query(&GeometryQuery::SurfaceArea(id))? {
-            Value::Real(a) => a,
-            other => {
-                return Err(QueryError::QueryFailed(format!(
-                    "SurfaceArea({:?}) returned non-real value: {:?}",
-                    id, other
-                )));
-            }
-        };
+    for (id, value) in faces.iter().zip(values) {
+        let area = expect_real("SurfaceArea", *id, value)?;
         if area >= min_m2 && area <= max_m2 {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
@@ -239,9 +287,14 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         )
     })?;
     let faces = kernel.extract_faces(handle)?;
+    let queries: Vec<GeometryQuery> = faces
+        .iter()
+        .map(|id| GeometryQuery::FaceNormal(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
+    check_query_many_len("faces_by_normal", queries.len(), values.len())?;
     let mut out = Vec::with_capacity(faces.len());
-    for id in faces {
-        let normal_value = kernel.query(&GeometryQuery::FaceNormal(id))?;
+    for (id, normal_value) in faces.iter().zip(values) {
         let raw = parse_xyz_value(&normal_value, "FaceNormal")?;
         let normal = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
@@ -252,7 +305,7 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         let cos = dot3(normal, target).clamp(-1.0, 1.0);
         let angle = cos.acos();
         if angle <= angular_tol_rad {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
@@ -294,9 +347,14 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
+    let queries: Vec<GeometryQuery> = edges
+        .iter()
+        .map(|id| GeometryQuery::EdgeTangent(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
+    check_query_many_len("edges_parallel_to", queries.len(), values.len())?;
     let mut out = Vec::with_capacity(edges.len());
-    for id in edges {
-        let tan_value = kernel.query(&GeometryQuery::EdgeTangent(id))?;
+    for (id, tan_value) in edges.iter().zip(values) {
         let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
         let tan = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
@@ -309,7 +367,7 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
         // angle <= tol is equivalent to cos(angle) >= cos(tol). For the
         // sign-tolerant variant we use |cos|.
         if abs_dot >= cos_tol {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
@@ -341,12 +399,17 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
     tol_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
+    let queries: Vec<GeometryQuery> = edges
+        .iter()
+        .map(|id| GeometryQuery::BoundingBox(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
+    check_query_many_len("edges_at_height", queries.len(), values.len())?;
     let mut out = Vec::with_capacity(edges.len());
-    for id in edges {
-        let bbox_value = kernel.query(&GeometryQuery::BoundingBox(id))?;
+    for (id, bbox_value) in edges.iter().zip(values) {
         let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
         if (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
@@ -396,4 +459,470 @@ fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
         _ => false,
     })?;
     Some((zmin?, zmax?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::{
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, TessError,
+    };
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// In-test `GeometryKernel` that records `query` and `query_many`
+    /// invocation counts so we can prove the migrated selectors batch
+    /// their kernel reads via `query_many` (one call) instead of looping
+    /// over per-element `query` (N calls).
+    ///
+    /// Configure with:
+    ///   * `edges` / `faces`: handle ids returned by `extract_edges` /
+    ///     `extract_faces`.
+    ///   * `responses`: map from sub-shape handle id to the `Value` the
+    ///     kernel should reply with for any query against that id
+    ///     (regardless of query variant — every selector uses exactly
+    ///     one `GeometryQuery` kind, so a single `Value` per id is
+    ///     unambiguous).
+    ///
+    /// `query_many`'s override looks up `Value`s directly from
+    /// `responses` rather than calling `self.query()` per element —
+    /// this lets each test assert `query_calls == 0` after a successful
+    /// batched selector run, which would be impossible if the override
+    /// fell back to per-element `query`.
+    struct CountingKernel {
+        query_calls: AtomicUsize,
+        query_many_calls: AtomicUsize,
+        edges: Vec<GeometryHandleId>,
+        faces: Vec<GeometryHandleId>,
+        responses: HashMap<GeometryHandleId, Value>,
+    }
+
+    impl CountingKernel {
+        fn new() -> Self {
+            CountingKernel {
+                query_calls: AtomicUsize::new(0),
+                query_many_calls: AtomicUsize::new(0),
+                edges: Vec::new(),
+                faces: Vec::new(),
+                responses: HashMap::new(),
+            }
+        }
+
+        fn with_edges(mut self, edges: Vec<GeometryHandleId>) -> Self {
+            self.edges = edges;
+            self
+        }
+
+        fn with_faces(mut self, faces: Vec<GeometryHandleId>) -> Self {
+            self.faces = faces;
+            self
+        }
+
+        fn with_response(mut self, id: GeometryHandleId, value: Value) -> Self {
+            self.responses.insert(id, value);
+            self
+        }
+
+        fn query_calls(&self) -> usize {
+            self.query_calls.load(Ordering::SeqCst)
+        }
+
+        fn query_many_calls(&self) -> usize {
+            self.query_many_calls.load(Ordering::SeqCst)
+        }
+
+        /// Look up the staged response for `query`, returning a clone or an
+        /// `InvalidHandle` error if no response was staged for the queried
+        /// handle id. Centralizes the dispatch shared by `query` and
+        /// `query_many`.
+        fn lookup(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+            let id = match query {
+                GeometryQuery::EdgeLength(id)
+                | GeometryQuery::EdgeTangent(id)
+                | GeometryQuery::FaceNormal(id)
+                | GeometryQuery::SurfaceArea(id)
+                | GeometryQuery::BoundingBox(id) => *id,
+                other => {
+                    return Err(QueryError::QueryFailed(format!(
+                        "CountingKernel: unsupported query variant {:?}",
+                        other
+                    )));
+                }
+            };
+            self.responses
+                .get(&id)
+                .cloned()
+                .ok_or(QueryError::InvalidHandle(id))
+        }
+    }
+
+    impl GeometryKernel for CountingKernel {
+        fn execute(
+            &mut self,
+            _op: &GeometryOp,
+        ) -> Result<GeometryHandle, GeometryError> {
+            unimplemented!("CountingKernel does not implement execute")
+        }
+
+        fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+            self.query_calls.fetch_add(1, Ordering::SeqCst);
+            self.lookup(query)
+        }
+
+        fn query_many(
+            &self,
+            queries: &[GeometryQuery],
+        ) -> Result<Vec<Value>, QueryError> {
+            self.query_many_calls.fetch_add(1, Ordering::SeqCst);
+            // Look up directly from the staged responses so per-element
+            // `query` is *not* called — the assertion `query_calls == 0`
+            // proves the migrated selector relies on the batched path.
+            queries.iter().map(|q| self.lookup(q)).collect()
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            unimplemented!("CountingKernel does not implement export")
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            unimplemented!("CountingKernel does not implement tessellate")
+        }
+
+        fn extract_edges(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(self.edges.clone())
+        }
+
+        fn extract_faces(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(self.faces.clone())
+        }
+    }
+
+    /// Compile-time witness: `CountingKernel` must satisfy the `Send + Sync`
+    /// supertrait bound that `GeometryKernel` requires of its impls.
+    const _: fn() = || {
+        fn must_be_send_sync<T: Send + Sync>() {}
+        must_be_send_sync::<CountingKernel>();
+    };
+
+    #[test]
+    fn edges_by_length_uses_query_many_once() {
+        // Three edges with lengths 5mm, 10mm, 15mm. The window
+        // [8mm, 12mm] selects only the middle edge.
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.005))
+            .with_response(edge_ids[1], Value::Real(0.010))
+            .with_response(edge_ids[2], Value::Real(0.015));
+
+        let source = GeometryHandleId(1);
+        let result =
+            edges_by_length(&mut kernel, source, 0.008, 0.012).expect("selector should succeed");
+
+        assert_eq!(result, vec![edge_ids[1]], "expected only the 10mm edge");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "edges_by_length must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "edges_by_length must not loop over per-element query"
+        );
+    }
+
+    #[test]
+    fn faces_by_normal_uses_query_many_once() {
+        // Three faces with normals (+Z, +X, -Z). Filter on +Z direction
+        // with 1 deg tolerance: only the +Z face is accepted (anti-
+        // parallel -Z is rejected per the documented contract).
+        let face_ids = vec![
+            GeometryHandleId(301),
+            GeometryHandleId(302),
+            GeometryHandleId(303),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
+            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(
+                face_ids[2],
+                Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()),
+            );
+
+        let source = GeometryHandleId(1);
+        let result = faces_by_normal(
+            &mut kernel,
+            source,
+            [0.0, 0.0, 1.0],
+            1f64.to_radians(),
+        )
+        .expect("selector should succeed");
+
+        assert_eq!(result, vec![face_ids[0]], "expected only the +Z face");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "faces_by_normal must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "faces_by_normal must not loop over per-element query"
+        );
+    }
+
+    #[test]
+    fn edges_parallel_to_uses_query_many_once() {
+        // Three edges with tangents +X, -X, +Y. Filter on +X axis with
+        // 1 deg tolerance: the +X and -X edges are both retained
+        // (sign-tolerant predicate); the +Y edge is rejected.
+        let edge_ids = vec![
+            GeometryHandleId(401),
+            GeometryHandleId(402),
+            GeometryHandleId(403),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(
+                edge_ids[1],
+                Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+
+        let source = GeometryHandleId(1);
+        let result = edges_parallel_to(
+            &mut kernel,
+            source,
+            [1.0, 0.0, 0.0],
+            1f64.to_radians(),
+        )
+        .expect("selector should succeed");
+
+        assert_eq!(
+            result,
+            vec![edge_ids[0], edge_ids[1]],
+            "expected both x-aligned edges (sign-tolerant)"
+        );
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "edges_parallel_to must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "edges_parallel_to must not loop over per-element query"
+        );
+    }
+
+    #[test]
+    fn faces_by_area_uses_query_many_once() {
+        // Three faces with surface areas 200, 300, 600 in mm^2 (i.e.
+        // 200e-6, 300e-6, 600e-6 m^2). The window [199e-6, 201e-6] m^2
+        // selects only the first face.
+        let face_ids = vec![
+            GeometryHandleId(201),
+            GeometryHandleId(202),
+            GeometryHandleId(203),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::Real(200e-6))
+            .with_response(face_ids[1], Value::Real(300e-6))
+            .with_response(face_ids[2], Value::Real(600e-6));
+
+        let source = GeometryHandleId(1);
+        let result = faces_by_area(&mut kernel, source, 199e-6, 201e-6)
+            .expect("selector should succeed");
+
+        assert_eq!(result, vec![face_ids[0]], "expected only the 200e-6 m^2 face");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "faces_by_area must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "faces_by_area must not loop over per-element query"
+        );
+    }
+
+    #[test]
+    fn edges_at_height_uses_query_many_once() {
+        // Three edges:
+        //   * edge_ids[0]: top edge — flat at z = +5mm (zmin == zmax == 5e-3).
+        //   * edge_ids[1]: vertical edge spanning -5mm to +5mm.
+        //   * edge_ids[2]: bottom edge — flat at z = -5mm.
+        // Filter on z = +5mm with 1e-6 m tolerance: only the top edge is
+        // retained (the vertical edge fails because zmin is 10mm away,
+        // and the bottom edge fails on both extents).
+        let edge_ids = vec![
+            GeometryHandleId(501),
+            GeometryHandleId(502),
+            GeometryHandleId(503),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(
+                edge_ids[0],
+                Value::String(
+                    "{\"xmin\":0,\"ymin\":0,\"zmin\":0.005,\"xmax\":0.01,\"ymax\":0,\"zmax\":0.005}"
+                        .into(),
+                ),
+            )
+            .with_response(
+                edge_ids[1],
+                Value::String(
+                    "{\"xmin\":0,\"ymin\":0,\"zmin\":-0.005,\"xmax\":0,\"ymax\":0,\"zmax\":0.005}"
+                        .into(),
+                ),
+            )
+            .with_response(
+                edge_ids[2],
+                Value::String(
+                    "{\"xmin\":0,\"ymin\":0,\"zmin\":-0.005,\"xmax\":0.01,\"ymax\":0,\"zmax\":-0.005}"
+                        .into(),
+                ),
+            );
+
+        let source = GeometryHandleId(1);
+        let result =
+            edges_at_height(&mut kernel, source, 5e-3, 1e-6).expect("selector should succeed");
+
+        assert_eq!(result, vec![edge_ids[0]], "expected only the top edge");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "edges_at_height must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "edges_at_height must not loop over per-element query"
+        );
+    }
+
+    /// In-test `GeometryKernel` whose `query_many` deliberately violates
+    /// the length invariant: returns a `Vec<Value>` shorter than the
+    /// input `queries` slice. Used to prove selectors detect the
+    /// mismatch and surface `QueryError::QueryFailed` instead of
+    /// silently truncating results via `zip`.
+    struct ShortQueryManyKernel {
+        edges: Vec<GeometryHandleId>,
+        // The Vec returned from query_many regardless of input length.
+        short_reply: Vec<Value>,
+    }
+
+    impl GeometryKernel for ShortQueryManyKernel {
+        fn execute(
+            &mut self,
+            _op: &GeometryOp,
+        ) -> Result<GeometryHandle, GeometryError> {
+            unimplemented!("ShortQueryManyKernel does not implement execute")
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            unimplemented!("ShortQueryManyKernel only supports query_many")
+        }
+
+        fn query_many(
+            &self,
+            _queries: &[GeometryQuery],
+        ) -> Result<Vec<Value>, QueryError> {
+            Ok(self.short_reply.clone())
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            unimplemented!()
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            unimplemented!()
+        }
+
+        fn extract_edges(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(self.edges.clone())
+        }
+    }
+
+    #[test]
+    fn edges_by_length_detects_query_many_length_invariant_violation() {
+        // Three edges, kernel returns only two values: selector must
+        // surface `QueryError::QueryFailed` instead of silently truncating.
+        let edge_ids = vec![
+            GeometryHandleId(601),
+            GeometryHandleId(602),
+            GeometryHandleId(603),
+        ];
+        let mut kernel = ShortQueryManyKernel {
+            edges: edge_ids,
+            short_reply: vec![Value::Real(0.005), Value::Real(0.010)],
+        };
+        let err = edges_by_length(&mut kernel, GeometryHandleId(1), 0.0, 1.0)
+            .expect_err("selector must reject length-mismatched query_many output");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("edges_by_length") && msg.contains("length invariant"),
+                    "expected length-invariant message, got {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn expect_real_error_message_names_query_label_and_id() {
+        // Direct sanity test of the helper: a non-Real value yields a
+        // QueryFailed whose message names the query label and id.
+        let id = GeometryHandleId(701);
+        let err = expect_real("EdgeLength", id, Value::String("not a number".into()))
+            .expect_err("expect_real must reject non-Real values");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("EdgeLength") && msg.contains("701"),
+                    "expected label + id in error, got {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+    }
 }

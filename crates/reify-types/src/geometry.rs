@@ -533,6 +533,36 @@ pub trait GeometryKernel: Send + Sync {
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
 
+    /// Run a batch of queries in a single round-trip and return one
+    /// `Value` per query, in the same order as `queries`.
+    ///
+    /// # Length invariant
+    ///
+    /// On success, implementations **must** return a `Vec<Value>` whose
+    /// length equals `queries.len()`, with `result[i]` being the answer
+    /// to `queries[i]`. Callers (e.g. the topology selectors in
+    /// `reify-eval`) rely on this invariant to `zip` ids with values
+    /// without an explicit re-check; a misbehaving impl that returns a
+    /// shorter `Vec` would silently truncate consumer results. Defensive
+    /// callers may still verify `result.len() == queries.len()` and
+    /// surface `QueryError::QueryFailed` on a kernel-side contract
+    /// violation.
+    ///
+    /// The default implementation simply forwards to `query` per element
+    /// and collects via `Result<Vec<_>, _>`'s fail-fast `FromIterator`
+    /// impl: it **returns the first `QueryError` encountered; remaining
+    /// queries are not issued.** This default trivially preserves the
+    /// length invariant because a successful `Result<Vec<_>, _>::collect`
+    /// produces exactly one `Value` per source `Result::Ok`.
+    ///
+    /// Channel-routed kernels (e.g. `OcctKernelHandle`) override this to
+    /// batch the actor-channel hop and the underlying FFI work into a
+    /// single send/recv round-trip, eliminating the N+1 overhead that
+    /// per-element `query` incurs in tight selector loops.
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        queries.iter().map(|q| self.query(q)).collect()
+    }
+
     /// Export a handle to the given format, writing to the provided writer.
     fn export(
         &self,
@@ -869,6 +899,178 @@ mod tests {
             }
             _ => panic!("expected NurbsCurve variant"),
         }
+    }
+
+    #[test]
+    fn geometry_kernel_query_many_default_forwards_to_query() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A minimal in-test `GeometryKernel` that records every `query` call
+        /// and replies with a fixed `Value::Real(42.0)`. It implements only the
+        /// abstract `query` method — every other trait member uses its
+        /// not-supported default or a stub `unimplemented!()` — so we can
+        /// observe whether `query_many`'s default delegates to `query` per
+        /// element and preserves order. `AtomicUsize` keeps the kernel
+        /// `Send + Sync` (a bound the trait requires) without external locks.
+        struct CountingKernel {
+            query_calls: AtomicUsize,
+            reply: Value,
+        }
+
+        impl GeometryKernel for CountingKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                unimplemented!("CountingKernel only supports query")
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                self.query_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(self.reply.clone())
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!("CountingKernel only supports query")
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!("CountingKernel only supports query")
+            }
+        }
+
+        let kernel = CountingKernel {
+            query_calls: AtomicUsize::new(0),
+            reply: Value::Real(42.0),
+        };
+
+        // (1) Two-element batch: returns ordered Values, calls `query` exactly twice.
+        let queries = vec![
+            GeometryQuery::Volume(GeometryHandleId(1)),
+            GeometryQuery::SurfaceArea(GeometryHandleId(2)),
+        ];
+        let result = kernel
+            .query_many(&queries)
+            .expect("query_many should succeed");
+        assert_eq!(result.len(), 2, "query_many should return one Value per query");
+        match (&result[0], &result[1]) {
+            (Value::Real(a), Value::Real(b)) => {
+                assert!((a - 42.0).abs() < 1e-15);
+                assert!((b - 42.0).abs() < 1e-15);
+            }
+            other => panic!("expected two Value::Real(42.0), got {:?}", other),
+        }
+        assert_eq!(
+            kernel.query_calls.load(Ordering::SeqCst),
+            2,
+            "expected exactly 2 query calls"
+        );
+
+        // (2) Empty batch: returns Ok(vec![]) with zero additional `query` calls.
+        let result = kernel
+            .query_many(&[])
+            .expect("empty query_many should succeed");
+        assert!(result.is_empty(), "empty batch should return empty Vec");
+        assert_eq!(
+            kernel.query_calls.load(Ordering::SeqCst),
+            2,
+            "empty query_many must not call query"
+        );
+    }
+
+    #[test]
+    fn geometry_kernel_query_many_default_fails_fast_on_first_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// In-test `GeometryKernel` whose `query` returns `Ok(...)` until the
+        /// `fail_after_call` threshold (1-based) is hit, then returns
+        /// `QueryError::QueryFailed` for that call. Subsequent calls would
+        /// also error if reached, but the trait default's fail-fast collect
+        /// must short-circuit before that — the asserted call count proves it.
+        struct FailAfterKernel {
+            query_calls: AtomicUsize,
+            fail_after_call: usize,
+            ok_reply: Value,
+        }
+
+        impl GeometryKernel for FailAfterKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                unimplemented!("FailAfterKernel only supports query")
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                let call_index = self.query_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call_index >= self.fail_after_call {
+                    Err(QueryError::QueryFailed(format!(
+                        "synthetic failure on call #{}",
+                        call_index
+                    )))
+                } else {
+                    Ok(self.ok_reply.clone())
+                }
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!("FailAfterKernel only supports query")
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!("FailAfterKernel only supports query")
+            }
+        }
+
+        // Three queries; the kernel returns Ok on call #1 and Err on call #2.
+        // The default `query_many` must short-circuit at call #2 — never
+        // issuing call #3 — and return that error.
+        let kernel = FailAfterKernel {
+            query_calls: AtomicUsize::new(0),
+            fail_after_call: 2,
+            ok_reply: Value::Real(1.0),
+        };
+        let queries = vec![
+            GeometryQuery::Volume(GeometryHandleId(1)),
+            GeometryQuery::SurfaceArea(GeometryHandleId(2)),
+            GeometryQuery::EdgeLength(GeometryHandleId(3)),
+        ];
+        let err = kernel
+            .query_many(&queries)
+            .expect_err("query_many must propagate the inner error");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("call #2"),
+                    "expected fail-fast at call #2, got {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+        assert_eq!(
+            kernel.query_calls.load(Ordering::SeqCst),
+            2,
+            "fail-fast must stop after the first Err — call #3 must not be issued"
+        );
     }
 
     #[test]

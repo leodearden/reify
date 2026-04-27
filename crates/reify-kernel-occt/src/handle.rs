@@ -30,6 +30,10 @@ enum OcctRequest {
         query: GeometryQuery,
         reply: oneshot::Sender<Result<Value, QueryError>>,
     },
+    QueryMany {
+        queries: Vec<GeometryQuery>,
+        reply: oneshot::Sender<Result<Vec<Value>, QueryError>>,
+    },
     Export {
         handle: GeometryHandleId,
         format: ExportFormat,
@@ -129,6 +133,49 @@ impl OcctKernelHandle {
         self.tx
             .blocking_send(OcctRequest::Query {
                 query: query.clone(),
+                reply: reply_tx,
+            })
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
+    /// Run a batch of queries in a single channel round-trip and return
+    /// the results in order.
+    ///
+    /// Sends one `QueryMany` request to the kernel thread; the kernel
+    /// thread fail-fast collects per-query results (stopping at the
+    /// first `QueryError`) and replies with a `Result<Vec<Value>,
+    /// QueryError>`. This collapses the actor-channel send/recv to a
+    /// single round-trip, eliminating the N+1 latency that per-element
+    /// `query` incurs in tight selector loops.
+    ///
+    /// As a hot-path optimization, an empty `queries` slice is
+    /// short-circuited locally: the channel send/recv is skipped and
+    /// `Ok(Vec::new())` is returned immediately. This matters because
+    /// selectors built on `extract_edges` / `extract_faces` may produce
+    /// an empty handle list for shapes with no sub-shapes of the
+    /// requested kind, and forcing those calls through the actor channel
+    /// for a guaranteed-empty reply is pure overhead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn query_many(
+        &self,
+        queries: &[GeometryQuery],
+    ) -> Result<Vec<Value>, QueryError> {
+        // Empty-batch fast path: skip the actor channel round-trip
+        // entirely. The kernel-thread arm would itself produce
+        // `Ok(Vec::new())`, so the result is identical.
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::QueryMany {
+                queries: queries.to_vec(),
                 reply: reply_tx,
             })
             .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
@@ -237,6 +284,14 @@ impl OcctKernelHandle {
                     }
                     OcctRequest::Query { query, reply } => {
                         let result = kernel.query(&query);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::QueryMany { queries, reply } => {
+                        // Fail-fast collect: Result<Vec<_>, _>'s FromIterator
+                        // short-circuits on the first Err, so we stop issuing
+                        // FFI calls once any query fails.
+                        let result: Result<Vec<Value>, QueryError> =
+                            queries.iter().map(|q| kernel.query(q)).collect();
                         let _ = reply.send(result);
                     }
                     OcctRequest::Export {
@@ -547,6 +602,13 @@ impl GeometryKernel for OcctKernelHandle {
         OcctKernelHandle::query(self, query)
     }
 
+    /// Override the trait default with a real channel-routed batched
+    /// implementation. Delegates to the inherent `query_many` (which
+    /// only needs `&self`).
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        OcctKernelHandle::query_many(self, queries)
+    }
+
     fn export(
         &self,
         handle: GeometryHandleId,
@@ -641,6 +703,77 @@ mod tests {
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn query_many_returns_ordered_values_for_heterogeneous_batch() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let result = handle
+            .query_many(&[
+                GeometryQuery::Volume(gh.id),
+                GeometryQuery::SurfaceArea(gh.id),
+            ])
+            .expect("query_many should succeed for valid handles");
+        assert_eq!(result.len(), 2, "expected one Value per query");
+        match (&result[0], &result[1]) {
+            (Value::Real(vol), Value::Real(area)) => {
+                // 10 * 20 * 30 = 6000
+                assert!(
+                    (vol - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {vol}"
+                );
+                // 2 * (10*20 + 10*30 + 20*30) = 2200
+                assert!(
+                    (area - 2200.0).abs() < 1.0,
+                    "expected surface area ~2200, got {area}"
+                );
+            }
+            other => panic!("expected two Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn query_many_short_circuits_on_first_invalid_handle() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let result = handle.query_many(&[
+            GeometryQuery::Volume(GeometryHandleId(999)),
+            GeometryQuery::SurfaceArea(gh.id),
+        ]);
+        assert!(result.is_err(), "query_many must propagate the bad handle");
+        match result.unwrap_err() {
+            reify_types::QueryError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn query_many_empty_batch_returns_ok_empty_vec() {
+        // The empty-batch fast path should return Ok(Vec::new()) without
+        // routing through the actor channel. Observable behaviour is the
+        // empty Ok result; the channel skip is documented in the doc-comment.
+        let handle = super::OcctKernelHandle::spawn();
+        let result = handle
+            .query_many(&[])
+            .expect("empty query_many should succeed");
+        assert!(
+            result.is_empty(),
+            "empty batch should return empty Vec, got {:?}",
+            result
+        );
     }
 
     #[test]
