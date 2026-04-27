@@ -380,6 +380,24 @@ impl CacheStore {
             .unwrap_or_default()
     }
 
+    /// Canonical writer for cache freshness.
+    ///
+    /// Updates the cached entry's freshness in place and returns `true`;
+    /// returns `false` (no-op) when the node has no cache entry — auto-creation
+    /// has no value/result/trace to seed (see task #2326 design decision). Use
+    /// `put(node, NodeCache::new(...))` to insert a fresh entry.
+    ///
+    /// Domain-specific helpers `mark_pending`/`restore_final` continue to
+    /// coexist; they additionally manipulate `last_substantive`.
+    pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.freshness = freshness;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Restore a node's freshness to Final after early cutoff skips its
     /// re-evaluation. This handles nodes that were pre-marked Pending but
     /// then bypassed because an upstream node produced an unchanged result.
