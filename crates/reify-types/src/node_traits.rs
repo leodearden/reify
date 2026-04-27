@@ -15,6 +15,31 @@
 //! Nothing in this crate or its dependents currently dispatches on these traits.
 //! They are purely declarative scaffolding for downstream scheduler/cache tasks to adopt.
 
+/// Composable execution-trait flags for a node kind.
+///
+/// See `docs/reify-implementation-architecture.md §7.6 lines 803–816`.
+///
+/// Implemented as a `u8` bitflag newtype to avoid introducing a third-party
+/// dependency (`bitflags`, `enumflags2`) for ~30 lines of trivial logic.
+/// Use [`NodeTraits::union`] / [`NodeTraits::intersection`] in `const` contexts;
+/// the `|` / `&` operators are available for non-const use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct NodeTraits(u8);
+
+impl NodeTraits {
+    /// The empty (no flags) value. Equivalent to [`Default::default`].
+    #[inline]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Returns `true` if no flags are set.
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
