@@ -69,23 +69,27 @@ impl Engine {
         // mirrors `remap_entity`'s arm-by-arm structure so future variant
         // additions in `crates/reify-types/src/expr.rs` only need to touch the
         // same places.
-        for constraint in &mut rewritten_constraints {
+        //
+        // Captured shape — `&purpose.resolved_queries`, `entity_ref`, and
+        // `&state.snapshot.graph.value_cells` — is identical for the
+        // constraints loop and the objective rewrite, so a closure keeps the
+        // call sites in lockstep (any future arg change only touches one
+        // signature).
+        let expand_placeholders = |expr: &mut CompiledExpr| {
             expand_purpose_reflective_placeholders(
-                &mut constraint.expr,
+                expr,
                 &purpose.resolved_queries,
                 entity_ref,
                 &state.snapshot.graph.value_cells,
             );
+        };
+        for constraint in &mut rewritten_constraints {
+            expand_placeholders(&mut constraint.expr);
         }
         let rewritten_objective = rewritten_objective.map(|mut obj| {
             match &mut obj {
                 OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    expand_purpose_reflective_placeholders(
-                        expr,
-                        &purpose.resolved_queries,
-                        entity_ref,
-                        &state.snapshot.graph.value_cells,
-                    );
+                    expand_placeholders(expr);
                 }
             }
             obj
