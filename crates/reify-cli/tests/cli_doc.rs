@@ -309,6 +309,40 @@ fn doc_o_flag_writes_to_file_for_json() {
 }
 
 #[test]
+fn doc_split_markdown_writes_files_to_directory() {
+    let path = common::fixture_path("bracket.ri");
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let dir_str = dir.path().to_str().expect("tmp dir path is utf-8");
+
+    let (status, stdout, stderr) =
+        run_doc(&["--format", "markdown", "--split", "-o", dir_str, &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format markdown --split -o <dir> must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    let entries: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read tmp dir")
+        .map(|e| e.expect("read entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    // Minimal placeholder DocModel has zero items, so render_split emits
+    // only `index.md` (matches fmt_markdown::render_split's known
+    // item-less behaviour).
+    assert_eq!(
+        entries,
+        vec!["index.md".to_string()],
+        "expected exactly index.md in {}, got: {entries:?}",
+        dir.path().display()
+    );
+    let index = std::fs::read_to_string(dir.path().join("index.md")).expect("read index.md");
+    assert!(
+        index.starts_with("# bracket"),
+        "index.md must start with '# bracket', got: {index}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
