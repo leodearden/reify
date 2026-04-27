@@ -426,6 +426,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::ParamOverrideRejection;
+    use crate::Engine;
 
     // Pin that `ParamOverrideRejection` fits within 32 bytes.
     // See `ParamOverrideRejection::ScalarDimensionMismatch` doc for rationale.
@@ -436,6 +437,45 @@ mod tests {
             "ParamOverrideRejection is {} bytes; expected <= 32. \
              Box the DimensionVector fields in ScalarDimensionMismatch.",
             std::mem::size_of::<ParamOverrideRejection>()
+        );
+    }
+
+    /// `register_solver` stores a named solver in the registry; `unregister_solver`
+    /// returns `true` when a matching name was registered (and removes it) and
+    /// `false` otherwise. `registered_solvers()` iterates over the currently
+    /// registered names. Mirrors the optimized-impl registry contract
+    /// (`register_optimized_impl` / `unregister_optimized_impl` /
+    /// `optimized_targets`) for the named-solver dispatch added by Task 2300.
+    #[test]
+    fn register_solver_stores_named_solver_and_unregister_returns_true_when_present() {
+        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
+        use std::collections::HashMap;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_solver(
+            "libslvs",
+            Box::new(SpyConstraintSolver::new_solved(HashMap::new())),
+        );
+        assert!(
+            engine.registered_solvers().any(|n| n == "libslvs"),
+            "expected 'libslvs' in registered_solvers(), got {:?}",
+            engine.registered_solvers().collect::<Vec<_>>()
+        );
+
+        // Unregister returns true and the name is no longer registered.
+        assert!(
+            engine.unregister_solver("libslvs"),
+            "expected unregister_solver('libslvs') to return true"
+        );
+        assert_eq!(
+            engine.registered_solvers().count(),
+            0,
+            "expected registered_solvers() to be empty after unregister"
+        );
+
+        // Unregister of a missing name returns false.
+        assert!(
+            !engine.unregister_solver("missing"),
+            "expected unregister_solver('missing') to return false"
         );
     }
 }
