@@ -225,6 +225,19 @@ fn std_units_module_has_expected_units() {
 fn prelude_modules_carry_no_prelude_pragma() {
     let modules = stdlib_loader::load_stdlib();
 
+    // Invariant: a stdlib module belongs in this list if and only if it has
+    // ZERO inter-stdlib dependencies — i.e. it references only built-in
+    // dimension types (Length, Angle, …), built-in primitives (Real, Int,
+    // String), and units from the hardcoded `unit_to_scalar` fallback table
+    // in `crates/reify-compiler/src/units.rs` (mm, cm, m, in, deg, rad, kg,
+    // g, s).  Modules that refine or reference a trait/type first defined in
+    // another stdlib file (e.g. materials_thermal.ri refines `MaterialSpec`
+    // from materials_mechanical.ri) must NOT be added here.
+    //
+    // If you add a new stdlib .ri file that meets the invariant above, add it
+    // here AND add `#no_prelude` to its source.  If you add an inter-stdlib
+    // dependency to one of these four files, remove it from this list AND
+    // remove `#no_prelude` from its source (see Task 2322 design decision).
     let targets = [
         "std/units",
         "std/materials/mechanical",

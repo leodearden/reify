@@ -119,9 +119,14 @@ fn without_no_prelude_stdlib_units_resolve() {
 /// Positive regression test: pins that the prelude IS merged into user modules
 /// when `#no_prelude` is absent. Stronger than `without_no_prelude_stdlib_units_resolve`
 /// (unit resolution) — trait visibility is the most direct signal that the full
-/// prelude is applied. Mirrors `compile_with_prelude_makes_traits_visible` in
-/// stdlib_loader_tests.rs but exercises the higher-level `compile_source_with_stdlib`
-/// entry-point path that real users hit.
+/// prelude is applied.
+///
+/// Unique coverage vs `compile_with_prelude_makes_traits_visible` in
+/// stdlib_loader_tests.rs: that test exercises the lower-level
+/// `compile_with_prelude()` API directly. This test would catch a regression
+/// where `compile_source_with_stdlib` stops merging the prelude (e.g. a bug in
+/// the stdlib entrypoint) even though the lower-level `compile_with_prelude`
+/// still works correctly — the actual scenario that real user code hits.
 #[test]
 fn without_no_prelude_stdlib_traits_resolve() {
     let source = steel_elastic_source();
