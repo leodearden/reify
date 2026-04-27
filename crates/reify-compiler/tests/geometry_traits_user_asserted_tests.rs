@@ -9,9 +9,11 @@
 //! Test coverage:
 //! - Basic emission: single geometry marker bound emits one warning.
 //! - Non-geometry trait: no warning emitted.
-//! (Additional multi-bound, mixed, and parametric coverage in step 7.)
+//! - Multi-bound: each geometry marker bound emits its own warning with a distinct span.
+//! - Mixed bounds: only geometry marker bounds trip the lint.
+//! - Parametric: every stdlib geometry marker name triggers exactly one warning.
 
-use reify_test_support::{compile_source_with_stdlib, warnings_only};
+use reify_test_support::{compile_source_with_stdlib, warnings_only, EXPECTED_GEOMETRY_TRAITS};
 use reify_types::{DiagnosticCode, Severity};
 
 /// A structure with a single Watertight bound must emit exactly one
@@ -93,4 +95,149 @@ structure def MyMaterial : Elastic {
         asserted.len(),
         asserted
     );
+}
+
+/// A structure with two geometry marker bounds (`Closed + Manifold`) must emit
+/// exactly 2 `W_TRAIT_USER_ASSERTED` warnings, one per marker, with distinct
+/// label spans (each pinned to its own trait bound, not to the entity span).
+#[test]
+fn multi_geometry_marker_bound_emits_one_warning_per_marker_with_distinct_label_spans() {
+    let source = r#"
+structure def Shell : Closed + Manifold {
+    param x : Real = 1.0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let asserted: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TraitUserAsserted))
+        .collect();
+
+    assert_eq!(
+        asserted.len(),
+        2,
+        "expected exactly 2 W_TRAIT_USER_ASSERTED warnings (one per bound), got {}: {:#?}",
+        asserted.len(),
+        asserted
+    );
+
+    // Each warning must name its respective trait.
+    let names_in_messages: Vec<bool> = asserted
+        .iter()
+        .map(|d| d.message.contains("Closed") || d.message.contains("Manifold"))
+        .collect();
+    assert!(
+        names_in_messages.iter().all(|&b| b),
+        "each warning message must name its trait ('Closed' or 'Manifold'): {:#?}",
+        asserted.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Confirm both trait names appear across the two warnings.
+    assert!(
+        asserted.iter().any(|d| d.message.contains("Closed")),
+        "expected one warning to name 'Closed'"
+    );
+    assert!(
+        asserted.iter().any(|d| d.message.contains("Manifold")),
+        "expected one warning to name 'Manifold'"
+    );
+
+    // Each warning must have exactly one label with a non-empty span.
+    for w in &asserted {
+        assert_eq!(w.labels.len(), 1, "each warning must have 1 label, got: {:#?}", w.labels);
+        assert!(
+            !w.labels[0].span.is_empty(),
+            "label span must be non-empty, got: {:?}",
+            w.labels[0].span
+        );
+    }
+
+    // The two label spans must be distinct (each bound has its own source position).
+    assert_ne!(
+        asserted[0].labels[0].span,
+        asserted[1].labels[0].span,
+        "Closed and Manifold bounds must have distinct label spans"
+    );
+}
+
+/// A structure with mixed geometry and non-geometry bounds (`Watertight + Elastic`)
+/// must emit exactly 1 `W_TRAIT_USER_ASSERTED` warning — only for `Watertight`.
+/// `Elastic` is a stdlib mechanical material trait and must not trip the lint.
+#[test]
+fn mixed_geometry_and_non_geometry_bounds_emit_one_warning_for_geometry_only() {
+    let source = r#"
+structure def Hybrid : Watertight + Elastic {
+    param x : Real = 1.0
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let asserted: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TraitUserAsserted))
+        .collect();
+
+    assert_eq!(
+        asserted.len(),
+        1,
+        "expected exactly 1 W_TRAIT_USER_ASSERTED warning (for Watertight only), got {}: {:#?}",
+        asserted.len(),
+        asserted
+    );
+
+    assert!(
+        asserted[0].message.contains("Watertight"),
+        "the single warning must name 'Watertight', got: {:?}",
+        asserted[0].message
+    );
+}
+
+/// Parametric coverage: for every name in `EXPECTED_GEOMETRY_TRAITS`, a
+/// structure with that single trait bound must emit exactly one
+/// `W_TRAIT_USER_ASSERTED` warning whose message names the trait.
+///
+/// This pins the helper's full alphabet against drift — if `GEOMETRY_MARKER_TRAITS`
+/// in the compiler diverges from `EXPECTED_GEOMETRY_TRAITS` in the test fixture,
+/// one of these sub-tests will fail.
+#[test]
+fn every_stdlib_geometry_marker_emits_one_user_asserted_warning_when_declared_explicitly() {
+    for trait_name in EXPECTED_GEOMETRY_TRAITS {
+        let source = format!(
+            r#"
+structure def Foo_{trait_name} : {trait_name} {{
+    param x : Real = 1.0
+}}
+"#
+        );
+        let module = compile_source_with_stdlib(&source);
+        let warnings = warnings_only(&module);
+        let asserted: Vec<_> = warnings
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitUserAsserted))
+            .collect();
+
+        assert_eq!(
+            asserted.len(),
+            1,
+            "trait '{trait_name}': expected exactly 1 W_TRAIT_USER_ASSERTED warning, got {}: {:#?}",
+            asserted.len(),
+            asserted
+        );
+
+        assert!(
+            asserted[0].message.contains(trait_name),
+            "trait '{trait_name}': warning message should name the trait, got: {:?}",
+            asserted[0].message
+        );
+
+        assert_eq!(
+            asserted[0].severity,
+            Severity::Warning,
+            "trait '{trait_name}': expected Warning severity"
+        );
+    }
 }
