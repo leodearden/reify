@@ -1052,4 +1052,173 @@ mod tests {
             failures
         );
     }
+
+    /// Regression pin: `expand_purpose_reflective_placeholders` must recurse
+    /// into every child slot of compound wrapper nodes — `UserFunctionCall`,
+    /// `Lambda`, `MapLiteral` (key and value), `IndexAccess` (object and
+    /// index), `MethodCall` (object and args), `OptionSome`, and
+    /// `RangeConstructor` (lower and upper bounds).
+    ///
+    /// These round out the description's parenthetical list beyond the
+    /// Conditional / Quantifier / Match pins in the sibling tests.
+    #[test]
+    fn expand_recurses_through_compound_wrappers() {
+        use reify_types::Value;
+
+        let entity = "Foo";
+        let cell_x = ValueCellId::new(entity, "x");
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_x.clone()],
+        }];
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        value_cells.insert(
+            cell_x.clone(),
+            ValueCellNode {
+                id: cell_x.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("x"),
+            },
+        );
+        let make_placeholder = || {
+            CompiledExpr::purpose_reflective_aggregation(
+                "subject".to_string(),
+                "params".to_string(),
+                Type::List(Box::new(Type::Real)),
+            )
+        };
+
+        type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
+        let wrappers: Vec<(&str, WrapFn)> = vec![
+            (
+                "UserFunctionCall arg",
+                Box::new(|ph| {
+                    CompiledExpr::user_function_call("f".to_string(), vec![ph], Type::Bool)
+                }),
+            ),
+            (
+                "Lambda body",
+                Box::new(|ph| {
+                    CompiledExpr::lambda(
+                        vec![("x".to_string(), Some(Type::Real))],
+                        vec![ValueCellId::new("L", "x")],
+                        ph,
+                        vec![],
+                        Type::List(Box::new(Type::Real)),
+                    )
+                }),
+            ),
+            (
+                "MapLiteral key",
+                Box::new(|ph| {
+                    CompiledExpr::map_literal(
+                        vec![(ph, CompiledExpr::literal(Value::Int(0), Type::Int))],
+                        Type::Map(
+                            Box::new(Type::List(Box::new(Type::Real))),
+                            Box::new(Type::Int),
+                        ),
+                    )
+                }),
+            ),
+            (
+                "MapLiteral val",
+                Box::new(|ph| {
+                    CompiledExpr::map_literal(
+                        vec![(CompiledExpr::literal(Value::Int(0), Type::Int), ph)],
+                        Type::Map(
+                            Box::new(Type::Int),
+                            Box::new(Type::List(Box::new(Type::Real))),
+                        ),
+                    )
+                }),
+            ),
+            (
+                "IndexAccess object",
+                Box::new(|ph| {
+                    CompiledExpr::index_access(
+                        ph,
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        Type::Real,
+                    )
+                }),
+            ),
+            (
+                "IndexAccess index",
+                Box::new(|ph| {
+                    CompiledExpr::index_access(
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        ph,
+                        Type::Real,
+                    )
+                }),
+            ),
+            (
+                "MethodCall object",
+                Box::new(|ph| {
+                    CompiledExpr::method_call(ph, "len".to_string(), vec![], Type::Int)
+                }),
+            ),
+            (
+                "MethodCall arg",
+                Box::new(|ph| {
+                    CompiledExpr::method_call(
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        "to_str".to_string(),
+                        vec![ph],
+                        Type::Int,
+                    )
+                }),
+            ),
+            (
+                "OptionSome inner",
+                Box::new(|ph| {
+                    CompiledExpr::option_some(
+                        ph,
+                        Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+                    )
+                }),
+            ),
+            (
+                "RangeConstructor lower",
+                Box::new(|ph| {
+                    CompiledExpr::range_constructor(
+                        Some(ph),
+                        None,
+                        true,
+                        false,
+                        Type::Range(Box::new(Type::Real)),
+                    )
+                }),
+            ),
+            (
+                "RangeConstructor upper",
+                Box::new(|ph| {
+                    CompiledExpr::range_constructor(
+                        None,
+                        Some(ph),
+                        false,
+                        true,
+                        Type::Range(Box::new(Type::Real)),
+                    )
+                }),
+            ),
+        ];
+
+        let mut failures: Vec<&str> = Vec::new();
+        for (label, wrap) in &wrappers {
+            let mut wrapped = wrap(make_placeholder());
+            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
+            if tree_contains_placeholder(&wrapped) {
+                failures.push(label);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "placeholder not rewritten under: {:?}",
+            failures
+        );
+    }
 }
