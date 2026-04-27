@@ -735,6 +735,39 @@ mod tests {
         );
     }
 
+    // --- canonical_name tests (step-1) ---
+
+    #[test]
+    fn canonical_name_money_returns_money() {
+        assert_eq!(DimensionVector::MONEY.canonical_name(), Some("Money"));
+    }
+
+    #[test]
+    fn canonical_name_force_returns_force() {
+        assert_eq!(DimensionVector::FORCE.canonical_name(), Some("Force"));
+    }
+
+    #[test]
+    fn canonical_name_length_returns_length() {
+        assert_eq!(DimensionVector::LENGTH.canonical_name(), Some("Length"));
+    }
+
+    #[test]
+    fn canonical_name_mass_returns_mass() {
+        assert_eq!(DimensionVector::MASS.canonical_name(), Some("Mass"));
+    }
+
+    #[test]
+    fn canonical_name_composite_returns_none() {
+        // MONEY / MASS is a composite dimension — no single canonical name.
+        assert_eq!(DimensionVector::MONEY.div(&DimensionVector::MASS).canonical_name(), None);
+    }
+
+    #[test]
+    fn canonical_name_dimensionless_returns_none() {
+        assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
+    }
+
     #[test]
     fn content_hash_buffer_covers_slot_9() {
         // Verify that slot-9 bytes actually feed into the digest.
