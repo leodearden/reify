@@ -1,5 +1,5 @@
 //! Filtered topology selectors composed over `GeometryKernel::extract_edges`
-//! / `extract_faces` and per-sub-shape `GeometryQuery` reads (task 318).
+//! / `extract_faces` and the batched `GeometryKernel::query_many` path.
 //!
 //! These are pure-Rust functions over `&mut dyn GeometryKernel` (rather than
 //! new `GeometryQuery` variants or new kernel methods) because:
@@ -11,6 +11,14 @@
 //!   - .ri-language wiring (compiler-side) is intentionally out of scope for
 //!     this task; the pub Rust API is the boundary and a future task adds
 //!     the language surface.
+//!
+//! Each selector first allocates sub-shape handles, then issues a single
+//! `kernel.query_many(&[...])` call for all per-sub-shape reads, then
+//! applies its predicate (length window, area window, normal cone, edge-
+//! tangent absolute-cosine, bbox-z window) on the returned `Vec<Value>`.
+//! This collapses the actor-channel + FFI hop to O(1) per selector
+//! regardless of sub-shape count, resolving the N+1 round-trip overhead
+//! flagged in the post-merge review of task 318 (see task 2509).
 //!
 //! All returned `Vec<GeometryHandleId>`s preserve the kernel's canonical
 //! sub-shape order (from `TopExp::MapShapes`), filtered to those satisfying
