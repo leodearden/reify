@@ -162,4 +162,183 @@ mod tests {
             "one arg should return Undef"
         );
     }
+
+    // ── prismatic validation: axis ───────────────────────────────────────────
+
+    #[test]
+    fn prismatic_non_vector_axis_returns_undef() {
+        // axis is a bare Real, not a Vector3
+        assert!(
+            eval_builtin("prismatic", &[Value::Real(1.0), length_range_0_to_1m()]).is_undef(),
+            "non-vector axis should return Undef"
+        );
+    }
+
+    #[test]
+    fn prismatic_vec2_axis_returns_undef() {
+        // axis has 2 components, not 3
+        let axis2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("prismatic", &[axis2, length_range_0_to_1m()]).is_undef(),
+            "2-component axis should return Undef"
+        );
+    }
+
+    #[test]
+    fn prismatic_length_dimensioned_axis_returns_undef() {
+        // axis components are LENGTH-dimensioned, not dimensionless
+        let axis_len = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("prismatic", &[axis_len, length_range_0_to_1m()]).is_undef(),
+            "Length-dimensioned axis should return Undef"
+        );
+    }
+
+    #[test]
+    fn prismatic_zero_axis_returns_undef() {
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("prismatic", &[zero_axis, length_range_0_to_1m()]).is_undef(),
+            "zero-magnitude axis should return Undef"
+        );
+    }
+
+    #[test]
+    fn prismatic_nan_axis_returns_undef() {
+        let nan_axis = Value::Vector(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("prismatic", &[nan_axis, length_range_0_to_1m()]).is_undef(),
+            "NaN axis should return Undef"
+        );
+    }
+
+    // ── prismatic validation: range ──────────────────────────────────────────
+
+    #[test]
+    fn prismatic_non_range_arg_returns_undef() {
+        // range arg is a bare Real
+        assert!(
+            eval_builtin("prismatic", &[axis_x_unit(), Value::Real(1.0)]).is_undef(),
+            "non-Range second arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn prismatic_unbounded_range_returns_undef() {
+        // range is missing upper bound
+        let unbounded = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        assert!(
+            eval_builtin("prismatic", &[axis_x_unit(), unbounded]).is_undef(),
+            "unbounded range should return Undef"
+        );
+    }
+
+    #[test]
+    fn prismatic_angle_range_returns_undef() {
+        // range dimension is Angle, not Length — dimension mismatch
+        assert!(
+            eval_builtin("prismatic", &[axis_x_unit(), angle_range_0_to_pi()]).is_undef(),
+            "Angle-dimensioned range for Prismatic should return Undef"
+        );
+    }
+
+    // ── revolute validation: axis ────────────────────────────────────────────
+
+    #[test]
+    fn revolute_non_vector_axis_returns_undef() {
+        assert!(
+            eval_builtin("revolute", &[Value::Real(1.0), angle_range_0_to_pi()]).is_undef(),
+            "non-vector axis for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_vec2_axis_returns_undef() {
+        let axis2 = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("revolute", &[axis2, angle_range_0_to_pi()]).is_undef(),
+            "2-component axis for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_length_dimensioned_axis_returns_undef() {
+        let axis_len = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(1.0),
+        ]);
+        assert!(
+            eval_builtin("revolute", &[axis_len, angle_range_0_to_pi()]).is_undef(),
+            "Length-dimensioned axis for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_zero_axis_returns_undef() {
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("revolute", &[zero_axis, angle_range_0_to_pi()]).is_undef(),
+            "zero-magnitude axis for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_nan_axis_returns_undef() {
+        let nan_axis = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(f64::NAN),
+        ]);
+        assert!(
+            eval_builtin("revolute", &[nan_axis, angle_range_0_to_pi()]).is_undef(),
+            "NaN axis for revolute should return Undef"
+        );
+    }
+
+    // ── revolute validation: range ───────────────────────────────────────────
+
+    #[test]
+    fn revolute_non_range_arg_returns_undef() {
+        assert!(
+            eval_builtin("revolute", &[axis_z_unit(), Value::Real(1.0)]).is_undef(),
+            "non-Range second arg for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_unbounded_range_returns_undef() {
+        let unbounded = Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        };
+        assert!(
+            eval_builtin("revolute", &[axis_z_unit(), unbounded]).is_undef(),
+            "unbounded range for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_length_range_returns_undef() {
+        // range dimension is Length, not Angle — dimension mismatch
+        assert!(
+            eval_builtin("revolute", &[axis_z_unit(), length_range_0_to_1m()]).is_undef(),
+            "Length-dimensioned range for revolute should return Undef"
+        );
+    }
 }
