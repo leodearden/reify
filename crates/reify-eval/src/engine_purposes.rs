@@ -232,6 +232,7 @@ impl Engine {
 ///      (same posture as the `PurposeReflectiveAggregation` arm in
 ///      `eval_expr`, `crates/reify-expr/src/lib.rs`).
 ///   3. Falls back to `Type::Real` for release-build anti-cascade safety.
+///
 /// This is qualitatively different from the empty-list case (absent
 /// `ResolvedSchemaQuery` — intentional vacuous-true) and the present-cell
 /// case (normal cell-type lockstep): a missing cell means the template
