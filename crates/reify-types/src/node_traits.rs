@@ -255,4 +255,76 @@ mod tests {
     fn const_union_is_usable() {
         assert_eq!(FOO, NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE);
     }
+
+    // --- Step 7: NodeArchKind variants and default_traits() ---
+
+    #[test]
+    fn node_arch_kind_variants_are_distinct() {
+        use NodeArchKind::*;
+        assert_ne!(ValueCellScalar, SchemaNode);
+        assert_ne!(ValueCellScalar, SourceNode);
+        assert_ne!(ValueCellScalar, ResolutionNode);
+        assert_ne!(ValueCellScalar, RealizationNode);
+        assert_ne!(ValueCellScalar, ComputeNode);
+        assert_ne!(ValueCellScalar, ConstraintNode);
+        assert_ne!(SchemaNode, SourceNode);
+        assert_ne!(ResolutionNode, RealizationNode);
+        assert_ne!(RealizationNode, ComputeNode);
+    }
+
+    #[test]
+    fn value_cell_scalar_default_traits() {
+        assert_eq!(
+            NodeArchKind::ValueCellScalar.default_traits(),
+            NodeTraits::IMMEDIATE
+        );
+    }
+
+    #[test]
+    fn schema_node_default_traits() {
+        assert_eq!(
+            NodeArchKind::SchemaNode.default_traits(),
+            NodeTraits::IMMEDIATE
+        );
+    }
+
+    #[test]
+    fn source_node_default_traits() {
+        assert_eq!(
+            NodeArchKind::SourceNode.default_traits(),
+            NodeTraits::IMMEDIATE
+        );
+    }
+
+    #[test]
+    fn resolution_node_default_traits() {
+        assert_eq!(
+            NodeArchKind::ResolutionNode.default_traits(),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
+
+    #[test]
+    fn realization_node_default_traits() {
+        assert_eq!(
+            NodeArchKind::RealizationNode.default_traits(),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
+
+    #[test]
+    fn compute_node_default_traits() {
+        assert_eq!(
+            NodeArchKind::ComputeNode.default_traits(),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
+
+    #[test]
+    fn constraint_node_default_traits() {
+        assert_eq!(
+            NodeArchKind::ConstraintNode.default_traits(),
+            NodeTraits::empty()
+        );
+    }
 }
