@@ -581,8 +581,8 @@ fn bounded_param_accepting_box_geometry_emits_no_diagnostic() {
     );
 }
 
-/// Regression-pinning end-to-end test: `intersection(box, box)` at a `Bounded`
-/// slot must NOT emit `E_GEOMETRY_UNBOUNDED`.
+/// Positive end-to-end smoke: `intersection(box, box)` at a `Bounded` slot
+/// must NOT emit `E_GEOMETRY_UNBOUNDED`.
 ///
 /// Per `combine_intersection`, the result is Bounded if **either** operand is
 /// Bounded — and `box(...)` is fully Bounded. So the worked example from the
@@ -592,12 +592,16 @@ fn bounded_param_accepting_box_geometry_emits_no_diagnostic() {
 /// to-end test (`intersection(half_space, half_space)` rejected) becomes a
 /// one-source-string change away.
 ///
-/// This test pins the specific propagation rule (`intersection`'s bounded-
-/// from-either flow through nested `FunctionCall` recursion in
-/// `infer_traits_for_expr`) so a regression that breaks call-site recursion
-/// — e.g. accidentally taking `infer_traits_for_expr`'s default-`all()`
-/// fallback for `intersection` — would surface here even though the wrapping
-/// inference still says "Bounded".
+/// **Scope:** this test only proves the call site does not spuriously fail
+/// for nested geometry. It does NOT pin the specific dispatch arm: with two
+/// fully-Bounded boxes, both `combine_intersection(all, all)` and the
+/// unknown-name `_ => all()` fallback yield a result with `bounded == true`,
+/// so a broken `intersection` arm would still pass this assertion. The
+/// dispatch arm itself is pinned by
+/// [`infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop`]
+/// below, which constructs a hand-built `intersection(...)` `CompiledExpr`
+/// and asserts `connected == false` (a property only `combine_intersection`
+/// guarantees).
 #[test]
 fn intersection_of_bounded_with_anything_remains_bounded_at_call_site() {
     let source = r#"
@@ -630,5 +634,50 @@ fn intersection_of_bounded_with_anything_remains_bounded_at_call_site() {
         g_conformance_failures.is_empty(),
         "expected no TypeNotConformingToTrait diagnostic for the 'g' Bounded slot, got: {:?}",
         g_conformance_failures
+    );
+}
+
+/// Asymmetric pin on the `"intersection"` dispatch arm in
+/// `infer_traits_for_function_call`. With two fully-Bounded box arguments,
+/// `combine_intersection(all, all)` drops `connected` (intersection of two
+/// connected sets can be disconnected) but preserves `bounded` and
+/// `convex`. The unknown-name fallback `_ => all()` would instead leave
+/// `connected == true`. Asserting `connected == false` therefore catches
+/// both:
+///   - a regression that removes the explicit `"intersection"` arm and
+///     lets the call fall through to the default,
+///   - a regression that swaps to the wrong combine helper (e.g.
+///     `combine_transform`, which preserves all three traits).
+///
+/// This is the unit-level companion to
+/// [`intersection_of_bounded_with_anything_remains_bounded_at_call_site`],
+/// which is intentionally a positive smoke (its bounded-only assertion
+/// passes under either dispatch path).
+#[test]
+fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_a = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let box_b = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let intersection_expr =
+        make_function_call("intersection", vec![box_a, box_b], Type::Geometry);
+    let result = infer_traits_for_expr(&intersection_expr);
+    assert_eq!(
+        result,
+        InferredTraits {
+            bounded: true,
+            connected: false,
+            convex: true,
+        },
+        "intersection dispatch must fold combine_intersection — bounded+convex \
+         preserved, connected dropped (regressing to the `_ => all()` fallback \
+         would leave connected = true)"
     );
 }
