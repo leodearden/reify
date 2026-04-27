@@ -1466,6 +1466,16 @@ impl Engine {
     /// borrow `self`. NLL releases the `self.eval_state` borrow (used only as
     /// an argument to `detect_role_flip`) before `self.last_role_flip_probes`
     /// is mutated, so `&mut self` is unambiguous.
+    ///
+    /// # Why this is not called directly from `edit_source`
+    ///
+    /// `PendingWarmSeedsGuard` holds `&mut self.warm_pool` for the duration of
+    /// `edit_source`, which prevents `&mut self` method calls (Rust's disjoint-
+    /// field borrow rules). Both call sites in `edit_source` inline this body
+    /// via explicit disjoint-field accesses instead; see the comments at those
+    /// sites. The method body is kept here as the canonical single-source-of-
+    /// truth for the pattern.
+    #[allow(dead_code)]
     fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
         let result = detect_role_flip(
             &self
