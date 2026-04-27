@@ -9,10 +9,12 @@
 //! ([`crate::compile_builder::pre_pass`]) only warns on UNKNOWN module-pragma names;
 //! the two passes run at different phases and emit non-overlapping diagnostic sets.
 
+use std::collections::BTreeMap;
+
 use reify_syntax::{ParsedModule, Pragma, PragmaArg, PragmaValue};
 use reify_types::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan, Value};
 
-use crate::types::CompiledModule;
+use crate::types::{CompiledModule, SolverPragma};
 use crate::units::unit_to_scalar;
 
 /// Apply every known module-level pragma to the assembled `CompiledModule`,
@@ -20,6 +22,7 @@ use crate::units::unit_to_scalar;
 pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledModule) {
     apply_precision_pragma(parsed, module);
     apply_version_pragma(parsed, module);
+    apply_solver_pragma(parsed, module);
     warn_block_level_precision(module);
 }
 
@@ -389,6 +392,56 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         pragma.span,
                         format!("predates v{sup_maj}.{sup_min}"),
                     )),
+                );
+            }
+        }
+    }
+}
+
+/// Process the first well-formed module-level
+/// `#solver(<back-end-ident>, [key=value, ...])` pragma: store the back-end
+/// name + options on `module.solver_pragma`. Subsequent `#solver` pragmas
+/// emit a "subsequent pragma ignored; first one wins" warning. See
+/// `docs/prds/pragmas.md` §3.
+///
+/// Per design decision, `solver_pragma` reflects the user-declared back-end
+/// name regardless of whether the name is in the v0.1 known list, mirroring
+/// `#version`'s storage-reflects-declared policy. Only malformed argument
+/// shapes (no Bare-Ident first arg, KeyValue-only, etc.) leave it `None`.
+fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    let mut first_seen = false;
+    for pragma in &parsed.pragmas {
+        if pragma.name != "solver" {
+            continue;
+        }
+
+        if first_seen {
+            module.diagnostics.push(
+                Diagnostic::warning("subsequent #solver pragma ignored; first one wins")
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+            );
+            continue;
+        }
+        first_seen = true;
+
+        // First-seen pragma: interpret its args.
+        match pragma.args.as_slice() {
+            [PragmaArg::Bare(PragmaValue::Ident(name))] => {
+                module.solver_pragma = Some(SolverPragma {
+                    name: name.clone(),
+                    options: BTreeMap::new(),
+                });
+            }
+            _ => {
+                // Catch-all placeholder — refined in later steps with explicit
+                // arms for malformed shapes (zero args, KeyValue-only, bare
+                // Number/Bool/String/Quantity) and the well-formed
+                // `[Bare(Ident), KeyValue*]` shape.
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
         }
