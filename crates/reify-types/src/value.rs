@@ -7113,4 +7113,30 @@ mod tests {
         );
     }
 
+    // ── dimension_unit_label / format_hover Money tests ──────────────────────
+
+    #[test]
+    fn dimension_unit_label_money_returns_usd() {
+        // dimension_unit_label must return "USD" for MONEY, not "SI".
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::MONEY),
+            "USD",
+            "dimension_unit_label(MONEY) should return \"USD\" (source-form), not fall through to \"SI\""
+        );
+    }
+
+    #[test]
+    fn format_hover_money_scalar_renders_usd() {
+        // Value::Scalar with MONEY dimension must format as "25 USD", not "25 SI".
+        let v = Value::Scalar {
+            si_value: 25.0,
+            dimension: DimensionVector::MONEY,
+        };
+        assert_eq!(
+            v.format_hover(),
+            "25 USD",
+            "format_hover() on a Money scalar should render \"25 USD\", not \"25 SI\""
+        );
+    }
+
 }
