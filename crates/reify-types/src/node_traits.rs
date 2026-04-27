@@ -38,6 +38,32 @@ impl NodeTraits {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// Returns `true` if `self` contains all flags in `other` (subset test).
+    #[inline]
+    pub const fn contains(self, other: NodeTraits) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    /// Result is available as soon as inputs are known; no warm-start needed.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    pub const IMMEDIATE: NodeTraits = NodeTraits(0b0000_0001);
+
+    /// Can be resumed from a saved warm state to avoid full recomputation.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    pub const WARM_STARTABLE: NodeTraits = NodeTraits(0b0000_0010);
+
+    /// Emits partial results before reaching a final value.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    pub const PROGRESSIVE: NodeTraits = NodeTraits(0b0000_0100);
+
+    /// Produces a value that can be committed to the snapshot store.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    pub const COMMITTABLE: NodeTraits = NodeTraits(0b0000_1000);
 }
 
 #[cfg(test)]
