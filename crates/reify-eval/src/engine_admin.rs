@@ -306,7 +306,7 @@ impl Engine {
                 .solvers
                 .get(&p.name)
                 .map(|b| b.as_ref() as &dyn ConstraintSolver)
-                .or_else(|| self.solver.as_deref()),
+                .or(self.solver.as_deref()),
         }
     }
 
