@@ -213,6 +213,21 @@ fn std_units_module_has_expected_units() {
 
 // ─── step-2492: bidirectional #no_prelude invariant ─────────────────
 
+/// Build a [`CompiledModule`] with dotted path `dotted` that carries a single
+/// `#no_prelude` pragma.  Used by the synthetic-fixture `#no_prelude` tests
+/// so the builder-and-push boilerplate lives in one place.
+fn module_with_no_prelude(dotted: &str) -> reify_compiler::CompiledModule {
+    let no_prelude = Pragma {
+        name: "no_prelude".to_string(),
+        args: vec![],
+        span: SourceSpan::new(0, 0),
+    };
+    let mut module =
+        CompiledModuleBuilder::new(ModulePath::from_dotted(dotted).unwrap()).build();
+    module.pragmas.push(no_prelude);
+    module
+}
+
 /// Synthetic fixture: a non-bootstrap module (`std/materials/thermal`) that
 /// incorrectly carries `#no_prelude` must cause the bidirectional invariant
 /// helper to panic, naming the offending path in the panic message.
@@ -226,27 +241,12 @@ fn std_units_module_has_expected_units() {
 #[test]
 #[should_panic(expected = "std/materials/thermal")]
 fn non_bootstrap_module_with_no_prelude_pragma_panics() {
-    let no_prelude = Pragma {
-        name: "no_prelude".to_string(),
-        args: vec![],
-        span: SourceSpan::new(0, 0),
-    };
-
     // Build a synthetic module set: std/units (bootstrap, pragma OK) plus
     // std/materials/thermal (non-bootstrap, pragma is the planted violation).
-    let mut units_module = CompiledModuleBuilder::new(
-        ModulePath::from_dotted("std.units").unwrap(),
-    )
-    .build();
-    units_module.pragmas.push(no_prelude.clone());
-
-    let mut thermal_module = CompiledModuleBuilder::new(
-        ModulePath::from_dotted("std.materials.thermal").unwrap(),
-    )
-    .build();
-    thermal_module.pragmas.push(no_prelude);
-
-    let modules = vec![units_module, thermal_module];
+    let modules = vec![
+        module_with_no_prelude("std.units"),
+        module_with_no_prelude("std.materials.thermal"),
+    ];
 
     // Only "std/units" is the bootstrap target in this synthetic set; the
     // other three production targets are omitted because they are not present
@@ -285,6 +285,53 @@ fn bootstrap_module_missing_no_prelude_pragma_panics() {
     let targets = ["std/units"];
 
     assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
+}
+
+/// Multi-violation fixture: when TWO non-bootstrap modules both carry
+/// `#no_prelude`, the bidirectional invariant helper must name BOTH offending
+/// paths in its panic message.
+///
+/// This is a red test for the "collect-all" refactor of the inverse-direction
+/// loop. Before the refactor, the helper panics on the first offender only
+/// (`std/materials/thermal`) and never reports `std/geometry/traits`. After
+/// the refactor, a single aggregated panic message lists every violator so
+/// developers don't have to iterate fix-and-rerun.
+#[test]
+fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
+    let modules = vec![
+        module_with_no_prelude("std.units"),            // bootstrap target, pragma OK
+        module_with_no_prelude("std.materials.thermal"), // non-bootstrap violation #1
+        module_with_no_prelude("std.geometry.traits"),   // non-bootstrap violation #2
+    ];
+    let targets = ["std/units"];
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
+    }));
+
+    let err = result.expect_err("expected panic naming all offending paths");
+    let msg: &str = if let Some(s) = err.downcast_ref::<String>() {
+        s.as_str()
+    } else if let Some(s) = err.downcast_ref::<&'static str>() {
+        s
+    } else {
+        panic!("panic payload was neither String nor &'static str");
+    };
+
+    // Anchor: confirm the panic originates from the aggregated-violations code
+    // path, not a stray panic from elsewhere (e.g. an unwrap() inside the helper).
+    assert!(
+        msg.contains("non-bootstrap stdlib modules"),
+        "panic message should be from the aggregated-violations code path, got:\n{msg}"
+    );
+    assert!(
+        msg.contains("std/materials/thermal"),
+        "panic message should name 'std/materials/thermal', got:\n{msg}"
+    );
+    assert!(
+        msg.contains("std/geometry/traits"),
+        "panic message should name 'std/geometry/traits', got:\n{msg}"
+    );
 }
 
 // ─── step-2322 / step-2492: bidirectional #no_prelude invariant ─────
@@ -333,28 +380,34 @@ fn assert_no_prelude_pragma_invariant_bidirectional(
     // materials_mechanical.ri). The check is bidirectional so that both
     // adding #no_prelude to the wrong file and removing it from a bootstrap
     // file are caught.
+    let mut violations: Vec<(String, &reify_syntax::Pragma)> = Vec::new();
     for module in modules {
-        let path_str = format!("{}", module.path);
+        let path_str = module.path.to_string();
         if targets.contains(&path_str.as_str()) {
             continue;
         }
         if let Some(bad_pragma) = module.pragmas.iter().find(|p| p.name == "no_prelude") {
-            panic!(
-                "non-bootstrap stdlib module '{}' carries unauthorized `#no_prelude` pragma \
-                 (pragma: {:?}).\n\
-                 \n\
-                 Impact: `#no_prelude` silently disables prelude access during compilation, \
-                 breaking inter-stdlib refinements (e.g. if this module refines a trait from \
-                 another stdlib file, that trait will be unresolved at compile time).\n\
-                 \n\
-                 Fix: remove `#no_prelude` from the .ri source for '{}'. \
-                 If this module truly has ZERO inter-stdlib dependencies and should \
-                 be a bootstrap module, add its path to the `targets` list in \
-                 `prelude_modules_carry_no_prelude_pragma` AND keep the pragma.",
-                path_str, bad_pragma, path_str,
-            );
+            violations.push((path_str, bad_pragma));
         }
     }
+    assert!(
+        violations.is_empty(),
+        "non-bootstrap stdlib modules carry unauthorized `#no_prelude` pragma:\n{}\n\
+         \n\
+         Impact: `#no_prelude` silently disables prelude access during compilation, \
+         breaking inter-stdlib refinements (e.g. if a module refines a trait from \
+         another stdlib file, that trait will be unresolved at compile time).\n\
+         \n\
+         Fix: remove `#no_prelude` from the .ri source for each listed path. \
+         If a module truly has ZERO inter-stdlib dependencies and should \
+         be a bootstrap module, add its path to the `targets` list in \
+         `prelude_modules_carry_no_prelude_pragma` AND keep the pragma.",
+        violations
+            .iter()
+            .map(|(path, pragma)| format!("  - '{}' (pragma: {:?})", path, pragma))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }
 
 /// The four stdlib modules that have no inter-stdlib dependencies must carry
