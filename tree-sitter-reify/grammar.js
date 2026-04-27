@@ -664,9 +664,10 @@ module.exports = grammar({
     //
     // Note: collection is $._expression, which syntactically includes
     // quantifier_expression (i.e. a nested forall is valid grammar).
-    // Nested-quantifier collections are unrealistic in practice and are not
-    // separately tested; GLR resolves them correctly because the outer body
-    // still requires a leading 'connect', 'constraint', or 'chain' keyword.
+    // Pinned by the 'nested-quantifier collection' corpus test in
+    // test/corpus/forall_statement.txt; GLR resolves cleanly because the
+    // outer body still requires a leading 'connect', 'chain', or 'constraint'
+    // keyword.
     forall_statement: $ => seq(
       'forall',
       field('variable', $.identifier),
