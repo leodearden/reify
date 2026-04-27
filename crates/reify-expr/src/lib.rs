@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
-    DeterminacyState, DimensionVector, FieldSourceKind, PersistentMap, QuantifierKind, Type, UnOp,
-    Value, ValueCellId, ValueMap, quaternion_is_finite,
+    DeterminacyState, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind, PersistentMap,
+    QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap, quaternion_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -300,7 +300,31 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 {
                     analysis::compute_safety_factor(&evaluated_args[0], &evaluated_args[1])
                 }
-                _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
+                _ => {
+                    // Composed-field call dispatch: a name in a composed lambda
+                    // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
+                    // resolves to a captured `__field.<name>` cell. The compiler's
+                    // `phase_augment_composed_captures` pass injects these cells
+                    // into the lambda's `captures`, so by the time we reach this
+                    // arm — inside `apply_lambda`, with captures already cloned
+                    // into `ctx.values` — the field is in scope. We dispatch via
+                    // `apply_lambda_with_point_unpacking` to mirror the `sample`
+                    // path. Builtins are matched in earlier arms, so they are
+                    // never shadowed; non-field names yield `Undef` from the
+                    // cell lookup and fall through to `eval_builtin` unchanged.
+                    let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
+                    let candidate = ctx.values.get_or_undef(&field_id);
+                    if let Value::Field { lambda, .. } = &candidate
+                        && evaluated_args.len() == 1
+                    {
+                        return apply_lambda_with_point_unpacking(
+                            lambda,
+                            &evaluated_args[0],
+                            ctx,
+                        );
+                    }
+                    reify_stdlib::eval_builtin(&function.name, &evaluated_args)
+                }
             }
         }
 
@@ -3873,6 +3897,106 @@ mod tests {
             eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
             Value::Bool(true)
         );
+    }
+
+    // ── Task 2343 step-7b: composed-field call dispatch ──────────────────
+    //
+    // Pin the runtime fallthrough that turns a `field_name(p)` call inside
+    // a composed lambda body into a dispatch to the captured
+    // `__field.<field_name>` cell. The `_ =>` arm of the FunctionCall match
+    // (eval_expr) checks ctx.values for a `Value::Field` keyed by the
+    // resolved `__field.<name>` cell ID; if present, it dispatches via
+    // `apply_lambda_with_point_unpacking`. Otherwise it falls through to
+    // `reify_stdlib::eval_builtin` (preserving the prior behavior for
+    // unknown / non-field names — e.g. `function_call_unknown_returns_undef`
+    // above is not affected because no `__field.nonexistent` cell exists).
+
+    /// A captured `__field.base` cell containing a `Value::Field { lambda }`
+    /// dispatches `base(p)` via `apply_lambda_with_point_unpacking`. The
+    /// lambda body is `p * 2.0`, so `base(3.0) == 6.0`.
+    #[test]
+    fn function_call_dispatches_to_captured_field_cell() {
+        use std::sync::Arc;
+
+        // Lambda body: ValueRef of param `p`.
+        let p_id = ValueCellId::new("__field.base", "p");
+        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
+        let body = CompiledExpr::binop(
+            BinOp::Mul,
+            p_ref,
+            lit(Value::Real(2.0), Type::Real),
+            Type::Real,
+        );
+
+        // The lambda value (as it would appear inside Value::Field.lambda).
+        let lambda_value = Value::Lambda {
+            params: vec![("p".to_string(), p_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        // Build the field cell and seed the values map under __field.base.
+        let field_value = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Composed,
+            lambda: Arc::new(lambda_value),
+        };
+        let field_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "base");
+        let mut values = ValueMap::new();
+        values.insert(field_cell, field_value);
+
+        // Synthesize a FunctionCall: `base(3.0)`.
+        let call = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[100]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "base".to_string(),
+                    qualified_name: "field::base".to_string(),
+                },
+                args: vec![lit(Value::Real(3.0), Type::Real)],
+            },
+        };
+
+        // Dispatch must apply the lambda: 3.0 * 2.0 = 6.0.
+        let result = eval_expr(&call, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!(
+                (v - 6.0).abs() < 1e-12,
+                "expected base(3.0) == 6.0 via field dispatch, got {}",
+                v
+            ),
+            other => panic!("expected Real(6.0) via field dispatch, got {:?}", other),
+        }
+    }
+
+    /// A name that does not resolve to a `Value::Field` falls through to
+    /// `eval_builtin` exactly as before. Pins the no-regression contract:
+    /// the new dispatch is a no-op for non-field names.
+    #[test]
+    fn function_call_falls_through_when_field_cell_absent() {
+        // No `__field.abs` cell present → dispatch fall-through →
+        // `reify_stdlib::eval_builtin("abs", &[Real(-3.0)])` runs and
+        // returns Real(3.0).
+        let arg = lit(Value::Real(-3.0), Type::Real);
+        let call = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[101]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&call, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12),
+            other => panic!("expected Real(3.0) (eval_builtin fallthrough), got {:?}", other),
+        }
     }
 
 }
