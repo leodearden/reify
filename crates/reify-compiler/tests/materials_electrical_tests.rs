@@ -414,4 +414,15 @@ structure def Glass : Insulating {
         "expected a constraint referencing 'dielectric_strength' in Glass template, got constraints: {:?}",
         template.constraints
     );
+
+    // Verify the resistivity > 1e6 constraint is injected via a BinOp.
+    let resistivity_constraint = template.constraints.iter().find(|cc| {
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
+            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "resistivity"))
+    });
+    assert!(
+        resistivity_constraint.is_some(),
+        "expected a constraint referencing 'resistivity' in Glass template, got constraints: {:?}",
+        template.constraints
+    );
 }
