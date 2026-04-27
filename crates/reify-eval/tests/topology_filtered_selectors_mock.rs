@@ -233,6 +233,31 @@ fn faces_by_normal_nan_target_returns_query_failed() {
 // edges_parallel_to
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// FaceNormal contract requires Value::String. A Value::Real payload must
+/// produce QueryFailed — pins the non-string fall-through arm of
+/// `parse_xyz_value` (topology_selectors.rs line 159-163) for FaceNormal.
+#[test]
+fn faces_by_normal_returns_query_failed_when_normal_is_real() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(f, Value::Real(1.0)); // intentionally wrong type
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-string value"),
+                "error message should mention 'non-string value', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed), got {:?}", other),
+    }
+}
+
 #[test]
 fn edges_parallel_to_anti_parallel_tangent_is_accepted() {
     // edges_parallel_to is orientation-agnostic: the kernel may return either
