@@ -147,6 +147,33 @@ mod tests {
     }
 
     #[test]
+    fn build_cross_refs_dedups_repeated_input_templates() {
+        // Two identical Bolt templates (same name, same trait) and two identical
+        // Robot templates (same name, same sub-component).  Each template name
+        // must appear exactly once in the output despite appearing twice in input.
+        let bolt_a = TopologyTemplateBuilder::new("Bolt").trait_bound("Rigid").build();
+        let bolt_b = TopologyTemplateBuilder::new("Bolt").trait_bound("Rigid").build();
+        let robot_a = TopologyTemplateBuilder::new("Robot").sub_component("arm", "Arm", vec![]).build();
+        let robot_b = TopologyTemplateBuilder::new("Robot").sub_component("arm", "Arm", vec![]).build();
+
+        let result = build_cross_refs(&[bolt_a, bolt_b, robot_a, robot_b]);
+
+        // (a) "Bolt" must appear exactly once under "Rigid" (not twice)
+        assert_eq!(
+            result.trait_to_conformers["Rigid"],
+            vec!["Bolt".to_string()],
+            "expected a single deduplicated entry for Bolt under Rigid",
+        );
+
+        // (b) "Robot" must appear exactly once under "Arm" (not twice)
+        assert_eq!(
+            result.entity_to_containers["Arm"],
+            vec!["Robot".to_string()],
+            "expected a single deduplicated entry for Robot under Arm",
+        );
+    }
+
+    #[test]
     fn build_cross_refs_input_order_independent() {
         // Combined fixture: Bolt + Spring (traits) + Robot + Arm (sub-components)
         let bolt = TopologyTemplateBuilder::new("Bolt")
