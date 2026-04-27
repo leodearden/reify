@@ -416,3 +416,70 @@ structure def S {
         child_label.span
     );
 }
+
+/// A lambda parameter inside a function body shadows the outer fn param.
+///
+/// `fn area(w: Scalar, h: Scalar) -> Scalar { let f = |w| w * h ; f(w) }`:
+/// the lambda's `w` shadows the fn param `w`. Exactly ONE Shadowing warning
+/// is expected. The original-decl span points at the fn param `w`; the
+/// child-site span at the lambda's `|w|`.
+///
+/// Uses `;` between the let binding and the result expression because the
+/// parser does not currently treat a newline as a statement separator
+/// between a let-with-lambda and a function-call result.
+#[test]
+fn lambda_in_fn_body_shadows_fn_param() {
+    let source = r#"fn area(w: Scalar, h: Scalar) -> Scalar { let f = |w| w * h ; f(w) }"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda |w| vs fn param w), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'w'"),
+        "expected the warning to be about `w`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    // The fn param `w` appears before the lambda's `|w|`. Verify the
+    // original-decl label sits between the `fn area(` and the lambda.
+    let fn_param_w = source
+        .find("(w:")
+        .expect("source must contain `(w:` (fn signature)");
+    let lambda_w = source.find("|w|").expect("source must contain `|w|`");
+
+    let l0 = &warning.labels[0]; // child site
+    let l1 = &warning.labels[1]; // original-decl site
+    assert!(
+        (l1.span.start as usize) >= fn_param_w
+            && (l1.span.start as usize) < lambda_w,
+        "original-decl span must point at the fn param `w` \
+         (between byte {} and {}), got {:?}",
+        fn_param_w,
+        lambda_w,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= lambda_w,
+        "child-site span must point at the lambda's `|w|` (>= byte {}), \
+         got {:?}",
+        lambda_w,
+        l0.span
+    );
+}
