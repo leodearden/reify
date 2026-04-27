@@ -34,8 +34,83 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_joint("revolute", args[0].clone(), args[1].clone())
         }
+        "transform_at" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            let kind = match map.get(&Value::String("kind".to_string())) {
+                Some(Value::String(s)) => s.as_str(),
+                _ => return Some(Value::Undef),
+            };
+            let axis_val = match map.get(&Value::String("axis".to_string())) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            let comps = match validate_axis(axis_val) {
+                Some(c) => c,
+                None => return Some(Value::Undef),
+            };
+            // Normalize axis to unit length
+            let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
+            let [nax, nay, naz] = [comps[0] / mag, comps[1] / mag, comps[2] / mag];
+
+            match kind {
+                "prismatic" => {
+                    // Accept Length Scalar or bare Real/Int as metres
+                    let dist = match length_input(&args[1]) {
+                        Some(d) => d,
+                        None => return Some(Value::Undef),
+                    };
+                    if !dist.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    let translation = Value::Vector(vec![
+                        Value::length(dist * nax),
+                        Value::length(dist * nay),
+                        Value::length(dist * naz),
+                    ]);
+                    let rotation = Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    };
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(translation),
+                    }
+                }
+                _ => Value::Undef,
+            }
+        }
         _ => return None,
     })
+}
+
+/// Extract metres from a `transform_at` value argument for a Prismatic joint.
+///
+/// Accepts:
+/// - `Value::Scalar { dimension: LENGTH, .. }` — si_value is metres.
+/// - `Value::Real(r)` / `Value::Int(i)` — treated as metres directly.
+///
+/// Returns `None` for any other variant (wrong dimension, non-finite).
+fn length_input(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            if *dimension == DimensionVector::LENGTH && si_value.is_finite() {
+                Some(*si_value)
+            } else {
+                None
+            }
+        }
+        Value::Real(r) if r.is_finite() => Some(*r),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
 }
 
 /// Validate an axis value: must be a Vector3 of dimensionless components,
