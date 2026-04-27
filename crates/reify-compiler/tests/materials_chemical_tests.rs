@@ -286,6 +286,26 @@ enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
     }
 }
 
+/// Regression guard: `assert_inline_enums_match_stdlib_bidirectionally` must
+/// detect a stdlib-only enum that is omitted from the inline source.
+///
+/// This test deliberately declares ONLY `CorrosionClass` (omitting
+/// `BiocompatibilityClass`) to simulate a future scenario where stdlib gains a
+/// new enum but the inline copies are forgotten.  The helper must panic and
+/// include "BiocompatibilityClass" in the message.
+#[test]
+#[should_panic(expected = "BiocompatibilityClass")]
+fn bidirectional_enum_check_detects_stdlib_only_enum_omissions() {
+    let incomplete_inline_source = r#"
+enum CorrosionClass { C1, C2, C3, C4, C5 }
+"#;
+
+    let compiled = compile_source_with_stdlib(incomplete_inline_source);
+    let stdlib = load_stdlib_module();
+
+    assert_inline_enums_match_stdlib_bidirectionally(&compiled.enum_defs, &stdlib.enum_defs);
+}
+
 // ─── (f) TitaniumImplant : Biocompatible + CorrosionResistant conformance ─────
 
 /// A structure conforming to Biocompatible + CorrosionResistant must compile
