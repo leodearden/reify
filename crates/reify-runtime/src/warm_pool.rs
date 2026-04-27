@@ -227,6 +227,15 @@ impl WarmStatePool {
     pub fn is_empty(&self) -> bool {
         self.pool.is_empty()
     }
+
+    /// Whether the pool currently holds an entry for `node_id`.
+    ///
+    /// Non-destructive: unlike [`retrieve`](Self::retrieve), this leaves the
+    /// pool untouched. Use it to probe membership without consuming the entry
+    /// or perturbing the LRU ordering (`last_accessed` is not updated).
+    pub fn contains(&self, node_id: &NodeId) -> bool {
+        self.pool.contains_key(node_id)
+    }
 }
 
 #[cfg(test)]
