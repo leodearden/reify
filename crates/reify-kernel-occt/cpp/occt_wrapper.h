@@ -247,6 +247,13 @@ Point3 wire_start_tangent(const OcctShape& wire);
 double query_volume(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
+
+/// Centroid of a 2D sub-shape (TopoDS_Face), via `BRepGProp::SurfaceProperties`
+/// + `GProp_GProps::CentreOfMass`. Used by the `GeometryQuery::Centroid`
+/// dispatch when the stored `ReprKind` is `Face` (an extracted face has no
+/// enclosed volume, so volume-properties would default to the origin).
+Point3 query_face_centroid(const OcctShape& shape);
+
 BBox query_bbox(const OcctShape& shape);
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
@@ -300,6 +307,21 @@ std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 /// `BRepGProp::LinearProperties` followed by `props.Mass()` — for edges,
 /// "mass" under the linear density is the arc length.
 double query_edge_length(const OcctShape& shape);
+
+/// Compute the unit outward normal at the face's centroid.
+///
+/// The shape MUST be a TopoDS_Face. The implementation:
+///   (a) computes the face centroid via `BRepGProp::SurfaceProperties`
+///       + `GProp_GProps::CentreOfMass`,
+///   (b) projects the centroid to parametric (u, v) via
+///       `ShapeAnalysis_Surface::ValueOfUV`,
+///   (c) gets first derivatives via `BRepAdaptor_Surface::D1`,
+///   (d) returns `Du × Dv` normalized, flipping for reversed-orientation
+///       faces so the result tracks the topological face orientation.
+///
+/// Throws std::runtime_error if the shape is not a face, has no surface,
+/// or yields a degenerate (zero-magnitude) normal.
+Point3 query_face_normal(const OcctShape& shape);
 
 // --- Conformance queries ---
 

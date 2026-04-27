@@ -994,11 +994,24 @@ impl OcctKernel {
                 Ok(Value::Real(area))
             }
             GeometryQuery::Centroid(id) => {
+                // Dispatch by stored ReprKind so an extracted Face handle
+                // (no enclosed volume — `query_centroid`'s VolumeProperties
+                // path would default to the origin) routes through the
+                // surface-area centroid. Every other repr (Solid, Compound,
+                // Wire, Edge, Shell, …) keeps the legacy volume-based path,
+                // preserving existing semantics validated by tests like
+                // `center_of_mass_on_non_solid_wire_returns_origin` and
+                // `sweep_guided_orientation_differs_from_plain_sweep`.
                 let shape = self
                     .get_shape(*id)
                     .map_err(|_| QueryError::InvalidHandle(*id))?;
-                let pt = ffi::ffi::query_centroid(shape)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                let pt = if self.repr_of(*id) == Some(ReprKind::Face) {
+                    ffi::ffi::query_face_centroid(shape)
+                        .map_err(|e| QueryError::QueryFailed(e.to_string()))?
+                } else {
+                    ffi::ffi::query_centroid(shape)
+                        .map_err(|e| QueryError::QueryFailed(e.to_string()))?
+                };
                 // Return centroid as a JSON string since Value has no tuple variant
                 Ok(Value::String(format!(
                     "{{\"x\":{},\"y\":{},\"z\":{}}}",
@@ -1156,9 +1169,19 @@ impl OcctKernel {
             GeometryQuery::EdgeTangent(_) => Err(QueryError::QueryFailed(
                 "EdgeTangent query not yet implemented".into(),
             )),
-            GeometryQuery::FaceNormal(_) => Err(QueryError::QueryFailed(
-                "FaceNormal query not yet implemented".into(),
-            )),
+            GeometryQuery::FaceNormal(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let n = ffi::ffi::query_face_normal(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                // Encode as the same JSON-string format as Centroid so
+                // downstream filters share a single parse routine.
+                Ok(Value::String(format!(
+                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
+                    n.x, n.y, n.z
+                )))
+            }
         }
     }
 

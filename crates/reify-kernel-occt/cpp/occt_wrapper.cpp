@@ -88,6 +88,7 @@
 #include <GProp_GProps.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAdaptor_CompCurve.hxx>
+#include <ShapeAnalysis_Surface.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
 
@@ -1265,10 +1266,81 @@ double query_edge_length(const OcctShape& shape) {
     });
 }
 
+Point3 query_face_normal(const OcctShape& shape) {
+    return wrap_occt_call("query_face_normal", [&]() {
+        // 1. Coerce shape to TopoDS_Face. TopoDS::Face throws Standard_Failure
+        //    via the wrap_occt_call guard if the shape is not a face.
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "query_face_normal: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("query_face_normal: face is null");
+        }
+
+        // 2. Compute the face centroid via SurfaceProperties + CentreOfMass.
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(face, props);
+        gp_Pnt centroid = props.CentreOfMass();
+
+        // 3. Project the 3D centroid back to (u, v) parametric coordinates.
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "query_face_normal: face has no underlying surface"
+            );
+        }
+        ShapeAnalysis_Surface analyzer(surf);
+        gp_Pnt2d uv = analyzer.ValueOfUV(centroid, 1e-9);
+
+        // 4. First derivatives at (u, v) via BRepAdaptor_Surface.
+        BRepAdaptor_Surface adaptor(face);
+        gp_Pnt p;
+        gp_Vec du, dv;
+        adaptor.D1(uv.X(), uv.Y(), p, du, dv);
+
+        // 5. Cross product gives the surface normal (Du × Dv).
+        gp_Vec n = du.Crossed(dv);
+        double mag = n.Magnitude();
+        if (mag < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error(
+                "query_face_normal: degenerate surface (zero normal)"
+            );
+        }
+
+        // 6. Account for face orientation: a REVERSED face flips the
+        //    parametric-derivative cross-product so the returned normal
+        //    points along the topological orientation of the face.
+        if (face.Orientation() == TopAbs_REVERSED) {
+            n.Reverse();
+        }
+
+        return Point3{ n.X() / mag, n.Y() / mag, n.Z() / mag };
+    });
+}
+
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
+        gp_Pnt c = props.CentreOfMass();
+        return Point3{c.X(), c.Y(), c.Z()};
+    });
+}
+
+/// Surface-properties centroid for a 2D sub-shape (FACE).
+///
+/// Used by the `GeometryQuery::Centroid` dispatch when the stored
+/// `ReprKind` is `Face` (extracted via `extract_faces`). Volume-based
+/// `query_centroid` returns mass=0 → origin for an isolated face, which
+/// is meaningless for downstream filters like `edges_at_height` that
+/// need the geometric centroid of the surface.
+Point3 query_face_centroid(const OcctShape& shape) {
+    return wrap_occt_call("query_face_centroid", [&]() {
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
         return Point3{c.X(), c.Y(), c.Z()};
     });

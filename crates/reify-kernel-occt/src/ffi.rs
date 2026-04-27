@@ -283,7 +283,16 @@ pub mod ffi {
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
         fn query_edge_length(shape: &OcctShape) -> Result<f64>;
+        /// Unit outward normal of `shape` (must be a TopoDS_Face) sampled at
+        /// the face's centroid. Honours topological orientation: a REVERSED
+        /// face yields the topologically-outward normal.
+        fn query_face_normal(shape: &OcctShape) -> Result<Point3>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
+        /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
+        /// Used by the `Centroid` query path when the stored repr is
+        /// `ReprKind::Face`, since `query_centroid` (volume-based) returns
+        /// the origin for isolated faces with zero enclosed volume.
+        fn query_face_centroid(shape: &OcctShape) -> Result<Point3>;
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
 
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
