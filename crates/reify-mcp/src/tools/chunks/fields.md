@@ -20,18 +20,12 @@ Composition is type-safe: `Field<A,B>` composed with `Field<B,C>` yields `Field<
 
 ## Source Kinds
 
+v0.1 supports `analytical` and `composed`; `sampled` and `imported` are reserved syntax that the compiler rejects with the diagnostic codes shown below.
+
 ```
 field def temperature_distribution : Point3<Length> -> Scalar<Temperature> {
     source = analytical {
         |p| 300K + 50K * exp(-distance(p, heat_source) / 10mm)
-    }
-}
-
-field def material_density : Point3<Length> -> Scalar<Density> {
-    source = sampled {
-        grid = RegularGrid3 { spacing = 0.5mm, bounds = part.bounding_box }
-        interpolation = trilinear
-        data = import("density_field.vdb")
     }
 }
 ```
@@ -39,9 +33,9 @@ field def material_density : Point3<Length> -> Scalar<Density> {
 | Source kind | Meaning |
 |------------|---------|
 | `analytical` | Closed-form expression (lambda) |
-| `sampled` | Discrete samples with interpolation |
+| `sampled` | v0.2 (deferred — emits `FieldSampledV02` in v0.1; v0.1 supports `analytical` and `composed` only) |
 | `composed` | Combination of other fields |
-| `imported` | External data file (OpenVDB, CSV, HDF5) |
+| `imported` | v0.2 (deferred — emits `FieldImportedV02` in v0.1; v0.1 supports `analytical` and `composed` only) |
 
 ## Standard Library Field Functions
 
