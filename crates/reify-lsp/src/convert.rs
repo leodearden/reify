@@ -178,9 +178,13 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         None
     };
 
+    // NOTE: route through serde so future field-bearing DiagnosticCode variants don't
+    // leak Debug-style "Variant(...)" strings to the wire; as_str() returns None for
+    // non-string JSON values, leaving the code field absent (safe degradation).
     let code = diag
         .code
-        .map(|c| lsp_types::NumberOrString::String(format!("{:?}", c)));
+        .and_then(|c| serde_json::to_value(&c).ok().and_then(|v| v.as_str().map(str::to_owned)))
+        .map(lsp_types::NumberOrString::String);
 
     lsp_types::Diagnostic {
         range,
