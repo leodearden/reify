@@ -351,9 +351,13 @@ pub fn interpolate_2d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::Cubic => unreachable!(
-            "InterpolationMethod::Cubic 2D not yet implemented"
-        ),
+        InterpolationMethod::Cubic => {
+            let value = cubic_2d(grid_x, grid_y, values, query);
+            InterpolationResult {
+                value,
+                diagnostics: Vec::new(),
+            }
+        }
         InterpolationMethod::Rbf => unreachable!(
             "InterpolationMethod::Rbf 2D not yet implemented"
         ),
@@ -388,6 +392,37 @@ fn linear_2d(
     let v_lo = linear_1d(grid_x, &row_lo, qx);
     let v_hi = linear_1d(grid_x, &row_hi, qx);
     lerp(v_lo, v_hi, ty)
+}
+
+/// Bicubic kernel for a 2D grid, computed as a tensor product of 1D cubic
+/// interpolations: for each x-index `i`, interpolate the column of values
+/// `values[i, *]` along the y-axis at `qy` to produce a row of length
+/// `grid_x.len()`; then interpolate that row along the x-axis at `qx`.
+///
+/// Reuses [`cubic_1d`] so that boundary cells inherit the same
+/// linear-extrapolated ghost-point convention. The full row is materialised
+/// (rather than only the four bracketing values) so that the result matches
+/// the natural `interpolate_1d`-of-`interpolate_1d` separability identity that
+/// callers can verify directly.
+fn cubic_2d(
+    grid_x: &[f64],
+    grid_y: &[f64],
+    values: &[f64],
+    query: (f64, f64),
+) -> f64 {
+    let (qx, qy) = query;
+    let nx = grid_x.len();
+    let ny = grid_y.len();
+
+    let mut col = vec![0.0f64; ny];
+    let mut row = vec![0.0f64; nx];
+    for i in 0..nx {
+        for j in 0..ny {
+            col[j] = values[index_2d(i, j, ny)];
+        }
+        row[i] = cubic_1d(grid_y, &col, qy);
+    }
+    cubic_1d(grid_x, &row, qx)
 }
 
 /// Locate a cell on a single axis with constant-extrapolation clamping.
