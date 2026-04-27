@@ -17,15 +17,26 @@ use reify_types::DiagnosticCode;
 ///
 /// This is a regression lock: the gate is `> THRESHOLD`, not `>= THRESHOLD`,
 /// so at-threshold chains are explicitly OK per spec §5.7's example.
+///
+/// The test also includes a deeper chain `a.b.c.d.e.f` (length 6) in the
+/// same module as a positive control. If the lint pass were silently
+/// disabled (e.g. early-exit added before our phase, or our phase removed
+/// from the orchestrator), the at-threshold negative would pass for the
+/// wrong reason. The positive control fails loudly in that scenario, so
+/// the threshold-boundary assertion only passes when the pass is actually
+/// running.
 #[test]
 fn chain_at_threshold_does_not_warn() {
-    // Source uses a chain of length 4 (root `a` + 3 dot hops `.b.c.d`).
-    // The structure body just establishes a scope for the chain to live in;
+    // Source contains TWO chains:
+    //   * `a.b.c.d` (length 4) — at threshold, MUST NOT warn.
+    //   * `a.b.c.d.e.f` (length 6) — above threshold, MUST warn (positive control).
+    // The structure body just establishes a scope for the chains to live in;
     // the lint only cares about AST shape, not name resolution.
     let source = r#"
 structure S {
     param a: Real = 0
     let x = a.b.c.d
+    let y = a.b.c.d.e.f
 }
 "#;
     let module = compile_source(source);
@@ -35,14 +46,35 @@ structure S {
         .filter(|d| d.code == Some(DiagnosticCode::DeepDotChain))
         .collect();
 
-    assert!(
-        deep_dot_chain_warnings.is_empty(),
-        "expected no DeepDotChain warnings for at-threshold chain `a.b.c.d`, \
-         got: {:?}",
+    // Exactly one warning total — proves both that the threshold-boundary
+    // chain does NOT trip and that the lint pass IS running (positive
+    // control). A `0` count would mean the pass is disabled; a `2` count
+    // would mean the boundary is `>= THRESHOLD` instead of `> THRESHOLD`.
+    assert_eq!(
+        deep_dot_chain_warnings.len(),
+        1,
+        "expected exactly 1 DeepDotChain warning (only `a.b.c.d.e.f`, NOT \
+         `a.b.c.d`), got {} warnings: {:?}",
+        deep_dot_chain_warnings.len(),
         deep_dot_chain_warnings
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+
+    // The single warning must be the deeper chain, not the at-threshold one.
+    let warning = deep_dot_chain_warnings[0];
+    assert!(
+        warning.message.contains("a.b.c.d.e.f"),
+        "expected the single DeepDotChain warning to be for `a.b.c.d.e.f` \
+         (the only above-threshold chain), got message: {:?}",
+        warning.message
+    );
+    assert!(
+        !warning.message.contains("a.b.c.d ") && !warning.message.ends_with("a.b.c.d"),
+        "the at-threshold chain `a.b.c.d` must NOT have produced a warning, \
+         got message: {:?}",
+        warning.message
     );
 }
 
