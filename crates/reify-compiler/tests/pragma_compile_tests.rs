@@ -21,8 +21,13 @@ fn pragma_warnings<'a>(
 /// Module-level pragmas are stored on CompiledModule.pragmas with correct names/args.
 #[test]
 fn module_pragmas_stored_on_compiled_module() {
+    // `#version(0.1)` chosen because it is the supported-version happy path
+    // (silent — no errors or warnings). Earlier this fixture used `#version(1)`,
+    // but task 2305 made `#version` semantic: with integer-valued Number support
+    // (so `0.0` parses as `(0, 0)`), `#version(1)` parses as `(1, 0)` which is
+    // too-new and would raise an error.
     let module =
-        compile_source("#precision(value=64)\n#version(1)\nstructure S { param x : Real }");
+        compile_source("#precision(value=64)\n#version(0.1)\nstructure S { param x : Real }");
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -62,7 +67,7 @@ fn module_pragmas_stored_on_compiled_module() {
     assert_eq!(version.args.len(), 1, "expected 1 arg on #version");
     match &version.args[0] {
         reify_syntax::PragmaArg::Bare(reify_syntax::PragmaValue::Number(n)) => {
-            assert_eq!(n, &1.0_f64, "expected version 1, got {n}");
+            assert_eq!(n, &0.1_f64, "expected version 0.1, got {n}");
         }
         other => panic!("expected Bare(Number) arg on #version, got: {:?}", other),
     }

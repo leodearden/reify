@@ -269,13 +269,21 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 // on '.' to extract MAJOR / MINOR. See task design decision:
                 // `0.10` lexes to the same f64 as `0.1` (printed as "0.1");
                 // users who need MINOR=10 must use the string form.
+                //
+                // Integer-valued numbers (e.g. `0.0`, `1.0`) lose their `.0`
+                // under f64 Display, yielding `"0"` / `"1"`; treat those as
+                // MAJOR with MINOR=0 so `#version(0.0)` parses cleanly.
                 let rendered = format!("{n}");
-                rendered.split_once('.').and_then(|(maj_s, min_s)| {
-                    match (maj_s.parse::<u16>(), min_s.parse::<u16>()) {
+                match rendered.split_once('.') {
+                    Some((maj_s, min_s)) => match (maj_s.parse::<u16>(), min_s.parse::<u16>()) {
                         (Ok(maj), Ok(min)) => Some((maj, min)),
                         _ => None,
-                    }
-                })
+                    },
+                    None => match rendered.parse::<u16>() {
+                        Ok(maj) => Some((maj, 0)),
+                        Err(_) => None,
+                    },
+                }
                 // Malformed Number-form parses fall through silently for now;
                 // step-12 will add the warning.
             }
@@ -313,8 +321,15 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     ))
                     .with_label(DiagnosticLabel::new(pragma.span, "unsupported version")),
                 );
+            } else if (maj, min) < COMPILER_SUPPORTED_VERSION {
+                module.diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "declared version {maj}.{min} predates the first stable language; \
+                         treating as 0.1"
+                    ))
+                    .with_label(DiagnosticLabel::new(pragma.span, "predates v0.1")),
+                );
             }
-            // step-8 will add the symmetric too-old warning here.
         }
     }
 }
