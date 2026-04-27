@@ -1,3 +1,4 @@
+#no_prelude
 // Stdlib: Mechanical Material Traits
 // Provides core trait definitions for engineering material characterization.
 // All dimensioned quantities use Real (dimensionless) pending Pressure/Density

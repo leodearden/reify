@@ -1,3 +1,4 @@
+#no_prelude
 // Stdlib: Tolerancing — Dimensional, Geometric (14 GD&T types), Surface
 // Provides core definitions for engineering tolerancing and geometric dimensioning.
 // Uses Length and Angle types for dimensioned params. Real is used as a

@@ -1,3 +1,4 @@
+#no_prelude
 // Stdlib: Stress Analysis Traits
 // Provides trait definitions for stress analysis results and analysis
 // configurations. These traits describe the interface for von Mises stress,
