@@ -759,6 +759,150 @@ fn function_body_renders_signature_pre() {
     );
 }
 
+/// Field body: `<dl>` with `<dt>Type</dt><dd><code>{type}</code></dd>`,
+/// optionally followed by `<dt>Default</dt><dd><code>{default}</code></dd>`
+/// when `default_repr` is `Some`.  Default row is absent when `None`.
+#[test]
+fn field_body_renders_with_default() {
+    let with_default = ItemDoc::Field {
+        name: "vcc".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: "Voltage".into(),
+        default_repr: Some("3.3 V".into()),
+    };
+    let out = render_one_item(with_default);
+
+    assert!(out.contains("<dl>"), "missing <dl>; got:\n{out}");
+    assert!(
+        out.contains("<dt>Type</dt><dd><code>Voltage</code></dd>"),
+        "missing Type row; got:\n{out}"
+    );
+    assert!(
+        out.contains("<dt>Default</dt><dd><code>3.3 V</code></dd>"),
+        "missing Default row; got:\n{out}"
+    );
+}
+
+#[test]
+fn field_body_omits_default_when_none() {
+    let no_default = ItemDoc::Field {
+        name: "vcc".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: "Voltage".into(),
+        default_repr: None,
+    };
+    let out = render_one_item(no_default);
+
+    assert!(
+        out.contains("<dt>Type</dt><dd><code>Voltage</code></dd>"),
+        "missing Type row; got:\n{out}"
+    );
+    assert!(
+        !out.contains("<dt>Default</dt>"),
+        "Default row must be absent when default_repr is None; got:\n{out}"
+    );
+}
+
+/// Purpose body: `<dl>` with `<dt>Direction</dt><dd>{direction}</dd>` and
+/// `<dt>Expression</dt><dd><code>{expr}</code></dd>`.
+#[test]
+fn purpose_body_renders() {
+    let item = ItemDoc::Purpose {
+        name: "min_area".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        expr_repr: "total_area".into(),
+        direction: "minimize".into(),
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<dt>Direction</dt><dd>minimize</dd>"),
+        "missing Direction row; got:\n{out}"
+    );
+    assert!(
+        out.contains("<dt>Expression</dt><dd><code>total_area</code></dd>"),
+        "missing Expression row; got:\n{out}"
+    );
+}
+
+/// Unit body: `<dl>` with `<dt>Base</dt><dd><code>{base_unit}</code></dd>` and
+/// `<dt>Scale</dt><dd><code>{scale}</code></dd>`.
+#[test]
+fn unit_body_renders() {
+    let item = ItemDoc::Unit {
+        name: "mA".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        base_unit: "Ampere".into(),
+        scale: "0.001".into(),
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<dt>Base</dt><dd><code>Ampere</code></dd>"),
+        "missing Base row; got:\n{out}"
+    );
+    assert!(
+        out.contains("<dt>Scale</dt><dd><code>0.001</code></dd>"),
+        "missing Scale row; got:\n{out}"
+    );
+}
+
+/// TypeAlias body: `<p>= <code>{type}</code></p>`.
+#[test]
+fn type_alias_body_renders() {
+    let item = ItemDoc::TypeAlias {
+        name: "Real".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: "f64".into(),
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<p>= <code>f64</code></p>"),
+        "expected `<p>= <code>f64</code></p>`; got:\n{out}"
+    );
+}
+
+/// ConstraintDef body: `<p><code>{escaped-expr}</code></p>`.  `<=` must be
+/// escaped to `&lt;=`.
+#[test]
+fn constraint_def_body_renders() {
+    let item = ItemDoc::ConstraintDef {
+        name: "safe_v".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        expr_repr: "v <= 5.5 V".into(),
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<p><code>v &lt;= 5.5 V</code></p>"),
+        "expected `<p><code>v &lt;= 5.5 V</code></p>` with `<=` escaped to `&lt;=`; got:\n{out}"
+    );
+    // Negative: no raw `<=` outside an entity.
+    assert!(
+        !out.contains("v <= 5.5 V"),
+        "expected raw `<=` to be escaped; got:\n{out}"
+    );
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
