@@ -2137,6 +2137,15 @@ pub enum Freshness {
     Failed { error: ErrorRef },
 }
 
+impl Default for Freshness {
+    /// `Default::default()` returns `Final`; this is the canonical fallback for
+    /// cache reads on absent entries (see `CacheStore::freshness`) and pins
+    /// task #2326's "default to Final on read" contract.
+    fn default() -> Self {
+        Freshness::Final
+    }
+}
+
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
 fn sorted_captures(captures: &ValueMap) -> Vec<(&ValueCellId, &Value)> {
     let mut caps: Vec<_> = captures.iter().collect();
