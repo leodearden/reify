@@ -1,0 +1,177 @@
+// DriveBelt composed-trait-bound integration example + §6.3-§6.6 gap-fill samples
+//
+// PRD reference:  docs/prds/stdlib-trait-breadth.md §worked-examples (task #4 integration target)
+// Audit gaps:     docs/notes/stdlib-trait-audit.md §6.3-§6.6 (all four modules marked MISSING)
+//
+// This file exercises two concerns in one place:
+//
+//   (1) Composed-bound integration (DriveBelt task #4 primary goal):
+//       DriveBelt : ElasticallyDeformable + ImpactResistant + Damping
+//       Uses flat inherited params rather than `geometry: Solid` / `material: Material`
+//       slots because `Solid` is not yet a usable type (out of scope).  Flat params
+//       match the existing conformance pattern used in structural_physical_tests.rs
+//       and materials_mechanical_tests.rs.
+//
+//   (2) §6.3-§6.6 gap-fill samples (one per audit sub-section):
+//       CeramicLiner    : Refractory           (§6.3 ThermallyCharacterized sub-trait)
+//       Copper          : Conductive            (§6.4 ElectricallyCharacterized sub-trait)
+//       BorosilicateGlass : OpticallyCharacterized (§6.5 root trait)
+//       TitaniumImplant : Biocompatible + CorrosionResistant (§6.6 both traits)
+//
+// This file is auto-discovered by crates/reify-compiler/tests/examples_smoke.rs
+// (walks examples/*.ri) and the dedicated integration test at
+// crates/reify-eval/tests/drivebelt_trait_bounds.rs.
+//
+// Enum note: CorrosionClass and BiocompatibilityClass are declared in the stdlib
+// (std.materials.chemical), but the parser resolves EnumAccess nodes (e.g.
+// `CorrosionClass.C5`) from the *current source file* only.  Re-declaring the
+// enums here (identical to the stdlib definitions) is safe — no duplicate-enum
+// diagnostic is emitted, and the compiler's resolution_enums has the prelude
+// entry first so stdlib types win.  See materials_chemical_tests.rs for the
+// same pattern and rationale.
+
+// ── Enum re-declarations (for parser EnumAccess resolution) ─────────────────
+
+enum CorrosionClass { C1, C2, C3, C4, C5 }
+enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
+
+// ── (1) Composed-bound integration: DriveBelt ────────────────────────────────
+
+// DriveBelt is a representative elastomeric power-transmission belt.
+// It satisfies three stdlib structural traits simultaneously:
+//   ElasticallyDeformable : Flexible — lumped recoverable deformation contract
+//   ImpactResistant : MaterialSpec   — impact energy capacity
+//   Damping : MaterialSpec           — vibration damping properties
+//
+// The eight required params come from the full transitive chain:
+//   density, name              ← MaterialSpec (shared via IR ∩ D diamond merge)
+//   stiffness, max_deflection  ← Flexible (via ElasticallyDeformable)
+//   max_elastic_strain         ← ElasticallyDeformable
+//   impact_energy              ← ImpactResistant
+//   damping_ratio, loss_factor ← Damping
+//
+// Constraints injected by traits:
+//   stiffness > 0       (Flexible)
+//   max_deflection > 0  (Flexible)
+//   max_elastic_strain > 0 (ElasticallyDeformable)
+//
+// All values are raw SI numerics (Real) — density in kg/m³, stiffness in N/m,
+// deflection in m, energy in J, ratios dimensionless.
+structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
+    // MaterialSpec (shared root via ImpactResistant and Damping)
+    param density : Real = 1100.0          // kg/m³ — typical SBR/EPDM elastomer
+    param name : String = "elastomer_belt"
+
+    // Flexible (via ElasticallyDeformable) — stiffness > 0, max_deflection > 0
+    param stiffness : Real = 2000.0        // N/m — moderate belt stiffness
+    param max_deflection : Real = 0.02     // m — 20mm rated deflection
+
+    // ElasticallyDeformable — max_elastic_strain > 0
+    param max_elastic_strain : Real = 0.1  // 10% recoverable strain limit
+
+    // ImpactResistant
+    param impact_energy : Real = 500.0     // J — Charpy/Izod equivalent
+
+    // Damping
+    param damping_ratio : Real = 0.15      // 15% of critical damping (typical rubber)
+    param loss_factor : Real = 0.30        // loss tangent ~ 0.3 for filled elastomers
+}
+
+// ── (2a) §6.3 gap-fill sample: CeramicLiner : Refractory ────────────────────
+
+// CeramicLiner is an alumina-based refractory liner.  It satisfies:
+//   Refractory : ThermallyCharacterized : MaterialSpec
+//
+// Constraint from Refractory: max_service_temperature >= 1500.0
+// CeramicLiner.max_service_temperature = 2050.0 — well above the guard.
+//
+// All thermal quantities are raw Real (dimensionless SI numerics):
+//   thermal_conductivity in W/(m·K), specific_heat in J/(kg·K),
+//   thermal_expansion in 1/K, temperatures in K.
+structure def CeramicLiner : Refractory {
+    // MaterialSpec
+    param density : Real = 3900.0              // kg/m³ — alumina (Al₂O₃)
+    param name : String = "alumina_ceramic"
+
+    // ThermallyCharacterized
+    param thermal_conductivity : Real = 30.0   // W/(m·K)
+    param specific_heat : Real = 880.0         // J/(kg·K)
+    param thermal_expansion : Real = 0.000008  // 1/K (8.0e-6 — coefficient of linear expansion)
+    param melting_point : Real = 2072.0        // K
+    param max_service_temperature : Real = 2050.0 // K — clears Refractory >= 1500 guard
+    param glass_transition : Real = 0.0        // K — not applicable; 0 sentinel
+}
+
+// ── (2b) §6.4 gap-fill sample: Copper : Conductive ──────────────────────────
+
+// Copper satisfies:
+//   Conductive : ElectricallyCharacterized : MaterialSpec
+//
+// Constraint from Conductive: resistivity < 1.0e-4
+// Copper.resistivity = 1.7e-8 Ω·m — well below the guard.
+//
+// dielectric_constant, dielectric_strength, magnetic_permeability are
+// required by ElectricallyCharacterized even though they are not physically
+// meaningful for pure metals; placeholder values are supplied.
+structure def Copper : Conductive {
+    // MaterialSpec
+    param density : Real = 8960.0               // kg/m³ — pure copper
+    param name : String = "copper"
+
+    // ElectricallyCharacterized
+    param resistivity : Real = 0.000000017      // Ω·m (1.7e-8) — clears Conductive < 1e-4 guard
+    param dielectric_constant : Real = 1.0      // placeholder (not meaningful for metals)
+    param dielectric_strength : Real = 0.0      // placeholder (infinite for conductors)
+    param magnetic_permeability : Real = 1.0    // μ_r ≈ 1 for copper (diamagnetic)
+}
+
+// ── (2c) §6.5 gap-fill sample: BorosilicateGlass : OpticallyCharacterized ───
+
+// BorosilicateGlass satisfies:
+//   OpticallyCharacterized : MaterialSpec
+//
+// No constraints are inherited from OpticallyCharacterized itself; a
+// structure-level sanity constraint on density is added below.
+structure def BorosilicateGlass : OpticallyCharacterized {
+    // MaterialSpec
+    param density : Real = 2230.0               // kg/m³ — Borosilicate 33 glass
+    param name : String = "borosilicate_glass"
+
+    // OpticallyCharacterized
+    param refractive_index : Real = 1.52        // dimensionless (BK7 / N-BK7)
+    param absorption_coefficient : Real = 0.001 // 1/m — very low for optical glass
+    param transmittance : Real = 0.92           // 92% at reference thickness
+    param reference_thickness : Real = 0.01    // 1cm reference sample thickness
+
+    // Structure-level physical sanity constraint (also ensures engine.check
+    // produces non-empty constraint_results for this entity in eval tests).
+    constraint density > 0.0
+}
+
+// ── (2d) §6.6 gap-fill sample: TitaniumImplant : Biocompatible + CorrosionResistant
+
+// TitaniumImplant (Ti-6Al-4V) satisfies both §6.6 traits:
+//   Biocompatible : MaterialSpec
+//   CorrosionResistant : MaterialSpec
+//
+// density and name are shared via the MaterialSpec diamond merge.
+// The enum-typed params use the CorrosionClass and BiocompatibilityClass enums
+// declared at the top of this file (re-declared from std.materials.chemical).
+//
+// A structure-level constraint on density is added below for the same reason
+// as BorosilicateGlass (ensure engine.check produces non-empty results).
+structure def TitaniumImplant : Biocompatible + CorrosionResistant {
+    // MaterialSpec (shared via diamond merge)
+    param density : Real = 4500.0               // kg/m³ — Ti-6Al-4V
+    param name : String = "titanium"
+
+    // Biocompatible
+    param biocompatibility_class : BiocompatibilityClass = BiocompatibilityClass.USP_Class_VI
+
+    // CorrosionResistant
+    param corrosion_class : CorrosionClass = CorrosionClass.C5
+
+    // Structure-level physical sanity constraint (also ensures engine.check
+    // produces non-empty constraint_results for this entity in eval tests).
+    constraint density > 0.0
+}
