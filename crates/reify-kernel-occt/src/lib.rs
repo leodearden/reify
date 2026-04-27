@@ -1459,6 +1459,18 @@ impl OcctKernel {
         let h = self.store(shape);
         h.id
     }
+
+    /// Build a single vertex at the origin and store it.
+    ///
+    /// The returned shape has `TopAbs_ShapeType() == TopAbs_VERTEX`. Used by
+    /// `conformance_integration` tests to exercise the `TopAbs_VERTEX`
+    /// short-circuit path in `is_watertight`.
+    pub fn store_vertex_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_vertex_for_test()
+            .expect("make_vertex_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
 }
 
 #[cfg(all(test, has_occt))]

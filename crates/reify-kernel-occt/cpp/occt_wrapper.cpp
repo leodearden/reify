@@ -43,11 +43,12 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 
-// OCCT edge/wire/face/solid construction
+// OCCT edge/wire/face/solid/vertex construction
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 
 // OCCT pipe (sweep)
 #include <BRepOffsetAPI_MakePipe.hxx>
@@ -1645,6 +1646,22 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
 
         auto result = std::make_unique<OcctShape>();
         result->shape = shell;
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_vertex_for_test() {
+    // A single point vertex at the origin.
+    // ShapeType() == TopAbs_VERTEX; no edge→face incidence → manifold trivially
+    // true; no shells loaded → orientable trivially true; hits the shape-type
+    // guard in is_watertight → returns false.
+    return wrap_occt_call("make_vertex", [&]() {
+        BRepBuilderAPI_MakeVertex vertex_maker(gp_Pnt(0.0, 0.0, 0.0));
+        if (!vertex_maker.IsDone()) {
+            throw std::runtime_error("make_vertex: vertex construction failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = vertex_maker.Vertex();
         return result;
     });
 }

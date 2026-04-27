@@ -379,6 +379,9 @@ pub mod ffi {
         /// Straight edge (0,0,0)→(10mm,0,0) → TopAbs_EDGE; type-guard fires for watertight.
         fn make_edge_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// Single vertex at origin → TopAbs_VERTEX; type-guard fires for watertight.
+        fn make_vertex_for_test() -> Result<UniquePtr<OcctShape>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

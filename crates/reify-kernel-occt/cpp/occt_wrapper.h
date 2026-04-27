@@ -388,6 +388,10 @@ std::unique_ptr<OcctShape> make_closed_shell_for_test();
 /// The returned shape has TopAbs_ShapeType() == TopAbs_EDGE.
 std::unique_ptr<OcctShape> make_edge_for_test();
 
+/// Build a single vertex at the origin (0,0,0).
+/// The returned shape has TopAbs_ShapeType() == TopAbs_VERTEX.
+std::unique_ptr<OcctShape> make_vertex_for_test();
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.
