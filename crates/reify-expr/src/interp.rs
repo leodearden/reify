@@ -181,6 +181,9 @@ fn nearest_index_on_axis(grid: &[f64], query: f64) -> usize {
 /// methods (`Linear`, `NearestNeighbor`, `Cubic`); `Rbf`/`Kriging` produce a
 /// single deferred-method warning and fall back to `Linear`.
 ///
+/// NaN queries propagate to a NaN value with no diagnostics (IEEE 754
+/// NaN-poisoning convention).
+///
 /// Panics if `grid.len() != values.len()` or if `grid.len() < 2`.
 pub fn interpolate_1d(
     method: InterpolationMethod,
@@ -200,6 +203,12 @@ pub fn interpolate_1d(
         "interpolate_1d: grid must have at least 2 points (got {})",
         grid.len()
     );
+    if query.is_nan() {
+        return InterpolationResult {
+            value: f64::NAN,
+            diagnostics: Vec::new(),
+        };
+    }
 
     match method {
         InterpolationMethod::Linear => {
