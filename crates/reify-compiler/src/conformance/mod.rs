@@ -3703,4 +3703,51 @@ mod tests {
         );
         assert_eq!(d.labels[0].span, span);
     }
+
+    /// `emit_geometry_trait_violation` pushes exactly one `Diagnostic` with severity
+    /// `Error`, code `Some(DiagnosticCode::TypeNotConformingToTrait)`, a message
+    /// mentioning the arg name and the required trait name (`Connected` in this call),
+    /// and a `DiagnosticLabel` at the supplied span. This is the symmetric sibling of
+    /// `emit_geometry_unbounded` for the `Connected`/`Convex` cases.
+    ///
+    /// The load-bearing assertion here is `!d.message.contains("required by param")`:
+    /// the old inline branch included a redundant `required by param '{}'` suffix that
+    /// repeated the arg name already present in the `argument '{}'` slot. This test pins
+    /// the corrected wording contract and prevents accidental reintroduction.
+    #[test]
+    fn emit_geometry_trait_violation_helper_produces_error_with_code_and_label() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = SourceSpan::new(7, 19);
+        emit_geometry_trait_violation("g", "Connected", span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "emit_geometry_trait_violation should push exactly one diagnostic"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeNotConformingToTrait));
+        assert!(
+            d.message.contains("Connected"),
+            "message should mention the required trait 'Connected', got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'g'"),
+            "message should mention the arg name 'g', got: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("required by param"),
+            "message must NOT contain 'required by param' (redundant suffix was dropped), got: {}",
+            d.message
+        );
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly one label attached at the supplied span"
+        );
+        assert_eq!(d.labels[0].span, span);
+    }
 }
