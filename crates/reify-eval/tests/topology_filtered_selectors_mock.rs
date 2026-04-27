@@ -91,3 +91,39 @@ fn edges_by_length_propagates_invalid_handle_from_extract_edges() {
         result
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// faces_by_area
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn faces_by_area_inclusive_at_min_and_max_endpoints() {
+    let parent = GeometryHandleId(1);
+    let f_small = GeometryHandleId(2);
+    let f_mid = GeometryHandleId(3);
+    let f_big = GeometryHandleId(4);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f_small, f_mid, f_big])
+        .with_surface_area_result(f_small, Value::Real(1.0e-4))
+        .with_surface_area_result(f_mid, Value::Real(4.0e-4))
+        .with_surface_area_result(f_big, Value::Real(9.0e-4));
+
+    // Full window [1.0e-4, 9.0e-4] — both endpoints inclusive.
+    let all = topology_selectors::faces_by_area(&mut kernel, parent, 1.0e-4, 9.0e-4)
+        .expect("faces_by_area should succeed with full window");
+    assert_eq!(
+        all,
+        vec![f_small, f_mid, f_big],
+        "all three faces should be included when window covers all areas exactly"
+    );
+
+    // Tighter window [2.0e-4, 5.0e-4] — just-outside endpoints are excluded.
+    let mid_only = topology_selectors::faces_by_area(&mut kernel, parent, 2.0e-4, 5.0e-4)
+        .expect("faces_by_area should succeed with tighter window");
+    assert_eq!(
+        mid_only,
+        vec![f_mid],
+        "only the middle face should survive when min/max endpoints are just outside"
+    );
+}
