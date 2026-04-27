@@ -356,9 +356,13 @@ fn render_html_stub(model: &reify_doc::model::DocModel) -> String {
         &reify_doc::fmt_markdown::MarkdownOptions::default(),
     ) {
         reify_doc::fmt_markdown::MarkdownOutput::Single(s) => s,
-        // Single-mode dispatch always returns Single; guard against future
-        // refactors so we still produce a valid HTML page.
-        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => String::new(),
+        // `render_markdown` only emits `Split` when `opts.split == true`, and
+        // we always pass `MarkdownOptions::default()` (split = false).  Use
+        // `unreachable!` so a future refactor that breaks this invariant
+        // panics loudly instead of silently emitting an empty `<pre>` block.
+        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => unreachable!(
+            "render_html_stub always uses MarkdownOptions::default() (split = false)"
+        ),
     };
     let path = model
         .modules
@@ -469,6 +473,17 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::from(2u8);
     }
 
+    // `--split` (markdown-only by the guard above) requires `-o <dir>` so we
+    // know where to write the per-item files.  Single-mode markdown can target
+    // stdout, so this combined check is guarded on `format == Markdown && split
+    // && output.is_none()` rather than `split && output.is_none()`.  Hoisted
+    // above `parse_and_compile` so usage errors don't pay for parsing.
+    if split && format == Format::Markdown && output.is_none() {
+        eprintln!("Error: --split requires -o <directory>");
+        eprintln!("{}", DOC_USAGE);
+        return ExitCode::from(2u8);
+    }
+
     let compiled = match parse_and_compile(input) {
         Ok(c) => c,
         Err(code) => return code,
@@ -511,14 +526,19 @@ fn cmd_doc(args: &[String]) -> ExitCode {
                     )
                 }
                 reify_doc::fmt_markdown::MarkdownOutput::Split(files) => {
-                    let dir = match output.as_deref() {
-                        Some(d) => std::path::PathBuf::from(d),
-                        None => {
-                            eprintln!("Error: --split requires -o <directory>");
-                            eprintln!("{}", DOC_USAGE);
-                            return ExitCode::from(2u8);
-                        }
-                    };
+                    // The `--split requires -o <dir>` guard runs in the early
+                    // usage-validation block above, so by the time we get here
+                    // `output` is guaranteed `Some`.  `expect` rather than
+                    // `unwrap` so a future refactor that bypasses the guard
+                    // panics with a loud, attributable message instead of
+                    // silently writing to a wrong path.
+                    let dir = std::path::PathBuf::from(
+                        output.as_deref().expect(
+                            "--split + --format markdown without -o is rejected by the early \
+                             usage-validation block; reaching this branch means that guard was \
+                             accidentally bypassed",
+                        ),
+                    );
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         eprintln!("Error writing {}: {}", dir.display(), e);
                         return ExitCode::FAILURE;
