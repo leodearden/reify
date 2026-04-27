@@ -1,3 +1,33 @@
+use std::collections::BTreeMap;
+
+use reify_types::Value;
+
+/// Evaluate a joints stdlib function by name.
+///
+/// Returns `Some(Value)` for known function names (including
+/// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
+pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "prismatic" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            make_joint("prismatic", args[0].clone(), args[1].clone())
+        }
+        _ => return None,
+    })
+}
+
+/// Build a joint `Value::Map` with the standard three-key layout:
+/// `"kind"`, `"axis"`, `"range"`.
+fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String(kind.to_string()));
+    m.insert(Value::String("axis".to_string()), axis);
+    m.insert(Value::String("range".to_string()), range);
+    Value::Map(m)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
