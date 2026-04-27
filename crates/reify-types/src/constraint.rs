@@ -460,6 +460,7 @@ mod tests {
                 severity: Severity::Error,
                 labels: vec![],
                 code: None,
+                candidates: Vec::new(),
             }],
         };
         match &result {

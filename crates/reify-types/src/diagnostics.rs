@@ -281,6 +281,12 @@ pub struct Diagnostic {
     /// Typed kind of this diagnostic. `None` for legacy emissions that have
     /// not yet been migrated. Producers attach a code via [`Diagnostic::with_code`].
     pub code: Option<DiagnosticCode>,
+    /// Machine-readable candidate set for "expected one of …" diagnostics.
+    /// Empty for diagnostics that do not enumerate alternatives.
+    /// Producers attach via [`Diagnostic::with_candidates`]; consumers
+    /// (LSP quick-fixes, IDE error UIs) may read this without parsing the
+    /// human-readable message.
+    pub candidates: Vec<String>,
 }
 
 impl Diagnostic {
@@ -290,6 +296,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             code: None,
+            candidates: Vec::new(),
         }
     }
 
@@ -299,6 +306,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             code: None,
+            candidates: Vec::new(),
         }
     }
 
@@ -308,6 +316,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             code: None,
+            candidates: Vec::new(),
         }
     }
 
@@ -323,6 +332,18 @@ impl Diagnostic {
     /// `Diagnostic::error(...)` and `.with_label(...)`.
     pub fn with_code(mut self, code: DiagnosticCode) -> Self {
         self.code = Some(code);
+        self
+    }
+
+    /// Attach a machine-readable candidate list to this diagnostic.
+    ///
+    /// Mirrors [`Diagnostic::with_code`]: builder-fluent, takes ownership,
+    /// returns `Self`. Callers chain `.with_candidates(vec![...])` to expose
+    /// the "expected one of …" set as a structured field so downstream
+    /// consumers (LSP quick-fixes, IDE error UIs) can read it without
+    /// parsing the human-readable message.
+    pub fn with_candidates(mut self, candidates: Vec<String>) -> Self {
+        self.candidates = candidates;
         self
     }
 }

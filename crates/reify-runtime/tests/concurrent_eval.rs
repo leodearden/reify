@@ -1227,6 +1227,7 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
                 message: "constraint x > a is infeasible".to_string(),
                 labels: Vec::new(),
                 code: None,
+                candidates: Vec::new(),
             }],
         },
     ]);

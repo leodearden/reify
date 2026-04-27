@@ -958,6 +958,7 @@ impl ConstraintSolver for SolveSpaceSolver {
                     ),
                     labels: vec![],
                     code: Some(DiagnosticCode::ConstraintUnsatisfiable),
+                    candidates: Vec::new(),
                 }],
             },
             SlvsSolveResult::DidntConverge => SolveResult::NoProgress {

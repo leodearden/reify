@@ -439,6 +439,7 @@ impl ConstraintChecker for LabelEmittingChecker {
                     message: format!("constraint {} violated", id_str),
                     labels: vec![label],
                     code: None,
+                    candidates: Vec::new(),
                 };
                 ConstraintResult {
                     id: id.clone(),

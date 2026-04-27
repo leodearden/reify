@@ -678,6 +678,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
                 ),
                 labels: vec![],
                 code: Some(DiagnosticCode::ConstraintUnsatisfiable),
+                candidates: Vec::new(),
             }],
         };
     }
@@ -889,6 +890,7 @@ impl ConstraintSolver for DimensionalSolver {
                                     .to_string(),
                                 labels: vec![],
                                 code: Some(DiagnosticCode::ConstraintNonUnique),
+                                candidates: Vec::new(),
                             }],
                         }
                     }
