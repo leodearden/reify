@@ -596,4 +596,37 @@ mod tests {
             "edges_by_length must not loop over per-element query"
         );
     }
+
+    #[test]
+    fn faces_by_area_uses_query_many_once() {
+        // Three faces with surface areas 200, 300, 600 in mm^2 (i.e.
+        // 200e-6, 300e-6, 600e-6 m^2). The window [199e-6, 201e-6] m^2
+        // selects only the first face.
+        let face_ids = vec![
+            GeometryHandleId(201),
+            GeometryHandleId(202),
+            GeometryHandleId(203),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::Real(200e-6))
+            .with_response(face_ids[1], Value::Real(300e-6))
+            .with_response(face_ids[2], Value::Real(600e-6));
+
+        let source = GeometryHandleId(1);
+        let result = faces_by_area(&mut kernel, source, 199e-6, 201e-6)
+            .expect("selector should succeed");
+
+        assert_eq!(result, vec![face_ids[0]], "expected only the 200e-6 m^2 face");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "faces_by_area must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "faces_by_area must not loop over per-element query"
+        );
+    }
 }
