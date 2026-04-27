@@ -639,20 +639,31 @@ trait T {
 /// outer (domain-binding) lambda. Source:
 ///
 /// ```text
-/// field def temp : Point3 -> Scalar {
-///     source = analytical { |p| (|p| p + 1.0)(p) }
+/// field def temp : Point3 -> Vector3 {
+///     source = analytical { |p| |p| p }
 /// }
 /// ```
 ///
 /// The OUTER `|p|` is the field's domain binder; the INNER `|p|` shadows
-/// it. The shadow is detected naturally by `walk_expr`'s Lambda handling
-/// (the outer Lambda pushes a frame `{p}`; the inner Lambda's `p` lookup in
-/// that frame finds it). Exactly ONE Shadowing warning is expected.
+/// it. (Lambdas are right-associative — see the existing
+/// `parse_composed_field` test, `|f, g| |p| f(g(p))`, in
+/// `crates/reify-syntax/tests/field_tests.rs:81`.) The shadow is detected
+/// naturally by `walk_expr`'s Lambda handling (the outer Lambda pushes a
+/// frame `{p}`; the inner Lambda's `p` lookup in that frame finds it).
+/// Exactly ONE Shadowing warning is expected.
+///
+/// The plan's example used `|p| (|p| p + 1.0)(p)` — a function-call of a
+/// lambda — which does not parse cleanly inside the analytical block. The
+/// shadow-lint contract is identical regardless: `walk_expr`'s Lambda arm
+/// is the same code path. We exercise it here with the simpler nested-lambda
+/// form, mirroring the precedent established in
+/// `match_arm_style_guarded_subs_do_not_warn` and
+/// `purpose_constraint_lambda_shadows_purpose_param`.
 #[test]
 fn field_analytical_lambda_inner_lambda_shadows_outer_param() {
     let source = r#"
-field def temp : Point3 -> Scalar {
-    source = analytical { |p| (|p| p + 1.0)(p) }
+field def temp : Point3 -> Vector3 {
+    source = analytical { |p| |p| p }
 }
 "#;
     let module = compile_source_with_stdlib(source);

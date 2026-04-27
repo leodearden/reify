@@ -148,10 +148,48 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             let frames: Vec<&Frame> = vec![&frame];
             walk_members(&t.members, &frames, diagnostics);
         }
-        // The remaining declaration arms are wired in subsequent steps
-        // (fields, purposes). Until then they pass through without
-        // forming a frame, matching the lint's "no frame ⇒ no shadow"
-        // invariant.
+        Declaration::Field(f) => {
+            // Fields have no body params at the top level — the lambda
+            // inside `analytical { |p| … }` (or `composed { … }`) introduces
+            // its own scope, naturally caught by `walk_expr`'s Lambda
+            // handling. We therefore walk the source expression with an
+            // EMPTY top-level frame and let the lambda push add the domain
+            // binders; any inner lambda binding the same name then shadows
+            // against that pushed frame.
+            let frame: Frame = HashMap::new();
+            let frames: Vec<&Frame> = vec![&frame];
+            match &f.source {
+                reify_syntax::FieldSource::Analytical { expr }
+                | reify_syntax::FieldSource::Composed { expr } => {
+                    walk_expr(expr, &frames, diagnostics);
+                }
+                reify_syntax::FieldSource::Sampled { config } => {
+                    for (_, value) in config {
+                        walk_expr(value, &frames, diagnostics);
+                    }
+                }
+                reify_syntax::FieldSource::Imported { .. } => {}
+            }
+        }
+        Declaration::Purpose(p) => {
+            // Build a frame from the purpose's params and walk every member
+            // expression (constraints, minimize/maximize, lets, etc.)
+            // against that frame.
+            let mut frame: Frame = HashMap::new();
+            for pp in &p.params {
+                frame.insert(pp.name.clone(), pp.span);
+            }
+            // Lets declared inside the purpose body register as siblings of
+            // the params (one lexical scope), via `collect_body_frame`.
+            for (name, span) in collect_body_frame(&p.members) {
+                frame.insert(name, span);
+            }
+            let frames: Vec<&Frame> = vec![&frame];
+            walk_members(&p.members, &frames, diagnostics);
+        }
+        // The remaining declaration arms (Enum, Unit, TypeAlias) do not
+        // introduce expression-bearing scopes that the lint needs to walk;
+        // they pass through without forming a frame.
         _ => {}
     }
 }
