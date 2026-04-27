@@ -385,3 +385,47 @@ fn extract_edges_invalid_handle_returns_invalid_reference() {
         Err(other) => panic!("expected Err(InvalidHandle), got Err({:?})", other),
     }
 }
+
+#[test]
+fn extract_edges_after_fillet_count_differs_from_box() {
+    // Filleting a box rounds each of its 12 sharp edges. Each rounded
+    // edge becomes a curved fillet surface bounded by new edges, and
+    // every original face is also re-trimmed so its boundary edges
+    // are split. The resulting topology has many more edges than the
+    // 12 of a sharp box.
+    //
+    // We don't lock in an exact count (it varies with OCCT version
+    // and fillet algorithm) — only that the count is *not* 12, which
+    // is enough to confirm `extract_edges` traverses the post-fillet
+    // shape rather than reporting a stale or "passthrough" count.
+    let (mut kernel, box_id) = box_kernel(10.0, 10.0, 10.0);
+    let filleted = kernel
+        .execute(&GeometryOp::Fillet {
+            target: box_id,
+            radius: Value::Real(0.001),
+        })
+        .expect("Fillet of a 10mm box with 1mm radius should succeed");
+
+    let edges = kernel
+        .extract_edges(filleted.id)
+        .expect("extract_edges on a filleted box should succeed");
+
+    assert_ne!(
+        edges.len(),
+        12,
+        "filleting a box must change its edge count from 12 \
+         (got {}, which suggests extract_edges did not traverse the post-fillet shape)",
+        edges.len()
+    );
+
+    // Sanity: the new edges should also be distinct, non-INVALID, and
+    // none should equal the source handle (mirrors the invariants on
+    // the pre-fillet path).
+    let mut seen = std::collections::HashSet::new();
+    for id in &edges {
+        assert_ne!(*id, box_id, "extracted edge handle must differ from box_id");
+        assert_ne!(*id, filleted.id, "extracted edge handle must differ from filleted.id");
+        assert_ne!(*id, GeometryHandleId::INVALID, "extracted edge handle must not be INVALID");
+        assert!(seen.insert(*id), "duplicate edge handle id {:?}", id);
+    }
+}
