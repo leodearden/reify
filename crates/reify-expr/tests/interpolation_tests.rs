@@ -1177,3 +1177,33 @@ fn non_deferred_methods_produce_no_diagnostics() {
         assert!(r.diagnostics.is_empty(), "3D {:?} emitted diagnostics", m);
     }
 }
+
+// ---------------------------------------------------------------------------
+// NaN-propagation tests
+// ---------------------------------------------------------------------------
+
+/// A NaN query in 1D must produce a NaN value with no diagnostics, for all
+/// three v0.1 methods (Linear, NearestNeighbor, Cubic).
+///
+/// IEEE 754 NaN-poisoning convention: the result is NaN when the query is NaN.
+/// No diagnostic is emitted (consistent with the silent constant-extrapolation
+/// policy for out-of-range queries).
+#[test]
+fn nan_query_1d_returns_nan_with_no_diagnostics() {
+    let grid = [0.0f64, 1.0, 3.0, 6.0];
+    let values = [0.0f64, 10.0, 30.0, 90.0];
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        let r = interpolate_1d(m, &grid, &values, f64::NAN);
+        assert!(r.value.is_nan(), "1D {:?}: expected NaN, got {}", m, r.value);
+        assert!(
+            r.diagnostics.is_empty(),
+            "1D {:?}: expected empty diagnostics, got {:?}",
+            m,
+            r.diagnostics
+        );
+    }
+}
