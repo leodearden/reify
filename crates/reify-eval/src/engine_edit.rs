@@ -3340,4 +3340,62 @@ mod tests {
         );
     }
 
+    /// Dual-mode absent-guard contract: when the guard cell is absent from
+    /// `values`, `phase3_take_guard_val` must emit exactly one WARN event
+    /// scoped to `reify_eval::engine_edit` and return `None`.
+    ///
+    /// The test wraps the call in `catch_unwind(AssertUnwindSafe(...))` so it
+    /// runs identically in debug builds (where `debug_assert!(false)` panics)
+    /// and release builds (where it is a no-op).  The WARN fires *before* the
+    /// `debug_assert!`, so the counter increments unconditionally regardless of
+    /// build mode.
+    ///
+    /// Under `#[cfg(not(debug_assertions))]` the test also asserts the helper
+    /// returned `None` (in debug builds the `debug_assert!(false)` unwinds
+    /// before `None` is returned, so there is no return value to observe).
+    #[test]
+    fn phase3_take_guard_val_warns_and_returns_none_when_guard_absent() {
+        use std::panic::AssertUnwindSafe;
+        use std::sync::atomic::Ordering;
+        use reify_test_support::CountingSubscriberBuilder;
+
+        let guard_cell = ValueCellId::new("E", "guard");
+        let values = ValueMap::default(); // guard_cell absent
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::engine_edit")
+            .build();
+        let warn_arc = counters[&tracing::Level::WARN].clone();
+
+        // Capture the return value via Cell so it crosses the catch_unwind
+        // boundary without requiring Send (Option<Value> is Send, but Cell avoids
+        // needing to reason about it).
+        #[cfg(not(debug_assertions))]
+        let result_cell = std::cell::Cell::new(None::<Value>);
+
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let ret = tracing::subscriber::with_default(subscriber, || {
+                phase3_take_guard_val(&values, &guard_cell)
+            });
+            #[cfg(not(debug_assertions))]
+            result_cell.set(ret);
+        }));
+
+        assert_eq!(
+            warn_arc.load(Ordering::Acquire),
+            1,
+            "absent-guard arm: expected exactly one WARN from \
+             reify_eval::engine_edit when the guard cell is absent from values"
+        );
+
+        #[cfg(not(debug_assertions))]
+        assert_eq!(
+            result_cell.get(),
+            None,
+            "absent-guard arm (release build): helper must return None \
+             when the guard cell is absent"
+        );
+    }
+
 }
