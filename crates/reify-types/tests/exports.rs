@@ -213,6 +213,30 @@ fn spanned_ident_exported() {
 }
 
 #[test]
+fn node_traits_exported() {
+    // NodeTraits::IMMEDIATE is accessible at the crate root
+    let imm = reify_types::NodeTraits::IMMEDIATE;
+    assert!(!imm.is_empty());
+
+    // Compose via | operator
+    let warm_committable =
+        reify_types::NodeTraits::WARM_STARTABLE | reify_types::NodeTraits::COMMITTABLE;
+    assert!(warm_committable.contains(reify_types::NodeTraits::WARM_STARTABLE));
+    assert!(warm_committable.contains(reify_types::NodeTraits::COMMITTABLE));
+
+    // ResolutionNode.default_traits() == WARM_STARTABLE | COMMITTABLE
+    assert_eq!(
+        reify_types::NodeArchKind::ResolutionNode.default_traits(),
+        warm_committable
+    );
+
+    // ConstraintNode.default_traits().is_empty()
+    assert!(reify_types::NodeArchKind::ConstraintNode
+        .default_traits()
+        .is_empty());
+}
+
+#[test]
 fn presentation_info_types_exported() {
     // DiagnosticInfo is accessible at the reify_types crate root
     let _d = reify_types::DiagnosticInfo {
