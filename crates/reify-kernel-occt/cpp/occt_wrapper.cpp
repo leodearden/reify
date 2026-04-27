@@ -121,6 +121,34 @@
 
 namespace occt {
 
+namespace {
+
+/// Call `fn()` inside the standard 3-arm OCCT exception guard.
+///
+/// Catch arms:
+///   - Standard_Failure  → "OCCT <name>: <GetMessageString()>"
+///   - std::exception    → "OCCT <name>: unexpected: <what()>"
+///   - catch-all         → "OCCT <name>: unknown C++ exception"
+///
+/// Return type is deduced from `fn()` via `decltype`, so this helper works
+/// uniformly across all wrapper return types (double, Point3, BBox,
+/// InertiaTensor3x3, bool, std::unique_ptr<OcctShape>, rust::String,
+/// rust::Vec<uint32_t>, TessResult) without any explicit casts.
+template <typename F>
+auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
+    try {
+        return fn();
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT ") + name + ": " + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT ") + name + ": unexpected: " + e.what());
+    } catch (...) {
+        throw std::runtime_error(std::string("OCCT ") + name + ": unknown C++ exception");
+    }
+}
+
+} // anonymous namespace
+
 // --- Validation thresholds ---
 //
 // DEFENSE-IN-DEPTH: The Rust layer validates first with stricter thresholds
@@ -155,7 +183,7 @@ constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 // --- Primitive construction ---
 
 std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
-    try {
+    return wrap_occt_call("make_box", [&]() {
         gp_Pnt corner(-width / 2.0, -height / 2.0, -depth / 2.0);
         BRepPrimAPI_MakeBox maker(corner, width, height, depth);
         maker.Build();
@@ -165,17 +193,11 @@ std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_box: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_box: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_box: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_cylinder(double radius, double height) {
-    try {
+    return wrap_occt_call("make_cylinder", [&]() {
         BRepPrimAPI_MakeCylinder maker(radius, height);
         maker.Build();
         if (!maker.IsDone()) {
@@ -184,17 +206,11 @@ std::unique_ptr<OcctShape> make_cylinder(double radius, double height) {
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_cylinder: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_cylinder: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_cylinder: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_sphere(double radius) {
-    try {
+    return wrap_occt_call("make_sphere", [&]() {
         BRepPrimAPI_MakeSphere maker(radius);
         maker.Build();
         if (!maker.IsDone()) {
@@ -203,19 +219,13 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_sphere: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_sphere: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_sphere: unknown C++ exception");
-    }
+    });
 }
 
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
-    try {
+    return wrap_occt_call("boolean_fuse", [&]() {
         BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
         fuse.Build();
         if (!fuse.IsDone()) {
@@ -224,17 +234,11 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         auto result = std::make_unique<OcctShape>();
         result->shape = fuse.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT boolean_fuse: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT boolean_fuse: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT boolean_fuse: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right) {
-    try {
+    return wrap_occt_call("boolean_cut", [&]() {
         BRepAlgoAPI_Cut cut(left.shape, right.shape);
         cut.Build();
         if (!cut.IsDone()) {
@@ -243,17 +247,11 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         auto result = std::make_unique<OcctShape>();
         result->shape = cut.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT boolean_cut: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT boolean_cut: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT boolean_cut: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right) {
-    try {
+    return wrap_occt_call("boolean_common", [&]() {
         BRepAlgoAPI_Common common(left.shape, right.shape);
         common.Build();
         if (!common.IsDone()) {
@@ -262,19 +260,13 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT boolean_common: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT boolean_common: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT boolean_common: unknown C++ exception");
-    }
+    });
 }
 
 // --- Modifications ---
 
 std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius) {
-    try {
+    return wrap_occt_call("fillet_all_edges", [&]() {
         BRepFilletAPI_MakeFillet fillet(shape.shape);
         for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
             fillet.Add(radius, TopoDS::Edge(ex.Current()));
@@ -286,17 +278,11 @@ std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radiu
         auto result = std::make_unique<OcctShape>();
         result->shape = fillet.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT fillet_all_edges: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT fillet_all_edges: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT fillet_all_edges: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance) {
-    try {
+    return wrap_occt_call("chamfer_all_edges", [&]() {
         BRepFilletAPI_MakeChamfer chamfer(shape.shape);
         for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
             chamfer.Add(distance, TopoDS::Edge(ex.Current()));
@@ -308,19 +294,13 @@ std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double dist
         auto result = std::make_unique<OcctShape>();
         result->shape = chamfer.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT chamfer_all_edges: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT chamfer_all_edges: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT chamfer_all_edges: unknown C++ exception");
-    }
+    });
 }
 
 // --- Transforms ---
 
 std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, double dy, double dz) {
-    try {
+    return wrap_occt_call("translate_shape", [&]() {
         gp_Trsf trsf;
         trsf.SetTranslation(gp_Vec(dx, dy, dz));
         BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
@@ -331,17 +311,11 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT translate_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT translate_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT translate_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad) {
-    try {
+    return wrap_occt_call("rotate_shape", [&]() {
         gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(ax, ay, az));
         gp_Trsf trsf;
         trsf.SetRotation(axis, angle_rad);
@@ -353,17 +327,11 @@ std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, doubl
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT rotate_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, double cx, double cy, double cz) {
-    try {
+    return wrap_occt_call("scale_shape", [&]() {
         gp_Trsf trsf;
         trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
         BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
@@ -374,20 +342,14 @@ std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, do
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT scale_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT scale_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT scale_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
     double px, double py, double pz,
     double ax, double ay, double az,
     double angle_rad) {
-    try {
+    return wrap_occt_call("rotate_around_shape", [&]() {
         // gp_Ax1 defines an axis through a point with a direction.
         // trsf.SetRotation(axis, angle) then rotates around that axis,
         // correctly handling the non-origin pivot point.
@@ -402,13 +364,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_around_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT rotate_around_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT rotate_around_shape: unknown C++ exception");
-    }
+    });
 }
 
 // --- Mirror / Pattern ---
@@ -416,7 +372,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
 std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
     double ox, double oy, double oz,
     double nx, double ny, double nz) {
-    try {
+    return wrap_occt_call("mirror_shape", [&]() {
         gp_Ax2 mirror_plane(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz));
         gp_Trsf trsf;
         trsf.SetMirror(mirror_plane);
@@ -428,19 +384,13 @@ std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT mirror_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT mirror_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT mirror_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
     double dx, double dy, double dz,
     uint32_t count, double spacing) {
-    try {
+    return wrap_occt_call("linear_pattern", [&]() {
         if (count < 1) {
             throw std::runtime_error("linear_pattern: count must be >= 1");
         }
@@ -474,13 +424,7 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT linear_pattern: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
@@ -488,7 +432,7 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
     uint32_t count1, double spacing1,
     double dx2, double dy2, double dz2,
     uint32_t count2, double spacing2) {
-    try {
+    return wrap_occt_call("linear_pattern_2d", [&]() {
         if (count1 < 1) {
             throw std::runtime_error("linear_pattern_2d: count1 must be >= 1");
         }
@@ -540,20 +484,14 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern_2d: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT linear_pattern_2d: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT linear_pattern_2d: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ox, double oy, double oz,
     double ax, double ay, double az,
     uint32_t count, double total_angle) {
-    try {
+    return wrap_occt_call("circular_pattern", [&]() {
         if (count < 1) {
             throw std::runtime_error("circular_pattern: count must be >= 1");
         }
@@ -581,18 +519,12 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT circular_pattern: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT circular_pattern: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT circular_pattern: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms) {
-    try {
+    return wrap_occt_call("arbitrary_pattern", [&]() {
         if (num_transforms == 0) {
             throw std::runtime_error("arbitrary_pattern: num_transforms must be > 0");
         }
@@ -625,19 +557,13 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
         auto result = std::make_unique<OcctShape>();
         result->shape = accumulated;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT arbitrary_pattern: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT arbitrary_pattern: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT arbitrary_pattern: unknown C++ exception");
-    }
+    });
 }
 
 // --- Thicken / Shell ---
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
-    try {
+    return wrap_occt_call("thicken_shape", [&]() {
         BRepOffsetAPI_MakeOffsetShape maker;
         maker.PerformBySimple(shape.shape, offset);
         if (!maker.IsDone()) {
@@ -646,18 +572,12 @@ std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) 
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT thicken_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT thicken_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT thicken_shape: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     const rust::Vec<uint32_t>& face_indices) {
-    try {
+    return wrap_occt_call("shell_shape", [&]() {
         // Collect the faces to remove
         TopTools_ListOfShape faces_to_remove;
         std::vector<TopoDS_Face> all_faces;
@@ -678,20 +598,14 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT shell_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT shell_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT shell_shape: unknown C++ exception");
-    }
+    });
 }
 
 // --- Draft ---
 
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape) {
-    try {
+    return wrap_occt_call("draft_shape", [&]() {
         // Extract the neutral plane from plane_shape's first face
         gp_Dir pull_dir;
         gp_Pln neutral_plane;
@@ -730,19 +644,13 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
         auto result = std::make_unique<OcctShape>();
         result->shape = drafter.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT draft_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT draft_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT draft_shape: unknown C++ exception");
-    }
+    });
 }
 
 // --- Wire helpers ---
 
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
-    try {
+    return wrap_occt_call("make_circle_wire", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_circle_wire: radius must be finite and positive");
         }
@@ -761,17 +669,11 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
         auto result = std::make_unique<OcctShape>();
         result->shape = wire;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_circle_wire: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
-    try {
+    return wrap_occt_call("make_circle_face", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_circle_face: radius must be finite and positive");
         }
@@ -794,13 +696,7 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_face: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_face: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_circle_face: unknown C++ exception");
-    }
+    });
 }
 
 // --- OcctShapeVec ---
@@ -817,7 +713,7 @@ void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
 
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
                                            double x2, double y2, double z2) {
-    try {
+    return wrap_occt_call("make_line_wire", [&]() {
         gp_Pnt p1(x1, y1, z1);
         gp_Pnt p2(x2, y2, z2);
         double dist_sq = (x2-x1)*(x2-x1) + (y2-y1)*(y2-y1) + (z2-z1)*(z2-z1);
@@ -836,13 +732,7 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_line_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_line_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_line_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_arc_wire ---
@@ -852,7 +742,7 @@ std::unique_ptr<OcctShape> make_arc_wire(
     double radius,
     double start_angle, double end_angle,
     double ax, double ay, double az) {
-    try {
+    return wrap_occt_call("make_arc_wire", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_arc_wire: radius must be finite and positive");
         }
@@ -870,20 +760,14 @@ std::unique_ptr<OcctShape> make_arc_wire(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_arc_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_arc_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_arc_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_helix_wire ---
 
 std::unique_ptr<OcctShape> make_helix_wire(
     double radius, double pitch, double height) {
-    try {
+    return wrap_occt_call("make_helix_wire", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_helix_wire: radius must be finite and positive");
         }
@@ -916,20 +800,14 @@ std::unique_ptr<OcctShape> make_helix_wire(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_helix_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_helix_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_helix_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_polyline_wire ---
 
 std::unique_ptr<OcctShape> make_polyline_wire(
     rust::Slice<const double> coords, size_t n_points) {
-    try {
+    return wrap_occt_call("make_polyline_wire", [&]() {
         if (n_points < 2) {
             throw std::runtime_error("make_polyline_wire: requires at least 2 points");
         }
@@ -956,20 +834,14 @@ std::unique_ptr<OcctShape> make_polyline_wire(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_polyline_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_polyline_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_polyline_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_interp_curve ---
 
 std::unique_ptr<OcctShape> make_interp_curve(
     rust::Slice<const double> coords, size_t n_points) {
-    try {
+    return wrap_occt_call("make_interp_curve", [&]() {
         if (n_points < 2) {
             throw std::runtime_error("make_interp_curve: requires at least 2 points");
         }
@@ -993,20 +865,14 @@ std::unique_ptr<OcctShape> make_interp_curve(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_interp_curve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_interp_curve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_interp_curve: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_bezier_curve ---
 
 std::unique_ptr<OcctShape> make_bezier_curve(
     rust::Slice<const double> coords, size_t n_points) {
-    try {
+    return wrap_occt_call("make_bezier_curve", [&]() {
         if (n_points < 2) {
             throw std::runtime_error("make_bezier_curve: requires at least 2 control points");
         }
@@ -1027,13 +893,7 @@ std::unique_ptr<OcctShape> make_bezier_curve(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_bezier_curve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_bezier_curve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_bezier_curve: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_nurbs_curve ---
@@ -1043,7 +903,7 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
     rust::Slice<const double> weights,
     rust::Slice<const double> flat_knots,
     int degree) {
-    try {
+    return wrap_occt_call("make_nurbs_curve", [&]() {
         if (n_poles < 2) {
             throw std::runtime_error("make_nurbs_curve: requires at least 2 control points");
         }
@@ -1087,19 +947,13 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_nurbs_curve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_nurbs_curve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_nurbs_curve: unknown C++ exception");
-    }
+    });
 }
 
 // --- Loft (generic N profiles) ---
 
 std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
-    try {
+    return wrap_occt_call("loft_profiles", [&]() {
         if (profiles.shapes.size() < 2) {
             throw std::runtime_error("loft_profiles: requires at least 2 profiles");
         }
@@ -1114,19 +968,13 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
         auto result = std::make_unique<OcctShape>();
         result->shape = loft.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_profiles: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_profiles: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT loft_profiles: unknown C++ exception");
-    }
+    });
 }
 
 // --- Sweep ---
 
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
-    try {
+    return wrap_occt_call("make_pipe", [&]() {
         BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
         // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
         // an explicit Build() here is redundant and was removed (task-383 S1).
@@ -1136,19 +984,13 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_pipe: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide) {
-    try {
+    return wrap_occt_call("make_pipe_shell", [&]() {
         // Spine and guide must both be wires; profile may be an edge,
         // wire, or face.
         BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
@@ -1163,18 +1005,12 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe_shell: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe_shell: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_pipe_shell: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides) {
-    try {
+    return wrap_occt_call("loft_guided_profiles", [&]() {
         // DEFENSE-IN-DEPTH: Rust layer validates; this catches direct FFI paths.
         if (profiles.shapes.size() < 2) {
             throw std::runtime_error("loft_guided_profiles: requires at least 2 profiles");
@@ -1199,19 +1035,13 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_guided_profiles: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_guided_profiles: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT loft_guided_profiles: unknown C++ exception");
-    }
+    });
 }
 
 // --- Sweep / Extrude ---
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
-    try {
+    return wrap_occt_call("make_prism", [&]() {
         // DEFENSE-IN-DEPTH: Rust extrude validates distance; this catches direct FFI calls.
         double mag_sq = dx*dx + dy*dy + dz*dz;
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
@@ -1228,20 +1058,14 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_prism: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_prism: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_prism: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
     double angle_rad) {
-    try {
+    return wrap_occt_call("make_revolve", [&]() {
         // DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12 for axis).
         // These C++ checks (1e-30) are a safety net for future code paths that may bypass
         // the Rust layer (e.g., direct FFI calls from tests or hot-path optimizations).
@@ -1285,18 +1109,12 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
         auto result = std::make_unique<OcctShape>();
         result->shape = rev_shape;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_revolve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_revolve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_revolve: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_rect_face(double width, double height,
     double cx, double cy, double cz) {
-    try {
+    return wrap_occt_call("make_rect_face", [&]() {
         if (!(std::isfinite(width) && width > 0.0)) {
             throw std::runtime_error("make_rect_face: width must be finite and positive");
         }
@@ -1335,19 +1153,13 @@ std::unique_ptr<OcctShape> make_rect_face(double width, double height,
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_rect_face: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_rect_face: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_rect_face: unknown C++ exception");
-    }
+    });
 }
 
 // --- Wire queries ---
 
 Point3 wire_start_tangent(const OcctShape& wire_shape) {
-    try {
+    return wrap_occt_call("wire_start_tangent", [&]() {
         TopoDS_Wire w = TopoDS::Wire(wire_shape.shape);
         if (w.IsNull()) {
             throw std::runtime_error("wire_start_tangent: shape is not a wire");
@@ -1362,13 +1174,7 @@ Point3 wire_start_tangent(const OcctShape& wire_shape) {
             throw std::runtime_error("wire_start_tangent: degenerate curve (zero tangent)");
         }
         return Point3{ v.X() / m, v.Y() / m, v.Z() / m };
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT wire_start_tangent: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT wire_start_tangent: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT wire_start_tangent: unknown C++ exception");
-    }
+    });
 }
 
 // --- Queries ---
@@ -1412,7 +1218,7 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
 }
 
 double query_volume(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_volume", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         double vol = props.Mass();
@@ -1422,107 +1228,65 @@ double query_volume(const OcctShape& shape) {
             vol = mesh_based_volume(shape.shape, 0.01);
         }
         return vol;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_volume: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_volume: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_volume: unknown C++ exception");
-    }
+    });
 }
 
 double query_area(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_area", [&]() {
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         return props.Mass();
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_area: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_area: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_area: unknown C++ exception");
-    }
+    });
 }
 
 Point3 query_centroid(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_centroid", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
         return Point3{c.X(), c.Y(), c.Z()};
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_centroid: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_centroid: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_centroid: unknown C++ exception");
-    }
+    });
 }
 
 BBox query_bbox(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_bbox", [&]() {
         Bnd_Box box;
         BRepBndLib::Add(shape.shape, box);
         double xmin, ymin, zmin, xmax, ymax, zmax;
         box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
         return BBox{xmin, ymin, zmin, xmax, ymax, zmax};
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_bbox: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_bbox: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_bbox: unknown C++ exception");
-    }
+    });
 }
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2) {
-    try {
+    return wrap_occt_call("query_distance", [&]() {
         BRepExtrema_DistShapeShape dist(shape1.shape, shape2.shape);
         if (!dist.IsDone()) {
             throw std::runtime_error("BRepExtrema_DistShapeShape failed");
         }
         return dist.Value();
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_distance: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_distance: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_distance: unknown C++ exception");
-    }
+    });
 }
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
-    try {
+    return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Ax1 axis(props.CentreOfMass(), gp_Dir(ax, ay, az));
         return props.MomentOfInertia(axis);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_moment_of_inertia: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_moment_of_inertia: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_moment_of_inertia: unknown C++ exception");
-    }
+    });
 }
 
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
-    // The try guard covers only BRepGProp::VolumeProperties — the sole OCCT call that may
+    // wrap_occt_call wraps only BRepGProp::VolumeProperties — the sole OCCT call that may
     // legitimately throw (Standard_Failure or std::exception).  MatrixOfInertia() and
     // m.Value(i,j) are pure inline accessors on already-computed GProp_GProps state; they
     // don't perform OCCT computation and don't throw in practice, so they live outside the
     // guard to avoid re-wrapping the intentional symmetry-check diagnostic.
     GProp_GProps props;
-    try {
+    wrap_occt_call("query_inertia_tensor", [&]() {
         BRepGProp::VolumeProperties(shape.shape, props);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_inertia_tensor: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_inertia_tensor: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_inertia_tensor: unknown C++ exception");
-    }
+    });
     gp_Mat m = props.MatrixOfInertia();
     // OCCT's MatrixOfInertia() is mathematically symmetric by construction:
     // m(i,j) and m(j,i) are computed from the same volume integral and may
@@ -1576,7 +1340,7 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
 // --- Conformance queries ---
 
 bool is_watertight(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("is_watertight", [&]() {
         // Shape-type guard: only SOLID, COMPSOLID, and SHELL can be watertight
         // (they can enclose a volume). COMPOUND is intentionally excluded:
         // BRepCheck_Analyzer.IsValid() on a compound reports topological
@@ -1591,17 +1355,11 @@ bool is_watertight(const OcctShape& shape) {
         }
         BRepCheck_Analyzer analyzer(shape.shape);
         return analyzer.IsValid();
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT is_watertight: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT is_watertight: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT is_watertight: unknown C++ exception");
-    }
+    });
 }
 
 bool is_manifold(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("is_manifold", [&]() {
         // Walk the cached edge→face incidence map. Every edge that has more
         // than 2 parent faces violates manifoldness. Shapes with no face
         // incidence (wires, edges, vertices) trivially return true.
@@ -1612,17 +1370,11 @@ bool is_manifold(const OcctShape& shape) {
             }
         }
         return true;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT is_manifold: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT is_manifold: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT is_manifold: unknown C++ exception");
-    }
+    });
 }
 
 bool is_orientable(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("is_orientable", [&]() {
         ShapeAnalysis_Shell sa;
         sa.LoadShells(shape.shape);
         if (sa.NbLoaded() == 0) {
@@ -1633,13 +1385,7 @@ bool is_orientable(const OcctShape& shape) {
         // (edges with inconsistent orientation), i.e. true = problems found.
         // We invert: orientable iff no problems found.
         return !sa.CheckOrientedShells(shape.shape, Standard_False);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT is_orientable: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT is_orientable: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT is_orientable: unknown C++ exception");
-    }
+    });
 }
 
 // --- Test fixture helpers ---
@@ -1648,7 +1394,7 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
     // Three planar faces sharing a common edge along the X axis from
     // (0,0,0) to (10mm,0,0). The shared edge has 3 incident faces, so
     // edge_face_map().FindFromIndex(i).Extent() == 3 > 2 for that edge.
-    try {
+    return wrap_occt_call("make_nonmanifold_compound", [&]() {
         // Create the shared edge first; add it as the FIRST edge of each wire
         // so BRepBuilderAPI_MakeWire does not need to stitch it and preserves
         // its TShape identity across all three wires/faces.
@@ -1696,20 +1442,14 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
         auto result = std::make_unique<OcctShape>();
         result->shape = compound;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonmanifold_compound: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonmanifold_compound: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_nonmanifold_compound: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
     // Build a 10×10×10 mm box, extract 5 of its 6 faces into a shell,
     // wrap the open shell in a solid. The 4 edges that connected to the
     // removed face are now free → BRepCheck_Analyzer::IsValid() returns false.
-    try {
+    return wrap_occt_call("make_malformed_solid", [&]() {
         BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
         box_maker.Build();
         if (!box_maker.IsDone()) {
@@ -1734,13 +1474,7 @@ std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
         auto result = std::make_unique<OcctShape>();
         result->shape = solid;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_malformed_solid: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_malformed_solid: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_malformed_solid: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
@@ -1748,7 +1482,7 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
     // FORWARD — violates the requirement that adjacent faces must use each
     // non-free edge with opposite orientations. ShapeAnalysis_Shell::
     // CheckOrientedShells returns Standard_True (problems found) for this shell.
-    try {
+    return wrap_occt_call("make_nonorientable_shell", [&]() {
         // Shared edge along X: (0,0,0) → (10mm,0,0). Added first to both
         // wires to prevent BRepBuilderAPI_MakeWire from reversing it.
         BRepBuilderAPI_MakeEdge e_shared(gp_Pnt(0.0,0.0,0.0), gp_Pnt(0.01,0.0,0.0));
@@ -1784,13 +1518,7 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
         auto result = std::make_unique<OcctShape>();
         result->shape = shell;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonorientable_shell: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonorientable_shell: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_nonorientable_shell: unknown C++ exception");
-    }
+    });
 }
 
 // --- OcctShape lazy accessor implementations ---
@@ -1986,7 +1714,7 @@ static std::mutex g_step_export_mutex;
 
 rust::String export_step(const OcctShape& shape) {
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
-    try {
+    return wrap_occt_call("export_step", [&]() {
         STEPControl_Writer writer;
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
@@ -2011,19 +1739,13 @@ rust::String export_step(const OcctShape& shape) {
         std::remove(tmpname);
 
         return rust::String(content);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT export_step: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT export_step: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT export_step: unknown C++ exception");
-    }
+    });
 }
 
 // --- BRep serialization ---
 
 rust::String serialize_brep(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("serialize_brep", [&]() {
         std::ostringstream oss;
         ::BRepTools::Write(shape.shape, oss);
         std::string content = oss.str();
@@ -2031,17 +1753,11 @@ rust::String serialize_brep(const OcctShape& shape) {
             throw std::runtime_error("BRepTools::Write produced empty output");
         }
         return rust::String(content);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT serialize_brep: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT serialize_brep: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT serialize_brep: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> deserialize_brep(const std::string& data) {
-    try {
+    return wrap_occt_call("deserialize_brep", [&]() {
         ::BRep_Builder builder;
         auto result = std::make_unique<OcctShape>();
         std::istringstream iss(data);
@@ -2050,19 +1766,13 @@ std::unique_ptr<OcctShape> deserialize_brep(const std::string& data) {
             throw std::runtime_error("BRepTools::Read produced null shape");
         }
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT deserialize_brep: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT deserialize_brep: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT deserialize_brep: unknown C++ exception");
-    }
+    });
 }
 
 // --- Tessellation ---
 
 TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
-    try {
+    return wrap_occt_call("tessellate_shape", [&]() {
         BRepMesh_IncrementalMesh mesh(shape.shape, tolerance);
         mesh.Perform();
         if (!mesh.IsDone()) {
@@ -2147,13 +1857,7 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
         }
 
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT tessellate_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT tessellate_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT tessellate_shape: unknown C++ exception");
-    }
+    });
 }
 
 } // namespace occt
