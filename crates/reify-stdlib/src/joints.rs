@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use reify_types::{DimensionVector, Value};
 
-use crate::helpers::tensor_components_f64;
+use crate::helpers::{tensor_components_f64, trig_input};
+use crate::orientation::normalize_quaternion;
 
 /// Evaluate a joints stdlib function by name.
 ///
@@ -79,6 +80,30 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         y: 0.0,
                         z: 0.0,
                     };
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(translation),
+                    }
+                }
+                "revolute" => {
+                    // Accept Angle Scalar or bare Real/Int as radians
+                    let theta = match trig_input(&args[1]) {
+                        Some(t) => t,
+                        None => return Some(Value::Undef),
+                    };
+                    if !theta.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    let half = theta / 2.0;
+                    let c = half.cos();
+                    let s = half.sin();
+                    let rotation = normalize_quaternion(c, s * nax, s * nay, s * naz)
+                        .unwrap_or(Value::Undef);
+                    let translation = Value::Vector(vec![
+                        Value::length(0.0),
+                        Value::length(0.0),
+                        Value::length(0.0),
+                    ]);
                     Value::Transform {
                         rotation: Box::new(rotation),
                         translation: Box::new(translation),
