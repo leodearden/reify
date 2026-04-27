@@ -113,6 +113,27 @@ fn doc_missing_file_exits_one() {
 }
 
 #[test]
+fn doc_format_json_compact_emits_single_line() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "json", "--compact", &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format json --compact must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // After stripping a single trailing newline (cmd_doc emits one for tidy
+    // shell output), the JSON body itself must be a single line.
+    let body = stdout.trim_end_matches('\n');
+    assert!(
+        !body.contains('\n'),
+        "compact json body must be single-line, got: {body}"
+    );
+    let _model: reify_doc::model::DocModel = serde_json::from_str(body).unwrap_or_else(|e| {
+        panic!("compact stdout must parse as DocModel JSON: {e}\nbody: {body}")
+    });
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
