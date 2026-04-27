@@ -317,6 +317,17 @@ fn eviction_fallback_evicted_state_seeds_no_warm_state() {
 /// the realization (drives `Bracket@0` into `removed_realizations`).
 /// Assert the pool now holds the donated state and a `checkout`
 /// returns the original 0xBEEF payload.
+///
+/// TODO(post-engine_build-realization-cache): this test currently invokes
+/// `cache_store_mut().insert_synthetic_realization_entry(&rid)` because
+/// `engine_build.rs` populates Realization cache entries on demand at
+/// `build()`/`check()` time, not at `edit_source()` time. When that
+/// population path moves earlier (or another engine path creates Realization
+/// cache entries during `edit_source`), replace the synthetic-helper call
+/// here with the real production setup so this test exercises the actual
+/// cache-population path rather than a placeholder. See
+/// `CacheStore::insert_synthetic_realization_entry` doc 'When to retire'
+/// note at cache.rs:500-504.
 #[test]
 fn donation_hook_fires_for_realization_removal() {
     let mut engine = fresh_engine();
