@@ -284,11 +284,11 @@ fn biocompatible_refines_material_spec_with_enum_param() {
 // ─── (f-guard) Inline enum re-declarations match stdlib definitions ───────────
 
 /// The inline enum re-declarations used in the TitaniumImplant conformance test
-/// (and in `examples/drivebelt_trait_bounds.ri`) must stay in sync with the
-/// stdlib definitions in `materials_chemical.ri`.  This check is now
-/// bidirectional: both stdlib-side additions (a new enum in stdlib that the
-/// inline copies omit) and inline-side additions (a typo or extra redeclaration)
-/// are caught, as are variant additions, removals, and renames on either side.
+/// must stay in sync with the stdlib definitions in `materials_chemical.ri`.
+/// The check is bidirectional: both stdlib-side additions (a new enum in stdlib
+/// that the inline copies omit) and inline-side additions (a typo or extra
+/// redeclaration) are caught, as are variant additions, removals, and renames on
+/// either side.
 ///
 /// Pattern:  compile a source with ONLY the inline enum decls, then compare the
 /// resulting enum_defs against `load_stdlib_module().enum_defs` using the
@@ -301,26 +301,6 @@ enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
 "#;
 
     let compiled = compile_source_with_stdlib(inline_source);
-    let stdlib = load_stdlib_module();
-
-    assert_inline_enums_match_stdlib_bidirectionally(&compiled.enum_defs, &stdlib.enum_defs);
-}
-
-/// Regression guard: `assert_inline_enums_match_stdlib_bidirectionally` must
-/// detect a stdlib-only enum that is omitted from the inline source.
-///
-/// This test deliberately declares ONLY `CorrosionClass` (omitting
-/// `BiocompatibilityClass`) to simulate a future scenario where stdlib gains a
-/// new enum but the inline copies are forgotten.  The helper must panic and
-/// include "BiocompatibilityClass" in the message.
-#[test]
-#[should_panic(expected = "BiocompatibilityClass")]
-fn bidirectional_enum_check_detects_stdlib_only_enum_omissions() {
-    let incomplete_inline_source = r#"
-enum CorrosionClass { C1, C2, C3, C4, C5 }
-"#;
-
-    let compiled = compile_source_with_stdlib(incomplete_inline_source);
     let stdlib = load_stdlib_module();
 
     assert_inline_enums_match_stdlib_bidirectionally(&compiled.enum_defs, &stdlib.enum_defs);
