@@ -424,19 +424,47 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         }
         first_seen = true;
 
-        // First-seen pragma: interpret its args.
+        // First-seen pragma: interpret its args. The well-formed shape is
+        // `[Bare(Ident(name)), KeyValue*]`. The single bare-ident case is a
+        // degenerate of that shape (empty tail).
         match pragma.args.as_slice() {
-            [PragmaArg::Bare(PragmaValue::Ident(name))] => {
+            [PragmaArg::Bare(PragmaValue::Ident(name)), tail @ ..] => {
+                let mut options: BTreeMap<String, PragmaValue> = BTreeMap::new();
+                for (idx, arg) in tail.iter().enumerate() {
+                    match arg {
+                        PragmaArg::KeyValue { key, value } => {
+                            // Last-wins on duplicate keys, matching BTreeMap::insert
+                            // semantics. The compiler does not warn on duplicates
+                            // in v0.1 (deferred to back-end-level validation per
+                            // PRD §3).
+                            options.insert(key.clone(), value.clone());
+                        }
+                        PragmaArg::Bare(_) => {
+                            // The user wrote a second bare value where a key=value
+                            // was expected (e.g. `#solver(argmin, foo)`). Skip the
+                            // arg and continue processing the rest. Position is
+                            // 1-based so users see the arg number after the
+                            // back-end ident.
+                            let pos = idx + 2;
+                            module.diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "#solver: option arguments must be `key = value`; \
+                                     got bare value at position {pos}; ignored"
+                                ))
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        }
+                    }
+                }
                 module.solver_pragma = Some(SolverPragma {
                     name: name.clone(),
-                    options: BTreeMap::new(),
+                    options,
                 });
             }
             _ => {
-                // Catch-all placeholder — refined in later steps with explicit
-                // arms for malformed shapes (zero args, KeyValue-only, bare
-                // Number/Bool/String/Quantity) and the well-formed
-                // `[Bare(Ident), KeyValue*]` shape.
+                // Catch-all placeholder — refined in step-8 with explicit arms
+                // for malformed shapes (zero args, KeyValue-only, bare Number/
+                // Bool/String/Quantity).
                 module.diagnostics.push(
                     Diagnostic::warning(
                         "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
