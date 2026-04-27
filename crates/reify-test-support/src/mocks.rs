@@ -455,9 +455,11 @@ impl QueryKey {
                     !density.is_nan(),
                     "CenterOfMass density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
                 );
+                // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
+                let density_bits = if *density == 0.0 { 0u64 } else { density.to_bits() };
                 QueryKey::CenterOfMass {
                     handle: *handle,
-                    density_bits: density.to_bits(),
+                    density_bits,
                 }
             }
             GeometryQuery::InertiaTensor { handle, density } => {
@@ -465,9 +467,11 @@ impl QueryKey {
                     !density.is_nan(),
                     "InertiaTensor density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
                 );
+                // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
+                let density_bits = if *density == 0.0 { 0u64 } else { density.to_bits() };
                 QueryKey::InertiaTensor {
                     handle: *handle,
-                    density_bits: density.to_bits(),
+                    density_bits,
                 }
             }
         }
@@ -591,10 +595,12 @@ impl MockGeometryKernel {
             !density.is_nan(),
             "CenterOfMass density NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
         );
+        // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
+        let density_bits = if density == 0.0 { 0u64 } else { density.to_bits() };
         self.typed_queries.insert(
             QueryKey::CenterOfMass {
                 handle,
-                density_bits: density.to_bits(),
+                density_bits,
             },
             value,
         );
@@ -619,10 +625,12 @@ impl MockGeometryKernel {
             !density.is_nan(),
             "InertiaTensor density NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
         );
+        // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
+        let density_bits = if density == 0.0 { 0u64 } else { density.to_bits() };
         self.typed_queries.insert(
             QueryKey::InertiaTensor {
                 handle,
-                density_bits: density.to_bits(),
+                density_bits,
             },
             value,
         );
