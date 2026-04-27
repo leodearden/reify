@@ -1401,3 +1401,281 @@ fn cross_refs_omitted_when_absent_or_empty() {
         "expected no `<h3>Used by</h3>` when cross_refs is empty; got:\n{out_empty}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot tests (committed-golden HTML under tests/snapshots/)
+// ---------------------------------------------------------------------------
+//
+// To regenerate the snapshots after an intentional formatter change, run:
+//
+//     UPDATE_SNAPSHOTS=1 cargo test -p reify-doc --test fmt_html_tests
+//
+// `assert_or_update_snapshot` writes the current actual output to disk when
+// the env var is set, otherwise it `assert_eq!`s with a clear-diff panic
+// message that names the offending file.
+
+/// Build the absolute path to a file under `crates/reify-doc/tests/snapshots/`.
+///
+/// Uses `CARGO_MANIFEST_DIR` so the path resolves correctly regardless of
+/// the working directory the test is run from.  Pattern matches the
+/// project's task-348 convention.
+fn snapshot_path(filename: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join(filename)
+}
+
+/// Assert that `actual` matches the committed snapshot at
+/// `tests/snapshots/{filename}`, or — when `UPDATE_SNAPSHOTS=1` is set —
+/// overwrite the snapshot with `actual` so the developer can regenerate
+/// goldens after an intentional formatter change.
+fn assert_or_update_snapshot(filename: &str, actual: &str) {
+    let path = snapshot_path(filename);
+    if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|e| panic!("create_dir_all({parent:?}): {e}"));
+        }
+        std::fs::write(&path, actual)
+            .unwrap_or_else(|e| panic!("write({path:?}): {e}"));
+        return;
+    }
+    let expected = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => panic!(
+            "snapshot file not found at {path:?}: {e}\n\
+             Re-run with UPDATE_SNAPSHOTS=1 to create it.\n\
+             === Actual output ({} bytes) ===\n{actual}",
+            actual.len()
+        ),
+    };
+    if expected != actual {
+        panic!(
+            "snapshot mismatch for {filename}; \
+             re-run with UPDATE_SNAPSHOTS=1 to regenerate.\n\
+             === Expected ({} bytes) ===\n{expected}\n\n\
+             === Actual ({} bytes) ===\n{actual}",
+            expected.len(),
+            actual.len(),
+        );
+    }
+}
+
+/// Build the inline `DocModel` fixture used by the snapshot tests.
+///
+/// TODO(future task): replace with `build_doc_model(load_str!("examples/integration_full_v01.ri"))`
+/// once that function lands; see scope caveat in task 2359 description.  The
+/// markdown formatter (sibling task 2357) carries the same fixture inline
+/// for the same reason — both will migrate together when `build_doc_model()`
+/// arrives.
+///
+/// The fixture mirrors the *structure* of `examples/integration_full_v01.ri` —
+/// multiple Structures, an Occurrence, a Trait, an Enum, a Function, a
+/// TypeAlias, a Unit, a ConstraintDef, a Purpose, and representative
+/// annotations including `@deprecated`, `@optimized`, `@test`, `@solver_hint`.
+/// Item names and content are deliberately kept short so the goldens stay
+/// reviewable.
+fn build_integration_full_v01_fixture() -> DocModel {
+    DocModel {
+        modules: vec![ModuleDoc {
+            path: "integration_full_v01".to_string(),
+            doc: Some(
+                "Comprehensive v0.1 language feature integration.".to_string(),
+            ),
+            items: vec![
+                ItemDoc::TypeAlias {
+                    name: "Pressure".into(),
+                    doc: Some("Pressure is Force per Area (SI unit: Pa).".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    type_repr: "Force / Area".into(),
+                },
+                ItemDoc::Unit {
+                    name: "mil".into(),
+                    doc: Some("One mil = 1/1000 inch.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    base_unit: "Length".into(),
+                    scale: "0.0000254".into(),
+                },
+                ItemDoc::Enum {
+                    name: "Grade".into(),
+                    doc: Some("Material grade classification.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    variants: vec![
+                        "Standard".into(),
+                        "Reinforced".into(),
+                        "Premium".into(),
+                    ],
+                },
+                ItemDoc::Function {
+                    name: "safety_factor".into(),
+                    doc: Some("Safety factor for real-valued loads.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    signature: "fn safety_factor(load: Real) -> Real".into(),
+                },
+                ItemDoc::Trait {
+                    name: "Physical".into(),
+                    doc: Some("Trait for objects with a measurable mass.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    members: vec!["mass: Mass".into()],
+                },
+                ItemDoc::ConstraintDef {
+                    name: "Positive".into(),
+                    doc: Some("Length value v is strictly positive.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    expr_repr: "v > 0mm".into(),
+                },
+                ItemDoc::Purpose {
+                    name: "minimize_area".into(),
+                    doc: None,
+                    is_pub: false,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    expr_repr: "total_area".into(),
+                    direction: "minimize".into(),
+                },
+                ItemDoc::Structure {
+                    name: "Bolt".into(),
+                    doc: Some("A standard fastening bolt.".into()),
+                    is_pub: true,
+                    annotations: vec![AnnotationDoc {
+                        name: "optimized".into(),
+                        args: vec!["\"area\"".into()],
+                    }],
+                    pragmas: vec![],
+                    params: vec![
+                        ParamDoc {
+                            name: "length".into(),
+                            doc: Some("Bolt length.".into()),
+                            type_repr: "Length".into(),
+                            default_repr: Some("100 mm".into()),
+                            annotations: vec![AnnotationDoc {
+                                name: "solver_hint".into(),
+                                args: vec![
+                                    "discrete_set(standard_bolt_lengths)".into(),
+                                ],
+                            }],
+                        },
+                        ParamDoc {
+                            name: "diameter".into(),
+                            doc: None,
+                            type_repr: "Length".into(),
+                            default_repr: Some("M8".into()),
+                            annotations: vec![],
+                        },
+                    ],
+                    ports: vec![],
+                    constraints: vec![ConstraintDoc {
+                        label: None,
+                        expr_repr: "length >= diameter".into(),
+                        annotations: vec![],
+                        line: Some(42),
+                    }],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![("version".into(), "1.0".into())],
+                },
+                ItemDoc::Structure {
+                    name: "Board".into(),
+                    doc: Some("Main PCB board.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![PortDoc {
+                        name: "pwr_in".into(),
+                        direction: "in".into(),
+                        type_name: "Power".into(),
+                        members: vec!["voltage".into(), "current".into()],
+                    }],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+                ItemDoc::Occurrence {
+                    name: "MCU".into(),
+                    doc: Some("Microcontroller occurrence.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+                ItemDoc::Structure {
+                    name: "OldThing".into(),
+                    doc: Some("Deprecated legacy structure.".into()),
+                    is_pub: true,
+                    annotations: vec![AnnotationDoc {
+                        name: "deprecated".into(),
+                        args: vec!["\"use Bolt instead\"".into()],
+                    }],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+                ItemDoc::Structure {
+                    name: "TestSelfWeight".into(),
+                    doc: Some("Self-weight regression test.".into()),
+                    is_pub: false,
+                    annotations: vec![AnnotationDoc {
+                        name: "test".into(),
+                        args: vec![],
+                    }],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+            ],
+            ..Default::default()
+        }],
+    }
+}
+
+/// Build the matching `CrossRefs` fixture.  Populates both the trait→conformer
+/// and entity→containers maps so the snapshot exercises the "Conforms to" /
+/// "Used by" cross-ref renderings.
+fn build_integration_full_v01_cross_refs() -> CrossRefs {
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .trait_to_conformers
+        .insert("Physical".into(), vec!["Bolt".into()]);
+    xrefs
+        .entity_to_containers
+        .insert("MCU".into(), vec!["Board".into()]);
+    xrefs
+}
+
+/// HTML single-file mode snapshot.  Builds the inline fixture and compares
+/// the rendered output to `tests/snapshots/integration_full_v01.html`.
+#[test]
+fn snapshot_integration_full_v01_html() {
+    let model = build_integration_full_v01_fixture();
+    let xrefs = build_integration_full_v01_cross_refs();
+    let out = render_html(&model, Some(&xrefs));
+    assert_or_update_snapshot("integration_full_v01.html", &out);
+}
