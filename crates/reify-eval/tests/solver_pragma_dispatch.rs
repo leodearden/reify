@@ -102,7 +102,7 @@ fn eval_cached_uses_named_solver_from_registry_when_solver_pragma_matches() {
     *named_captured.lock().unwrap() = None;
     *default_captured.lock().unwrap() = None;
 
-    let _ = engine.eval_cached(&module, VersionId::new(0));
+    let _ = engine.eval_cached(&module, VersionId(0));
 
     assert!(
         named_captured.lock().unwrap().is_some(),
