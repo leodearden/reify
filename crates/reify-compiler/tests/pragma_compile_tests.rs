@@ -1218,3 +1218,49 @@ fn precision_pragma_at_upper_cap_is_accepted() {
         "expected default_tolerance Some(1.0) for #precision(1m) (cap is inclusive)"
     );
 }
+
+// ── Task 2305: #version pragma — declared_version plumbing ────────────────────
+
+/// Without any `#version` pragma, `module.declared_version` is `None`.
+#[test]
+fn version_pragma_absent_keeps_declared_version_none() {
+    let module = compile_source("structure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.declared_version.is_none(),
+        "expected declared_version None when no #version pragma, got {:?}",
+        module.declared_version
+    );
+}
+
+/// `#version(0.1)` (Number form, supported version) sets
+/// `declared_version = Some((0, 1))` and emits no errors or warnings about version.
+#[test]
+fn version_pragma_with_number_form_zero_one_sets_declared_version() {
+    let module = compile_source("#version(0.1)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.declared_version,
+        Some((0, 1)),
+        "expected declared_version Some((0, 1)) for #version(0.1)"
+    );
+    let version_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("version"))
+        .collect();
+    assert_eq!(
+        version_warns.len(),
+        0,
+        "expected zero 'version'-mentioning warnings for in-range #version(0.1), got {}: {:?}",
+        version_warns.len(),
+        version_warns
+    );
+}
