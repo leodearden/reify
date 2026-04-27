@@ -283,6 +283,9 @@ fn biocompatible_refines_material_spec_with_enum_param() {
 
 // ─── (f-guard) Inline enum re-declarations match stdlib definitions ───────────
 
+// TODO(task #2525): this guard test becomes obsolete once the parser consults
+// prelude/stdlib enums — delete this test together with the inline redecls.
+
 /// The inline enum re-declarations used in the TitaniumImplant conformance test
 /// must stay in sync with the stdlib definitions in `materials_chemical.ri`.
 /// The check is bidirectional: both stdlib-side additions (a new enum in stdlib
@@ -313,6 +316,10 @@ enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
 /// value cells for both enum-typed params with correct Enum cell_type.
 #[test]
 fn titanium_implant_conforms_to_biocompatible_and_corrosion_resistant() {
+    // TODO(task #2525): remove inline enum redecls and merge with the sibling
+    // #[ignore]-gated `titanium_implant_conforms_without_inline_enum_redeclarations`
+    // test once the parser fix lands.
+    //
     // Note: the enums are declared inline here because the parser populates
     // `known_enums` only from the current source file (not from the stdlib
     // prelude), so `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI`
