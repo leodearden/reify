@@ -108,8 +108,9 @@ fn nearest_1d_knot_exact_reproduction() {
     }
 }
 
-/// Cell-midpoint exact tie is broken by `round_ties_even` — choose the
-/// endpoint with the even index.
+/// Cell-midpoint exact tie is broken by the even-grid-index tie-breaker — between
+/// the two bracketing samples, the endpoint whose grid index is even wins. This is
+/// grid-offset-dependent (not `round_ties_even` / banker's rounding on the value).
 ///
 /// Grid `[0.0, 1.0, 2.0]` values `[10.0, 20.0, 30.0]`:
 /// - query `0.5` is exactly between indices 0 and 1 → even index wins → 0 → `10.0`.
@@ -441,7 +442,8 @@ fn nearest_2d_quadrant_of_nearest_cell_wins() {
     assert!(approx_eq(r.value, 20.0, TOL), "got {}", r.value);
 }
 
-/// Exact ties on each axis use `round_ties_even` independently. With grid
+/// Exact ties on each axis use the even-grid-index tie-breaker independently
+/// (grid-offset-dependent, not `round_ties_even` on the value). With grid
 /// `[0.0, 1.0, 2.0]` on each axis, query `(0.5, 1.5)` ties on both: x even
 /// index wins → 0; y even index wins → 2. Result is `values[(0, 2)]`.
 #[test]
@@ -841,7 +843,8 @@ fn nearest_3d_octant_of_nearest_cell_wins() {
     assert!(approx_eq(r.value, 3.0, TOL), "got {}", r.value);
 }
 
-/// Exact ties on each axis use `round_ties_even` independently. With grid
+/// Exact ties on each axis use the even-grid-index tie-breaker independently
+/// (grid-offset-dependent, not `round_ties_even` on the value). With grid
 /// `[0.0, 1.0, 2.0]` on each axis, query `(0.5, 1.5, 0.5)` ties on all three:
 /// x even index wins → 0; y even index wins → 2; z even index wins → 0.
 /// Result is `values[(0, 2, 0)]`.
