@@ -401,3 +401,135 @@ fn expand_purpose_reflective_placeholders(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests that drive `expand_purpose_reflective_placeholders`
+    //! directly, bypassing `compile_purpose`. Useful for pinning contract
+    //! invariants whose witness in an integration test would depend on
+    //! incidental compiler behaviour (e.g. declaration-order preservation
+    //! in `ResolvedSchemaQuery.resolved_ids`).
+    use super::*;
+    use crate::graph::ValueCellNode;
+
+    /// Reviewer suggestion S2 (amendment round 2): pin the precedence
+    /// contract — when a matching `ResolvedSchemaQuery` is supplied, its
+    /// `resolved_ids` order wins over the alphabetical fallback scan of
+    /// `value_cells`. Hand-crafting the inputs here means the test
+    /// doesn't bake in `compile_purpose`'s incidental ordering: a future
+    /// refactor that sorts inside the compiler would have made the
+    /// integration-level witness vacuous (both paths would have produced
+    /// the same alphabetical order), but this test stays sharp.
+    #[test]
+    fn expand_prefers_resolved_query_over_value_cells_scan() {
+        let entity = "Foo";
+        let cell_z = ValueCellId::new(entity, "z");
+        let cell_a = ValueCellId::new(entity, "a");
+
+        // Hand-crafted ResolvedSchemaQuery — order [z, a], NOT
+        // alphabetical. The fallback scan would sort to [a, z], so the
+        // two paths disagree on the witness.
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_z.clone(), cell_a.clone()],
+        }];
+
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
+            PersistentMap::default();
+        for cell in [&cell_a, &cell_z] {
+            value_cells.insert(
+                cell.clone(),
+                ValueCellNode {
+                    id: cell.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(&cell.member),
+                },
+            );
+        }
+
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+
+        let elements = match &expr.kind {
+            CompiledExprKind::ListLiteral(elements) => elements,
+            other => panic!("expected ListLiteral, got {:?}", other),
+        };
+        let expanded_order: Vec<&str> = elements
+            .iter()
+            .map(|e| match &e.kind {
+                CompiledExprKind::ValueRef(id) => id.member.as_str(),
+                other => panic!("expected ValueRef element, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(
+            expanded_order,
+            vec!["z", "a"],
+            "resolved-query path must preserve resolved_ids order; \
+             a [a, z] result would indicate the fallback scan won precedence"
+        );
+    }
+
+    /// Companion: when no matching `ResolvedSchemaQuery` is supplied
+    /// (e.g. the wildcard-subject case), expansion falls back to a
+    /// sorted scan of `value_cells` for the bound entity. This locks in
+    /// the fallback's stable ordering — a regression that returned
+    /// PersistentMap iteration order would break determinism.
+    #[test]
+    fn expand_falls_back_to_sorted_value_cells_scan_when_query_unresolved() {
+        let entity = "Foo";
+        let cell_z = ValueCellId::new(entity, "z");
+        let cell_a = ValueCellId::new(entity, "a");
+
+        // Empty queries — forces the fallback path for `params`.
+        let queries: Vec<ResolvedSchemaQuery> = Vec::new();
+
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
+            PersistentMap::default();
+        // Insert in non-alphabetical order to exercise the sort.
+        for cell in [&cell_z, &cell_a] {
+            value_cells.insert(
+                cell.clone(),
+                ValueCellNode {
+                    id: cell.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(&cell.member),
+                },
+            );
+        }
+
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+
+        let elements = match &expr.kind {
+            CompiledExprKind::ListLiteral(elements) => elements,
+            other => panic!("expected ListLiteral, got {:?}", other),
+        };
+        let expanded_order: Vec<&str> = elements
+            .iter()
+            .map(|e| match &e.kind {
+                CompiledExprKind::ValueRef(id) => id.member.as_str(),
+                other => panic!("expected ValueRef element, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(
+            expanded_order,
+            vec!["a", "z"],
+            "fallback scan must sort alphabetically for determinism"
+        );
+    }
+}

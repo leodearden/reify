@@ -1090,110 +1090,17 @@ purpose check(subject : Structure) {
     );
 }
 
-/// task-2289 amendment (reviewer S6): lock in precedence — when a purpose
-/// is concrete-typed (`subject : Bracket`), `compile_purpose` populates
-/// `CompiledPurpose.resolved_queries` with a `params` query whose
-/// `resolved_ids` come from the bound template. The activation-time
-/// expansion must prefer the resolved query over the wildcard fallback
-/// scan, so that the expanded ListLiteral elements come from
-/// `purpose.resolved_queries` (in template-declaration order) rather
-/// than the value-cells scan (sorted alphabetically).
-///
-/// To distinguish the two paths, the fixture declares its params in
-/// reverse-alphabetical order (`z`, then `a`). The resolved-query path
-/// preserves declaration order (`z`, `a`); the fallback scan would sort
-/// (`a`, `z`). Asserting the post-expansion order proves the resolved-
-/// query path took precedence.
-#[test]
-fn activate_concrete_typed_subject_uses_resolved_query_not_fallback_scan() {
-    let source = r#"
-structure Bracket {
-    param z : Real
-    param a : Real
-}
-
-purpose check(subject : Bracket) {
-    constraint forall p in subject.params: determined(p)
-}
-"#;
-    let compiled = parse_and_compile(source);
-    assert_eq!(
-        compiled.compiled_purposes.len(),
-        1,
-        "fixture failed to compile cleanly"
-    );
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .all(|d| d.severity != Severity::Error),
-        "fixture produced unexpected error diagnostics: {:?}",
-        compiled.diagnostics
-    );
-
-    // Pre-flight: confirm the compiler populated a `params` resolved query
-    // for `subject` (this is the path we're locking into precedence).
-    let purpose = &compiled.compiled_purposes[0];
-    assert_eq!(
-        purpose.resolved_queries.len(),
-        1,
-        "concrete-typed `subject : Bracket` must produce 1 ResolvedSchemaQuery"
-    );
-    let query = &purpose.resolved_queries[0];
-    assert_eq!(query.param_name, "subject");
-    assert_eq!(query.query_kind, "params");
-    let resolved_member_order: Vec<&str> = query
-        .resolved_ids
-        .iter()
-        .map(|id| id.member.as_str())
-        .collect();
-    assert_eq!(
-        resolved_member_order,
-        vec!["z", "a"],
-        "compile-time resolved_ids should preserve template declaration order \
-         (z, a) — used as the witness for resolved-query-vs-fallback below"
-    );
-
-    let mut engine = make_simple_engine();
-    engine.eval(&compiled);
-    engine.activate_purpose("check", "Bracket");
-
-    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
-    let injected = snapshot
-        .graph
-        .constraints
-        .iter()
-        .find(|(id, _)| id.entity.starts_with("purpose:check@Bracket"))
-        .map(|(_, data)| data.clone())
-        .expect("expected injected constraint with prefix purpose:check@Bracket");
-
-    let collection = match &injected.expr.kind {
-        CompiledExprKind::Quantifier { collection, .. } => collection,
-        other => panic!("expected Quantifier, got {:?}", other),
-    };
-    let elements = match &collection.kind {
-        CompiledExprKind::ListLiteral(elements) => elements,
-        other => panic!(
-            "post-activation: expected ListLiteral, got {:?} — placeholder \
-             must be expanded for concrete-typed subjects too",
-            other
-        ),
-    };
-
-    // The resolved-query path preserves declaration order (z, a). The
-    // fallback scan would have sorted (a, z). Assert the former.
-    let expanded_member_order: Vec<&str> = elements
-        .iter()
-        .map(|e| match &e.kind {
-            CompiledExprKind::ValueRef(id) => id.member.as_str(),
-            other => panic!("expected ValueRef element, got {:?}", other),
-        })
-        .collect();
-    assert_eq!(
-        expanded_member_order,
-        vec!["z", "a"],
-        "expanded ListLiteral element order should mirror resolved_ids \
-         (z, a) — declaration order — proving the resolved-query path took \
-         precedence over the alphabetically-sorted fallback scan (a, z)"
-    );
-}
+// task-2289 amendment (reviewer S2, round 2): the integration-level
+// precedence test that previously lived here was brittle — its witness
+// (resolved-query path preserving declaration order `[z, a]` vs
+// fallback scan sorting to `[a, z]`) depended on `compile_purpose`
+// preserving template declaration order in `resolved_ids`, which is
+// not a documented contract of `ResolvedSchemaQuery`. A future
+// refactor that sorted inside the compiler would have made the
+// post-activation assertion vacuous (both paths producing `[a, z]`)
+// while leaving the test green. The replacement lives in
+// `crates/reify-eval/src/engine_purposes.rs`'s `tests` module:
+// `expand_prefers_resolved_query_over_value_cells_scan` drives
+// `expand_purpose_reflective_placeholders` directly with a hand-crafted
+// `ResolvedSchemaQuery`, pinning the precedence contract independently
+// of compiler-internal ordering.
