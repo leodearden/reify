@@ -1059,14 +1059,7 @@ impl Engine {
                     // those defensively rather than panic; the old snapshot's guard value
                     // will be used for the downstream diff in subsequent edits. Symmetric
                     // with edit_source Phase 3 (task 2229).
-                    let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
-                        debug_assert!(
-                            false,
-                            "guard cell {:?} absent from `values` after group_needs_phase3 \
-                             returned true — unreachable in current flow but possible after a \
-                             future refactor that narrows structure_controlling (task 2229)",
-                            group.guard_cell
-                        );
+                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
@@ -2156,14 +2149,7 @@ impl Engine {
                     // than panic; the old snapshot's guard value will be used for
                     // the downstream diff in subsequent edits. Symmetric with
                     // edit_param Phase 3 (task 2229).
-                    let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
-                        debug_assert!(
-                            false,
-                            "guard cell {:?} absent from `values` after group_needs_phase3 \
-                             returned true — unreachable in current flow but possible after a \
-                             future refactor that narrows structure_controlling (task 2229)",
-                            group.guard_cell
-                        );
+                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
