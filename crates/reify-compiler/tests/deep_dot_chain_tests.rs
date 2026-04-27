@@ -214,3 +214,132 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+/// A single fixture exercising every expression-bearing position the lint
+/// walker is required to visit. Each labelled position contains an
+/// intentionally-deep chain `a.b.c.d.e` (length 5 → above threshold). Asserts
+/// that the count of `DeepDotChain` warnings equals the count of
+/// intentionally-deep chains in the fixture.
+///
+/// Positions covered (one chain per label unless noted):
+///
+///   1. `param p: Real = a.b.c.d.e`            — `MemberDecl::Param.default`
+///   2. `let v = a.b.c.d.e`                    — `MemberDecl::Let.value`
+///   3. `constraint a.b.c.d.e > 0`             — `MemberDecl::Constraint.expr`
+///   4. `sub s = Connector(p = a.b.c.d.e)`     — `MemberDecl::Sub.args`
+///   5. `minimize a.b.c.d.e`                   — `MemberDecl::Minimize.expr`
+///   6. `maximize a.b.c.d.e`                   — `MemberDecl::Maximize.expr`
+///   7. `where a.b.c.d.e > 0 { let g = a.b.c.d.e }`
+///                                              — `GuardedGroup.condition` (×1)
+///                                                AND nested `Let.value` (×1)
+///   8. `port p : ... { frame = a.b.c.d.e }`   — `Port.frame_expr`
+///   9. `connect ... : C { p = a.b.c.d.e }`    — `Connect.params`
+///  10. `chain st1.out_port -> st2.in_port.x.y.z.w.v`
+///                                              — `Chain.elements` (deep on
+///                                                second element only, length 7)
+///  11. `field def f : Real -> Real { source = analytical { |p| a.b.c.d.e } }`
+///                                              — `FieldSource::Analytical.expr`
+///  12. `constraint def MinX { ... a.b.c.d.e > 0 }`
+///                                              — `ConstraintDef.predicates`
+///  13. `unit u : Length = a.b.c.d.e`         — `UnitDecl.conversion`
+///  14. `fn f(...) { let z = a.b.c.d.e; a.b.c.d.e }`
+///                                              — `FnBody.let_bindings.value` (×1)
+///                                                AND `FnBody.result_expr` (×1)
+///
+/// Total intentional deep chains = 16. Walker must visit each one.
+#[test]
+fn walker_covers_all_expr_bearing_declaration_positions() {
+    let source = r#"
+// Position 11: field def's analytical lambda body.
+field def my_field : Real -> Real { source = analytical { |p| a.b.c.d.e } }
+
+// Position 12: named constraint def's predicate.
+constraint def MinX {
+    param x: Real
+    a.b.c.d.e > 0
+}
+
+// Position 13: unit decl's conversion expression.
+unit my_unit : Length = a.b.c.d.e
+
+// Position 14 (×2): function body's let value AND result_expr.
+fn my_fn(w: Real) -> Real {
+    let z = a.b.c.d.e;
+    a.b.c.d.e
+}
+
+// Helper: connector type for the connect statement (position 9).
+structure def Connector { param p: Real = 0 }
+
+// Helper: port-bearing structure for chain/connect (positions 9-10).
+trait MyPort { param diameter: Real }
+structure def SubTarget {
+    port out_port : out MyPort { param diameter: Real = 1 }
+    port in_port  : in  MyPort { param diameter: Real = 1 }
+}
+
+// Main structure exercising positions 1-10.
+structure def Main {
+    // Position 1: param default.
+    param p1: Real = a.b.c.d.e
+
+    // Position 2: let value.
+    let v2 = a.b.c.d.e
+
+    // Position 3: constraint expr (anonymous bare-expression form).
+    constraint a.b.c.d.e > 0
+
+    // Position 4: Sub args.
+    sub s4 = Connector(p: a.b.c.d.e)
+
+    // Position 5: minimize expr.
+    minimize a.b.c.d.e
+
+    // Position 6: maximize expr.
+    maximize a.b.c.d.e
+
+    // Position 7 (×2): GuardedGroup condition + nested member let.
+    where a.b.c.d.e > 0 {
+        let g7 = a.b.c.d.e
+    }
+
+    // Position 8: port frame_expr.
+    port p8 : out MyPort {
+        param diameter: Real = 1
+        frame = a.b.c.d.e
+    }
+
+    // Helpers for positions 9-10.
+    sub st1 = SubTarget()
+    sub st2 = SubTarget()
+
+    // Position 9: connect param.
+    connect st1.out_port -> st2.in_port : Connector { p = a.b.c.d.e }
+
+    // Position 10: chain element (second element is a 7-segment chain).
+    chain st1.out_port -> st2.in_port.x.y.z.w.v
+}
+"#;
+
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .collect();
+
+    // 1+1+1+1+1+1+2+1+1+1+1+1+1+2 = 16 intentional deep chains across the fixture.
+    let expected_count = 16;
+
+    assert_eq!(
+        deep_dot_chain_warnings.len(),
+        expected_count,
+        "expected {} DeepDotChain warnings (one per labelled position), got {}: {:#?}",
+        expected_count,
+        deep_dot_chain_warnings.len(),
+        deep_dot_chain_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
