@@ -86,9 +86,14 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
+    let queries: Vec<GeometryQuery> = faces
+        .iter()
+        .map(|id| GeometryQuery::SurfaceArea(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
     let mut out = Vec::with_capacity(faces.len());
-    for id in faces {
-        let area = match kernel.query(&GeometryQuery::SurfaceArea(id))? {
+    for (id, value) in faces.iter().zip(values) {
+        let area = match value {
             Value::Real(a) => a,
             other => {
                 return Err(QueryError::QueryFailed(format!(
@@ -98,7 +103,7 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
             }
         };
         if area >= min_m2 && area <= max_m2 {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
