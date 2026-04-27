@@ -752,6 +752,44 @@ mod tests {
     }
 
     #[test]
+    fn money_round_trips_through_dimension_vector_layout() {
+        // Construct a Money exponent vector three different ways.
+        let a = DimensionVector::MONEY;
+        let b = DimensionVector::basis(9);
+        let c = {
+            let mut v = [Rational::ZERO; 10];
+            v[9] = Rational::ONE;
+            DimensionVector(v)
+        };
+
+        // All three representations are equal.
+        assert_eq!(a, b, "MONEY constant and basis(9) must be equal");
+        assert_eq!(a, c, "MONEY constant and manual construction must be equal");
+
+        // All three have the same content_hash.
+        assert_eq!(
+            a.content_hash(),
+            b.content_hash(),
+            "MONEY and basis(9) must hash identically"
+        );
+        assert_eq!(
+            a.content_hash(),
+            c.content_hash(),
+            "MONEY and manual construction must hash identically"
+        );
+
+        // All three render as "USD" via Display.
+        assert_eq!(format!("{}", a), "USD");
+        assert_eq!(format!("{}", b), "USD");
+        assert_eq!(format!("{}", c), "USD");
+
+        // All three resolve back to "Money" by comparison against MONEY.
+        assert_eq!(a, DimensionVector::MONEY);
+        assert_eq!(b, DimensionVector::MONEY);
+        assert_eq!(c, DimensionVector::MONEY);
+    }
+
+    #[test]
     fn money_constant_populates_slot_9() {
         // Slot 9 must be ONE; all other slots must be ZERO.
         assert_eq!(DimensionVector::MONEY.0[9], Rational::ONE);
