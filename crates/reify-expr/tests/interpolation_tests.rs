@@ -397,6 +397,93 @@ fn linear_2d_out_of_range_clamps_each_axis() {
     assert!(approx_eq(r3.value, expected, TOL), "got {}", r3.value);
 }
 
+// ---------------------------------------------------------------------------
+// 2D NearestNeighbor
+// ---------------------------------------------------------------------------
+
+/// Knot-exact reproduction at every grid point.
+#[test]
+fn nearest_2d_knot_exact_reproduction() {
+    let gx = vec![0.0f64, 1.0, 2.0];
+    let gy = vec![0.0f64, 0.5, 1.0];
+    let values = build_2d(&gx, &gy, |x, y| 3.0 * x + 7.0 * y - 1.0);
+    for (i, &x) in gx.iter().enumerate() {
+        for (j, &y) in gy.iter().enumerate() {
+            let r = interpolate_2d(
+                InterpolationMethod::NearestNeighbor,
+                &gx,
+                &gy,
+                &values,
+                (x, y),
+            );
+            let expected = values[i * gy.len() + j];
+            assert!(approx_eq(r.value, expected, TOL), "({},{})", i, j);
+            assert!(r.diagnostics.is_empty());
+        }
+    }
+}
+
+/// Quadrant of nearest cell wins: 2x2 grid, query `(0.3, 0.7)` snaps to
+/// corner `(0, 1)` (closer in x to 0, closer in y to 1).
+#[test]
+fn nearest_2d_quadrant_of_nearest_cell_wins() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let values = vec![10.0, 20.0, 30.0, 40.0]; // (0,0)=10 (0,1)=20 (1,0)=30 (1,1)=40
+    let r = interpolate_2d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &values,
+        (0.3, 0.7),
+    );
+    assert!(approx_eq(r.value, 20.0, TOL), "got {}", r.value);
+}
+
+/// Exact ties on each axis use `round_ties_even` independently. With grid
+/// `[0.0, 1.0, 2.0]` on each axis, query `(0.5, 1.5)` ties on both: x even
+/// index wins → 0; y even index wins → 2. Result is `values[(0, 2)]`.
+#[test]
+fn nearest_2d_axis_ties_independent() {
+    let gx = [0.0f64, 1.0, 2.0];
+    let gy = [0.0f64, 1.0, 2.0];
+    let f = |x: f64, y: f64| x * 10.0 + y;
+    let values = build_2d(&gx, &gy, f);
+    let r = interpolate_2d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &values,
+        (0.5, 1.5),
+    );
+    let expected = f(0.0, 2.0);
+    assert!(approx_eq(r.value, expected, TOL), "got {}", r.value);
+}
+
+/// Out-of-range clamps each axis independently to the nearest sample.
+#[test]
+fn nearest_2d_out_of_range_clamps_each_axis() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let values = vec![10.0, 20.0, 30.0, 40.0];
+    let r1 = interpolate_2d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &values,
+        (-3.0, -3.0),
+    );
+    assert!(approx_eq(r1.value, 10.0, TOL));
+    let r2 = interpolate_2d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &values,
+        (10.0, 0.2),
+    );
+    assert!(approx_eq(r2.value, 30.0, TOL), "got {}", r2.value);
+}
+
 /// Larger 4x4 monotone grid: the midpoint of any cell equals the mean of its
 /// four corner values.
 #[test]
