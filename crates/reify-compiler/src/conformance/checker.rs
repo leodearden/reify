@@ -362,8 +362,17 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// (`b` is not in scope when `a`'s expression is compiled), yielding an `unresolved name`
 /// diagnostic. Annotating *either* binding unblocks the case. A topological ordering pass
 /// would remove the limitation but is out of scope ("documenting as intentional simplification").
+/// Named return type for `check_phase_pre_register_default_types`, replacing the former
+/// anonymous 5-tuple to eliminate position-swap bugs between the two `HashSet<String>` skip-sets.
+pub(super) struct PreRegisterOutput {
+    pub inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,
+    pub pass1_skipped: HashSet<String>,
+    pub pass1_param_skipped: HashSet<String>,
+    pub pass2_skipped: HashSet<String>,
+    pub pass2_compile_errors: HashSet<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::type_complexity)]
 pub(super) fn check_phase_pre_register_default_types(
     ctx: &MergeContext,
     structure_members: &HashMap<String, Type>,
@@ -372,13 +381,7 @@ pub(super) fn check_phase_pre_register_default_types(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> (
-    HashMap<(String, AvailableDefaultKind), CompiledExpr>,
-    HashSet<String>,
-    HashSet<String>,
-    HashSet<String>,
-    HashSet<String>,
-) {
+) -> PreRegisterOutput {
     let mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
         HashMap::new();
     // Annotated-Let defaults whose scope slot was already claimed by an earlier Pass 1
@@ -594,13 +597,13 @@ pub(super) fn check_phase_pre_register_default_types(
         }
     }
 
-    (
+    PreRegisterOutput {
         inferred_let_exprs,
         pass1_skipped,
         pass1_param_skipped,
         pass2_skipped,
         pass2_compile_errors,
-    )
+    }
 }
 
 /// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.

@@ -1266,6 +1266,15 @@ mod tests {
     }
 
     #[test]
+    fn format_value_scalar_money_renders_usd() {
+        let v = Value::Scalar {
+            si_value: 25.0,
+            dimension: DimensionVector::MONEY,
+        };
+        assert_eq!(format_value(&v), "25 USD");
+    }
+
+    #[test]
     fn format_value_bool() {
         assert_eq!(format_value(&Value::Bool(true)), "true");
         assert_eq!(format_value(&Value::Bool(false)), "false");

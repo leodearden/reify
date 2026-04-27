@@ -18,6 +18,19 @@ pub const BUDGET_ENV_VAR: &str = "REIFY_WARM_STATE_BUDGET_BYTES";
 /// Used when [`BUDGET_ENV_VAR`] is absent or set to an unparseable value.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
+/// Telemetry event emitted by `WarmStatePool` on the donate / evict transitions.
+///
+/// Buffered internally and consumed via [`WarmStatePool::drain_events`]; a future
+/// engine integration translates these into `EventKind::Donated` / `EventKind::Evicted`
+/// records on the diagnostic journal (see `reify_eval::journal`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WarmPoolEvent {
+    /// A warm state was donated to the pool (insertion).
+    Donated { node_id: NodeId, size_bytes: usize },
+    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    Evicted { node_id: NodeId, size_bytes: usize },
+}
+
 /// Entry in the warm-state pool, wrapping an `OpaqueState` with metadata.
 struct PoolEntry {
     state: OpaqueState,
@@ -40,6 +53,15 @@ pub struct WarmStatePool {
     pool: HashMap<NodeId, PoolEntry>,
     budget_bytes: Option<usize>,
     used_bytes: usize,
+    /// Buffered telemetry events (donations and evictions) — consumed via [`drain_events`](Self::drain_events).
+    ///
+    /// # Bounding note
+    /// This buffer is unbounded until the engine wires `drain_events()` at evaluation
+    /// boundaries (task 2345 follow-up).  In the interim every donate/evict appends
+    /// here; callers that keep a long-lived pool without draining will see slow growth.
+    /// TODO(task-2345): verify drain is called at every eval boundary and add an
+    /// integration test asserting buffer stays empty between drains in steady state.
+    events: Vec<WarmPoolEvent>,
 }
 
 impl WarmStatePool {
@@ -56,6 +78,7 @@ impl WarmStatePool {
             pool: HashMap::new(),
             budget_bytes,
             used_bytes: 0,
+            events: Vec::new(),
         }
     }
 
@@ -136,12 +159,18 @@ impl WarmStatePool {
         };
         let size = state.estimated_size_bytes();
 
+        // Capture a clone for telemetry emission after the move into pool.insert.
+        let node_id_for_event = node_id.clone();
+
         // If this node already has an entry, remove the old one first
         if let Some(old) = self.pool.remove(&node_id) {
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
-        // Evict LRU entries until the new item fits within budget (unlimited pools skip this)
+        // Evict LRU entries until the new item fits within budget (unlimited pools skip this).
+        // Each eviction pushes an Evicted event inside evict_lru(); evictions naturally
+        // precede the Donated event below, giving the drain consumer a "pressure then arrival"
+        // ordering useful for the diagnostic panel's narrative.
         if let Some(budget) = self.budget_bytes {
             while self.used_bytes + size > budget && !self.pool.is_empty() {
                 self.evict_lru();
@@ -156,6 +185,13 @@ impl WarmStatePool {
         };
         self.pool.insert(node_id, entry);
         self.used_bytes += size;
+
+        // Emit Donated after all evictions so the drained buffer orders evictions
+        // before the donation that forced them.
+        self.events.push(WarmPoolEvent::Donated {
+            node_id: node_id_for_event,
+            size_bytes: size,
+        });
     }
 
     /// Store warm-start state for a node.
@@ -173,6 +209,10 @@ impl WarmStatePool {
     }
 
     /// Evict the least-recently-accessed entry from the pool.
+    ///
+    /// Pushes one `WarmPoolEvent::Evicted` per call (i.e. per victim) onto the
+    /// internal buffer.  The caller (`donate_with_cost`) may call this in a loop,
+    /// producing one event per evicted entry before the single `Donated` event.
     fn evict_lru(&mut self) {
         let lru_key = self
             .pool
@@ -183,6 +223,10 @@ impl WarmStatePool {
         if let Some(key) = lru_key
             && let Some(entry) = self.pool.remove(&key)
         {
+            self.events.push(WarmPoolEvent::Evicted {
+                node_id: key,
+                size_bytes: entry.size_bytes,
+            });
             self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         }
     }
@@ -212,10 +256,32 @@ impl WarmStatePool {
         self.budget_bytes
     }
 
-    /// Remove all entries from the pool and reset used_bytes to 0.
+    /// Drain buffered telemetry events (donations and evictions) and clear the buffer.
+    ///
+    /// Intended to be called from the engine at evaluation boundaries; each drained
+    /// `WarmPoolEvent` is then translated into an `EvalEvent` with the current
+    /// `VersionId` and recorded on the diagnostic journal.
+    pub fn drain_events(&mut self) -> Vec<WarmPoolEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Remove all entries from the pool, reset used_bytes to 0, and clear the event buffer.
+    ///
+    /// # Telemetry note
+    /// Callers **must** call [`drain_events`](Self::drain_events) before `clear()` if they
+    /// care about pending telemetry events.  Any un-drained `WarmPoolEvent`s are silently
+    /// discarded by the buffer clear below.  A debug-mode assertion fires if this contract
+    /// is violated, surfacing the misuse during tests.
     pub fn clear(&mut self) {
+        debug_assert!(
+            self.events.is_empty(),
+            "WarmStatePool::clear() called with {} un-drained telemetry event(s); \
+             call drain_events() first to avoid losing diagnostic data",
+            self.events.len()
+        );
         self.pool.clear();
         self.used_bytes = 0;
+        self.events.clear();
     }
 
     /// Number of entries in the pool.
@@ -402,6 +468,8 @@ mod tests {
         assert_eq!(pool.len(), 2);
         assert_eq!(pool.used_bytes(), 300);
 
+        // Drain telemetry before clearing (required by the clear() contract).
+        let _ = pool.drain_events();
         pool.clear();
         assert_eq!(pool.len(), 0);
         assert_eq!(pool.used_bytes(), 0);
@@ -449,11 +517,11 @@ mod tests {
         // After clear: no longer present.
         pool.donate(node.clone(), OpaqueState::new(0u8, 100));
         assert!(pool.contains(&node));
+        // Drain telemetry before clearing (required by the clear() contract).
+        let _ = pool.drain_events();
         pool.clear();
         assert!(!pool.contains(&node));
     }
-
-    // --- Step 1: unlimited-budget path tests ---
 
     #[test]
     fn with_budget_none_reports_unlimited() {
@@ -500,8 +568,6 @@ mod tests {
         assert_eq!(pool.budget_bytes(), Some(1024));
     }
 
-    // --- Step 3: env-var parsing tests (compile-fails until step-4) ---
-
     #[test]
     fn default_budget_is_two_gib() {
         assert_eq!(DEFAULT_BUDGET_BYTES, 2 * 1024 * 1024 * 1024);
@@ -537,8 +603,6 @@ mod tests {
         let pool = WarmStatePool::from_env_value(Some("not-a-number"));
         assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
     }
-
-    // --- Step 5: cost_per_byte metadata tests (compile-fails until step-6) ---
 
     #[test]
     fn donate_with_cost_records_cost_per_byte() {
@@ -603,8 +667,6 @@ mod tests {
         assert!(pool.retrieve(&node_d).is_some(), "D should be retained (just added)");
     }
 
-    // --- Amendment: robustness tests ---
-
     #[test]
     fn from_env_value_empty_string_uses_default() {
         // `VAR=` in shell exports an empty string rather than unsetting the var.
@@ -615,6 +677,151 @@ mod tests {
             Some(DEFAULT_BUDGET_BYTES),
             "empty string should fall back to default, not trigger a warn"
         );
+    }
+
+    #[test]
+    fn donate_emits_donated_event() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+
+        let events = pool.drain_events();
+        assert_eq!(
+            events,
+            vec![WarmPoolEvent::Donated {
+                node_id: node_a,
+                size_bytes: 100
+            }]
+        );
+    }
+
+    #[test]
+    fn donate_with_cost_also_emits_donated_event() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        pool.donate_with_cost(node_a.clone(), OpaqueState::new(0u8, 200), 1.5);
+
+        let events = pool.drain_events();
+        assert_eq!(
+            events,
+            vec![WarmPoolEvent::Donated {
+                node_id: node_a,
+                size_bytes: 200
+            }]
+        );
+    }
+
+    #[test]
+    fn over_budget_donate_emits_evicted_then_donated() {
+        // budget=200, donate A(100) and B(100) — fills exactly.
+        // Drain intermediate events. Then donate C(100): forces eviction of A (LRU).
+        // The drain after C should have Evicted(A) then Donated(C).
+        let mut pool = WarmStatePool::new(200);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(0u8, 100));
+        // Clear intermediate events
+        let setup_events = pool.drain_events();
+        assert_eq!(setup_events.len(), 2);
+
+        // Now donate C, which forces eviction of A (LRU)
+        pool.donate(node_c.clone(), OpaqueState::new(0u8, 100));
+        let events = pool.drain_events();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            WarmPoolEvent::Evicted {
+                node_id: node_a,
+                size_bytes: 100
+            }
+        );
+        assert_eq!(
+            events[1],
+            WarmPoolEvent::Donated {
+                node_id: node_c,
+                size_bytes: 100
+            }
+        );
+    }
+
+    #[test]
+    fn single_oversized_donation_emits_one_evicted_per_victim() {
+        // budget=300, fill with three 100-byte items (used=300), then donate a 150-byte
+        // item. The loop: 300+150=450>300 → evict A (used=200); 200+150=350>300 → evict B
+        // (used=100); 100+150=250≤300 → stop. Expect 2 Evicted events + 1 Donated.
+        let mut pool = WarmStatePool::new(300);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+        let node_big = NodeId::Value(ValueCellId::new("T", "big"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_c.clone(), OpaqueState::new(0u8, 100));
+        pool.drain_events(); // clear setup events
+
+        pool.donate(node_big.clone(), OpaqueState::new(0u8, 150));
+        let events = pool.drain_events();
+
+        // 2 Evicted + 1 Donated
+        let evicted_count = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Evicted { .. }))
+            .count();
+        let donated_count = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Donated { .. }))
+            .count();
+        assert_eq!(evicted_count, 2, "expected 2 evictions for the oversized donation");
+        assert_eq!(donated_count, 1, "expected 1 donated event");
+        // The last event should be Donated (evictions precede the donation)
+        assert!(
+            matches!(events.last(), Some(WarmPoolEvent::Donated { .. })),
+            "donation event must follow eviction events"
+        );
+    }
+
+    #[test]
+    fn drain_events_clears_buffer() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node, OpaqueState::new(0u8, 10));
+
+        let first_drain = pool.drain_events();
+        assert!(!first_drain.is_empty(), "first drain should have events");
+
+        let second_drain = pool.drain_events();
+        assert!(second_drain.is_empty(), "second drain should be empty after clearing");
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn unlimited_pool_still_emits_donated_but_never_evicted() {
+        // unlimited() pool: donate 3 items larger than DEFAULT_BUDGET_BYTES combined.
+        // Expect 3 Donated events and 0 Evicted events.
+        let mut pool = WarmStatePool::unlimited();
+        let gib: usize = 1 << 30; // 1 GiB > DEFAULT_BUDGET_BYTES / 3
+
+        for i in 0..3usize {
+            let node = NodeId::Value(ValueCellId::new("T", format!("n{i}")));
+            pool.donate(node, OpaqueState::new(0u8, gib));
+        }
+
+        let events = pool.drain_events();
+        let donated = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Donated { .. }))
+            .count();
+        let evicted = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Evicted { .. }))
+            .count();
+        assert_eq!(donated, 3, "unlimited pool should emit 3 Donated events");
+        assert_eq!(evicted, 0, "unlimited pool must never emit Evicted events");
     }
 
     #[test]

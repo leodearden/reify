@@ -94,6 +94,10 @@
 // OCCT distance
 #include <BRepExtrema_DistShapeShape.hxx>
 
+// OCCT conformance queries
+#include <BRepCheck_Analyzer.hxx>
+#include <ShapeAnalysis_Shell.hxx>
+
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -1500,6 +1504,226 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
         throw std::runtime_error(std::string("OCCT query_moment_of_inertia: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT query_moment_of_inertia: unknown C++ exception");
+    }
+}
+
+// --- Conformance queries ---
+
+bool is_watertight(const OcctShape& shape) {
+    try {
+        // Shape-type guard: only SOLID, COMPSOLID, and SHELL can be watertight
+        // (they can enclose a volume). COMPOUND is intentionally excluded:
+        // BRepCheck_Analyzer.IsValid() on a compound reports topological
+        // consistency, not closure — a compound of wires or open faces would
+        // spuriously return true. Callers that need to test a compound's
+        // watertightness should iterate its sub-shapes individually.
+        // FACE, WIRE, EDGE, VERTEX always return false immediately.
+        TopAbs_ShapeEnum type = shape.shape.ShapeType();
+        if (type != TopAbs_SOLID && type != TopAbs_COMPSOLID
+                && type != TopAbs_SHELL) {
+            return false;
+        }
+        BRepCheck_Analyzer analyzer(shape.shape);
+        return analyzer.IsValid();
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT is_watertight: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT is_watertight: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT is_watertight: unknown C++ exception");
+    }
+}
+
+bool is_manifold(const OcctShape& shape) {
+    try {
+        // Walk the cached edge→face incidence map. Every edge that has more
+        // than 2 parent faces violates manifoldness. Shapes with no face
+        // incidence (wires, edges, vertices) trivially return true.
+        const auto& m = shape.edge_face_map();
+        for (Standard_Integer i = 1; i <= m.Extent(); ++i) {
+            if (m.FindFromIndex(i).Extent() > 2) {
+                return false;
+            }
+        }
+        return true;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT is_manifold: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT is_manifold: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT is_manifold: unknown C++ exception");
+    }
+}
+
+bool is_orientable(const OcctShape& shape) {
+    try {
+        ShapeAnalysis_Shell sa;
+        sa.LoadShells(shape.shape);
+        if (sa.NbLoaded() == 0) {
+            // No shells: wires, isolated faces, vertices are trivially orientable.
+            return true;
+        }
+        // CheckOrientedShells returns Standard_True when it finds "bad" edges
+        // (edges with inconsistent orientation), i.e. true = problems found.
+        // We invert: orientable iff no problems found.
+        return !sa.CheckOrientedShells(shape.shape, Standard_False);
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT is_orientable: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT is_orientable: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT is_orientable: unknown C++ exception");
+    }
+}
+
+// --- Test fixture helpers ---
+
+std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
+    // Three planar faces sharing a common edge along the X axis from
+    // (0,0,0) to (10mm,0,0). The shared edge has 3 incident faces, so
+    // edge_face_map().FindFromIndex(i).Extent() == 3 > 2 for that edge.
+    try {
+        // Create the shared edge first; add it as the FIRST edge of each wire
+        // so BRepBuilderAPI_MakeWire does not need to stitch it and preserves
+        // its TShape identity across all three wires/faces.
+        BRepBuilderAPI_MakeEdge e_shared(gp_Pnt(0.0,0.0,0.0), gp_Pnt(0.01,0.0,0.0));
+        TopoDS_Edge shared = e_shared.Edge();
+
+        // Face 1 — XY plane (z=0), y ∈ [0, 10mm]
+        BRepBuilderAPI_MakeEdge e1a(gp_Pnt(0.01,0.0,0.0), gp_Pnt(0.01,0.01,0.0));
+        BRepBuilderAPI_MakeEdge e1b(gp_Pnt(0.01,0.01,0.0), gp_Pnt(0.0,0.01,0.0));
+        BRepBuilderAPI_MakeEdge e1c(gp_Pnt(0.0,0.01,0.0), gp_Pnt(0.0,0.0,0.0));
+        BRepBuilderAPI_MakeWire w1;
+        w1.Add(shared);
+        w1.Add(e1a.Edge()); w1.Add(e1b.Edge()); w1.Add(e1c.Edge());
+        BRepBuilderAPI_MakeFace f1(w1.Wire(), Standard_True);
+        if (!f1.IsDone()) throw std::runtime_error("make_nonmanifold_compound: face1 failed");
+
+        // Face 2 — XZ plane (y=0), z ∈ [0, 10mm]
+        BRepBuilderAPI_MakeEdge e2a(gp_Pnt(0.01,0.0,0.0), gp_Pnt(0.01,0.0,0.01));
+        BRepBuilderAPI_MakeEdge e2b(gp_Pnt(0.01,0.0,0.01), gp_Pnt(0.0,0.0,0.01));
+        BRepBuilderAPI_MakeEdge e2c(gp_Pnt(0.0,0.0,0.01), gp_Pnt(0.0,0.0,0.0));
+        BRepBuilderAPI_MakeWire w2;
+        w2.Add(shared);
+        w2.Add(e2a.Edge()); w2.Add(e2b.Edge()); w2.Add(e2c.Edge());
+        BRepBuilderAPI_MakeFace f2(w2.Wire(), Standard_True);
+        if (!f2.IsDone()) throw std::runtime_error("make_nonmanifold_compound: face2 failed");
+
+        // Face 3 — XY plane (z=0), y ∈ [−10mm, 0]
+        BRepBuilderAPI_MakeEdge e3a(gp_Pnt(0.01,0.0,0.0), gp_Pnt(0.01,-0.01,0.0));
+        BRepBuilderAPI_MakeEdge e3b(gp_Pnt(0.01,-0.01,0.0), gp_Pnt(0.0,-0.01,0.0));
+        BRepBuilderAPI_MakeEdge e3c(gp_Pnt(0.0,-0.01,0.0), gp_Pnt(0.0,0.0,0.0));
+        BRepBuilderAPI_MakeWire w3;
+        w3.Add(shared);
+        w3.Add(e3a.Edge()); w3.Add(e3b.Edge()); w3.Add(e3c.Edge());
+        BRepBuilderAPI_MakeFace f3(w3.Wire(), Standard_True);
+        if (!f3.IsDone()) throw std::runtime_error("make_nonmanifold_compound: face3 failed");
+
+        // Assemble into a compound (no topology validation, just containment)
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        builder.Add(compound, f1.Face());
+        builder.Add(compound, f2.Face());
+        builder.Add(compound, f3.Face());
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = compound;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_nonmanifold_compound: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_nonmanifold_compound: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_nonmanifold_compound: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
+    // Build a 10×10×10 mm box, extract 5 of its 6 faces into a shell,
+    // wrap the open shell in a solid. The 4 edges that connected to the
+    // removed face are now free → BRepCheck_Analyzer::IsValid() returns false.
+    try {
+        BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
+        box_maker.Build();
+        if (!box_maker.IsDone()) {
+            throw std::runtime_error("make_malformed_solid: box construction failed");
+        }
+        TopoDS_Shape box = box_maker.Shape();
+
+        BRep_Builder builder;
+        TopoDS_Shell shell;
+        builder.MakeShell(shell);
+        int face_count = 0;
+        for (TopExp_Explorer ex(box, TopAbs_FACE); ex.More() && face_count < 5; ex.Next(), ++face_count) {
+            builder.Add(shell, ex.Current());
+        }
+
+        // Wrap the open shell in a solid (TopAbs_SOLID type, passes shape-type
+        // guard, but IsValid() fails because the shell is not closed)
+        TopoDS_Solid solid;
+        builder.MakeSolid(solid);
+        builder.Add(solid, shell);
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = solid;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_malformed_solid: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_malformed_solid: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_malformed_solid: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
+    // Two faces sharing a common edge, both wires using the shared edge
+    // FORWARD — violates the requirement that adjacent faces must use each
+    // non-free edge with opposite orientations. ShapeAnalysis_Shell::
+    // CheckOrientedShells returns Standard_True (problems found) for this shell.
+    try {
+        // Shared edge along X: (0,0,0) → (10mm,0,0). Added first to both
+        // wires to prevent BRepBuilderAPI_MakeWire from reversing it.
+        BRepBuilderAPI_MakeEdge e_shared(gp_Pnt(0.0,0.0,0.0), gp_Pnt(0.01,0.0,0.0));
+        TopoDS_Edge shared = e_shared.Edge();
+
+        // Face 1 — XY plane (z=0), y ∈ [0, 10mm]; shared edge is FORWARD
+        BRepBuilderAPI_MakeEdge f1e2(gp_Pnt(0.01,0.0,0.0), gp_Pnt(0.01,0.01,0.0));
+        BRepBuilderAPI_MakeEdge f1e3(gp_Pnt(0.01,0.01,0.0), gp_Pnt(0.0,0.01,0.0));
+        BRepBuilderAPI_MakeEdge f1e4(gp_Pnt(0.0,0.01,0.0), gp_Pnt(0.0,0.0,0.0));
+        BRepBuilderAPI_MakeWire w1;
+        w1.Add(shared);
+        w1.Add(f1e2.Edge()); w1.Add(f1e3.Edge()); w1.Add(f1e4.Edge());
+        BRepBuilderAPI_MakeFace face1(w1.Wire(), Standard_True);
+        if (!face1.IsDone()) throw std::runtime_error("make_nonorientable_shell: face1 failed");
+
+        // Face 2 — XZ plane (y=0), z ∈ [0, 10mm]; shared edge also FORWARD
+        // (same direction as in face1) → orientation inconsistency
+        BRepBuilderAPI_MakeEdge f2e2(gp_Pnt(0.01,0.0,0.0), gp_Pnt(0.01,0.0,0.01));
+        BRepBuilderAPI_MakeEdge f2e3(gp_Pnt(0.01,0.0,0.01), gp_Pnt(0.0,0.0,0.01));
+        BRepBuilderAPI_MakeEdge f2e4(gp_Pnt(0.0,0.0,0.01), gp_Pnt(0.0,0.0,0.0));
+        BRepBuilderAPI_MakeWire w2;
+        w2.Add(shared);
+        w2.Add(f2e2.Edge()); w2.Add(f2e3.Edge()); w2.Add(f2e4.Edge());
+        BRepBuilderAPI_MakeFace face2(w2.Wire(), Standard_True);
+        if (!face2.IsDone()) throw std::runtime_error("make_nonorientable_shell: face2 failed");
+
+        BRep_Builder builder;
+        TopoDS_Shell shell;
+        builder.MakeShell(shell);
+        builder.Add(shell, face1.Face());
+        builder.Add(shell, face2.Face());
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = shell;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_nonorientable_shell: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_nonorientable_shell: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_nonorientable_shell: unknown C++ exception");
     }
 }
 

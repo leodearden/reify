@@ -36,6 +36,10 @@
 //! extrapolation). This avoids cascading `NaN`/`Undef` into downstream field
 //! arithmetic, matches typical engineering-CAD field behaviour, and keeps
 //! cubic from producing wildly off values via linear extrapolation.
+//!
+//! NaN queries propagate to a NaN value with no diagnostics; this is the
+//! IEEE 754 NaN-poisoning convention and matches the silent treatment of
+//! out-of-range queries.
 
 use reify_types::{Diagnostic, DiagnosticCode};
 
@@ -106,9 +110,16 @@ fn resolve_method(method: InterpolationMethod) -> (InterpolationMethod, Option<D
 /// Locate the cell `[grid[i], grid[i+1]]` bracketing `query` in a strictly
 /// ascending grid. Returns `Some(i)` if `query` falls inside the grid (taking
 /// the right-most cell when `query == grid.last()`), `None` if the grid has
-/// fewer than two points or `query` is outside the grid.
+/// fewer than two points, `query` is outside the grid, or `query` is NaN
+/// (NaN is by definition not in the grid).
 fn locate_cell(grid: &[f64], query: f64) -> Option<usize> {
     if grid.len() < 2 {
+        return None;
+    }
+    // Belt-and-braces: NaN is canonically filtered at the public interpolate_Nd
+    // entry points; this guard prevents a latent partition_point(0)-1 underflow
+    // for any future caller that reaches this helper directly.
+    if query.is_nan() {
         return None;
     }
     if query < grid[0] || query > grid[grid.len() - 1] {
@@ -181,6 +192,15 @@ fn nearest_index_on_axis(grid: &[f64], query: f64) -> usize {
 /// methods (`Linear`, `NearestNeighbor`, `Cubic`); `Rbf`/`Kriging` produce a
 /// single deferred-method warning and fall back to `Linear`.
 ///
+/// NaN queries propagate to a NaN value with no diagnostics (IEEE 754
+/// NaN-poisoning convention). The NaN check fires *before* deferred-method
+/// resolution, so `Rbf`/`Kriging` with a NaN query also return NaN with an
+/// empty `diagnostics` vec (no deferred-method warning is emitted). This is
+/// intentional: the caller can detect the NaN output with `.is_nan()` and
+/// has no need for a method-deferral warning when the value itself signals
+/// that the query was uncomputable. See the module-level "Boundary policy"
+/// section for rationale.
+///
 /// Panics if `grid.len() != values.len()` or if `grid.len() < 2`.
 pub fn interpolate_1d(
     method: InterpolationMethod,
@@ -200,6 +220,12 @@ pub fn interpolate_1d(
         "interpolate_1d: grid must have at least 2 points (got {})",
         grid.len()
     );
+    if query.is_nan() {
+        return InterpolationResult {
+            value: f64::NAN,
+            diagnostics: Vec::new(),
+        };
+    }
 
     match method {
         InterpolationMethod::Linear => {
@@ -356,6 +382,10 @@ fn linear_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
 /// endpoint (constant extrapolation). `Rbf`/`Kriging` fall back to `Linear`
 /// and emit a single deferred-method warning.
 ///
+/// If any component of `query` is NaN, returns a NaN value with no
+/// diagnostics (IEEE 754 NaN-poisoning convention: any-component-NaN poisons
+/// the result).
+///
 /// Panics if `grid_x.len() < 2`, `grid_y.len() < 2`, or
 /// `values.len() != grid_x.len() * grid_y.len()`.
 pub fn interpolate_2d(
@@ -381,6 +411,12 @@ pub fn interpolate_2d(
         grid_x.len(),
         grid_y.len()
     );
+    if query.0.is_nan() || query.1.is_nan() {
+        return InterpolationResult {
+            value: f64::NAN,
+            diagnostics: Vec::new(),
+        };
+    }
 
     match method {
         InterpolationMethod::Linear => {
@@ -529,6 +565,9 @@ fn index_3d(i: usize, j: usize, k: usize, ny: usize, nz: usize) -> usize {
 /// (constant extrapolation). `Rbf`/`Kriging` fall back to `Linear` and emit a
 /// single deferred-method warning.
 ///
+/// If any component of `query` is NaN, returns a NaN value with no diagnostics
+/// (IEEE 754 NaN-poisoning convention: any-component-NaN poisons the result).
+///
 /// Panics if any axis has fewer than 2 points or `values.len()` does not match
 /// `grid_x.len() * grid_y.len() * grid_z.len()`.
 pub fn interpolate_3d(
@@ -560,6 +599,12 @@ pub fn interpolate_3d(
         grid_y.len(),
         grid_z.len()
     );
+    if query.0.is_nan() || query.1.is_nan() || query.2.is_nan() {
+        return InterpolationResult {
+            value: f64::NAN,
+            diagnostics: Vec::new(),
+        };
+    }
 
     match method {
         InterpolationMethod::Linear => {
@@ -696,10 +741,19 @@ fn cubic_3d(
 
 /// Locate a cell on a single axis with constant-extrapolation clamping.
 /// Returns `(cell_index, t)` where `t ∈ [0, 1]` is the local cell parameter,
-/// clamped to `0.0` or `1.0` for out-of-range queries. The grid must have at
-/// least two points.
+/// clamped to `0.0` or `1.0` for out-of-range queries. Returns `(0, f64::NAN)`
+/// when `query` is NaN so that any downstream `lerp` propagates NaN rather
+/// than silently clamping to a boundary value. The grid must have at least two
+/// points.
 fn locate_cell_with_clamp(grid: &[f64], query: f64) -> (usize, f64) {
     debug_assert!(grid.len() >= 2);
+    // Belt-and-braces: NaN is canonically filtered at the public interpolate_Nd
+    // entry points; this guard ensures any downstream lerp propagates NaN rather
+    // than silently clamping to a boundary value if this helper is ever called
+    // directly with a NaN query in a future code path.
+    if query.is_nan() {
+        return (0, f64::NAN);
+    }
     let last = grid.len() - 1;
     if query <= grid[0] {
         return (0, 0.0);

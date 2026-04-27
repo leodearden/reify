@@ -883,6 +883,7 @@ module.exports = grammar({
 
     // Pragma values are restricted to compile-time constants.
     _pragma_value: $ => choice(
+      $.quantity_literal,
       $.number_literal,
       $.string_literal,
       $.bool_literal,

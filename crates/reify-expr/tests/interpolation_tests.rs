@@ -1177,3 +1177,128 @@ fn non_deferred_methods_produce_no_diagnostics() {
         assert!(r.diagnostics.is_empty(), "3D {:?} emitted diagnostics", m);
     }
 }
+
+// ---------------------------------------------------------------------------
+// NaN-propagation tests
+// ---------------------------------------------------------------------------
+
+/// A NaN query in 3D must produce a NaN value with no diagnostics, for all
+/// three v0.1 methods. Any component being NaN poisons the result (IEEE 754
+/// NaN-poisoning convention).
+#[test]
+fn nan_query_3d_returns_nan_with_no_diagnostics() {
+    let gx = [0.0f64, 1.0, 2.0];
+    let gy = [0.0f64, 1.0, 2.0];
+    let gz = [0.0f64, 1.0, 2.0];
+    let values = build_3d(&gx, &gy, &gz, |x, y, z| x + y + z);
+    let queries: &[(f64, f64, f64)] = &[
+        (f64::NAN, 0.5, 0.5),
+        (0.5, f64::NAN, 0.5),
+        (0.5, 0.5, f64::NAN),
+        (f64::NAN, f64::NAN, f64::NAN),
+    ];
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        for &q in queries {
+            let r = interpolate_3d(m, &gx, &gy, &gz, &values, q);
+            assert!(
+                r.value.is_nan(),
+                "3D {:?} query {:?}: expected NaN, got {}",
+                m, q, r.value
+            );
+            assert!(
+                r.diagnostics.is_empty(),
+                "3D {:?} query {:?}: expected empty diagnostics, got {:?}",
+                m, q, r.diagnostics
+            );
+        }
+    }
+}
+
+/// A NaN query in 2D must produce a NaN value with no diagnostics, for all
+/// three v0.1 methods. Any component being NaN poisons the result (IEEE 754
+/// NaN-poisoning convention).
+#[test]
+fn nan_query_2d_returns_nan_with_no_diagnostics() {
+    let gx = [0.0f64, 1.0, 2.0];
+    let gy = [0.0f64, 1.0, 2.0];
+    let values = build_2d(&gx, &gy, |x, y| x + y);
+    let queries: &[(f64, f64)] = &[
+        (f64::NAN, 0.5),
+        (0.5, f64::NAN),
+        (f64::NAN, f64::NAN),
+    ];
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        for &q in queries {
+            let r = interpolate_2d(m, &gx, &gy, &values, q);
+            assert!(
+                r.value.is_nan(),
+                "2D {:?} query {:?}: expected NaN, got {}",
+                m, q, r.value
+            );
+            assert!(
+                r.diagnostics.is_empty(),
+                "2D {:?} query {:?}: expected empty diagnostics, got {:?}",
+                m, q, r.diagnostics
+            );
+        }
+    }
+}
+
+/// A NaN query in 1D must produce a NaN value with no diagnostics, for all
+/// three v0.1 methods (Linear, NearestNeighbor, Cubic).
+///
+/// IEEE 754 NaN-poisoning convention: the result is NaN when the query is NaN.
+/// No diagnostic is emitted (consistent with the silent constant-extrapolation
+/// policy for out-of-range queries).
+#[test]
+fn nan_query_1d_returns_nan_with_no_diagnostics() {
+    let grid = [0.0f64, 1.0, 3.0, 6.0];
+    let values = [0.0f64, 10.0, 30.0, 90.0];
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        let r = interpolate_1d(m, &grid, &values, f64::NAN);
+        assert!(r.value.is_nan(), "1D {:?}: expected NaN, got {}", m, r.value);
+        assert!(
+            r.diagnostics.is_empty(),
+            "1D {:?}: expected empty diagnostics, got {:?}",
+            m,
+            r.diagnostics
+        );
+    }
+}
+
+/// Deferred methods (Rbf, Kriging) with a NaN query return NaN with *empty*
+/// diagnostics — the NaN short-circuit fires before deferred-method resolution,
+/// so no deferred-method warning is emitted. This locks down the chosen
+/// behaviour described in the `interpolate_1d` doc comment.
+#[test]
+fn nan_query_1d_deferred_method_returns_nan_no_warning() {
+    let grid = [0.0f64, 1.0, 3.0, 6.0];
+    let values = [0.0f64, 10.0, 30.0, 90.0];
+    for m in [InterpolationMethod::Rbf, InterpolationMethod::Kriging] {
+        let r = interpolate_1d(m, &grid, &values, f64::NAN);
+        assert!(
+            r.value.is_nan(),
+            "1D deferred {:?}: expected NaN, got {}",
+            m,
+            r.value
+        );
+        assert!(
+            r.diagnostics.is_empty(),
+            "1D deferred {:?}: expected empty diagnostics (no deferred warning), got {:?}",
+            m,
+            r.diagnostics
+        );
+    }
+}

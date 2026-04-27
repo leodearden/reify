@@ -449,17 +449,12 @@ pub(crate) fn compile_expr_guarded(
                             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
                                 if ld != rd =>
                             {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "dimension mismatch in {}: {} vs {}",
-                                        op_name,
-                                        compiled_left.result_type,
-                                        compiled_right.result_type,
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(expr.span, "incompatible dimensions"),
-                                    ),
-                                );
+                                diagnostics.push(format_dimension_mismatch_diagnostic(
+                                    op_name,
+                                    &compiled_left.result_type,
+                                    &compiled_right.result_type,
+                                    expr.span,
+                                ));
                             }
                             // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
                             (Type::Scalar { .. }, Type::Int | Type::Real)
@@ -557,13 +552,12 @@ pub(crate) fn compile_expr_guarded(
                     (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
                         if ld != rd =>
                     {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "dimension mismatch in range: {} vs {}",
-                                lo.result_type, hi.result_type,
-                            ))
-                            .with_label(DiagnosticLabel::new(expr.span, "incompatible dimensions")),
-                        );
+                        diagnostics.push(format_dimension_mismatch_diagnostic(
+                            "range",
+                            &lo.result_type,
+                            &hi.result_type,
+                            expr.span,
+                        ));
                     }
                     (Type::Scalar { .. }, Type::Int | Type::Real)
                     | (Type::Int | Type::Real, Type::Scalar { .. }) => {
@@ -1148,14 +1142,33 @@ pub(crate) fn compile_expr_guarded(
                 && !scope.is_entity_scope
             {
                 if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
-                    // FIXME(task-2199): reflective aggregation placeholder — emits
-                    // empty list so `forall p in subject.<member>: ...` evaluates
-                    // vacuously true. Runtime expansion is deferred; see
-                    // `docs/notes/purpose-reflective-aggregation.md` for the three
-                    // blockers (list population, quantifier identity carry-through,
-                    // element-type lockstep) and the §8 characterization test in
+                    // Reflective-aggregation placeholder (task-2289).
+                    //
+                    // Emits the marker variant `PurposeReflectiveAggregation`,
+                    // which `Engine::activate_purpose` (in
+                    // `crates/reify-eval/src/engine_purposes.rs`) walks and
+                    // replaces with a populated `ListLiteral` of `ValueRef`s
+                    // built from `CompiledPurpose.resolved_queries`. For the
+                    // currently-resolved `params` query that yields the bound
+                    // entity's param cells, flipping `forall p in
+                    // subject.params: determined(p)` from a vacuous-true
+                    // result to a real check. For `geometric_params`/
+                    // `material_params` the activation walk currently emits an
+                    // empty list (no resolved query — task-1904 follow-up
+                    // territory), preserving today's vacuous-true behaviour.
+                    //
+                    // The compile-time placeholder element type stays
+                    // `List<Real>`; activation refines each element's
+                    // `result_type` from the looked-up `ValueCellNode.cell_type`.
+                    //
+                    // See `docs/notes/purpose-reflective-aggregation.md` for the
+                    // full rationale and the §8 acceptance test in
                     // `crates/reify-eval/tests/purpose_activation.rs`.
-                    return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+                    return CompiledExpr::purpose_reflective_aggregation(
+                        id.member.clone(),
+                        member.clone(),
+                        Type::List(Box::new(Type::Real)),
+                    );
                 } else {
                     // Regular member access (e.g., `subject.mass`):
                     //   - Emit a ValueRef whose entity stamp equals the purpose

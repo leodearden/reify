@@ -1273,6 +1273,8 @@ fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
         "kg"
     } else if *dim == DimensionVector::ANGLE {
         "rad"
+    } else if *dim == DimensionVector::MONEY {
+        "USD"
     } else if dim.is_dimensionless() {
         ""
     } else {
@@ -2135,6 +2137,15 @@ pub enum Freshness {
     ///
     /// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
     Failed { error: ErrorRef },
+}
+
+impl Default for Freshness {
+    /// `Default::default()` returns `Final`; this is the canonical fallback for
+    /// cache reads on absent entries (see `CacheStore::freshness`) and pins
+    /// task #2326's "default to Final on read" contract.
+    fn default() -> Self {
+        Freshness::Final
+    }
 }
 
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
@@ -7110,6 +7121,42 @@ mod tests {
             v.try_infer_type(),
             None,
             "try_infer_type() on Option(Some(empty List)) should return None (inner is ambiguous)"
+        );
+    }
+
+    // --- Freshness::default() tests (task #2326) ---
+
+    #[test]
+    fn freshness_default_is_final() {
+        // The canonical fallback for cache reads on absent entries must be Final.
+        // This pins the type-level default so CacheStore::freshness() (task #2326)
+        // can delegate to Freshness::default() rather than hard-coding Freshness::Final.
+        assert_eq!(Freshness::default(), Freshness::Final);
+    }
+
+    // ── dimension_unit_label / format_hover Money tests ──────────────────────
+
+    #[test]
+    fn dimension_unit_label_money_returns_usd() {
+        // dimension_unit_label must return "USD" for MONEY, not "SI".
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::MONEY),
+            "USD",
+            "dimension_unit_label(MONEY) should return \"USD\" (source-form), not fall through to \"SI\""
+        );
+    }
+
+    #[test]
+    fn format_hover_money_scalar_renders_usd() {
+        // Value::Scalar with MONEY dimension must format as "25 USD", not "25 SI".
+        let v = Value::Scalar {
+            si_value: 25.0,
+            dimension: DimensionVector::MONEY,
+        };
+        assert_eq!(
+            v.format_hover(),
+            "25 USD",
+            "format_hover() on a Money scalar should render \"25 USD\", not \"25 SI\""
         );
     }
 

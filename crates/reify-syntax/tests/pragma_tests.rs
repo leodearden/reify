@@ -332,6 +332,48 @@ fn parse_block_pragma_in_constraint() {
     );
 }
 
+// ── Quantity pragma values (task 2296: #precision support) ─────
+
+#[test]
+fn parse_pragma_with_quantity_metres_value() {
+    let source = "#precision(0.001m)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "precision");
+    assert_eq!(pragma.args.len(), 1, "expected 1 arg, got {:?}", pragma.args);
+
+    match &pragma.args[0] {
+        PragmaArg::Bare(PragmaValue::Quantity { value, unit }) => {
+            assert_eq!(*value, 0.001);
+            assert_eq!(unit, "m");
+        }
+        other => panic!("expected Bare(Quantity{{0.001, 'm'}}), got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_pragma_with_quantity_mm_value() {
+    let source = "#precision(1mm)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "precision");
+    assert_eq!(pragma.args.len(), 1, "expected 1 arg, got {:?}", pragma.args);
+
+    match &pragma.args[0] {
+        PragmaArg::Bare(PragmaValue::Quantity { value, unit }) => {
+            assert_eq!(*value, 1.0);
+            assert_eq!(unit, "mm");
+        }
+        other => panic!("expected Bare(Quantity{{1.0, 'mm'}}), got {:?}", other),
+    }
+}
+
 // ── Step 3/4: pragma with key=value args ─────────────────────────
 
 #[test]

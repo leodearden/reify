@@ -84,14 +84,7 @@ subprojects:
       - decision: "structure and occurrence compile to identical TopologyTemplate, differentiated only by EntityKind enum"
         why: "Semantics differ (thing-that-exists vs process/transformation) but the evaluation engine treats both identically. Ports, connections, and chain declarations work on both."
 
-    known_gaps:
-      - what: "User import declarations emit a stale 'module resolution not yet implemented' warning even when ModuleDag resolved them, and the standard single-module entry point compile_with_stdlib (used by LSP/CLI/MCP) does not recurse into imported user files at all"
-        why: "ModuleDag exists from task #69 and the test suite uses it, but the user-facing tools went through compile_with_stdlib which only collects imports. Stdlib types resolve via the prelude context (task #2176), so this is specifically about user `import \"foo.ri\"` declarations."
-        tracking: "2226"
-
-      - what: "Call-site trait conformance bypasses Option<TraitObject> and collection-typed (e.g. Vec<TraitObject>) params — only the bare TraitObject form is checked"
-        why: "Wrapping a trait type in Option or a collection currently passes silently. Marked TODO(follow-up) at conformance/mod.rs:152 with 'known gap, not forgotten'."
-        tracking: "2227"
+    known_gaps: []
 
     exclude:
       - ".worktrees/ — orchestrator working copies, not reviewed"

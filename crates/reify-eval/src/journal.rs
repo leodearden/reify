@@ -41,6 +41,18 @@ pub enum EventKind {
     CacheHit,
     /// A warm-start state was used for evaluation.
     WarmStartUsed,
+    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    ///
+    /// Translation contract: when the engine translator converts a `WarmPoolEvent::Evicted`
+    /// into an `EvalEvent`, `EvalEvent.node_id` **must** be the evicted node (the victim
+    /// whose state was discarded), not the donating node that triggered the eviction.
+    Evicted { size_bytes: usize },
+    /// A warm state was donated to the pool (insertion or topology-removal donation).
+    ///
+    /// Translation contract: when the engine translator converts a `WarmPoolEvent::Donated`
+    /// into an `EvalEvent`, `EvalEvent.node_id` **must** be the donating node (the node
+    /// whose state was inserted into the pool).
+    Donated { size_bytes: usize },
 }
 
 /// Optional payload attached to an evaluation event.
@@ -126,6 +138,27 @@ impl EventJournal {
             .get(node_id)
             .map(|indices| indices.iter().map(|&idx| &self.events[idx]).collect())
             .unwrap_or_default()
+    }
+
+    /// Count events whose `EventKind` satisfies `predicate`.
+    ///
+    /// Generic base for diagnostic counters — prefer the typed convenience wrappers
+    /// (`count_donated`, `count_evicted`) for common cases.  As new `EventKind`
+    /// variants land (e.g. `CacheHit` stats, `Cancelled` counts) they can be
+    /// expressed as one-liners via this helper rather than duplicating the
+    /// filter-and-count pattern.
+    pub fn count_matching(&self, predicate: impl Fn(&EventKind) -> bool) -> usize {
+        self.events.iter().filter(|e| predicate(&e.kind)).count()
+    }
+
+    /// Number of `EventKind::Donated` events recorded in this journal.
+    pub fn count_donated(&self) -> usize {
+        self.count_matching(|k| matches!(k, EventKind::Donated { .. }))
+    }
+
+    /// Number of `EventKind::Evicted` events recorded in this journal.
+    pub fn count_evicted(&self) -> usize {
+        self.count_matching(|k| matches!(k, EventKind::Evicted { .. }))
     }
 
     /// The most recent event for a specific node, or None if no events exist.
@@ -546,6 +579,80 @@ mod tests {
             EventKind::Completed {
                 outcome: EvalOutcome::Changed
             }
+        ));
+    }
+
+    #[test]
+    fn count_donated_returns_zero_for_empty_journal() {
+        let journal = EventJournal::new();
+        assert_eq!(journal.count_donated(), 0);
+    }
+
+    #[test]
+    fn count_evicted_returns_zero_for_empty_journal() {
+        let journal = EventJournal::new();
+        assert_eq!(journal.count_evicted(), 0);
+    }
+
+    #[test]
+    fn count_donated_counts_only_donated_events() {
+        let mut journal = EventJournal::new();
+        // Mixed sequence: Started, Donated, CacheHit, Donated, Evicted, Completed
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Donated { size_bytes: 100 }, 0));
+        journal.record(make_event("c", EventKind::CacheHit, 0));
+        journal.record(make_event("d", EventKind::Donated { size_bytes: 200 }, 0));
+        journal.record(make_event("e", EventKind::Evicted { size_bytes: 100 }, 0));
+        journal.record(make_event(
+            "f",
+            EventKind::Completed {
+                outcome: EvalOutcome::Changed,
+            },
+            0,
+        ));
+        assert_eq!(journal.count_donated(), 2);
+        assert_eq!(journal.count_evicted(), 1);
+    }
+
+    #[test]
+    fn count_helpers_ignore_other_kinds() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::CacheHit, 0));
+        journal.record(make_event("c", EventKind::WarmStartUsed, 0));
+        journal.record(make_event("d", EventKind::Cancelled, 0));
+        journal.record(make_event(
+            "e",
+            EventKind::Failed {
+                error: "oops".to_string(),
+            },
+            0,
+        ));
+        assert_eq!(journal.count_donated(), 0);
+        assert_eq!(journal.count_evicted(), 0);
+    }
+
+    #[test]
+    fn journal_records_evicted_and_donated_events() {
+        let mut journal = EventJournal::new();
+        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
+        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
+
+        journal.record(make_event("a", EventKind::Evicted { size_bytes: 512 }, 0));
+        journal.record(make_event("b", EventKind::Donated { size_bytes: 4096 }, 1));
+
+        let a_events = journal.events_for_node(&node_a);
+        assert_eq!(a_events.len(), 1);
+        assert!(matches!(
+            a_events[0].kind,
+            EventKind::Evicted { size_bytes: 512 }
+        ));
+
+        let b_events = journal.events_for_node(&node_b);
+        assert_eq!(b_events.len(), 1);
+        assert!(matches!(
+            b_events[0].kind,
+            EventKind::Donated { size_bytes: 4096 }
         ));
     }
 

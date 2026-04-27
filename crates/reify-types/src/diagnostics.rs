@@ -261,6 +261,15 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_INTERPOLATION_DEFERRED`.
     InterpolationDeferred,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (binary-op `Add`/`Sub` site and
+    ///          range-bounds site), via `crates/reify-compiler/src/type_compat::format_dimension_mismatch_diagnostic`.
+    /// Canonical message form: `"dimension mismatch in {op}: {left} vs {right}"`.
+    ///
+    /// Emitted when two `Type::Scalar` operands carry different, incompatible
+    /// dimensions (e.g. Money vs Force). The diagnostic may carry an optional
+    /// secondary label naming the canonical dimensions when both are known
+    /// (e.g. `"Money and Force are different dimensions and cannot be combined directly"`).
+    DimensionMismatch,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -426,6 +435,21 @@ mod tests {
         let b = a; // Copy
         assert_eq!(a, b); // PartialEq + Eq
         assert_eq!(format!("{:?}", a), "DeepDotChain");
+    }
+
+    // --- DimensionMismatch tests (step-3) ---
+    // Note: Copy/Clone/PartialEq/Eq/Hash/Debug derives for DimensionMismatch are
+    // already covered by the variant-agnostic `diagnostic_code_derives` test above.
+    // Only the serde wire-format test is kept here because it is genuinely
+    // variant-specific (PascalCase serialization of the exact string "DimensionMismatch").
+
+    /// Under `feature = "serde"`, `DiagnosticCode::DimensionMismatch` serializes as
+    /// `"DimensionMismatch"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_dimension_mismatch_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DimensionMismatch).unwrap();
+        assert_eq!(s, "\"DimensionMismatch\"");
     }
 }
 

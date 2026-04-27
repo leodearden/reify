@@ -32,7 +32,11 @@ trait Rigid : Physical {
 
 // ── Flexibility ─────────────────────────────────────────────────────────────
 
-// A body that deforms reversibly under load.
+// Flexible is the lumped-deformation umbrella: any body that deforms under load
+// carries a stiffness > 0 and max_deflection > 0 contract, regardless of whether
+// the deformation is recoverable or permanent.
+// The reversible-vs-permanent distinction is delegated to refining traits:
+// ElasticallyDeformable (recoverable/reversible) and Plastic (permanent/irreversible).
 // stiffness (N/m, using Real), max_deflection (m, using Real).
 trait Flexible {
     param stiffness : Real
@@ -44,8 +48,15 @@ trait Flexible {
 // ── Elastic deformation ─────────────────────────────────────────────────────
 
 // ElasticallyDeformable refines Flexible (same-module refinement): elastic
-// deformation is a specific form of reversible flexibility. Adds a
-// max_elastic_strain limit (dimensionless fraction, using Real).
+// deformation is a recoverable form of lumped deformation. Adds a
+// max_elastic_strain recoverable-strain bound (dimensionless fraction, using Real).
+//
+// ED intentionally does NOT refine materials_mechanical.ri::Elastic. Material
+// elastic moduli (youngs_modulus, poissons_ratio, shear_modulus) flow through a
+// structure's `material : MaterialSpec` slot per the stdlib material-via-slot
+// architecture (see materials_mechanical.ri §Trait Resolution Policy).
+// Forcing those moduli onto every ED-conforming structure would duplicate the
+// material-slot machinery; the prior `: Elastic` edge was therefore redundant.
 trait ElasticallyDeformable : Flexible {
     param max_elastic_strain : Real
     constraint max_elastic_strain > 0
@@ -53,8 +64,11 @@ trait ElasticallyDeformable : Flexible {
 
 // ── Plasticity ──────────────────────────────────────────────────────────────
 
-// Plastic refines Flexible: plastic deformation extends the elastic flexibility
-// contract, inheriting stiffness and max_deflection.
+// Plastic refines Flexible to inherit the lumped-deformation contract (stiffness,
+// max_deflection). Every deforming body — regardless of regime — carries these
+// members; Plastic adds the permanent-regime members plastic_strain and
+// hardening_modulus. Inheriting Flexible does NOT imply reversibility: Flexible is
+// regime-agnostic; Plastic deformation is permanent/irreversible.
 // plastic_strain (dimensionless fraction, using Real),
 // hardening_modulus (Pa, using Real).
 // Note: hardening_modulus > 0 is strictly positive — a zero modulus would mean

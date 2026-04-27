@@ -388,6 +388,9 @@ enum QueryKey {
         face_a: usize,
         face_b: usize,
     },
+    IsWatertight(GeometryHandleId),
+    IsManifold(GeometryHandleId),
+    IsOrientable(GeometryHandleId),
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -434,6 +437,9 @@ impl QueryKey {
                 face_a: *face_a,
                 face_b: *face_b,
             },
+            GeometryQuery::IsWatertight(id) => QueryKey::IsWatertight(*id),
+            GeometryQuery::IsManifold(id) => QueryKey::IsManifold(*id),
+            GeometryQuery::IsOrientable(id) => QueryKey::IsOrientable(*id),
         }
     }
 }
@@ -618,6 +624,9 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::MomentOfInertia { handle, .. } => handle,
             GeometryQuery::AdjacentFaces { shape, .. } => shape,
             GeometryQuery::SharedEdges { shape, .. } => shape,
+            GeometryQuery::IsWatertight(id) => id,
+            GeometryQuery::IsManifold(id) => id,
+            GeometryQuery::IsOrientable(id) => id,
         };
 
         self.queries

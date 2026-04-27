@@ -329,6 +329,29 @@ pub enum GeometryQuery {
         face_a: usize,
         face_b: usize,
     },
+    /// Check whether a shape is watertight (closed, no free edges).
+    ///
+    /// Backed by `BRepCheck_Analyzer.IsValid()`. Returns `Value::Bool(true)` for
+    /// valid SOLID/COMPSOLID/SHELL shapes. Returns `Value::Bool(false)` for
+    /// COMPOUND, FACE, WIRE, EDGE, VERTEX (shape-type guard). COMPOUND is
+    /// intentionally excluded because `BRepCheck_Analyzer.IsValid()` on a
+    /// compound checks topological consistency, not closure — a compound of
+    /// open faces would spuriously pass. Callers needing per-sub-shape
+    /// watertightness should iterate the compound's children.
+    IsWatertight(GeometryHandleId),
+    /// Check whether every edge of a shape has at most 2 parent faces.
+    ///
+    /// Backed by walking the cached `edge_face_map`. Returns `Value::Bool(true)`
+    /// iff every edge in the shape has ≤ 2 incident faces. Shapes with no face
+    /// incidence (wires, edges, vertices) trivially return `true`.
+    IsManifold(GeometryHandleId),
+    /// Check whether all shells in a shape are consistently oriented.
+    ///
+    /// Backed by `ShapeAnalysis_Shell::CheckOrientedShells(shape, alsofree=false)`.
+    /// Returns `Value::Bool(true)` iff every connected edge has opposite
+    /// (FORWARD/REVERSED) orientations on its two incident faces. Shapes with
+    /// no shells loaded (wires, isolated faces, vertices) trivially return `true`.
+    IsOrientable(GeometryHandleId),
 }
 
 /// Export formats for geometry.

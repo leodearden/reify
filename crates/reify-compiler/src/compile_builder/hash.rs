@@ -121,6 +121,9 @@ fn hash_pragma_value(v: &reify_syntax::PragmaValue) -> ContentHash {
         }
         reify_syntax::PragmaValue::Bool(b) => ContentHash::of_str("bool")
             .combine(ContentHash::of_str(if *b { "true" } else { "false" })),
+        reify_syntax::PragmaValue::Quantity { value, unit } => ContentHash::of_str("quantity")
+            .combine(ContentHash::of_u64(value.to_bits()))
+            .combine(ContentHash::of_str(unit)),
     }
 }
 

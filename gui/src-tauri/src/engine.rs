@@ -1397,6 +1397,15 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
                 args_str.join(", ")
             )
         }
+        // Reflective-aggregation placeholder (task-2289): renders as the
+        // source-level shape "<param_name>.<query_kind>" for hover/debug.
+        // Once activate_purpose runs, this variant is replaced by a populated
+        // ListLiteral, so the GUI normally only encounters it in pre-activation
+        // debug views.
+        CompiledExprKind::PurposeReflectiveAggregation {
+            param_name,
+            query_kind,
+        } => format!("{}.{}", param_name, query_kind),
     }
 }
 

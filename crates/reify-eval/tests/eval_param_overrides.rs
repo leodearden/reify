@@ -1597,3 +1597,84 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
         );
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-5 / step-6: Money source-form rendering in dimension-mismatch warnings
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression lock: when a param-override dimension mismatch fires for a
+/// Money-typed param, the warning message must render the dimensions in
+/// source form (e.g. "USD", "kg") rather than Debug format
+/// (e.g. "DimensionVector([Rational{…},…])").
+///
+/// Setup:
+///   Module A  — `param p: Mass = 5kg`     (MASS Param cell; override stored as MASS)
+///   Module B  — `param p: Money = 0.0`    (MONEY Param cell; MASS override mismatches)
+///
+/// Note: `auto` is intentionally NOT used for the Money param default because
+/// `param p: Money = auto` compiles to `ValueCellKind::Auto`, which is pruned by
+/// `prune_param_overrides_against` (it only retains `ValueCellKind::Param` cells).
+/// A concrete default (`0.0`) keeps the cell as `Param` kind so the override
+/// survives pruning and reaches `validate_param_override`.
+///
+/// Expected warning: "dimension mismatch (expected USD, got kg)" — both units
+/// in source form.  Today this FAILS because engine_eval.rs:443 still uses
+/// `{:?}`, which produces the raw Rational vector instead of human-readable units.
+#[test]
+fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
+    let mut engine = fresh_engine();
+    let p_id = ValueCellId::new("S", "p");
+
+    // Module A: param p is Mass (Param kind).  Register a MASS-dimensioned override.
+    let module_a = compile_source("structure S { param p: Mass = 5kg }");
+    let _ = engine.eval(&module_a);
+    let mass_override = Value::Scalar {
+        si_value: 5.0,
+        dimension: DimensionVector::MASS,
+    };
+    engine.set_param_and_invalidate(&p_id, mass_override);
+
+    // Module B: param p is Money (Param kind — non-auto default preserves Param kind
+    // so the override survives prune_param_overrides_against).
+    // The MASS override mismatches the MONEY cell_type → ScalarDimensionMismatch warning.
+    let module_b = compile_source("structure S { param p: Money = 0.0 }");
+    let result_b = engine.eval(&module_b);
+
+    // Exactly one Warning mentioning S.p must be emitted.
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.p"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.p, got: {:?}",
+        result_b.diagnostics
+    );
+    let msg = &warnings[0].message;
+
+    // Source-form rendering: both dimensions must appear as unit names.
+    assert!(
+        msg.contains("USD"),
+        "warning must contain 'USD' (Money source form), got: {:?}",
+        msg
+    );
+    assert!(
+        msg.contains("kg"),
+        "warning must contain 'kg' (Mass source form), got: {:?}",
+        msg
+    );
+
+    // Debug-format artefacts must NOT appear.
+    assert!(
+        !msg.contains("Rational"),
+        "warning must not contain 'Rational' (debug format), got: {:?}",
+        msg
+    );
+    assert!(
+        !msg.contains("DimensionVector("),
+        "warning must not contain 'DimensionVector(' (debug format), got: {:?}",
+        msg
+    );
+}

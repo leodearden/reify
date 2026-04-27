@@ -997,6 +997,30 @@ impl OcctKernel {
                     edges.into_iter().map(|i| Value::Int(i as i64)).collect(),
                 ))
             }
+            GeometryQuery::IsWatertight(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_watertight(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
+            GeometryQuery::IsManifold(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_manifold(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
+            GeometryQuery::IsOrientable(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_orientable(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
         }
     }
 
@@ -1134,6 +1158,68 @@ impl OcctKernel {
     /// last `with_warm_state()` call.
     pub fn warm_start_failures(&self) -> usize {
         self.last_warm_start_failures
+    }
+}
+
+/// Test fixture helpers: exposed as `pub` (not gated on `cfg(test)`) so that
+/// integration tests in `tests/` can call them.  These are named with a
+/// `_for_test` suffix to signal their intended scope.
+///
+/// Integration tests are compiled as a separate crate that depends on this
+/// library in its normal (non-test) build mode, so `#[cfg(test)]`-gated items
+/// in this crate are NOT visible to integration tests.  Gating on `has_occt`
+/// only (no `test` cfg) keeps these helpers out of stub builds while keeping
+/// them available to all test binaries that link this crate.
+#[cfg(has_occt)]
+impl OcctKernel {
+    /// Create a circle face at the given z-height via the OCCT FFI and store
+    /// it in the kernel, returning its `GeometryHandleId`.
+    ///
+    /// Exposed for integration tests that need a `TopAbs_FACE` fixture without
+    /// going through the production `GeometryOp` API, which has no standalone
+    /// face constructor.
+    pub fn store_circle_face_for_test(&mut self, radius: f64, z: f64) -> GeometryHandleId {
+        let shape = ffi::ffi::make_circle_face(radius, z)
+            .expect("make_circle_face should succeed in test fixture");
+        let h = self.store(shape);
+        h.id
+    }
+
+    /// Build a non-manifold compound (3 faces sharing 1 edge) and store it.
+    ///
+    /// Returns the `GeometryHandleId` of the stored compound. Used by
+    /// `conformance_integration` tests to verify that `IsManifold` returns `false`
+    /// when an edge has 3+ incident faces.
+    pub fn store_nonmanifold_compound_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_nonmanifold_compound_for_test()
+            .expect("make_nonmanifold_compound_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
+
+    /// Build a malformed solid (10×10×10 mm box missing one face) and store it.
+    ///
+    /// The solid's open shell causes `BRepCheck_Analyzer::IsValid()` to return
+    /// `false`, exercising the analyzer branch of `is_watertight` (as opposed to
+    /// the shape-type guard branch). Used by `conformance_integration` tests.
+    pub fn store_malformed_solid_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_malformed_solid_for_test()
+            .expect("make_malformed_solid_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
+
+    /// Build a non-orientable shell (2 faces using a shared edge with the same
+    /// orientation) and store it.
+    ///
+    /// `ShapeAnalysis_Shell::CheckOrientedShells` returns `Standard_True` (problems
+    /// found) for this shell, so `is_orientable` returns `false`. Used by
+    /// `conformance_integration` tests.
+    pub fn store_nonorientable_shell_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_nonorientable_shell_for_test()
+            .expect("make_nonorientable_shell_for_test should succeed");
+        let h = self.store(shape);
+        h.id
     }
 }
 

@@ -172,6 +172,14 @@ pub struct CompiledModule {
     /// Module-level pragmas declared in this module (e.g., `#no_prelude`, `#precision`).
     /// All pragmas are stored here, including consumed ones like `#no_prelude`.
     pub pragmas: Vec<reify_syntax::Pragma>,
+    /// Module-level `#precision` value in metres, or None when absent / when the
+    /// pragma was malformed.
+    ///
+    /// Populated by `module_pragmas::apply_module_pragmas` from the first
+    /// well-formed `#precision(<Length-quantity>)` module-level pragma. Consumed
+    /// downstream by `Engine::effective_tessellation_tolerance` to override the
+    /// default OCCT tessellation tolerance.
+    pub default_tolerance: Option<f64>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }

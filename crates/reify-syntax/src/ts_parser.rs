@@ -976,6 +976,13 @@ impl<'a> Lowering<'a> {
                 let text = self.node_text(node);
                 text.parse::<f64>().ok().map(PragmaValue::Number)
             }
+            "quantity_literal" => {
+                let value_node = node.child_by_field_name("value")?;
+                let unit_node = node.child_by_field_name("unit")?;
+                let value: f64 = self.node_text(value_node).parse().ok()?;
+                let unit = self.node_text(unit_node).to_string();
+                Some(PragmaValue::Quantity { value, unit })
+            }
             "string_literal" => {
                 let raw = self.node_text(node);
                 // Strip the surrounding quotes.

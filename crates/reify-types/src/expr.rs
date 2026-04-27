@@ -123,6 +123,18 @@ pub enum CompiledExprKind {
         selector_kind: SelectorKind,
         args: Vec<CompiledExpr>,
     },
+    /// Reflective-aggregation placeholder for `purpose_param.<query_kind>`
+    /// member access (e.g. `subject.params`, `subject.geometric_params`).
+    /// Emitted by the compiler in lieu of an empty `ListLiteral` so that
+    /// `Engine::activate_purpose` can unambiguously identify and rewrite
+    /// these nodes into populated `ListLiteral([ValueRef(...), ...])` against
+    /// the bound entity's value cells (task-2289).
+    PurposeReflectiveAggregation {
+        /// The purpose-parameter name this query was on (e.g. `"subject"`).
+        param_name: String,
+        /// The schema-query kind (e.g. `"params"`, `"geometric_params"`).
+        query_kind: String,
+    },
 }
 
 /// Determinacy predicate kinds.
@@ -216,7 +228,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[25]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[26]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -238,6 +250,7 @@ pub const TAG_DETERMINACY_PREDICATE: u8 = 17;
 pub const TAG_RANGE_CONSTRUCTOR: u8 = 18;
 pub const TAG_AD_HOC_SELECTOR: u8 = 19;
 pub const TAG_MATCH: u8 = 24;
+pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -376,6 +389,8 @@ impl CompiledExpr {
                     arg.walk(f);
                 }
             }
+            // Placeholder is a leaf — no children to traverse.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -509,6 +524,9 @@ impl CompiledExpr {
                     arg.collect_value_refs_inner(refs);
                 }
             }
+            // Placeholder carries no concrete cell IDs — activation will
+            // expand it before any dependency-tracking pass runs.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -657,6 +675,14 @@ impl CompiledExpr {
     /// replacing the entity part with `to_entity`. This is used during purpose
     /// activation to remap compiled references from the purpose's parameter
     /// namespace to the concrete entity being bound.
+    ///
+    /// CONTRACT — content-hash staleness: this rewrite mutates leaf cell IDs
+    /// in place but **does not** rebuild `content_hash` on ancestor nodes.
+    /// Callers that need a structurally-consistent hash on the rewritten
+    /// tree must reseed it themselves (e.g. `engine_purposes::activate_purpose`
+    /// reseeds each injected constraint's `content_hash` from
+    /// `purpose:<name>:constraint:<i>`). Same caveat applies to `remap_cell`
+    /// and to `engine_purposes::expand_purpose_reflective_placeholders`.
     pub fn remap_entity(&mut self, from_entity: &str, to_entity: &str) {
         match &mut self.kind {
             CompiledExprKind::ValueRef(id) => {
@@ -781,6 +807,147 @@ impl CompiledExpr {
                     arg.remap_entity(from_entity, to_entity);
                 }
             }
+            // Placeholder carries no entity-bearing cell IDs; the activation
+            // walk in `engine_purposes::activate_purpose` resolves it against
+            // the bound entity directly. No-op here.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        }
+    }
+
+    /// Rewrite every `ValueCellId` equal to `from` to `to`, traversing all
+    /// variants that carry a cell. This is used by activation-time expansion
+    /// of reflective-aggregation placeholders to carry a populated element's
+    /// cell ID into a quantifier predicate (e.g. `DeterminacyPredicate { cell }`)
+    /// after binding the synthetic loop var to the iterated cell (task-2289).
+    ///
+    /// Mirrors the structure of `remap_entity` arm-for-arm so future variant
+    /// additions touch one place.
+    ///
+    /// CONTRACT — content-hash staleness: same as `remap_entity`. This walk
+    /// rewrites cell IDs in place but does not rebuild ancestor `content_hash`
+    /// values. Callers that consume the rewritten tree's hash must reseed it.
+    pub fn remap_cell(&mut self, from: &ValueCellId, to: &ValueCellId) {
+        match &mut self.kind {
+            CompiledExprKind::ValueRef(id) => {
+                if id == from {
+                    *id = to.clone();
+                }
+            }
+            CompiledExprKind::Literal(_) => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                left.remap_cell(from, to);
+                right.remap_cell(from, to);
+            }
+            CompiledExprKind::UnOp { operand, .. } => {
+                operand.remap_cell(from, to);
+            }
+            CompiledExprKind::FunctionCall { args, .. } => {
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.remap_cell(from, to);
+                then_branch.remap_cell(from, to);
+                else_branch.remap_cell(from, to);
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                discriminant.remap_cell(from, to);
+                for arm in arms {
+                    arm.body.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::UserFunctionCall { args, .. } => {
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::Lambda {
+                body,
+                captures,
+                param_ids,
+                ..
+            } => {
+                body.remap_cell(from, to);
+                for cap in captures {
+                    if cap == from {
+                        *cap = to.clone();
+                    }
+                }
+                for pid in param_ids {
+                    if pid == from {
+                        *pid = to.clone();
+                    }
+                }
+            }
+            CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::SetLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    key.remap_cell(from, to);
+                    val.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                object.remap_cell(from, to);
+                index.remap_cell(from, to);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                object.remap_cell(from, to);
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::Quantifier {
+                variable_id,
+                collection,
+                predicate,
+                ..
+            } => {
+                if variable_id == from {
+                    *variable_id = to.clone();
+                }
+                collection.remap_cell(from, to);
+                predicate.remap_cell(from, to);
+            }
+            CompiledExprKind::OptionSome(inner) => {
+                inner.remap_cell(from, to);
+            }
+            CompiledExprKind::OptionNone => {}
+            CompiledExprKind::MetaAccess { .. } => {}
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
+                if cell == from {
+                    *cell = to.clone();
+                }
+            }
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+                if let Some(lo) = lower {
+                    lo.remap_cell(from, to);
+                }
+                if let Some(hi) = upper {
+                    hi.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                base.remap_cell(from, to);
+                for arg in args {
+                    arg.remap_cell(from, to);
+                }
+            }
+            // Placeholder has no cell to rewrite — activation expands it.
+            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         }
     }
 
@@ -939,6 +1106,35 @@ impl CompiledExpr {
             kind: CompiledExprKind::Match {
                 discriminant: Box::new(discriminant),
                 arms,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a reflective-aggregation placeholder expression (task-2289).
+    ///
+    /// Emitted by the compiler in lieu of an empty `ListLiteral` to mark a
+    /// `purpose_param.<query_kind>` reference (e.g. `subject.params`) so that
+    /// `Engine::activate_purpose` can unambiguously rewrite it into a
+    /// populated list of `ValueRef`s against the bound entity's value cells.
+    ///
+    /// Hash tag byte: `TAG_PURPOSE_REFLECTIVE_AGGREGATION` (= `[25]`).
+    /// Combines the tag, then the param_name and query_kind strings, so two
+    /// structurally-equal placeholders share a hash and any field difference
+    /// produces a distinct hash.
+    pub fn purpose_reflective_aggregation(
+        param_name: String,
+        query_kind: String,
+        result_type: Type,
+    ) -> Self {
+        let content_hash = ContentHash::of(&[TAG_PURPOSE_REFLECTIVE_AGGREGATION])
+            .combine(ContentHash::of_str(&param_name))
+            .combine(ContentHash::of_str(&query_kind));
+        CompiledExpr {
+            kind: CompiledExprKind::PurposeReflectiveAggregation {
+                param_name,
+                query_kind,
             },
             result_type,
             content_hash,
@@ -1373,6 +1569,200 @@ mod tests {
         assert_eq!(
             match_e.content_hash, expected_match,
             "match_expr hash must equal TAG_MATCH-based reconstruction"
+        );
+    }
+
+    /// step-1 (task-2289): `remap_cell` rewrites every occurrence of a target
+    /// `ValueCellId` to a replacement, traversing all variants that carry a cell.
+    ///
+    /// Builds a tree exercising every cell-bearing variant the remap must touch:
+    /// `ValueRef`, `BinOp` containing `ValueRef`s, `Quantifier { variable_id }`,
+    /// `DeterminacyPredicate { cell }`, and `Lambda { captures, param_ids }`.
+    /// Calls `remap_cell(old, new)` once, then asserts every matching id was
+    /// rewritten and every non-matching id is unchanged.
+    ///
+    /// RED before step-2: `remap_cell` does not yet exist on `CompiledExpr`.
+    #[test]
+    fn remap_cell_rewrites_all_matching_occurrences() {
+        let old = ValueCellId::new("E", "x");
+        let other = ValueCellId::new("E", "y");
+        let new_id = ValueCellId::new("E2", "x_renamed");
+        let unrelated = ValueCellId::new("U", "z");
+
+        // ValueRef(old) → BinOp ValueRef(old) > ValueRef(other)
+        let lhs = CompiledExpr::value_ref(old.clone(), Type::Real);
+        let rhs = CompiledExpr::value_ref(other.clone(), Type::Real);
+        let binop = CompiledExpr::binop(BinOp::Gt, lhs, rhs, Type::Bool);
+
+        // Quantifier with variable_id == old, predicate references determinacy on old
+        let det = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            old.clone(),
+        );
+        let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let quant =
+            CompiledExpr::quantifier(QuantifierKind::ForAll, "p".to_string(), old.clone(), coll, det);
+
+        // Lambda with captures = [old, unrelated] and param_ids = [old]
+        let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::Real);
+        let lambda = CompiledExpr::lambda(
+            vec![("p".to_string(), Some(Type::Real))],
+            vec![old.clone()],
+            lambda_body,
+            vec![old.clone(), unrelated.clone()],
+            Type::Real,
+        );
+
+        // Combine all under a top-level BinOp so a single remap_cell call walks them.
+        // Use a Conditional to bundle the three sub-expressions (binop, quant, lambda)
+        // since they have different result types and BinOp wants matching children.
+        let cond_then = CompiledExpr::list_literal(
+            vec![binop, quant, lambda],
+            Type::List(Box::new(Type::Real)),
+        );
+        let cond_else = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let mut tree = make_conditional(
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            cond_then,
+            cond_else,
+            Type::List(Box::new(Type::Real)),
+        );
+
+        tree.remap_cell(&old, &new_id);
+
+        // Walk and collect every cell-bearing site we touched.
+        let mut value_refs = Vec::new();
+        let mut quant_var_ids = Vec::new();
+        let mut det_cells = Vec::new();
+        let mut lambda_captures = Vec::new();
+        let mut lambda_param_ids = Vec::new();
+        tree.walk(&mut |node| match &node.kind {
+            CompiledExprKind::ValueRef(id) => value_refs.push(id.clone()),
+            CompiledExprKind::Quantifier { variable_id, .. } => {
+                quant_var_ids.push(variable_id.clone())
+            }
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => det_cells.push(cell.clone()),
+            CompiledExprKind::Lambda {
+                captures,
+                param_ids,
+                ..
+            } => {
+                lambda_captures.extend(captures.iter().cloned());
+                lambda_param_ids.extend(param_ids.iter().cloned());
+            }
+            _ => {}
+        });
+
+        // Every direct ValueRef(old) is rewritten to new_id; ValueRef(other) is
+        // unchanged; ValueRef(unrelated) (lambda body) is unchanged.
+        assert!(value_refs.contains(&new_id), "ValueRef(old) should be rewritten to new_id");
+        assert!(value_refs.contains(&other), "ValueRef(other) must remain");
+        assert!(value_refs.contains(&unrelated), "ValueRef(unrelated) must remain");
+        assert!(!value_refs.contains(&old), "no ValueRef(old) should remain");
+
+        // Quantifier.variable_id rewritten.
+        assert_eq!(quant_var_ids.len(), 1);
+        assert_eq!(quant_var_ids[0], new_id, "Quantifier.variable_id should be rewritten");
+
+        // DeterminacyPredicate.cell rewritten.
+        assert_eq!(det_cells.len(), 1);
+        assert_eq!(det_cells[0], new_id, "DeterminacyPredicate.cell should be rewritten");
+
+        // Lambda captures: old → new_id, unrelated → unchanged.
+        assert!(lambda_captures.contains(&new_id), "Lambda capture(old) should be rewritten");
+        assert!(lambda_captures.contains(&unrelated), "Lambda capture(unrelated) must remain");
+        assert!(!lambda_captures.contains(&old), "no Lambda capture(old) should remain");
+
+        // Lambda param_ids: old → new_id.
+        assert!(lambda_param_ids.contains(&new_id), "Lambda param_id(old) should be rewritten");
+        assert!(!lambda_param_ids.contains(&old), "no Lambda param_id(old) should remain");
+    }
+
+    /// step-3 (task-2289): constructor for the new
+    /// `PurposeReflectiveAggregation` variant builds a node with the expected
+    /// shape and result_type.
+    ///
+    /// RED before step-4: variant + constructor do not yet exist.
+    #[test]
+    fn purpose_reflective_aggregation_constructs_expected_kind() {
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        match &expr.kind {
+            CompiledExprKind::PurposeReflectiveAggregation {
+                param_name,
+                query_kind,
+            } => {
+                assert_eq!(param_name, "subject");
+                assert_eq!(query_kind, "params");
+            }
+            other => panic!("expected PurposeReflectiveAggregation, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
+    }
+
+    /// step-3 (task-2289): `walk` visits the placeholder node itself but has no
+    /// children — same shape as `OptionNone` / `MetaAccess`.
+    #[test]
+    fn purpose_reflective_aggregation_walk_has_no_children() {
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let mut count = 0;
+        expr.walk(&mut |_| count += 1);
+        assert_eq!(count, 1, "placeholder must be a leaf node");
+    }
+
+    /// step-3 (task-2289): `collect_value_refs` returns an empty Vec for the
+    /// placeholder — it has no `ValueCellId` until activation expands it.
+    #[test]
+    fn purpose_reflective_aggregation_has_no_value_refs() {
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        assert!(expr.collect_value_refs().is_empty());
+    }
+
+    /// step-3 (task-2289): structurally-equal placeholders share content_hash;
+    /// structurally-different placeholders (different `query_kind`) differ.
+    #[test]
+    fn purpose_reflective_aggregation_content_hash_is_structural() {
+        let a = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let b = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let different_kind = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "geometric_params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let different_param = CompiledExpr::purpose_reflective_aggregation(
+            "other".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        assert_eq!(a.content_hash, b.content_hash, "identical inputs → identical hashes");
+        assert_ne!(
+            a.content_hash, different_kind.content_hash,
+            "different query_kind must change the hash"
+        );
+        assert_ne!(
+            a.content_hash, different_param.content_hash,
+            "different param_name must change the hash"
         );
     }
 }

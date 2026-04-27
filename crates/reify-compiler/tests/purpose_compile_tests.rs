@@ -413,20 +413,25 @@ purpose check(subject : Widget) {
     );
 }
 
-// ── Step 1 (task-2181): reflective aggregation compiles as empty list ─────────
+// ── Step 1 (task-2181, updated by task-2289): reflective aggregation compiles
+// ── as a marker placeholder variant (expanded by activate_purpose at runtime)
 
 /// Shared helper for all `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS` tests.
 ///
-/// Compiles `forall p in subject.<member>: determined(p)` in a purpose body
+/// Compiles `forall p in part.<member>: determined(p)` in a purpose body
 /// and asserts the three acceptance criteria:
 /// (a) no "member access not yet supported" diagnostic,
-/// (b) `collection.result_type == Type::List(Box::new(Type::Real))`,
-/// (c) `collection.kind` is an empty `ListLiteral`.
+/// (b) `collection.kind` is the marker variant
+///     `CompiledExprKind::PurposeReflectiveAggregation { param_name: "part",
+///     query_kind: <member> }` (task-2289),
+/// (c) `collection.result_type == Type::List(Box::new(Type::Real))` —
+///     the compile-time placeholder element type is unchanged; activation
+///     refines it from looked-up cell types.
 ///
 /// Using a single helper avoids duplicating ~60 lines per member name and
 /// naturally extends to cover every entry in `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS`
 /// (currently `params`, `geometric_params`, `material_params`).
-fn assert_reflective_member_compiles_empty(member: &str) {
+fn assert_reflective_member_compiles_as_placeholder(member: &str) {
     let source = format!(
         r#"
 structure Part {{
@@ -453,8 +458,9 @@ purpose check_part(part : Structure) {{
         unsupported
     );
 
-    // (b) and (c): constraint is a Quantifier whose collection is an empty
-    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
+    // (b) and (c): constraint is a Quantifier whose collection is the new
+    // PurposeReflectiveAggregation placeholder variant with
+    // result_type == Type::List(Box::new(Type::Real)).
     assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
     let purpose = &module.compiled_purposes[0];
     assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
@@ -462,7 +468,7 @@ purpose check_part(part : Structure) {{
     let constraint = &purpose.constraints[0];
     match &constraint.expr.kind {
         CompiledExprKind::Quantifier { collection, .. } => {
-            // (b) collection result_type must be List<Real>
+            // (c) collection result_type must be List<Real> at compile time
             assert_eq!(
                 collection.result_type,
                 Type::List(Box::new(Type::Real)),
@@ -470,18 +476,27 @@ purpose check_part(part : Structure) {{
                 member,
                 collection.result_type
             );
-            // (c) collection kind must be an empty ListLiteral
+            // (b) collection kind must be the placeholder marker variant
             match &collection.kind {
-                CompiledExprKind::ListLiteral(elements) => {
-                    assert!(
-                        elements.is_empty(),
-                        "expected empty ListLiteral for subject.{}, got {} elements",
-                        member,
-                        elements.len()
+                CompiledExprKind::PurposeReflectiveAggregation {
+                    param_name,
+                    query_kind,
+                } => {
+                    assert_eq!(
+                        param_name, "part",
+                        "expected param_name to be 'part' (the source-level subject \
+                         identifier) for member '{}', got '{}'",
+                        member, param_name
+                    );
+                    assert_eq!(
+                        query_kind, member,
+                        "expected query_kind to be '{}', got '{}'",
+                        member, query_kind
                     );
                 }
                 other => panic!(
-                    "expected ListLiteral collection for member '{}', got {:?}",
+                    "expected PurposeReflectiveAggregation collection for member '{}', \
+                     got {:?}",
                     member, other
                 ),
             }
@@ -493,30 +508,32 @@ purpose check_part(part : Structure) {{
     }
 }
 
-/// `subject.params` compiles to an empty ListLiteral (step 1, task-2181).
+/// `subject.params` compiles to a `PurposeReflectiveAggregation` placeholder
+/// (task-2289 step-7; was empty `ListLiteral` per task-2181).
 ///
-/// RED before step-2 impl: catch-all at `expr.rs` fires and emits
-/// "member access not yet supported: .params".
+/// RED before step-7 impl: compiler still emits empty `ListLiteral`.
 #[test]
-fn compile_purpose_reflective_params_compiles_as_empty_list() {
-    assert_reflective_member_compiles_empty("params");
+fn compile_purpose_reflective_params_compiles_as_placeholder() {
+    assert_reflective_member_compiles_as_placeholder("params");
 }
 
-/// `part.geometric_params` compiles to an empty ListLiteral (step 1, task-2181).
+/// `part.geometric_params` compiles to a `PurposeReflectiveAggregation`
+/// placeholder (task-2289 step-7).
 ///
-/// RED before step-2 impl: analogous to the params test above.
+/// RED before step-7 impl: analogous to the params test above.
 #[test]
-fn compile_purpose_reflective_geometric_params_compiles_as_empty_list() {
-    assert_reflective_member_compiles_empty("geometric_params");
+fn compile_purpose_reflective_geometric_params_compiles_as_placeholder() {
+    assert_reflective_member_compiles_as_placeholder("geometric_params");
 }
 
-/// `subject.material_params` compiles to an empty ListLiteral (task-2181).
+/// `subject.material_params` compiles to a `PurposeReflectiveAggregation`
+/// placeholder (task-2289 step-7).
 ///
 /// `material_params` is the third entry in `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS`
 /// and previously had no dedicated compile-time coverage.
 #[test]
-fn compile_purpose_reflective_material_params_compiles_as_empty_list() {
-    assert_reflective_member_compiles_empty("material_params");
+fn compile_purpose_reflective_material_params_compiles_as_placeholder() {
+    assert_reflective_member_compiles_as_placeholder("material_params");
 }
 
 // ── Amendment (task-2181 review-1): entity-scope StructureRef regression ──────

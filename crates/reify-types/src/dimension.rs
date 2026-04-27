@@ -217,6 +217,25 @@ impl DimensionVector {
         DimensionVector(v)
     }
 
+    /// Return the canonical user-facing name for this dimension, if it matches
+    /// exactly one of the named singleton constants.
+    ///
+    /// Performs a linear scan over [`NAMED_DIMENSIONS`], the single source-of-truth
+    /// table shared with `resolve_dimension_type` in
+    /// `crates/reify-compiler/src/type_resolution.rs`.
+    ///
+    /// Returns `Some("Money")`, `Some("Force")`, etc. for each named singleton in the table.
+    ///
+    /// Returns `None` for:
+    /// - `DIMENSIONLESS` — intentionally excluded from the table; callers handle it specially.
+    /// - Composite/derived dimensions that are not in the named set (e.g. `MONEY/MASS`).
+    pub fn canonical_name(&self) -> Option<&'static str> {
+        NAMED_DIMENSIONS
+            .iter()
+            .find(|(dim, _)| *dim == *self)
+            .map(|(_, name)| *name)
+    }
+
     pub fn is_dimensionless(&self) -> bool {
         self.0.iter().all(|r| r.is_zero())
     }
@@ -308,6 +327,53 @@ pub const FORCE: DimensionVector = {
     v[2] = Rational::new(-2, 1); // time^-2
     DimensionVector(v)
 };
+
+/// Single source-of-truth mapping from named singleton `DimensionVector` constants to their
+/// canonical PascalCase user-facing names.
+///
+/// This table drives both:
+/// - [`DimensionVector::canonical_name`] — dimension → name direction (linear scan forward).
+/// - `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs` — name → dimension
+///   direction (linear scan backward).
+///
+/// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
+/// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
+/// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
+///
+/// The slice contains exactly 30 entries, one per named singleton, in the same order as the
+/// original `canonical_name` match arms (LENGTH .. DYNAMIC_VISCOSITY).
+pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
+    (DimensionVector::LENGTH, "Length"),
+    (DimensionVector::MASS, "Mass"),
+    (DimensionVector::TIME, "Time"),
+    (DimensionVector::CURRENT, "Current"),
+    (DimensionVector::TEMPERATURE, "Temperature"),
+    (DimensionVector::AMOUNT_OF_SUBSTANCE, "AmountOfSubstance"),
+    (DimensionVector::LUMINOUS_INTENSITY, "LuminousIntensity"),
+    (DimensionVector::ANGLE, "Angle"),
+    (DimensionVector::SOLID_ANGLE, "SolidAngle"),
+    (DimensionVector::MONEY, "Money"),
+    (DimensionVector::AREA, "Area"),
+    (DimensionVector::VOLUME, "Volume"),
+    (DimensionVector::FREQUENCY, "Frequency"),
+    (DimensionVector::FORCE, "Force"),
+    (DimensionVector::ENERGY, "Energy"),
+    (DimensionVector::POWER, "Power"),
+    (DimensionVector::PRESSURE, "Pressure"),
+    (DimensionVector::VOLTAGE, "Voltage"),
+    (DimensionVector::CHARGE, "Charge"),
+    (DimensionVector::CAPACITANCE, "Capacitance"),
+    (DimensionVector::RESISTANCE, "Resistance"),
+    (DimensionVector::CONDUCTANCE, "Conductance"),
+    (DimensionVector::INDUCTANCE, "Inductance"),
+    (DimensionVector::MAGNETIC_FLUX, "MagneticFlux"),
+    (DimensionVector::MAGNETIC_FLUX_DENSITY, "MagneticFluxDensity"),
+    (DimensionVector::LUMINOUS_FLUX, "LuminousFlux"),
+    (DimensionVector::ILLUMINANCE, "Illuminance"),
+    (DimensionVector::ABSORBED_DOSE, "AbsorbedDose"),
+    (DimensionVector::ANGULAR_VELOCITY, "AngularVelocity"),
+    (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
+];
 
 impl fmt::Display for DimensionVector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -735,6 +801,60 @@ mod tests {
         );
     }
 
+    // --- canonical_name tests (step-1) ---
+
+    #[test]
+    fn canonical_name_money_returns_money() {
+        assert_eq!(DimensionVector::MONEY.canonical_name(), Some("Money"));
+    }
+
+    #[test]
+    fn canonical_name_force_returns_force() {
+        assert_eq!(DimensionVector::FORCE.canonical_name(), Some("Force"));
+    }
+
+    #[test]
+    fn canonical_name_length_returns_length() {
+        assert_eq!(DimensionVector::LENGTH.canonical_name(), Some("Length"));
+    }
+
+    #[test]
+    fn canonical_name_mass_returns_mass() {
+        assert_eq!(DimensionVector::MASS.canonical_name(), Some("Mass"));
+    }
+
+    #[test]
+    fn canonical_name_composite_returns_none() {
+        // MONEY / MASS is a composite dimension — no single canonical name.
+        assert_eq!(DimensionVector::MONEY.div(&DimensionVector::MASS).canonical_name(), None);
+    }
+
+    #[test]
+    fn canonical_name_dimensionless_returns_none() {
+        assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
+    }
+
+    /// Full coverage: every named singleton round-trips through `canonical_name`.
+    ///
+    /// The test derives its loop from [`super::NAMED_DIMENSIONS`] — the single source-of-truth
+    /// table shared with `resolve_dimension_type`. Adding a new named dimension only requires
+    /// updating `NAMED_DIMENSIONS`; this test and both consuming functions automatically stay in
+    /// sync.
+    #[test]
+    fn canonical_name_covers_all_named_singletons() {
+        for &(dim, expected) in super::NAMED_DIMENSIONS {
+            assert_eq!(
+                dim.canonical_name(),
+                Some(expected),
+                "canonical_name() mismatch for {:?}: expected {:?}",
+                dim,
+                expected,
+            );
+        }
+        // DIMENSIONLESS is intentionally not named (self-explanatory to users).
+        assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
+    }
+
     #[test]
     fn content_hash_buffer_covers_slot_9() {
         // Verify that slot-9 bytes actually feed into the digest.
@@ -781,5 +901,36 @@ mod tests {
         // MONEY is not DIMENSIONLESS and not SOLID_ANGLE.
         assert_ne!(DimensionVector::MONEY, DimensionVector::DIMENSIONLESS);
         assert_ne!(DimensionVector::MONEY, DimensionVector::SOLID_ANGLE);
+    }
+
+    /// Verify `NAMED_DIMENSIONS` is a complete, self-consistent table.
+    ///
+    /// (a) The table must be non-empty.
+    /// (b) For every `(dim, name)` entry the round-trip `dim.canonical_name() == Some(name)` holds.
+    /// (c) `DIMENSIONLESS.canonical_name()` is still `None` (intentionally excluded from the table).
+    ///
+    /// The table length is intentionally not asserted as a magic number — the round-trip loop
+    /// and the DIMENSIONLESS check are the meaningful coverage; a length constant would just
+    /// need updating whenever a new named singleton is added.
+    #[test]
+    fn named_dimensions_table_round_trips_canonical_name() {
+        assert!(
+            !super::NAMED_DIMENSIONS.is_empty(),
+            "NAMED_DIMENSIONS must not be empty"
+        );
+        for &(dim, expected_name) in super::NAMED_DIMENSIONS {
+            assert_eq!(
+                dim.canonical_name(),
+                Some(expected_name),
+                "round-trip failed for {:?}: canonical_name() should return {:?}",
+                dim,
+                expected_name,
+            );
+        }
+        assert_eq!(
+            DimensionVector::DIMENSIONLESS.canonical_name(),
+            None,
+            "DIMENSIONLESS must remain absent from NAMED_DIMENSIONS (canonical_name returns None)"
+        );
     }
 }

@@ -102,6 +102,12 @@ pub struct ConstraintDoc {
     pub expr_repr: String,
     /// Annotations attached to this constraint.
     pub annotations: Vec<AnnotationDoc>,
+    /// 1-indexed source line number of the constraint, if known.
+    ///
+    /// The struct-level `#[serde(default)]` keeps legacy JSON (serialized
+    /// before this field was introduced) deserializing cleanly with
+    /// `line == None`.
+    pub line: Option<u32>,
 }
 
 /// Documentation for a sub-component instantiation inside a topology template.
@@ -366,11 +372,41 @@ mod tests {
             label: Some("voltage_range".to_string()),
             expr_repr: "voltage >= 3.0 V && voltage <= 5.5 V".to_string(),
             annotations: vec![],
+            line: None,
         };
         let json = serde_json::to_string(&constraint).expect("serialize");
         let back: ConstraintDoc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(constraint, back);
         assert!(back.annotations.is_empty());
+    }
+
+    /// Round-trip with the new `line` field populated.
+    #[test]
+    fn constraint_doc_serde_round_trip_with_line() {
+        let constraint = ConstraintDoc {
+            label: Some("len_ge_diam".to_string()),
+            expr_repr: "length >= diameter".to_string(),
+            annotations: vec![],
+            line: Some(42),
+        };
+        let json = serde_json::to_string(&constraint).expect("serialize");
+        assert!(json.contains("\"line\":42"), "line tag in JSON: {json}");
+        let back: ConstraintDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(constraint, back);
+        assert_eq!(back.line, Some(42));
+    }
+
+    /// Forward-compat guard: legacy JSON without the `line` field must still
+    /// deserialize, with `line` defaulting to `None` via the struct-level
+    /// `#[serde(default)]`.
+    #[test]
+    fn constraint_doc_deserializes_without_line() {
+        let legacy_json = r#"{"label":"voltage_range","expr_repr":"v <= 5.5 V","annotations":[]}"#;
+        let c: ConstraintDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
+        assert_eq!(c.label.as_deref(), Some("voltage_range"));
+        assert_eq!(c.expr_repr, "v <= 5.5 V");
+        assert!(c.annotations.is_empty());
+        assert_eq!(c.line, None);
     }
 
     #[test]
@@ -431,6 +467,7 @@ mod tests {
                 label: None,
                 expr_repr: "width > 0 mm".to_string(),
                 annotations: vec![],
+                line: None,
             }],
             sub_components: vec![SubComponentDoc {
                 name: "cpu".to_string(),

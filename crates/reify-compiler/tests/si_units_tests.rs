@@ -4,6 +4,7 @@ mod common;
 
 use reify_compiler::{CompiledUnit, compile, si_units};
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use common::stdlib_param_si_value;
 use reify_types::{DimensionVector, ModulePath};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -244,34 +245,6 @@ fn generated_source_parses_and_compiles_cleanly() {
 
 // ─── step-11: task-specified prefixed-base resolution via stdlib ─────────────
 
-/// Compile a structure with a default-valued param and return the Scalar's
-/// si_value from its default expression.
-fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
-    let source = format!(
-        "structure def S {{ param x : {} = {} }}",
-        param_type, literal
-    );
-    let module = compile_source_with_stdlib(&source);
-    let errs = errors_only(&module);
-    assert!(
-        errs.is_empty(),
-        "source `{}` produced errors: {:?}",
-        source,
-        errs
-    );
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S template not found");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "x")
-        .expect("x cell not found");
-    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
-    common::expect_scalar(expr)
-}
 
 #[test]
 fn task_test_prefixed_bases_resolve_via_stdlib() {

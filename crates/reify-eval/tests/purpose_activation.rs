@@ -31,7 +31,9 @@ use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_types::{CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity};
+use reify_types::{
+    CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity, Type, ValueCellId,
+};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -781,29 +783,35 @@ purpose weight_target(subject : Structure) {
     );
 }
 
-// ── §8: Reflective aggregation trap (task-2199) ──────────────────────────────
+// ── §8: Reflective aggregation acceptance (task-2289) ────────────────────────
 
-/// # Characterization test — do NOT fix by making this GREEN without reading the comment
+/// Acceptance test for runtime expansion of `subject.params` (task-2289).
 ///
-/// This test pins the **vacuous-true trap**: `subject.params` inside a purpose body
-/// compiles to an empty `ListLiteral` (placeholder at `expr.rs:1136-1150`), so
-/// `forall p in []: determined(p)` is vacuously true and the purpose reports
-/// `Satisfied` even for an entity with undetermined params.
+/// Guards the end-to-end pipeline that fires `forall p in subject.params:
+/// determined(p)` against a real entity:
 ///
-/// This is a CHARACTERIZATION test of the *current broken behavior*, NOT a test of
-/// the desired correct behavior.
+///   1. The compiler emits a `PurposeReflectiveAggregation` placeholder in
+///      place of the legacy empty `ListLiteral` (task-2289 step-7).
+///   2. `activate_purpose` walks the constraint expression and rewrites the
+///      placeholder into `ListLiteral([ValueRef(Bracket, x)])` using the
+///      bound entity's resolved param queries (task-2289 step-11).
+///   3. The quantifier evaluator detects the all-`ValueRef` collection and
+///      iterates over cell IDs, calling `remap_cell` per iteration so
+///      `determined(p)` is rewritten to `determined(Bracket.x)` rather than
+///      `determined($loop_var)` (task-2289 step-9).
 ///
-/// **When runtime expansion lands, FLIP this assertion to `Satisfaction::Violated`
-/// (or `Satisfaction::Indeterminate`).**
+/// `Bracket.x` is declared with no default and no auto, so it is
+/// `Undetermined` at runtime → `determined(Bracket.x)` is `false` →
+/// `forall` returns `false` → the purpose reports `Violated`.
 ///
-/// See `FIXME(task-2199)` at `crates/reify-compiler/src/expr.rs:1141` for the
-/// full blocker analysis (list population, quantifier identity carry-through,
-/// element-type lockstep).
+/// Historical note: this test previously pinned a vacuous-true trap
+/// (`Satisfied` for an entity with undetermined params) under
+/// task-2199; runtime expansion landing under task-2289 closed the trap.
 #[test]
-fn manufacturing_ready_silently_passes_for_undetermined_params_trap() {
+fn manufacturing_ready_violates_for_undetermined_params() {
     // Bracket has a deliberately undetermined param: no default, no auto.
-    // With runtime expansion, `determined(p)` for `Bracket.x` would return
-    // false → `forall` → false → Violated.  Today it silently passes (trap).
+    // Runtime expansion makes `determined(p)` for `Bracket.x` return
+    // false → `forall` → false → Violated.
     let source = r#"
 structure Bracket {
     param x : Real
@@ -852,18 +860,247 @@ purpose manufacturing_ready(subject : Structure) {
             )
         });
 
-    // ‼ TRAP ASSERTION — asserts the broken/vacuous-true behavior, NOT desired behavior ‼
-    //
-    // `subject.params` compiles to `[]` (empty list), so
-    // `forall p in []: determined(p)` is vacuously true → Satisfied.
-    // Bracket.x is undetermined, but the forall never inspects it.
-    //
-    // WHEN RUNTIME EXPANSION LANDS: flip this to Satisfaction::Violated or Indeterminate.
+    // Acceptance: runtime expansion + cell-iteration quantifier eval cause
+    // `determined(Bracket.x)` to return false → forall false → Violated.
     assert_eq!(
         purpose_result.satisfaction,
-        Satisfaction::Satisfied,
-        "TRAP (task-2199 / expr.rs:1136-1150): vacuous-true — subject.params compiles \
-         to an empty list, so forall iterates [] and returns true regardless of Bracket.x \
-         being undetermined. When runtime expansion lands, flip this assertion to Violated.",
+        Satisfaction::Violated,
+        "task-2289 acceptance: subject.params expands at activation to [ValueRef(Bracket, x)], \
+         the quantifier iterates cell IDs and rewrites determined(p) into determined(Bracket.x); \
+         Bracket.x is undetermined, so forall is false and the purpose must be Violated.",
     );
 }
+
+// ── §9: Reflective aggregation activation-time expansion (task-2289) ─────────
+//
+// `activate_purpose` walks each constraint's expression tree (and the objective)
+// and rewrites every `CompiledExprKind::PurposeReflectiveAggregation` placeholder
+// into a populated `ListLiteral([ValueRef(entity_ref, member), ...])` sourced
+// from the active purpose's `resolved_queries`. Element `result_type` is
+// inherited from the looked-up `ValueCellNode.cell_type` (cell-type lockstep).
+
+/// Verifies that activating `purpose check(subject : Structure) {
+/// constraint forall p in subject.params: determined(p) }` against a
+/// `Bracket` with two `Real` params expands the placeholder into a
+/// concrete `ListLiteral` of `ValueRef`s pointing at `Bracket.x` and
+/// `Bracket.y`.
+///
+/// Acceptance criteria (task-2289 step-10):
+///  (a) collection.kind is `CompiledExprKind::ListLiteral` (no longer the
+///      `PurposeReflectiveAggregation` marker).
+///  (b) the ListLiteral has exactly two elements, each a `ValueRef`.
+///  (c) the elements' cell IDs are `{Bracket.x, Bracket.y}` (any order).
+///  (d) each element's `result_type` is `Type::Real` (cell-type lockstep —
+///      `Bracket.x` / `Bracket.y` are declared as `Real`).
+#[test]
+fn activate_expands_subject_params_placeholder_to_populated_list() {
+    let source = r#"
+structure Bracket {
+    param x : Real
+    param y : Real
+}
+
+purpose check(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "fixture failed to compile cleanly"
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture produced unexpected error diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("check", "Bracket");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
+
+    // Locate the injected constraint by its purpose-prefixed entity id.
+    let injected = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:check@Bracket"))
+        .map(|(_, data)| data.clone())
+        .expect(
+            "expected at least one constraint with entity prefix 'purpose:check@Bracket' \
+             after activation",
+        );
+
+    // The constraint expression is `forall p in subject.params: determined(p)` →
+    // a Quantifier whose collection should now be the expanded ListLiteral.
+    let collection = match &injected.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => collection,
+        other => panic!(
+            "expected Quantifier in injected constraint expr, got {:?}",
+            other
+        ),
+    };
+
+    // (a) collection.kind is ListLiteral (no longer the placeholder marker).
+    let elements = match &collection.kind {
+        CompiledExprKind::ListLiteral(elements) => elements,
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
+            "post-activation: collection is still the PurposeReflectiveAggregation \
+             placeholder; activate_purpose must expand it into a populated ListLiteral"
+        ),
+        other => panic!(
+            "post-activation: expected ListLiteral in Quantifier collection, got {:?}",
+            other
+        ),
+    };
+
+    // (b) exactly two elements, each a ValueRef.
+    assert_eq!(
+        elements.len(),
+        2,
+        "expected 2 ValueRef elements (Bracket.x, Bracket.y), got {}",
+        elements.len()
+    );
+
+    let mut element_cells: Vec<ValueCellId> = Vec::with_capacity(elements.len());
+    for (i, element) in elements.iter().enumerate() {
+        match &element.kind {
+            CompiledExprKind::ValueRef(id) => element_cells.push(id.clone()),
+            other => panic!(
+                "expected ValueRef element at index {} of expanded ListLiteral, got {:?}",
+                i, other
+            ),
+        }
+        // (d) cell-type lockstep — each element's result_type must equal the
+        // declared cell type (Real for Bracket.x / Bracket.y).
+        assert_eq!(
+            element.result_type,
+            Type::Real,
+            "expected element {} result_type to be Type::Real (cell-type lockstep), got {:?}",
+            i,
+            element.result_type
+        );
+    }
+
+    // (c) element cell IDs are exactly {Bracket.x, Bracket.y} (any order).
+    element_cells.sort();
+    let expected = vec![
+        ValueCellId::new("Bracket", "x"),
+        ValueCellId::new("Bracket", "y"),
+    ];
+    assert_eq!(
+        element_cells, expected,
+        "expected expanded element cell IDs to be {{Bracket.x, Bracket.y}}, got {:?}",
+        element_cells
+    );
+}
+
+/// Companion test for `activate_expands_subject_params_placeholder_to_populated_list`:
+/// `subject.geometric_params` has no compile-time `ResolvedSchemaQuery` entry
+/// (only `params` is populated by `compile_purpose` in `traits.rs`) and no
+/// activation-time fallback heuristic (task-1904 territory). The expansion
+/// helper's no-resolved-query branch must therefore replace the placeholder
+/// with an empty `ListLiteral`, preserving today's vacuous-true semantics
+/// for `forall p in subject.geometric_params: ...`.
+///
+/// Acceptance criteria (task-2289 step-12):
+///   (a) collection.kind is `CompiledExprKind::ListLiteral` (no longer the
+///       `PurposeReflectiveAggregation` placeholder).
+///   (b) the ListLiteral is empty.
+///
+/// Should PASS immediately given step-11's no-matching-query branch.
+#[test]
+fn activate_expands_geometric_params_placeholder_to_empty_list() {
+    let source = r#"
+structure Bracket {
+    param x : Real
+}
+
+purpose check(subject : Structure) {
+    constraint forall p in subject.geometric_params: determined(p)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "fixture failed to compile cleanly"
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture produced unexpected error diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("check", "Bracket");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
+
+    let injected = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:check@Bracket"))
+        .map(|(_, data)| data.clone())
+        .expect(
+            "expected at least one constraint with entity prefix 'purpose:check@Bracket' \
+             after activation",
+        );
+
+    let collection = match &injected.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => collection,
+        other => panic!(
+            "expected Quantifier in injected constraint expr, got {:?}",
+            other
+        ),
+    };
+
+    // (a) collection.kind is ListLiteral (not the placeholder).
+    let elements = match &collection.kind {
+        CompiledExprKind::ListLiteral(elements) => elements,
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
+            "post-activation: collection is still the PurposeReflectiveAggregation \
+             placeholder; activate_purpose must expand the geometric_params \
+             placeholder into an empty ListLiteral"
+        ),
+        other => panic!(
+            "post-activation: expected ListLiteral in Quantifier collection, got {:?}",
+            other
+        ),
+    };
+
+    // (b) the ListLiteral is empty.
+    assert!(
+        elements.is_empty(),
+        "expected expanded geometric_params ListLiteral to be empty (no resolved \
+         query and no fallback heuristic for geometric_params yet — task-1904), \
+         got {} elements",
+        elements.len()
+    );
+}
+
+// task-2289 amendment (reviewer S2, round 2): the integration-level
+// precedence test that previously lived here was brittle — its witness
+// (resolved-query path preserving declaration order `[z, a]` vs
+// fallback scan sorting to `[a, z]`) depended on `compile_purpose`
+// preserving template declaration order in `resolved_ids`, which is
+// not a documented contract of `ResolvedSchemaQuery`. A future
+// refactor that sorted inside the compiler would have made the
+// post-activation assertion vacuous (both paths producing `[a, z]`)
+// while leaving the test green. The replacement lives in
+// `crates/reify-eval/src/engine_purposes.rs`'s `tests` module:
+// `expand_prefers_resolved_query_over_value_cells_scan` drives
+// `expand_purpose_reflective_placeholders` directly with a hand-crafted
+// `ResolvedSchemaQuery`, pinning the precedence contract independently
+// of compiler-internal ordering.

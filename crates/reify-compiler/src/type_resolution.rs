@@ -95,60 +95,34 @@ pub(crate) fn resolve_dimension_type(
         reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
     };
-    match name {
-        // SI base dimensions
-        "Length" => Some(DimensionVector::LENGTH),
-        "Mass" => Some(DimensionVector::MASS),
-        "Time" => Some(DimensionVector::TIME),
-        "Current" => Some(DimensionVector::CURRENT),
-        "Temperature" => Some(DimensionVector::TEMPERATURE),
-        "AmountOfSubstance" => Some(DimensionVector::AMOUNT_OF_SUBSTANCE),
-        "LuminousIntensity" => Some(DimensionVector::LUMINOUS_INTENSITY),
-        "Angle" => Some(DimensionVector::ANGLE),
-        "SolidAngle" => Some(DimensionVector::SOLID_ANGLE),
-        "Money" => Some(DimensionVector::MONEY),
-        // Geometric derived dimensions
-        "Area" => Some(DimensionVector::AREA),
-        "Volume" => Some(DimensionVector::VOLUME),
-        // SI derived dimensions
-        "Force" => Some(DimensionVector::FORCE),
-        "Energy" => Some(DimensionVector::ENERGY),
-        "Power" => Some(DimensionVector::POWER),
-        "Pressure" => Some(DimensionVector::PRESSURE),
-        "Frequency" => Some(DimensionVector::FREQUENCY),
-        "Voltage" => Some(DimensionVector::VOLTAGE),
-        "Charge" => Some(DimensionVector::CHARGE),
-        "Capacitance" => Some(DimensionVector::CAPACITANCE),
-        "Resistance" => Some(DimensionVector::RESISTANCE),
-        "Conductance" => Some(DimensionVector::CONDUCTANCE),
-        "Inductance" => Some(DimensionVector::INDUCTANCE),
-        "MagneticFlux" => Some(DimensionVector::MAGNETIC_FLUX),
-        "MagneticFluxDensity" => Some(DimensionVector::MAGNETIC_FLUX_DENSITY),
-        "LuminousFlux" => Some(DimensionVector::LUMINOUS_FLUX),
-        "Illuminance" => Some(DimensionVector::ILLUMINANCE),
-        "AbsorbedDose" => Some(DimensionVector::ABSORBED_DOSE),
-        "AngularVelocity" => Some(DimensionVector::ANGULAR_VELOCITY),
-        "DynamicViscosity" => Some(DimensionVector::DYNAMIC_VISCOSITY),
-        "Dimensionless" => Some(DimensionVector::DIMENSIONLESS),
-        other => {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "unknown dimension type '{}': expected one of Length, Mass, Time, Current, \
-                     Temperature, AmountOfSubstance, LuminousIntensity, Angle, SolidAngle, \
-                     Money, Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage, \
-                     Charge, Capacitance, Resistance, Conductance, Inductance, MagneticFlux, \
-                     MagneticFluxDensity, LuminousFlux, Illuminance, AbsorbedDose, \
-                     AngularVelocity, DynamicViscosity, Dimensionless",
-                    other
-                ))
-                .with_label(DiagnosticLabel::new(
-                    type_expr.span,
-                    "unrecognized dimension type",
-                )),
-            );
-            None
-        }
+    // Scan the shared table (name → dimension direction).
+    if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS.iter().find(|(_, n)| *n == name) {
+        return Some(*dim);
     }
+    // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
+    // None for it), but resolve_dimension_type must still accept it.
+    if name == "Dimensionless" {
+        return Some(DimensionVector::DIMENSIONLESS);
+    }
+    // Unknown name: emit a diagnostic whose expected-names list is derived from the shared
+    // table chained with "Dimensionless" so it cannot drift from NAMED_DIMENSIONS.
+    let names_list = reify_types::NAMED_DIMENSIONS
+        .iter()
+        .map(|(_, n)| *n)
+        .chain(std::iter::once("Dimensionless"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "unknown dimension type '{}': expected one of {}",
+            name, names_list
+        ))
+        .with_label(DiagnosticLabel::new(
+            type_expr.span,
+            "unrecognized dimension type",
+        )),
+    );
+    None
 }
 
 /// Evaluate a constant expression to a `f64` value.
@@ -1339,6 +1313,50 @@ mod tests {
         );
     }
 
+    /// Parity contract: `resolve_dimension_type` correctly maps every entry in
+    /// `reify_types::NAMED_DIMENSIONS` and the special-cased `"Dimensionless"`.
+    ///
+    /// This test is written BEFORE the implementation is switched to use the shared table
+    /// (step 4), so it serves as a regression-protection contract that will catch any
+    /// silent divergence between the old match-arm implementation and the new table-driven
+    /// one. It is expected to pass against both implementations.
+    #[test]
+    fn resolve_dimension_type_round_trips_all_named_dimensions() {
+        for &(dim, name) in reify_types::NAMED_DIMENSIONS {
+            let te = named_type_expr(name);
+            let mut diagnostics = Vec::new();
+            let result = resolve_dimension_type(&te, &mut diagnostics);
+            assert_eq!(
+                result,
+                Some(dim),
+                "resolve_dimension_type({:?}) should return Some({:?})",
+                name,
+                dim,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "resolve_dimension_type({:?}) should produce no diagnostics; got: {:?}",
+                name,
+                diagnostics,
+            );
+        }
+        // Special-case fallback: "Dimensionless" is intentionally absent from NAMED_DIMENSIONS
+        // but must still resolve to DimensionVector::DIMENSIONLESS.
+        let te = named_type_expr("Dimensionless");
+        let mut diagnostics = Vec::new();
+        let result = resolve_dimension_type(&te, &mut diagnostics);
+        assert_eq!(
+            result,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_dimension_type(\"Dimensionless\") should return Some(DIMENSIONLESS)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "resolve_dimension_type(\"Dimensionless\") should produce no diagnostics; got: {:?}",
+            diagnostics,
+        );
+    }
+
     #[test]
     fn solid_resolves_to_geometry() {
         assert_eq!(
@@ -1372,5 +1390,45 @@ mod tests {
     #[test]
     fn resolve_enum_type_returns_none_for_empty_slice() {
         assert_eq!(resolve_enum_type("Direction", &[]), None);
+    }
+
+    /// Regression lock: the unknown-name diagnostic message for `resolve_dimension_type`
+    /// must list every name from `reify_types::NAMED_DIMENSIONS` plus `"Dimensionless"`,
+    /// with no extras or omissions.
+    ///
+    /// Uses exact set-membership rather than substring `contains` to avoid false positives
+    /// where one name is a substring of another (e.g. "Angle" ⊂ "SolidAngle",
+    /// "MagneticFlux" ⊂ "MagneticFluxDensity").
+    ///
+    /// This locks in the "diagnostic message is derived from the shared table" property.
+    /// If a future change hardcodes the message again (re-introducing drift), this test fails.
+    #[test]
+    fn resolve_dimension_type_unknown_diagnostic_lists_all_named_dimensions() {
+        let te = named_type_expr("Foo");
+        let mut diagnostics = Vec::new();
+        let _ = resolve_dimension_type(&te, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let message = &diagnostics[0].message;
+
+        // The message format is: "unknown dimension type 'Foo': expected one of A, B, C, ..."
+        // Extract everything after "expected one of " and split on ", " for exact membership check.
+        let listed_names: std::collections::HashSet<&str> = message
+            .split("expected one of ")
+            .nth(1)
+            .expect("diagnostic message should contain 'expected one of'")
+            .split(", ")
+            .collect();
+
+        let expected_names: std::collections::HashSet<&str> = reify_types::NAMED_DIMENSIONS
+            .iter()
+            .map(|(_, n)| *n)
+            .chain(std::iter::once("Dimensionless"))
+            .collect();
+
+        assert_eq!(
+            listed_names,
+            expected_names,
+            "diagnostic message listed names do not exactly match NAMED_DIMENSIONS + Dimensionless"
+        );
     }
 }

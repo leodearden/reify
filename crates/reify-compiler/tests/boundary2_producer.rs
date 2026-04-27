@@ -149,6 +149,9 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(arg);
             }
         }
+        // Reflective-aggregation placeholder (task-2289): leaf, expanded by
+        // activate_purpose at runtime. Treated as resolved here.
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
     }
 }
 

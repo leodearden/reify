@@ -205,6 +205,18 @@ impl Engine {
     /// Default tessellation tolerance in SI meters (0.1mm).
     const DEFAULT_TESSELLATION_TOLERANCE: f64 = 0.0001;
 
+    /// Returns the tessellation tolerance to use for `module`, in SI metres.
+    ///
+    /// Threads the module-level `#precision` pragma value (stored on
+    /// `CompiledModule::default_tolerance` by `apply_module_pragmas`) through
+    /// to the kernel. Falls back to [`Self::DEFAULT_TESSELLATION_TOLERANCE`]
+    /// when the pragma is absent or was malformed.
+    fn effective_tessellation_tolerance(module: &CompiledModule) -> f64 {
+        module
+            .default_tolerance
+            .unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE)
+    }
+
     /// Shared helper: execute geometry operations and tessellate each realization.
     ///
     /// Used by both `tessellate_realizations()` and `tessellate_snapshot()`.
@@ -249,7 +261,9 @@ impl Engine {
                 // Tessellate this realization's final handle (if any new handles were produced)
                 if step_handles.len() > handle_start {
                     let last_handle = step_handles[step_handles.len() - 1];
-                    match kernel.tessellate(last_handle, Self::DEFAULT_TESSELLATION_TOLERANCE) {
+                    match kernel
+                        .tessellate(last_handle, Self::effective_tessellation_tolerance(module))
+                    {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
@@ -1170,6 +1184,216 @@ mod tests {
              {:?}, got {:?}",
             realization_span,
             kernel_err_diag.labels[0].span
+        );
+    }
+
+    // ── effective_tessellation_tolerance unit tests ──────────────────────────
+
+    /// When `module.default_tolerance` is `Some(v)`, the helper returns `v`
+    /// (in SI metres) verbatim — the module-level `#precision` pragma value
+    /// overrides the engine's hardcoded default.
+    #[test]
+    fn effective_tessellation_tolerance_uses_module_default_when_set() {
+        use reify_test_support::builders::CompiledModuleBuilder;
+        use reify_types::ModulePath;
+
+        let mut module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+        module.default_tolerance = Some(0.005);
+
+        assert_eq!(
+            Engine::effective_tessellation_tolerance(&module),
+            0.005,
+            "effective_tessellation_tolerance must return module.default_tolerance \
+             when it is Some(_)"
+        );
+    }
+
+    /// When `module.default_tolerance` is `None`, the helper falls back to
+    /// `Engine::DEFAULT_TESSELLATION_TOLERANCE` — preserving v0.1 behaviour
+    /// for modules without a `#precision` pragma.
+    #[test]
+    fn effective_tessellation_tolerance_falls_back_to_default_when_none() {
+        use reify_test_support::builders::CompiledModuleBuilder;
+        use reify_types::ModulePath;
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+        assert!(
+            module.default_tolerance.is_none(),
+            "fresh module from CompiledModuleBuilder should have default_tolerance == None"
+        );
+
+        assert_eq!(
+            Engine::effective_tessellation_tolerance(&module),
+            Engine::DEFAULT_TESSELLATION_TOLERANCE,
+            "effective_tessellation_tolerance must fall back to \
+             Engine::DEFAULT_TESSELLATION_TOLERANCE when default_tolerance is None"
+        );
+    }
+
+    // ── End-to-end #precision threading: field → kernel.tessellate ───────────
+    //
+    // The unit tests above pin `effective_tessellation_tolerance` in isolation,
+    // but a regression that decoupled `default_tolerance` from the actual
+    // `kernel.tessellate(...)` call site (e.g. someone reverting that line back
+    // to the hardcoded constant) would slip through. The two tests below close
+    // that gap by driving `tessellate_realizations` with a recording stub kernel
+    // that captures every `tolerance` argument.
+
+    /// Recording stub kernel: delegates the full `GeometryKernel` surface to a
+    /// `MockGeometryKernel` and only intercepts `tessellate` to capture every
+    /// `tolerance` argument into a shared Vec the test can read back after the
+    /// engine takes ownership. Delegating (rather than reimplementing the
+    /// trait) keeps this stub consistent with how the rest of this file's
+    /// tests construct kernels and avoids drift if `MockGeometryKernel` gains
+    /// new behaviour.
+    struct RecordingTessellationKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        recorded_tolerances: std::sync::Arc<std::sync::Mutex<Vec<f64>>>,
+    }
+
+    impl reify_types::GeometryKernel for RecordingTessellationKernel {
+        fn execute(
+            &mut self,
+            op: &reify_types::GeometryOp,
+        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            query: &reify_types::GeometryQuery,
+        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            self.inner.query(query)
+        }
+
+        fn export(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            format: reify_types::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_types::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+            self.recorded_tolerances.lock().unwrap().push(tolerance);
+            self.inner.tessellate(handle, tolerance)
+        }
+    }
+
+    /// Build a CompiledModule with one Box-primitive realization, suitable for
+    /// driving `tessellate_realizations`. Uses the same builder pattern as the
+    /// fixture in `geometry_error_handling.rs::module_with_box_realization`.
+    fn module_with_one_box_realization() -> reify_compiler::CompiledModule {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
+        use reify_types::{CompiledExpr, ModulePath, Type};
+
+        let e = "TestShape";
+        let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+
+        let box_op = CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(80.0)),
+                ("height".into(), mm_lit(100.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        };
+
+        let template = TopologyTemplateBuilder::new(e)
+            .param(e, "width", Type::length(), Some(mm_lit(80.0)))
+            .param(e, "height", Type::length(), Some(mm_lit(100.0)))
+            .param(e, "depth", Type::length(), Some(mm_lit(5.0)))
+            .realization(e, 0, vec![box_op])
+            .build();
+
+        CompiledModuleBuilder::new(ModulePath::single("test_precision_threading"))
+            .template(template)
+            .build()
+    }
+
+    /// End-to-end: when `module.default_tolerance == Some(0.005)`, the value
+    /// passed to `kernel.tessellate(...)` must be exactly `0.005`. Pins the
+    /// `kernel.tessellate(last_handle, Self::effective_tessellation_tolerance(module))`
+    /// call site against a regression that re-introduces the hardcoded
+    /// `Self::DEFAULT_TESSELLATION_TOLERANCE`.
+    #[test]
+    fn tessellate_realizations_threads_module_default_tolerance_into_kernel() {
+        use reify_test_support::MockConstraintChecker;
+        use std::sync::{Arc, Mutex};
+
+        let mut module = module_with_one_box_realization();
+        module.default_tolerance = Some(0.005);
+
+        let recorded: Arc<Mutex<Vec<f64>>> = Arc::new(Mutex::new(Vec::new()));
+        let kernel = RecordingTessellationKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            recorded_tolerances: Arc::clone(&recorded),
+        };
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+        let _ = engine.tessellate_realizations(&module);
+
+        let tolerances = recorded.lock().unwrap().clone();
+        assert_eq!(
+            tolerances.len(),
+            1,
+            "expected exactly 1 tessellate call (one realization), got {}: {:?}",
+            tolerances.len(),
+            tolerances
+        );
+        assert_eq!(
+            tolerances[0], 0.005,
+            "kernel.tessellate must receive module.default_tolerance verbatim, got {}",
+            tolerances[0]
+        );
+    }
+
+    /// End-to-end fallback: when `module.default_tolerance == None`, the value
+    /// passed to `kernel.tessellate(...)` must be exactly
+    /// `Engine::DEFAULT_TESSELLATION_TOLERANCE`. Pins the same call site for
+    /// the no-pragma path.
+    #[test]
+    fn tessellate_realizations_falls_back_to_default_tolerance_in_kernel() {
+        use reify_test_support::MockConstraintChecker;
+        use std::sync::{Arc, Mutex};
+
+        let module = module_with_one_box_realization();
+        assert!(
+            module.default_tolerance.is_none(),
+            "fixture must start with default_tolerance == None"
+        );
+
+        let recorded: Arc<Mutex<Vec<f64>>> = Arc::new(Mutex::new(Vec::new()));
+        let kernel = RecordingTessellationKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            recorded_tolerances: Arc::clone(&recorded),
+        };
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+        let _ = engine.tessellate_realizations(&module);
+
+        let tolerances = recorded.lock().unwrap().clone();
+        assert_eq!(
+            tolerances.len(),
+            1,
+            "expected exactly 1 tessellate call (one realization), got {}: {:?}",
+            tolerances.len(),
+            tolerances
+        );
+        assert_eq!(
+            tolerances[0],
+            Engine::DEFAULT_TESSELLATION_TOLERANCE,
+            "kernel.tessellate must receive Engine::DEFAULT_TESSELLATION_TOLERANCE \
+             when default_tolerance is None, got {}",
+            tolerances[0]
         );
     }
 }
