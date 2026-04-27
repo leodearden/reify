@@ -532,6 +532,31 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::DimensionMismatch).unwrap();
         assert_eq!(s, "\"DimensionMismatch\"");
     }
+
+    // --- GeometryUnbounded tests (geometry-traits task 2312) ---
+    // Pairs with the conformance-walker producer in
+    // `crates/reify-compiler/src/conformance/mod.rs` for the call-site
+    // Bounded check at trait-typed parameters of `Type::Geometry` arguments.
+
+    /// `DiagnosticCode::GeometryUnbounded` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the variant-agnostic
+    /// `diagnostic_code_derives` shape but targeted at the new variant so a
+    /// future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_geometry_unbounded_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GeometryUnbounded);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryUnbounded));
+        assert_eq!(format!("{:?}", DiagnosticCode::GeometryUnbounded), "GeometryUnbounded");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GeometryUnbounded` serializes as
+    /// `"GeometryUnbounded"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_geometry_unbounded_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
+        assert_eq!(s, "\"GeometryUnbounded\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
