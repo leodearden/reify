@@ -262,6 +262,50 @@ structure S {
     );
 }
 
+/// A chain rooted at a `FunctionCall` (`f(x).a.b.c.d.e`, length 6) must emit
+/// exactly one DeepDotChain warning whose message contains the shape-hinting
+/// placeholder `_(…)` for the call root.
+///
+/// `render_chain_text` maps `ExprKind::FunctionCall { .. }` to `"_(…)"` so
+/// bare-text consumers (CLI, tools printing `Diagnostic.message`) see
+/// `_(…).a.b.c.d.e` and know the chain root was a function call, without
+/// needing the source span. Editor renderings (LSP/MCP) show the literal
+/// source via the squiggle.
+#[test]
+fn function_call_root_emits_function_call_placeholder() {
+    let source = r#"
+structure S {
+    param a: Real = 0
+    let x = f(a).a.b.c.d.e
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .collect();
+
+    assert_eq!(
+        deep_dot_chain_warnings.len(),
+        1,
+        "expected exactly 1 DeepDotChain warning for `f(a).a.b.c.d.e`, got: {:?}",
+        deep_dot_chain_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let warning = deep_dot_chain_warnings[0];
+    assert!(
+        warning.message.contains("_(\u{2026}).a.b.c.d.e"),
+        "DeepDotChain warning for a FunctionCall-rooted chain must render \
+         the chain text with `_(\u{2026})` (shape-hinting placeholder) standing \
+         in for the FunctionCall root, got: {:?}",
+        warning.message
+    );
+}
+
 // --- Walker-coverage cluster -----------------------------------------------
 //
 // The walker must visit every expression-bearing position in the AST. The
