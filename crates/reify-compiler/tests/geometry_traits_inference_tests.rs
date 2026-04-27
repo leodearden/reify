@@ -26,8 +26,9 @@ use reify_compiler::geometry_traits_inference::{
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind,
 };
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, ResolvedFunction, Type, Value,
+    CompiledExpr, CompiledExprKind, ContentHash, DiagnosticCode, ResolvedFunction, Type, Value,
 };
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
@@ -464,4 +465,54 @@ fn infer_traits_for_expr_handles_nested_union_of_boxes() {
 fn infer_traits_for_expr_defaults_to_all_for_non_function_call() {
     let lit = CompiledExpr::literal(Value::Int(42), Type::Int);
     assert_eq!(infer_traits_for_expr(&lit), InferredTraits::all());
+}
+
+// ─── End-to-end: call site with `param g : Bounded` ─────────────────────────
+
+/// Positive end-to-end test: a structure declares `param g : Bounded` and a
+/// caller instantiates it with a `box(...)` argument. `box(...)` infers as
+/// fully Bounded+Connected+Convex, so the call site must NOT emit
+/// `DiagnosticCode::GeometryUnbounded` (or a `TypeNotConformingToTrait`
+/// cascade for `g`). This exercises the conformance-walker hook end-to-end.
+///
+/// The negative end-to-end (an Unbounded primitive rejected at this slot)
+/// is deferred until `half_space` / `extrude_infinite` lands — see the
+/// `TODO(geometry-traits-task-4-or-later)` block in
+/// `geometry_traits_inference.rs`.
+#[test]
+fn bounded_param_accepting_box_geometry_emits_no_diagnostic() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+
+    // Filter to the diagnostics that this test pins: GeometryUnbounded must
+    // never fire for a box(...) arg, and TypeNotConformingToTrait must not
+    // fire for the `g` arg (a box is fully Bounded).
+    let geometry_unbounded: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected no GeometryUnbounded diagnostic for `box(...)` at a Bounded slot, got: {:?}",
+        geometry_unbounded
+    );
+
+    let g_conformance_failures: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .filter(|d| d.message.contains("'g'") || d.message.contains("Bounded"))
+        .collect();
+    assert!(
+        g_conformance_failures.is_empty(),
+        "expected no TypeNotConformingToTrait diagnostic for the 'g' Bounded slot, got: {:?}",
+        g_conformance_failures
+    );
 }
