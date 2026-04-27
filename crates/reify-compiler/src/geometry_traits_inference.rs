@@ -437,3 +437,50 @@ fn first_two_geometry_args(args: &[CompiledExpr]) -> (InferredTraits, InferredTr
         .unwrap_or(InferredTraits::all());
     (a, b)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{is_geometry_marker_trait, GEOMETRY_MARKER_TRAITS};
+
+    /// Every name in `GEOMETRY_MARKER_TRAITS` must be recognised as a geometry
+    /// marker by `is_geometry_marker_trait`. This pins the helper against drift:
+    /// if either the constant or the helper is updated incorrectly, this test
+    /// catches the mismatch.
+    #[test]
+    fn is_geometry_marker_trait_recognises_each_of_the_seven_stdlib_names() {
+        let expected = [
+            "Bounded",
+            "Closed",
+            "Manifold",
+            "Orientable",
+            "Convex",
+            "Connected",
+            "Watertight",
+        ];
+        assert_eq!(
+            GEOMETRY_MARKER_TRAITS.len(),
+            expected.len(),
+            "GEOMETRY_MARKER_TRAITS length mismatch: {:?}",
+            GEOMETRY_MARKER_TRAITS
+        );
+        for name in &expected {
+            assert!(
+                is_geometry_marker_trait(name),
+                "expected is_geometry_marker_trait({name:?}) == true, but got false"
+            );
+        }
+    }
+
+    /// Non-marker names — including lowercase variants — must return `false`.
+    /// Case-sensitivity is by design: Reify trait names are PascalCase.
+    #[test]
+    fn is_geometry_marker_trait_rejects_non_marker_names() {
+        let non_markers = ["Container", "Material", "Elastic", "watertight", ""];
+        for name in &non_markers {
+            assert!(
+                !is_geometry_marker_trait(name),
+                "expected is_geometry_marker_trait({name:?}) == false, but got true"
+            );
+        }
+    }
+}
