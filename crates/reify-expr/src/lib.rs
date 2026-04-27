@@ -1,6 +1,7 @@
 mod analysis;
 mod calculus;
 mod complex;
+pub mod interp;
 pub mod kleene;
 mod sanitize;
 
