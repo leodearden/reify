@@ -264,3 +264,47 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+/// Match-arm-style guarded-group siblings must NOT shadow each other.
+///
+/// Per spec §6.4, `where cond { … } else { … }` desugaring registers same-name
+/// members across the two branches as mutually-exclusive siblings into the
+/// SAME parent scope — not as a child scope. Declaring `param head` in both
+/// branches is a sibling guarded-decl group, not a shadow.
+///
+/// The plan's example used `sub head : HexHead/SocketHead`, but `sub` inside
+/// guarded blocks is currently rejected as "not yet supported" by the
+/// guard-compilation phase (see `recursive_sub_inside_block_guard_emits_
+/// unsupported_error`). The shadow-lint contract is identical for any
+/// member-decl variant — the lint folds both branches into the same parent
+/// frame regardless — so we exercise it with `param`, which is supported.
+#[test]
+fn match_arm_style_guarded_subs_do_not_warn() {
+    let source = r#"
+structure S {
+    param cond : Bool = true
+    where cond {
+        param head : Real = 1
+    } else {
+        param head : Real = 2
+    }
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        0,
+        "guarded-group sibling members with the same name must NOT shadow; \
+         got: {:?}",
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+}
