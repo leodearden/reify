@@ -521,6 +521,38 @@ impl CacheStore {
     }
 }
 
+/// Derive output freshness from `still_refining` flag and input freshnesses.
+///
+/// Implements arch §7.2 lines 730-749 (`docs/reify-implementation-architecture.md`):
+///
+/// | `still_refining` | any input `!= Final` | output                     |
+/// |------------------|----------------------|----------------------------|
+/// | `true`           | –                    | `Intermediate { generation }` |
+/// | `false`          | `true`               | `Intermediate { generation }` |
+/// | `false`          | `false` (all Final)  | `Final`                    |
+///
+/// Note: Pending and Failed both count as non-Final per §7.2 — see the
+/// `derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final`
+/// unit test for truth-table coverage across all 4 input variants.
+pub fn derive_output_freshness<'a>(
+    still_refining: bool,
+    input_freshnesses: impl IntoIterator<Item = &'a Freshness>,
+    generation: u64,
+) -> Freshness {
+    if still_refining {
+        return Freshness::Intermediate { generation };
+    }
+    // Pending and Failed both count as non-Final per §7.2 — the `!matches!(_, Final)`
+    // discriminator covers all three non-Final variants in a single predicate.
+    if input_freshnesses
+        .into_iter()
+        .any(|f| !matches!(f, Freshness::Final))
+    {
+        return Freshness::Intermediate { generation };
+    }
+    Freshness::Final
+}
+
 /// Compute the input hash for a value cell expression.
 ///
 /// Combines the expression's content_hash with dependency value hashes
