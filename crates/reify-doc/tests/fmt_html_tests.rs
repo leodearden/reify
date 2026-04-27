@@ -654,6 +654,111 @@ fn meta_section_omitted_when_empty() {
     assert!(!out.contains("<dl>"));
 }
 
+/// Trait body: `<h3>Members</h3><ul>` with one `<li>` per escaped member string.
+#[test]
+fn trait_body_renders_members() {
+    let item = ItemDoc::Trait {
+        name: "Fastener".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        members: vec!["thread_pitch: Length".into(), "diameter: Length".into()],
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<h3>Members</h3>"),
+        "missing <h3>Members</h3>; got:\n{out}"
+    );
+    assert!(out.contains("<ul>"), "missing <ul> for members; got:\n{out}");
+    assert!(
+        out.contains("<li>thread_pitch: Length</li>"),
+        "missing first member; got:\n{out}"
+    );
+    assert!(
+        out.contains("<li>diameter: Length</li>"),
+        "missing second member; got:\n{out}"
+    );
+}
+
+/// Empty trait members list must produce no `<h3>Members</h3>`.
+#[test]
+fn trait_body_omits_members_when_empty() {
+    let item = ItemDoc::Trait {
+        name: "Empty".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        members: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("<h3>Members</h3>"));
+}
+
+/// Enum body: `<h3>Variants</h3><ul>` with one `<li>` per escaped variant name.
+#[test]
+fn enum_body_renders_variants() {
+    let item = ItemDoc::Enum {
+        name: "Color".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        variants: vec!["Red".into(), "Green".into(), "Blue".into()],
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<h3>Variants</h3>"),
+        "missing <h3>Variants</h3>; got:\n{out}"
+    );
+    assert!(out.contains("<li>Red</li>"));
+    assert!(out.contains("<li>Green</li>"));
+    assert!(out.contains("<li>Blue</li>"));
+}
+
+/// Empty enum variants list must produce no `<h3>Variants</h3>`.
+#[test]
+fn enum_body_omits_variants_when_empty() {
+    let item = ItemDoc::Enum {
+        name: "Empty".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        variants: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("<h3>Variants</h3>"));
+}
+
+/// Function body: signature wrapped in `<pre><code>…</code></pre>` with HTML
+/// escaping (`->` becomes `-&gt;`).
+#[test]
+fn function_body_renders_signature_pre() {
+    let item = ItemDoc::Function {
+        name: "compute".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        signature: "fn compute(x: f64) -> f64".into(),
+    };
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<pre><code>fn compute(x: f64) -&gt; f64</code></pre>"),
+        "expected `<pre><code>fn compute(x: f64) -&gt; f64</code></pre>` (note `-&gt;` escaped); got:\n{out}"
+    );
+    // Negative: no raw `->` in the function body region.
+    assert!(
+        !out.contains("fn compute(x: f64) -> f64"),
+        "expected raw `->` to be escaped; got:\n{out}"
+    );
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
