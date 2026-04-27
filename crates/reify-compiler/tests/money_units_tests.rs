@@ -4,7 +4,7 @@
 //! USD quantity literal resolution (25USD → Scalar{si_value: 25.0, MONEY}),
 //! and USD compound arithmetic (25USD/1kg → BinOp with MONEY/MASS result).
 //!
-//! All five tests fail before step-2 adds `pub unit USD : Money` to units.ri,
+//! All four tests fail before step-2 adds `pub unit USD : Money` to units.ri,
 //! then pass without any additional Rust code changes.
 
 mod common;
@@ -251,14 +251,3 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
     }
 }
 
-// ─── (e) USD existence canary ─────────────────────────────────────────────────
-
-#[test]
-fn stdlib_units_count_grows_to_include_USD() {
-    let module = units_module();
-    assert!(
-        module.units.iter().any(|u| u.name == "USD"),
-        "std/units should contain a unit named 'USD'; found units: {:?}",
-        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
-    );
-}
