@@ -251,7 +251,36 @@ fn group_needs_phase3(
 /// dual-mode test) can observe the counter increment even when the
 /// `debug_assert!` subsequently unwinds the thread.
 fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
-    values.get(guard_cell).cloned()
+    match values.get(guard_cell) {
+        Some(v) => Some(v.clone()),
+        None => {
+            // Canonical three-step posture: warn first (observable by counting
+            // subscribers in both debug and release), debug_assert second (halts
+            // in debug builds so the invariant violation is caught early), return
+            // None third (safe fallback so release builds skip the group without
+            // cascading).  The warn-before-assert ordering is load-bearing: the
+            // WARN event must fire before the debug_assert! unwinds the thread
+            // so the dual-mode test's CountingSubscriber can observe the
+            // increment regardless of build mode.
+            tracing::warn!(
+                target: "reify_eval::engine_edit",
+                guard_cell = %guard_cell,
+                "Phase 3 guard cell absent from `values` after group_needs_phase3 \
+                 returned true — unreachable in current flow but possible after a \
+                 future refactor that narrows structure_controlling (task 2229); \
+                 skipping this group"
+            );
+            debug_assert!(
+                false,
+                "phase3_take_guard_val: guard cell {:?} absent from `values` after \
+                 group_needs_phase3 returned true — unreachable in current flow but \
+                 possible after a future refactor that narrows structure_controlling \
+                 (task 2229)",
+                guard_cell
+            );
+            None
+        }
+    }
 }
 
 /// Look up the pre-edit snapshot guard value for `gc` from the engine's
@@ -3368,18 +3397,18 @@ mod tests {
             .build();
         let warn_arc = counters[&tracing::Level::WARN].clone();
 
-        // Capture the return value via Cell so it crosses the catch_unwind
-        // boundary without requiring Send (Option<Value> is Send, but Cell avoids
-        // needing to reason about it).
+        // Track whether the helper returned None using an AtomicBool (UnwindSafe
+        // and Send, so it crosses the catch_unwind boundary without issue).
+        // `Value` is not `Copy`, so `Cell<Option<Value>>` would not work here.
         #[cfg(not(debug_assertions))]
-        let result_cell = std::cell::Cell::new(None::<Value>);
+        let result_was_none = std::sync::atomic::AtomicBool::new(false);
 
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let ret = tracing::subscriber::with_default(subscriber, || {
                 phase3_take_guard_val(&values, &guard_cell)
             });
             #[cfg(not(debug_assertions))]
-            result_cell.set(ret);
+            result_was_none.store(ret.is_none(), Ordering::Release);
         }));
 
         assert_eq!(
@@ -3390,9 +3419,8 @@ mod tests {
         );
 
         #[cfg(not(debug_assertions))]
-        assert_eq!(
-            result_cell.get(),
-            None,
+        assert!(
+            result_was_none.load(Ordering::Acquire),
             "absent-guard arm (release build): helper must return None \
              when the guard cell is absent"
         );
