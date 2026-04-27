@@ -279,6 +279,9 @@ fn walk_annotations(
 ) {
     for ann in annotations {
         for arg in &ann.args {
+            // Each annotation arg is an independent expression root:
+            // walk_expr starts a fresh depth budget (walk_expr_depth(_, _, 0))
+            // per arg, not a continuation of any surrounding expression context.
             walk_expr(arg, diagnostics);
         }
     }
