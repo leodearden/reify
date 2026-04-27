@@ -1026,3 +1026,195 @@ fn precision_pragma_with_multiple_args_warns_and_does_not_set_tolerance() {
         warns
     );
 }
+
+// ── Amendment round 2: extra unit + bare-value coverage ──────────────────────
+
+/// `#precision(1in)` converts the inch literal to its SI metres value.
+///
+/// The `in` arm in `unit_to_scalar` is the only imperial Length unit we
+/// promise to support in v0.1. Without this test, a regression that dropped
+/// the `in` match arm would leave the only failing assertion in much further
+/// downstream tests.
+#[test]
+fn precision_pragma_with_in_unit_converts_to_metres() {
+    let module = compile_source("#precision(1in)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.0254),
+        "expected default_tolerance Some(0.0254) for #precision(1in)"
+    );
+}
+
+/// `#precision("0.001m")` — a bare String argument — hits the catch-all `_`
+/// match arm and emits exactly one "expected a Length literal" warning;
+/// default_tolerance stays None.
+#[test]
+fn precision_pragma_with_bare_string_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision(\"0.001m\")\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for bare-string #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("expected a Length literal"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'expected a Length literal' warning for #precision(\"0.001m\"), \
+         got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision(true)` — a bare Bool argument — hits the catch-all `_` match
+/// arm and emits exactly one "expected a Length literal" warning;
+/// default_tolerance stays None.
+#[test]
+fn precision_pragma_with_bare_bool_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision(true)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for bare-bool #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("expected a Length literal"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'expected a Length literal' warning for #precision(true), \
+         got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision(somename)` — a bare Ident other than the legacy `float64` —
+/// hits the catch-all `_` match arm and emits exactly one "expected a Length
+/// literal" warning; default_tolerance stays None.
+///
+/// Distinguishes the catch-all branch from the float64-Ident special case
+/// (which emits an Info diagnostic with different text).
+#[test]
+fn precision_pragma_with_non_float64_ident_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision(somename)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for non-float64-ident #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("expected a Length literal"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'expected a Length literal' warning for #precision(somename), \
+         got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+// ── Amendment round 2: tolerance range bounds ────────────────────────────────
+
+/// `#precision(0m)` — explicit zero tolerance — is rejected with a "must be
+/// positive" warning; default_tolerance stays None so the engine falls back to
+/// its built-in default.
+#[test]
+fn precision_pragma_with_zero_tolerance_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision(0m)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for #precision(0m), got {:?}",
+        module.default_tolerance
+    );
+
+    let warns = pragma_warnings(&module, "must be positive");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'must be positive' warning for #precision(0m), got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision(1000m)` — far above the v0.1 cap of 1.0m — is rejected with a
+/// "exceeds the v0.1 cap" warning; default_tolerance stays None so the engine
+/// falls back to its built-in default.
+#[test]
+fn precision_pragma_above_cap_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision(1000m)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for #precision(1000m), got {:?}",
+        module.default_tolerance
+    );
+
+    let warns = pragma_warnings(&module, "exceeds the v0.1 cap");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'exceeds the v0.1 cap' warning for #precision(1000m), got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision(1m)` — exactly at the v0.1 cap — is accepted (the bound is
+/// inclusive on the upper end).
+#[test]
+fn precision_pragma_at_upper_cap_is_accepted() {
+    let module = compile_source("#precision(1m)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.default_tolerance,
+        Some(1.0),
+        "expected default_tolerance Some(1.0) for #precision(1m) (cap is inclusive)"
+    );
+}
