@@ -394,6 +394,18 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::TraitNotImplemented).unwrap();
         assert_eq!(s, "\"TraitNotImplemented\"");
     }
+
+    /// `DiagnosticCode::DeepDotChain` is a real variant: it constructs, supports
+    /// equality (mirrors `diagnostic_code_derives`), and Debug-prints as `"DeepDotChain"`.
+    /// Pairs with the lint pass in
+    /// `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
+    #[test]
+    fn diagnostic_code_deep_dot_chain_variant() {
+        let a = DiagnosticCode::DeepDotChain;
+        let b = a; // Copy
+        assert_eq!(a, b); // PartialEq + Eq
+        assert_eq!(format!("{:?}", a), "DeepDotChain");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
