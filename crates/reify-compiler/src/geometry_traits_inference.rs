@@ -475,28 +475,22 @@ fn first_two_geometry_args(args: &[CompiledExpr]) -> (InferredTraits, InferredTr
 mod tests {
     use super::{is_geometry_marker_trait, GEOMETRY_MARKER_TRAITS};
 
-    /// Every name in `GEOMETRY_MARKER_TRAITS` must be recognised as a geometry
-    /// marker by `is_geometry_marker_trait`. This pins the helper against drift:
-    /// if either the constant or the helper is updated incorrectly, this test
-    /// catches the mismatch.
+    /// `GEOMETRY_MARKER_TRAITS` must agree with the shared test-fixture
+    /// `EXPECTED_GEOMETRY_TRAITS` and `is_geometry_marker_trait` must accept
+    /// every name in that fixture.  Driving the assertion off
+    /// `EXPECTED_GEOMETRY_TRAITS` rather than a third inline copy means any
+    /// divergence between the two independently-maintained lists surfaces here
+    /// rather than silently passing.
     #[test]
     fn is_geometry_marker_trait_recognises_each_of_the_seven_stdlib_names() {
-        let expected = [
-            "Bounded",
-            "Closed",
-            "Manifold",
-            "Orientable",
-            "Convex",
-            "Connected",
-            "Watertight",
-        ];
+        let expected = reify_test_support::EXPECTED_GEOMETRY_TRAITS;
         assert_eq!(
             GEOMETRY_MARKER_TRAITS.len(),
             expected.len(),
-            "GEOMETRY_MARKER_TRAITS length mismatch: {:?}",
+            "GEOMETRY_MARKER_TRAITS length mismatch against EXPECTED_GEOMETRY_TRAITS: {:?}",
             GEOMETRY_MARKER_TRAITS
         );
-        for name in &expected {
+        for name in expected {
             assert!(
                 is_geometry_marker_trait(name),
                 "expected is_geometry_marker_trait({name:?}) == true, but got false"

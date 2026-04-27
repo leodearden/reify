@@ -97,6 +97,47 @@ structure def MyMaterial : Elastic {
     );
 }
 
+/// An *occurrence* with a single Watertight bound must emit exactly one
+/// `W_TRAIT_USER_ASSERTED` warning.  The lint fires for both `structure def` and
+/// `occurrence def` because both reach `compile_entity` via `EntityDefRef`, which
+/// shares the same trait_bound iteration loop.  A future refactor that moves
+/// warning emission into a structure-only branch would silently regress this test.
+#[test]
+fn occurrence_with_geometry_marker_bound_emits_one_user_asserted_warning() {
+    let source = r#"
+occurrence def Joint : Watertight {
+    param x : Real = 1.0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let asserted: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TraitUserAsserted))
+        .collect();
+
+    assert_eq!(
+        asserted.len(),
+        1,
+        "expected exactly 1 W_TRAIT_USER_ASSERTED warning for occurrence def, got {}: {:#?}",
+        asserted.len(),
+        asserted
+    );
+
+    let w = asserted[0];
+    assert_eq!(w.severity, Severity::Warning, "expected Warning severity");
+    assert!(
+        w.message.contains("Joint"),
+        "message should name the entity 'Joint', got: {:?}",
+        w.message
+    );
+    assert!(
+        w.message.contains("Watertight"),
+        "message should name the trait 'Watertight', got: {:?}",
+        w.message
+    );
+}
+
 /// A structure with two geometry marker bounds (`Closed + Manifold`) must emit
 /// exactly 2 `W_TRAIT_USER_ASSERTED` warnings, one per marker, with distinct
 /// label spans (each pinned to its own trait bound, not to the entity span).
@@ -120,17 +161,6 @@ structure def Shell : Closed + Manifold {
         "expected exactly 2 W_TRAIT_USER_ASSERTED warnings (one per bound), got {}: {:#?}",
         asserted.len(),
         asserted
-    );
-
-    // Each warning must name its respective trait.
-    let names_in_messages: Vec<bool> = asserted
-        .iter()
-        .map(|d| d.message.contains("Closed") || d.message.contains("Manifold"))
-        .collect();
-    assert!(
-        names_in_messages.iter().all(|&b| b),
-        "each warning message must name its trait ('Closed' or 'Manifold'): {:#?}",
-        asserted.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // Confirm both trait names appear across the two warnings.

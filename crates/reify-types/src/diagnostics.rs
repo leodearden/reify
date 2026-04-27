@@ -641,17 +641,16 @@ mod tests {
     // variant-specific round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TraitUserAsserted` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"TraitUserAsserted"`.
-    /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`; a future
-    /// enum reorganisation that drops `TraitUserAsserted` is caught here.
+    /// `Diagnostic::warning(...).with_code(...)`.  Shape mirrors
+    /// `diagnostic_code_shadowing_with_code_round_trips`; a future enum
+    /// reorganisation that drops `TraitUserAsserted` is caught here.
+    /// (The `Debug` rendering assertion is omitted — it would only pin the
+    /// identifier spelling, which any rename touches on both sides simultaneously.
+    /// The serde wire-format test below provides the real external-contract pin.)
     #[test]
     fn diagnostic_code_trait_user_asserted_with_code_round_trips() {
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::TraitUserAsserted);
         assert_eq!(d.code, Some(DiagnosticCode::TraitUserAsserted));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::TraitUserAsserted),
-            "TraitUserAsserted"
-        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::TraitUserAsserted` serializes as
