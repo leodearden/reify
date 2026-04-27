@@ -8,7 +8,7 @@
 //!   [`MarkdownOptions::split`] to either single-file or split-file rendering.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{DocModel, ItemDoc, ParamDoc, PortDoc};
+use crate::model::{ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
 
 /// Knobs controlling how the formatter emits Markdown.
 ///
@@ -189,10 +189,16 @@ fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>
 
     // Container variants (Structure / Occurrence) get parameter and port tables.
     match item {
-        ItemDoc::Structure { params, ports, .. }
-        | ItemDoc::Occurrence { params, ports, .. } => {
+        ItemDoc::Structure {
+            params, ports, constraints, meta, ..
+        }
+        | ItemDoc::Occurrence {
+            params, ports, constraints, meta, ..
+        } => {
             render_params_table(out, params);
             render_ports_table(out, ports);
+            render_constraints(out, constraints);
+            render_meta(out, meta);
         }
         _ => {}
     }
@@ -233,6 +239,55 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         out.push_str(" | ");
         out.push_str(&md_cell_escape(description));
         out.push_str(" |\n");
+    }
+    out.push('\n');
+}
+
+/// Render the `### Constraints` bullet list.  No-op when `cs` is empty.
+///
+/// Each entry is one of three shapes:
+/// - `- `{expr}`` — no label
+/// - `- {label}: `{expr}`` — labeled
+/// - either of the above with a trailing ` *(line N)*` when `line.is_some()`.
+fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
+    if cs.is_empty() {
+        return;
+    }
+    out.push_str("### Constraints\n\n");
+    for c in cs {
+        out.push_str("- ");
+        if let Some(label) = c.label.as_deref() {
+            out.push_str(label);
+            out.push_str(": ");
+        }
+        out.push('`');
+        out.push_str(&c.expr_repr);
+        out.push('`');
+        if let Some(line) = c.line {
+            out.push_str(" *(line ");
+            out.push_str(&line.to_string());
+            out.push_str(")*");
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
+/// Render the `### Meta` bullet list, sorted alphabetically by key.
+/// No-op when `meta` is empty.
+fn render_meta(out: &mut String, meta: &[(String, String)]) {
+    if meta.is_empty() {
+        return;
+    }
+    out.push_str("### Meta\n\n");
+    let mut sorted: Vec<&(String, String)> = meta.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (k, v) in sorted {
+        out.push_str("- **");
+        out.push_str(k);
+        out.push_str("**: ");
+        out.push_str(v);
+        out.push('\n');
     }
     out.push('\n');
 }
