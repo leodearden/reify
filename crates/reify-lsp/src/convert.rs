@@ -362,7 +362,7 @@ mod tests {
         ];
         for &(code, expected_wire) in cases {
             assert_eq!(
-                serde_json::to_value(&code).unwrap().as_str().unwrap(),
+                serde_json::to_value(code).unwrap().as_str().unwrap(),
                 expected_wire,
                 "serde wire form for DiagnosticCode::{code:?} must equal {expected_wire:?}"
             );

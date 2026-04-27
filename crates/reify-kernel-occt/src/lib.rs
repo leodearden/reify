@@ -1437,6 +1437,7 @@ impl OcctKernel {
 }
 
 #[cfg(all(test, has_occt))]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
     use crate::floor_constants::RUST_GUARD_MARKER;
@@ -5285,7 +5286,7 @@ mod tests {
     /// `Err(QueryError::InvalidHandle(*handle))`.
     #[test]
     fn center_of_mass_invalid_handle_returns_invalid_handle_err() {
-        let mut kernel = OcctKernel::new();
+        let kernel = OcctKernel::new();
         let bad_id = GeometryHandleId(9999);
         let result = kernel.query(&GeometryQuery::CenterOfMass { handle: bad_id, density: 1.0 });
         match result {
@@ -5318,7 +5319,7 @@ mod tests {
     /// `Err(QueryError::InvalidHandle(*handle))`.
     #[test]
     fn inertia_tensor_invalid_handle_returns_invalid_handle_err() {
-        let mut kernel = OcctKernel::new();
+        let kernel = OcctKernel::new();
         let bad_id = GeometryHandleId(9999);
         let result = kernel.query(&GeometryQuery::InertiaTensor { handle: bad_id, density: 1.0 });
         match result {

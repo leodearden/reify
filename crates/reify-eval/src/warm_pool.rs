@@ -208,7 +208,7 @@ impl WarmStatePool {
     /// debug builds, so callers must remain gated `#[cfg(not(debug_assertions))]` — the
     /// debug assertion still enforces the cap; only the *trim path* (release-only) is
     /// exercised by tests using this constructor.
-    #[cfg(test)]
+    #[cfg(all(test, not(debug_assertions)))]
     pub(crate) fn with_test_events_cap(cap: usize) -> Self {
         let mut pool = Self::unlimited();
         pool.test_events_cap = Some(cap);
