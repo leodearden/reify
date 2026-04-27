@@ -633,8 +633,32 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
+            // Bare Number / Bool / String / Quantity as the (only) first arg.
+            // The Ident cases were matched above; this arm catches the
+            // remaining bare scalar variants. v0.1 deliberately rejects the
+            // string form `#kernel("occt")` — only the Ident grammar is valid.
+            [PragmaArg::Bare(_)] => {
+                module.diagnostics.push(
+                    Diagnostic::warning("#kernel: expected #kernel(occt); ignored")
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // KeyValue first (e.g. `#kernel(name="occt")`): the kernel ident
+            // is required as the leading positional argument in v0.1.
+            [PragmaArg::KeyValue { .. }, ..] => {
+                module.diagnostics.push(
+                    Diagnostic::warning("#kernel: expected #kernel(occt); ignored")
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // Catch-all for any remaining shape (e.g. multi-bare-arg lists).
+            // Currently unreachable because the prior arms cover every
+            // single-arg shape; left as a future-proofing safety net.
             _ => {
-                // Other malformed arms handled in later steps.
+                module.diagnostics.push(
+                    Diagnostic::warning("#kernel: expected #kernel(occt); ignored")
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
             }
         }
     }
