@@ -599,10 +599,20 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 /// name. Only malformed shapes (zero args, key=value-first, non-Ident bare
 /// values) leave the field as None.
 fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    let mut first_seen = false;
     for pragma in &parsed.pragmas {
         if pragma.name != "kernel" {
             continue;
         }
+
+        if first_seen {
+            module.diagnostics.push(
+                Diagnostic::warning("subsequent #kernel pragma ignored; first one wins")
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+            );
+            continue;
+        }
+        first_seen = true;
 
         match pragma.args.as_slice() {
             // Happy path: `#kernel(occt)` — the only valid v0.1 form.
