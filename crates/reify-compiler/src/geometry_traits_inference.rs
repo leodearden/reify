@@ -70,6 +70,39 @@
 use crate::types::PrimitiveKind;
 use reify_types::{CompiledExpr, CompiledExprKind};
 
+/// The closed v0.1 set of stdlib geometry-conformance marker trait names.
+///
+/// These are the seven pure marker traits declared in
+/// `crates/reify-compiler/stdlib/geometry_traits.ri`; the set is fixed by
+/// the stdlib's `§3.10 trait-decl surface`. When a structure explicitly
+/// declares one of these as a trait bound, the compiler emits a
+/// `W_TRAIT_USER_ASSERTED` warning (see `DiagnosticCode::TraitUserAsserted`).
+///
+/// Order is stable — matches the `EXPECTED_GEOMETRY_TRAITS` fixture in
+/// `crates/reify-test-support/src/fixtures.rs` so parametric tests can
+/// iterate both in the same order. Case-sensitive: Reify trait names are
+/// PascalCase by convention.
+pub const GEOMETRY_MARKER_TRAITS: &[&str] = &[
+    "Bounded",
+    "Closed",
+    "Manifold",
+    "Orientable",
+    "Convex",
+    "Connected",
+    "Watertight",
+];
+
+/// Returns `true` iff `name` is one of the seven stdlib geometry-conformance
+/// marker trait names (case-sensitive).
+///
+/// This is the detection predicate used by the `entity.rs` trait_bound
+/// iteration to decide whether to emit a `W_TRAIT_USER_ASSERTED` warning.
+/// Detection is name-based (not qualified-trait-resolution-based) — see
+/// task 2321's design decision §1 for the rationale.
+pub fn is_geometry_marker_trait(name: &str) -> bool {
+    GEOMETRY_MARKER_TRAITS.contains(&name)
+}
+
 /// The three compile-time-inferred geometry traits.
 ///
 /// Names mirror the PRD; only these three are tracked because the remaining
