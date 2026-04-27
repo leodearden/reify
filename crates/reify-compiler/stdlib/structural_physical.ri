@@ -53,7 +53,7 @@ trait Flexible {
 //
 // ED intentionally does NOT refine materials_mechanical.ri::Elastic. Material
 // elastic moduli (youngs_modulus, poissons_ratio, shear_modulus) flow through a
-// structure's `material : Material` slot per the stdlib material-via-slot
+// structure's `material : MaterialSpec` slot per the stdlib material-via-slot
 // architecture (materials_mechanical.ri Trait Resolution Policy lines 27-33).
 // Forcing those moduli onto every ED-conforming structure would duplicate the
 // material-slot machinery; the prior `: Elastic` edge was therefore redundant.
