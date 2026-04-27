@@ -362,12 +362,9 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
-    let queries: Vec<GeometryQuery> = edges
-        .iter()
-        .map(|id| GeometryQuery::EdgeTangent(*id))
-        .collect();
-    let values = kernel.query_many(&queries)?;
-    check_query_many_len("edges_parallel_to", queries.len(), values.len())?;
+    let values = query_per_subshape(kernel, &edges, "edges_parallel_to", |id| {
+        GeometryQuery::EdgeTangent(id)
+    })?;
     let mut out = Vec::with_capacity(edges.len());
     for (id, tan_value) in edges.iter().zip(values) {
         let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
