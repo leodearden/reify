@@ -533,6 +533,22 @@ pub trait GeometryKernel: Send + Sync {
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
 
+    /// Run a batch of queries in a single round-trip and return one
+    /// `Value` per query, in the same order as `queries`.
+    ///
+    /// The default implementation simply forwards to `query` per element
+    /// and collects via `Result<Vec<_>, _>`'s fail-fast `FromIterator`
+    /// impl: it **returns the first `QueryError` encountered; remaining
+    /// queries are not issued.**
+    ///
+    /// Channel-routed kernels (e.g. `OcctKernelHandle`) override this to
+    /// batch the actor-channel hop and the underlying FFI work into a
+    /// single send/recv round-trip, eliminating the N+1 overhead that
+    /// per-element `query` incurs in tight selector loops.
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        queries.iter().map(|q| self.query(q)).collect()
+    }
+
     /// Export a handle to the given format, writing to the provided writer.
     fn export(
         &self,
