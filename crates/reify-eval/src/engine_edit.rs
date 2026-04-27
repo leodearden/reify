@@ -1521,23 +1521,45 @@ impl Engine {
         //     path (for constraints/realizations) will populate fresh entries.
         //     Dependents of value-cell changes are refreshed (or transitioned
         //     through Pending) by the per-cell eval loop below.
+        //
+        // For REMOVED nodes, donate any per-node warm state to the engine's
+        // `WarmStatePool` BEFORE invalidating. Per arch §4.3 lines 539-540
+        // and §6.4 lines 654-660: a node leaving the topology hands its warm
+        // state to the pool keyed by `NodeId`; LRU eviction inside the pool
+        // is the only memory bound (no engine-level eviction logic). Symmetric
+        // across all three NodeId variants currently produced by `diff_*`
+        // helpers — Value, Constraint, Realization. Resolution is not yet in
+        // any `diff_*` helper (see TODO(resolution-diff) above), so it does
+        // not donate today; ComputeNode is not yet a NodeId variant.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
         for id in &removed {
-            self.cache.invalidate(&NodeId::Value(id.clone()));
+            let nid = NodeId::Value(id.clone());
+            if let Some(state) = self.cache.get_warm_state(&nid) {
+                self.warm_pool.donate(nid.clone(), state);
+            }
+            self.cache.invalidate(&nid);
         }
         for cid in &changed_constraints {
             self.cache.invalidate(&NodeId::Constraint(cid.clone()));
         }
         for cid in &removed_constraints {
-            self.cache.invalidate(&NodeId::Constraint(cid.clone()));
+            let nid = NodeId::Constraint(cid.clone());
+            if let Some(state) = self.cache.get_warm_state(&nid) {
+                self.warm_pool.donate(nid.clone(), state);
+            }
+            self.cache.invalidate(&nid);
         }
         for rid in &changed_realizations {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
         for rid in &removed_realizations {
-            self.cache.invalidate(&NodeId::Realization(rid.clone()));
+            let nid = NodeId::Realization(rid.clone());
+            if let Some(state) = self.cache.get_warm_state(&nid) {
+                self.warm_pool.donate(nid.clone(), state);
+            }
+            self.cache.invalidate(&nid);
         }
 
         // (10) Attach provenance: Edit with the value-cell-level changed set
