@@ -17,3 +17,4 @@ cc = "1"
 
 [dev-dependencies]
 reify-test-support.workspace = true
+serde_json = { workspace = true }

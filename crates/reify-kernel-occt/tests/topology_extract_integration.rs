@@ -200,6 +200,66 @@ fn query_edge_length_returns_correct_value_for_extracted_box_edge() {
     }
 }
 
+/// Parse a `Value::String` formatted by the kernel as
+/// `{"x":...,"y":...,"z":...}` (the JSON encoding used by Centroid,
+/// EdgeTangent, FaceNormal) into a 3-tuple of f64.
+fn parse_xyz(v: &Value) -> (f64, f64, f64) {
+    let s = match v {
+        Value::String(s) => s,
+        other => panic!("expected Value::String, got {:?}", other),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(s)
+        .unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
+    let x = parsed["x"].as_f64().expect("missing x");
+    let y = parsed["y"].as_f64().expect("missing y");
+    let z = parsed["z"].as_f64().expect("missing z");
+    (x, y, z)
+}
+
+#[test]
+fn query_face_normal_top_face_of_box_is_plus_z() {
+    // 10x10x10 mm box centered at origin → z ∈ [-5e-3, +5e-3]. The "top"
+    // face has centroid (0, 0, +5e-3); its outward normal should be ±(0,0,1).
+    let (mut kernel, box_id) = box_kernel(10.0, 10.0, 10.0);
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces on a valid box should succeed");
+
+    // Find the face whose centroid lies on z = +5e-3.
+    let target_z = 5e-3;
+    let pos_tol = 1e-9;
+    let top = faces
+        .iter()
+        .find(|id| {
+            let c = kernel
+                .query(&GeometryQuery::Centroid(**id))
+                .expect("Centroid query");
+            let (_x, _y, z) = parse_xyz(&c);
+            (z - target_z).abs() < pos_tol
+        })
+        .copied()
+        .expect("a 10x10x10 box centered at origin must have a top face at z=+5e-3");
+
+    let normal = kernel
+        .query(&GeometryQuery::FaceNormal(top))
+        .expect("FaceNormal query should succeed");
+    let (nx, ny, nz) = parse_xyz(&normal);
+
+    let dir_tol = 1e-9;
+    assert!(
+        nx.abs() < dir_tol,
+        "top-face normal x should be ≈0, got {nx}"
+    );
+    assert!(
+        ny.abs() < dir_tol,
+        "top-face normal y should be ≈0, got {ny}"
+    );
+    assert!(
+        (nz.abs() - 1.0).abs() < dir_tol,
+        "top-face normal |z| should be ≈1, got {nz}"
+    );
+}
+
 #[test]
 fn extract_edges_invalid_handle_returns_invalid_reference() {
     // Fresh kernel — no shapes registered, so handle id 999 is unknown.
