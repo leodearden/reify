@@ -23,6 +23,7 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     apply_precision_pragma(parsed, module);
     apply_version_pragma(parsed, module);
     apply_solver_pragma(parsed, module);
+    apply_kernel_pragma(parsed, module);
     warn_block_level_precision(module);
     warn_block_level_solver(module);
 }
@@ -580,6 +581,36 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     )
                     .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
+            }
+        }
+    }
+}
+
+/// Process the first well-formed module-level `#kernel(<ident>)` pragma: store
+/// the user-declared kernel name on `module.kernel_pragma`. See
+/// `docs/prds/pragmas.md` §4.
+///
+/// In v0.1, only `#kernel(occt)` is accepted; any other ident emits an
+/// error-level diagnostic ("kernel '<other>' is deferred to v0.2; v0.1
+/// supports only #kernel(occt)") to make the v0.1 limitation discoverable.
+/// Per the storage-reflects-declared design decision, `kernel_pragma` mirrors
+/// the user's verbatim ident regardless of validation outcome — downstream
+/// tooling (doc generator, future kernel-registry lookup) needs the verbatim
+/// name. Only malformed shapes (zero args, key=value-first, non-Ident bare
+/// values) leave the field as None.
+fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    for pragma in &parsed.pragmas {
+        if pragma.name != "kernel" {
+            continue;
+        }
+
+        match pragma.args.as_slice() {
+            // Happy path: `#kernel(occt)` — the only valid v0.1 form.
+            [PragmaArg::Bare(PragmaValue::Ident(name))] if name == "occt" => {
+                module.kernel_pragma = Some(name.clone());
+            }
+            _ => {
+                // Malformed / non-occt arms handled in later steps.
             }
         }
     }
