@@ -504,6 +504,35 @@ fn edges_parallel_to_malformed_tangent_json_returns_query_failed() {
     }
 }
 
+/// A well-formed EdgeTangent JSON that omits the `z` key must produce
+/// QueryFailed. This pins the per-key Some/None branch of `parse_xyz_json`
+/// via the EdgeTangent label: `x` and `y` are set but `z?` short-circuits
+/// to `None`, surfacing "EdgeTangent returned malformed JSON Point3".
+#[test]
+fn edges_parallel_to_well_formed_xyz_missing_z_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_tangent_result(e, Value::String("{\"x\":1.0,\"y\":0.0}".into()));
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("malformed JSON") || msg.contains("EdgeTangent"),
+                "error should mention malformed JSON or EdgeTangent, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for missing-z edge tangent JSON, got {:?}",
+            other
+        ),
+    }
+}
+
 /// Malformed JSON in the BoundingBox payload must produce QueryFailed.
 #[test]
 fn edges_at_height_malformed_bbox_json_returns_query_failed() {
