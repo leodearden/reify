@@ -846,12 +846,12 @@ fn edit_param_dimension_mismatch_pins_cell_and_dimensions() {
     };
     assert_eq!(cell, height_id, "cell should be the height cell id");
     assert_eq!(
-        expected,
+        *expected,
         reify_types::DimensionVector::LENGTH,
         "expected dimension should be LENGTH (the cell's declared dimension)"
     );
     assert_eq!(
-        got,
+        *got,
         reify_types::DimensionVector::MASS,
         "got dimension should be MASS (from kg(5.0))"
     );
