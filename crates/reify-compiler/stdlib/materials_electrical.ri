@@ -1,0 +1,63 @@
+// Stdlib: Electrical Material Traits
+// Provides electrical characterization trait definitions for engineering materials.
+// All dimensioned quantities use Real (dimensionless) pending dimensional type
+// system extensions in a future task.
+//
+// Spec reference: docs/reify-stdlib-reference.md §6.4 lines 696-711.
+// Audit reference: docs/notes/stdlib-trait-audit.md §6.4 (all traits marked MISSING).
+//
+// ── Decision #1: Real placeholder for dimensioned params ─────────────────────
+// The spec's `Scalar<Voltage*Length/Current>` resistivity type is deferred.
+// Existing stdlib (materials_mechanical.ri, structural_physical.ri) consistently
+// uses `Real` until the dimensional type system lands; these traits follow the
+// same convention to keep the stdlib consistent and avoid blocking on
+// dimensional-type work.
+//
+// ── Decision #2: Parent trait name ───────────────────────────────────────────
+// The spec text says `: Material` but `Material` was renamed to `MaterialSpec`
+// in task 1876 (see BREAKING CHANGE block in materials_mechanical.ri). These
+// traits use `: MaterialSpec` so parent edges resolve correctly; the convention
+// is established by the four §6.2 traits in materials_mechanical.ri.
+//
+// ── Decision #3: Dropped determined(dielectric_strength) on Insulating ───────
+// The spec's `constraint determined(dielectric_strength)` on Insulating is
+// dropped. The Reify grammar has no `undef` keyword (see io.ri lines 11-12),
+// so `dielectric_strength : Real` is always required at every conforming
+// structure. The `determined(...)` call is therefore trivially true and
+// provides no signal. The spec's intent — "an Insulating material has a known
+// dielectric strength" — is preserved structurally by the required param.
+// The `resistivity > 1e6` numeric constraint is retained as specified.
+
+// ── ElectricallyCharacterized ────────────────────────────────────────────────
+
+// Root electrical-material trait. Every electrically characterised material
+// must supply the four scalar electrical properties below (all Real pending
+// dimensional type wiring):
+//   resistivity          — Ω·m (electrical resistivity)
+//   dielectric_constant  — dimensionless (relative permittivity)
+//   dielectric_strength  — V/m (breakdown field, using Real)
+//   magnetic_permeability — dimensionless (relative permeability)
+trait ElectricallyCharacterized : MaterialSpec {
+    param resistivity : Real
+    param dielectric_constant : Real
+    param dielectric_strength : Real
+    param magnetic_permeability : Real
+}
+
+// ── Conductive ───────────────────────────────────────────────────────────────
+
+// A conductive material is an ElectricallyCharacterized material whose
+// resistivity is below 1e-4 Ω·m (the conventional metal/semiconductor boundary).
+trait Conductive : ElectricallyCharacterized {
+    constraint resistivity < 0.0001
+}
+
+// ── Insulating ───────────────────────────────────────────────────────────────
+
+// An insulating material is an ElectricallyCharacterized material whose
+// resistivity exceeds 1e6 Ω·m (well above semiconductor range).
+// The spec's `determined(dielectric_strength)` predicate is omitted — see
+// Decision #3 in the header comment above for rationale.
+trait Insulating : ElectricallyCharacterized {
+    constraint resistivity > 1000000.0
+}
