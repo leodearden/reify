@@ -55,12 +55,17 @@ pub struct WarmStatePool {
     used_bytes: usize,
     /// Buffered telemetry events (donations and evictions) — consumed via [`drain_events`](Self::drain_events).
     ///
-    /// # Bounding note
-    /// This buffer is unbounded until the engine wires `drain_events()` at evaluation
-    /// boundaries (task 2345 follow-up).  In the interim every donate/evict appends
-    /// here; callers that keep a long-lived pool without draining will see slow growth.
-    /// TODO(task-2345): verify drain is called at every eval boundary and add an
-    /// integration test asserting buffer stays empty between drains in steady state.
+    /// # Bounding
+    /// All mutations go through [`push_event`](Self::push_event), which enforces
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS):
+    /// - **Debug builds**: a `debug_assert!` fires at the cap, surfacing the
+    ///   "engine never drains" scenario loudly during `cargo test`.
+    /// - **Release builds**: the oldest half of the buffer is auto-trimmed and
+    ///   a single `tracing::warn!` is emitted per pool instance.
+    ///
+    /// TODO(task-2345): verify engine wires `drain_events()` at every eval
+    /// boundary and add an integration test asserting the buffer stays near-empty
+    /// in steady state.
     events: Vec<WarmPoolEvent>,
 }
 
@@ -211,7 +216,7 @@ impl WarmStatePool {
 
         // Emit Donated after all evictions so the drained buffer orders evictions
         // before the donation that forced them.
-        self.events.push(WarmPoolEvent::Donated {
+        self.push_event(WarmPoolEvent::Donated {
             node_id: node_id_for_event,
             size_bytes: size,
         });
@@ -246,12 +251,37 @@ impl WarmStatePool {
         if let Some(key) = lru_key
             && let Some(entry) = self.pool.remove(&key)
         {
-            self.events.push(WarmPoolEvent::Evicted {
+            self.push_event(WarmPoolEvent::Evicted {
                 node_id: key,
                 size_bytes: entry.size_bytes,
             });
             self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         }
+    }
+
+    /// Append one telemetry event to the internal buffer, enforcing the cap.
+    ///
+    /// # Cap enforcement (layered safety nets)
+    ///
+    /// **Debug builds** — a `debug_assert!` fires when the buffer is already at
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS), causing a visible panic in
+    /// `cargo test`.  This surfaces "engine never drains" loudly during development.
+    ///
+    /// **Release builds** — (added in step 6) when `events.len() > MAX_BUFFERED_EVENTS`
+    /// the oldest half is auto-trimmed and a single `tracing::warn!` is emitted per
+    /// pool instance (controlled by `auto_trim_warned`).
+    ///
+    /// All donate/evict event emissions must go through this helper so the cap logic
+    /// lives in exactly one place.
+    fn push_event(&mut self, ev: WarmPoolEvent) {
+        debug_assert!(
+            self.events.len() < Self::MAX_BUFFERED_EVENTS,
+            "WarmStatePool events buffer reached cap of {}; \
+             engine drain_events() is not wired at evaluation boundaries \
+             (task 2345 follow-up)",
+            Self::MAX_BUFFERED_EVENTS
+        );
+        self.events.push(ev);
     }
 
     /// Check out warm-start state for a node (take semantics).
