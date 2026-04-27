@@ -274,8 +274,10 @@ pub(crate) fn compile_field(
         }
         reify_syntax::FieldSource::Sampled { .. } => {
             // Mirrors the Imported arm: v0.2 deferral — emit the diagnostic and
-            // return a payload-less variant.  The config block is intentionally not
-            // walked here; engine_eval.rs:652-653 maps Sampled { .. } unconditionally
+            // return the variant with an empty config Vec.  (Imported is fully
+            // payload-less; Sampled keeps its config field but the compiler always
+            // emits an empty Vec here.)  The config block is intentionally not
+            // walked; engine_eval.rs:652-653 maps Sampled { .. } unconditionally
             // to Value::Undef, so the compiled config has no runtime consumer.
             // Secondary lint diagnostics for malformed sub-expressions are still
             // surfaced by dot_chain_lint.rs:101-105 (AST-level walk, independent of
@@ -322,6 +324,10 @@ pub(crate) fn compile_field(
         let codomain_hash = ContentHash::of_str(&format!("{}", codomain_type));
         let source_hash = match &source {
             CompiledFieldSource::Analytical { expr } => expr.content_hash,
+            // Iteration preserved for non-compiler construction paths: test-support
+            // builders (reify-test-support/src/builders/field.rs:57) may construct
+            // Sampled directly with a non-empty config.  compile_field always emits
+            // an empty Vec, so this reduces to ContentHash::combine_all(empty) == ContentHash(0).
             CompiledFieldSource::Sampled { config } => {
                 let hashes = config
                     .iter()
