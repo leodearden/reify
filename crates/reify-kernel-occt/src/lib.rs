@@ -1154,10 +1154,6 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
-            // The following three variants are wired in steps 14/18/16
-            // respectively. Pre-emptive arms keep the workspace compiling
-            // after the new variants are added in reify-types; they will be
-            // replaced with real FFI dispatches in the impl steps.
             GeometryQuery::EdgeLength(id) => {
                 let shape = self
                     .get_shape(*id)
@@ -1166,9 +1162,20 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(len))
             }
-            GeometryQuery::EdgeTangent(_) => Err(QueryError::QueryFailed(
-                "EdgeTangent query not yet implemented".into(),
-            )),
+            GeometryQuery::EdgeTangent(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let t = ffi::ffi::query_edge_tangent(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                // Encode as the same JSON-string format as Centroid /
+                // FaceNormal so downstream filters share a single parse
+                // routine.
+                Ok(Value::String(format!(
+                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
+                    t.x, t.y, t.z
+                )))
+            }
             GeometryQuery::FaceNormal(id) => {
                 let shape = self
                     .get_shape(*id)

@@ -283,6 +283,11 @@ pub mod ffi {
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
         fn query_edge_length(shape: &OcctShape) -> Result<f64>;
+        /// Unit tangent of `shape` (must be a TopoDS_Edge) sampled at the
+        /// midpoint of the edge's parameter range. Direction is sign-arbitrary
+        /// (the edge's topological orientation is not honoured): callers
+        /// that care about specific orientation should compare both `±t`.
+        fn query_edge_tangent(shape: &OcctShape) -> Result<Point3>;
         /// Unit outward normal of `shape` (must be a TopoDS_Face) sampled at
         /// the face's centroid. Honours topological orientation: a REVERSED
         /// face yields the topologically-outward normal.

@@ -87,6 +87,7 @@
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_CompCurve.hxx>
 #include <ShapeAnalysis_Surface.hxx>
 #include <Bnd_Box.hxx>

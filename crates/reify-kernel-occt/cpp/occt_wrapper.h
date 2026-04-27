@@ -308,6 +308,16 @@ std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 /// "mass" under the linear density is the arc length.
 double query_edge_length(const OcctShape& shape);
 
+/// Compute the unit tangent of an edge sampled at the midpoint of its
+/// curve's parameter range. Backed by `BRepAdaptor_Curve::D1` at
+/// `(FirstParameter + LastParameter) / 2`. Direction is sign-arbitrary
+/// (the topological orientation of the edge is not honoured); callers
+/// that care about specific orientation should compare both `±t`.
+///
+/// Throws std::runtime_error if the shape is not an edge or yields a
+/// degenerate (zero-magnitude) tangent.
+Point3 query_edge_tangent(const OcctShape& shape);
+
 /// Compute the unit outward normal at the face's centroid.
 ///
 /// The shape MUST be a TopoDS_Face. The implementation:
