@@ -55,4 +55,5 @@ pub use value::{
 };
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use spanned_ident::SpannedIdent;
+pub use node_traits::{NodeArchKind, NodeTraits};
 pub use warm::{OpaqueState, WarmStartable};
