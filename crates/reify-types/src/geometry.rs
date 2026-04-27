@@ -872,6 +872,92 @@ mod tests {
     }
 
     #[test]
+    fn geometry_kernel_query_many_default_forwards_to_query() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A minimal in-test `GeometryKernel` that records every `query` call
+        /// and replies with a fixed `Value::Real(42.0)`. It implements only the
+        /// abstract `query` method — every other trait member uses its
+        /// not-supported default or a stub `unimplemented!()` — so we can
+        /// observe whether `query_many`'s default delegates to `query` per
+        /// element and preserves order. `AtomicUsize` keeps the kernel
+        /// `Send + Sync` (a bound the trait requires) without external locks.
+        struct CountingKernel {
+            query_calls: AtomicUsize,
+            reply: Value,
+        }
+
+        impl GeometryKernel for CountingKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                unimplemented!("CountingKernel only supports query")
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                self.query_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(self.reply.clone())
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!("CountingKernel only supports query")
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!("CountingKernel only supports query")
+            }
+        }
+
+        let kernel = CountingKernel {
+            query_calls: AtomicUsize::new(0),
+            reply: Value::Real(42.0),
+        };
+
+        // (1) Two-element batch: returns ordered Values, calls `query` exactly twice.
+        let queries = vec![
+            GeometryQuery::Volume(GeometryHandleId(1)),
+            GeometryQuery::SurfaceArea(GeometryHandleId(2)),
+        ];
+        let result = kernel
+            .query_many(&queries)
+            .expect("query_many should succeed");
+        assert_eq!(result.len(), 2, "query_many should return one Value per query");
+        match (&result[0], &result[1]) {
+            (Value::Real(a), Value::Real(b)) => {
+                assert!((a - 42.0).abs() < 1e-15);
+                assert!((b - 42.0).abs() < 1e-15);
+            }
+            other => panic!("expected two Value::Real(42.0), got {:?}", other),
+        }
+        assert_eq!(
+            kernel.query_calls.load(Ordering::SeqCst),
+            2,
+            "expected exactly 2 query calls"
+        );
+
+        // (3) Empty batch: returns Ok(vec![]) with zero additional `query` calls.
+        let result = kernel
+            .query_many(&[])
+            .expect("empty query_many should succeed");
+        assert!(result.is_empty(), "empty batch should return empty Vec");
+        assert_eq!(
+            kernel.query_calls.load(Ordering::SeqCst),
+            2,
+            "empty query_many must not call query"
+        );
+    }
+
+    #[test]
     fn geometry_query_topology_variants_can_be_constructed_and_matched() {
         let adj = GeometryQuery::AdjacentFaces {
             shape: GeometryHandleId(1),
