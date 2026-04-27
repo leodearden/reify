@@ -1092,10 +1092,25 @@ The `std.mechanism` library adds stdlib-level kinematic mechanism modelling. v0.
 
 Joint primitives are first-class stdlib values. Each joint type internally exposes `transform_at`, which returns a `Transform<3>` for a given motion-variable value. User code reaches it through the mechanism builder and snapshot APIs rather than calling `transform_at` directly.
 
+**Joint types and traits:**
+
+```
+trait Joint          // any joint kind; participates in the MotionValue<Self> type family
+trait DrivingJoint: Joint {}   // Prismatic and Revolute only; may be bound or swept directly
+                               // Coupling<P> derives its motion and does NOT implement DrivingJoint
+
+type Prismatic : DrivingJoint  // 1-DOF translation; MotionValue<Prismatic> = Length
+type Revolute  : DrivingJoint  // 1-DOF rotation;    MotionValue<Revolute>  = Angle
+type Coupling<P: DrivingJoint> : Joint  // derives motion from joint P;
+                                        // MotionValue<Coupling<P>> = MotionValue<P>
+```
+
+**Constructors:**
+
 ```
 fn prismatic(axis: Vector3<Dimensionless>, range: Range<Length>) -> Prismatic
 fn revolute(axis: Axis, range: Range<Angle>) -> Revolute
-fn couple(other: Joint, ratio: Real, offset: Length = 0mm) -> Coupling
+fn couple<P: DrivingJoint>(other: P, ratio: Real, offset: MotionValue<P> = zero) -> Coupling<P>
 ```
 
 `Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
@@ -1107,26 +1122,30 @@ fn axis(j: Prismatic) -> Vector3<Dimensionless>
 fn range(j: Prismatic) -> Range<Length>
 fn axis(j: Revolute) -> Axis
 fn range(j: Revolute) -> Range<Angle>
-fn ratio(j: Coupling) -> Real
-fn offset(j: Coupling) -> Length
+fn ratio(j: Coupling<P>) -> Real
+fn offset(j: Coupling<P>) -> MotionValue<P>
 fn transform_at(j: Prismatic, v: Length) -> Transform<3>
 fn transform_at(j: Revolute, v: Angle) -> Transform<3>
-fn transform_at(j: Coupling, v: Real) -> Transform<3>
+fn transform_at(j: Coupling<P>, v: MotionValue<P>) -> Transform<3>
 ```
 
 **Motion-variable units.** Each joint type has an associated motion-variable unit, exposed as the type family `MotionValue<J>`:
 
 ```
-type MotionValue<Prismatic> = Length
-type MotionValue<Revolute>  = Angle
-type MotionValue<Coupling>  = Real         // dimensionless coupling input
+type MotionValue<Prismatic>    = Length
+type MotionValue<Revolute>     = Angle
+type MotionValue<Coupling<P>>  = MotionValue<P>  // inherits parent joint's motion-variable unit
 ```
 
-`MotionValue<J>` parameterises the binding and range types in §13.3–§13.4 so that `0mm .. 500mm` (a `Range<Length>`) is the natural sweep range for a `Prismatic` joint, `0deg .. 90deg` (a `Range<Angle>`) for a `Revolute`, and so on.
+`MotionValue<J>` parameterises the binding and range types in §13.3–§13.4 so that `0mm .. 500mm` (a `Range<Length>`) is the natural sweep range for a `Prismatic` joint, `0deg .. 90deg` (a `Range<Angle>`) for a `Revolute`, and so on. For a `Coupling<Prismatic>` (such as the counter-mass in the worked example) the motion variable is also a `Length`, preserving dimensional coherence in the formula `value = ratio * other.value + offset`.
 
 ### 13.2 `std.mechanism.builder`
 
-`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`.
+`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world` is the pre-declared ground-frame sentinel — a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG:
+
+```
+let world : Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
+```
 
 ```
 fn mechanism() -> Mechanism
@@ -1134,7 +1153,7 @@ fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world, pose: Tran
 fn body_id_of(m: Mechanism, solid: Solid) -> BodyId
 ```
 
-`at` is the joint that positions the body; `parent` is the upstream joint (default `world` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value.
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
 
 **Closed-chain detection.** `mechanism()` builds a directed acyclic graph (DAG) of bodies connected through joints. If any body is reachable via two distinct joint paths, the compiler emits `error[E_KINEMATIC_CLOSED_CHAIN]`, naming both paths in the diagnostic:
 
@@ -1154,10 +1173,10 @@ Closed chains are a v0.1 error; v0.2 introduces a cyclic solver.
 
 ```
 fn snapshot(m: Mechanism, bindings: List<JointBinding>) -> Snapshot
-fn bind<J: Joint>(joint: J, value: MotionValue<J>) -> JointBinding
+fn bind<J: DrivingJoint>(joint: J, value: MotionValue<J>) -> JointBinding
 ```
 
-Each entry binds a joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`, `Real` for `Coupling` (the coupling's actual transform applies `ratio * value + offset` to its parent joint's frame). `JointBinding` is a sum type that erases the joint kind so a single bindings list can mix prismatic, revolute, and coupling entries while remaining type-safe at each construction site (see `MotionValue<J>` in §13.1). Joints absent from `bindings` take their range midpoint.
+Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling<P>` joints are excluded — their motion variable is derived from the parent joint's binding and cannot be overridden (`Coupling<P>` implements `Joint` but not `DrivingJoint`, so passing a coupling to `bind` is a type error). `JointBinding` is a sum type with one variant per `DrivingJoint` kind; its concrete variants are `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `MotionValue<J>` in §13.1). Joints absent from `bindings` take their range midpoint.
 
 **Snapshot accessors:**
 
@@ -1168,21 +1187,21 @@ fn center_of_mass(s: Snapshot, densities: Map<BodyId, Density> = undef) -> Point
 fn bounding_box(s: Snapshot) -> BoundingBox
 ```
 
-`center_of_mass` with no `densities` argument uses uniform density across all bodies. `bounding_box` returns the axis-aligned bounding box of all body geometry in the snapshot, expressed in world coordinates. `BoundingBox` is defined in §3.10. `BodyId` is the opaque identifier returned by `.body()` (§13.2).
+`center_of_mass` with `densities = undef` (the default) uses uniform density across all bodies; an empty map (`{}`) is treated identically to `undef`. A partial map uses the specified density for each listed body and falls back to uniform density for any body absent from the map. `bounding_box` returns the axis-aligned bounding box of all body geometry in the snapshot, expressed in world coordinates. `BoundingBox` is defined in §3.10. `BodyId` is the opaque identifier returned by `.body()` (§13.2).
 
 ### 13.4 `std.mechanism.sweep`
 
 `sweep` and `sweep_grid` produce lists of snapshots by varying one or more joints over a range.
 
 ```
-fn sweep<J: Joint>(m: Mechanism, joint: J, range: Range<MotionValue<J>>, steps: Int) -> List<Snapshot>
+fn sweep<J: DrivingJoint>(m: Mechanism, joint: J, range: Range<MotionValue<J>>, steps: Int) -> List<Snapshot>
 fn sweep_grid(m: Mechanism, dims: List<SweepDim>) -> List<Snapshot>
-fn dim<J: Joint>(joint: J, range: Range<MotionValue<J>>, steps: Int) -> SweepDim
+fn dim<J: DrivingJoint>(joint: J, range: Range<MotionValue<J>>, steps: Int) -> SweepDim
 ```
 
 `sweep` produces `steps` snapshots evenly spaced over `range` (the range carries the joint's motion-variable unit per `MotionValue<J>` in §13.1, so `0mm .. 500mm` for a `Prismatic` and `0deg .. 90deg` for a `Revolute` are both well-typed). The first snapshot matches `snapshot(m, [bind(joint, range.start)])` and the last matches `snapshot(m, [bind(joint, range.end)])`. All joints not mentioned take their range midpoint.
 
-`sweep_grid` computes the cross-product of the joint ranges (each constructed via `dim(joint, range, steps)`) in lexicographic order: the last dimension varies fastest. The total snapshot count is the product of all `steps` values. `SweepDim` is the sum type analogous to `JointBinding` that lets a grid mix heterogeneous joint kinds (e.g. a prismatic `Range<Length>` alongside a revolute `Range<Angle>`).
+`sweep_grid` computes the cross-product of the joint ranges (each constructed via `dim(joint, range, steps)`) in lexicographic order: the last dimension varies fastest. The total snapshot count is the product of all `steps` values. `SweepDim` is the sum type analogous to `JointBinding` that lets a grid mix driving-joint kinds (e.g. a prismatic `Range<Length>` alongside a revolute `Range<Angle>`). Its concrete variants are `dim(j: Prismatic, range: Range<Length>, steps: Int) -> SweepDim` and `dim(j: Revolute, range: Range<Angle>, steps: Int) -> SweepDim`. Couplings cannot appear in sweep dims for the same reason as in §13.3 — their motion is derived from the driving joint that is already being swept.
 
 ### 13.5 `std.mechanism.query`
 
