@@ -5,7 +5,20 @@
 //! sibling `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::{DocModel, ModuleDoc};
+use reify_doc::model::{DocModel, ItemDoc, ModuleDoc};
+
+/// Helper: build a single-module model with one item and return the rendered
+/// single-file output.
+fn render_one_item(item: ItemDoc) -> String {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".to_string(),
+            items: vec![item],
+            ..Default::default()
+        }],
+    };
+    render_single(&model)
+}
 
 /// Helper: render the model in single-file mode and unwrap to `String`.
 fn render_single(model: &DocModel) -> String {
@@ -112,4 +125,133 @@ fn module_header_without_doc() {
     };
     let out = render_single(&model);
     assert!(out.contains("# no_doc.module"), "header present, got: {out}");
+}
+
+/// Table-driven coverage for the H2 heading + anchor on every ItemDoc variant.
+///
+/// Each case names the variant, supplies the item built with `name = "Foo"`,
+/// and expects the rendered output to contain a substring including the
+/// language keyword and the anchor `<a id="Foo"></a>`.
+#[test]
+fn item_h2_headings_per_variant() {
+    fn item_with_name(maker: impl FnOnce(&str) -> ItemDoc) -> ItemDoc {
+        maker("Foo")
+    }
+
+    let cases: Vec<(&str, ItemDoc, &str)> = vec![
+        (
+            "structure",
+            item_with_name(|n| ItemDoc::Structure {
+                name: n.into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![], params: vec![],
+                ports: vec![], constraints: vec![], sub_components: vec![],
+                realizations: vec![], meta: vec![],
+            }),
+            "pub structure",
+        ),
+        (
+            "occurrence",
+            item_with_name(|n| ItemDoc::Occurrence {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], params: vec![],
+                ports: vec![], constraints: vec![], sub_components: vec![],
+                realizations: vec![], meta: vec![],
+            }),
+            "occurrence",
+        ),
+        (
+            "trait",
+            item_with_name(|n| ItemDoc::Trait {
+                name: n.into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![], members: vec![],
+            }),
+            "pub trait",
+        ),
+        (
+            "function",
+            item_with_name(|n| ItemDoc::Function {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                signature: "fn Foo()".into(),
+            }),
+            "fn",
+        ),
+        (
+            "field",
+            item_with_name(|n| ItemDoc::Field {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                type_repr: "i32".into(), default_repr: None,
+            }),
+            "let",
+        ),
+        (
+            "purpose",
+            item_with_name(|n| ItemDoc::Purpose {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                expr_repr: "x".into(), direction: "minimize".into(),
+            }),
+            "purpose",
+        ),
+        (
+            "enum",
+            item_with_name(|n| ItemDoc::Enum {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], variants: vec![],
+            }),
+            "enum",
+        ),
+        (
+            "unit",
+            item_with_name(|n| ItemDoc::Unit {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                base_unit: "Meter".into(), scale: "1.0".into(),
+            }),
+            "unit",
+        ),
+        (
+            "type_alias",
+            item_with_name(|n| ItemDoc::TypeAlias {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                type_repr: "f64".into(),
+            }),
+            "type",
+        ),
+        (
+            "constraint_def",
+            item_with_name(|n| ItemDoc::ConstraintDef {
+                name: n.into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                expr_repr: "x > 0".into(),
+            }),
+            "constraint",
+        ),
+    ];
+
+    for (kind, item, expected_keyword) in cases {
+        let out = render_one_item(item);
+        // Must contain an H2 heading line containing the keyword and `Foo`
+        // wrapped in backticks.
+        let header_line = out.lines().find(|l| l.starts_with("## "));
+        let header_line = header_line
+            .unwrap_or_else(|| panic!("variant={kind}: no H2 in output:\n{out}"));
+        assert!(
+            header_line.contains(expected_keyword),
+            "variant={kind}: H2 missing keyword {expected_keyword:?}: {header_line}"
+        );
+        assert!(
+            header_line.contains("`Foo`")
+                || header_line.contains("`pub structure Foo`")
+                || header_line.contains(&format!("`{} Foo`", expected_keyword))
+                || header_line.contains(&format!("`pub {} Foo`", expected_keyword)),
+            "variant={kind}: H2 missing `Foo` backticked: {header_line}"
+        );
+        assert!(
+            header_line.contains(r#"<a id="Foo">"#),
+            "variant={kind}: H2 missing anchor: {header_line}"
+        );
+    }
 }
