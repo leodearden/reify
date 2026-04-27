@@ -651,6 +651,116 @@ mod tests {
         }
     }
 
+    /// Dual-mode counterpart to `expand_signals_when_resolved_query_cell_missing_from_value_cells`.
+    ///
+    /// That sibling test asserts the WARN counter unconditionally and gates its
+    /// structural (anti-cascade) assertions behind `#[cfg(not(debug_assertions))]`
+    /// — those run in CI via `orchestrator.yaml:28`'s
+    /// `cargo test -p reify-eval --release` invocation (the second cargo-test
+    /// call in the two-pass pattern documented at `orchestrator.yaml:19`).
+    ///
+    /// This test pins the *debug-mode posture* explicitly:
+    /// - `catch_unwind` must return `Err(_)` (the `debug_assert!(false, …)` at
+    ///   `engine_purposes.rs:346` fires and unwinds the thread).
+    /// - The WARN counter must equal 1 — `tracing::warn!` fires *before* the
+    ///   `debug_assert!`, matching the "warn first, debug_assert second, fallback
+    ///   third" order documented in the contract preamble at lines 240–255.
+    /// - `expr.kind` must remain `PurposeReflectiveAggregation` — the panic
+    ///   occurs mid-`.collect()`, so `*expr = CompiledExpr::list_literal(…)`
+    ///   never runs, and the expression retains its pre-call shape.
+    ///
+    /// Gated with `#[cfg(debug_assertions)]` because in release builds
+    /// `debug_assert!(false)` is a no-op and `catch_unwind` would return `Ok`.
+    /// Marked `#[ignore]` because `catch_unwind` still allows libtest's panic
+    /// hook to emit a stacktrace to stderr, cluttering default `cargo test`
+    /// output; opt in via `cargo test -- --ignored`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[ignore = "verifies debug-mode panic posture for missing-cell branch; emits panic stacktrace \
+                to stderr — opt in via `cargo test -- --ignored`. Release-mode structural contract \
+                is in the sibling test, exercised by orchestrator.yaml's \
+                `cargo test -p reify-eval --release` pass."]
+    fn expand_missing_cell_debug_mode_halts_via_debug_assert() {
+        use std::panic::AssertUnwindSafe;
+        use std::sync::atomic::Ordering;
+        use reify_test_support::CountingSubscriberBuilder;
+
+        let entity = "Foo";
+        let cell_present = ValueCellId::new(entity, "present");
+        let cell_absent = ValueCellId::new(entity, "absent");
+
+        // Query references both "present" and "absent" cells.
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_present.clone(), cell_absent.clone()],
+        }];
+
+        // value_cells contains ONLY the "present" cell — "absent" is
+        // deliberately missing to trigger the missing-cell branch.
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
+            PersistentMap::default();
+        value_cells.insert(
+            cell_present.clone(),
+            ValueCellNode {
+                id: cell_present.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("present"),
+            },
+        );
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::engine_purposes")
+            .build();
+        let warn_arc = counters[&tracing::Level::WARN].clone();
+
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        // In debug builds debug_assert!(false) fires, unwinding the thread.
+        // catch_unwind captures the panic so this test can make assertions
+        // about the post-call state.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            tracing::subscriber::with_default(subscriber, || {
+                expand_purpose_reflective_placeholders(
+                    &mut expr,
+                    &queries,
+                    entity,
+                    &value_cells,
+                );
+            });
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug-mode posture: expected a panic from debug_assert!(false, …) \
+             at engine_purposes.rs:~346 when a resolved-query cell is absent from \
+             value_cells, but catch_unwind returned Ok(_)"
+        );
+
+        assert_eq!(
+            warn_arc.load(Ordering::Acquire),
+            1,
+            "debug-mode posture: WARN must fire before the debug_assert! \
+             (\"warn first, debug_assert second\" contract from preamble lines 240–255); \
+             expected counter == 1 regardless of build mode"
+        );
+
+        assert!(
+            matches!(&expr.kind, CompiledExprKind::PurposeReflectiveAggregation { .. }),
+            "debug-mode posture: panic mid-.collect() must prevent \
+             `*expr = CompiledExpr::list_literal(…)` from running; \
+             expr.kind must remain PurposeReflectiveAggregation, got {:?}",
+            expr.kind
+        );
+    }
+
     /// Companion: when no matching `ResolvedSchemaQuery` is supplied
     /// (e.g. the wildcard-subject case), expansion falls back to a
     /// sorted scan of `value_cells` for the bound entity. This locks in
