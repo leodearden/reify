@@ -11,7 +11,7 @@
 //! subsection for `@test`-annotated items.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{AnnotationDoc, DocModel, ItemDoc};
+use crate::model::{AnnotationDoc, DocModel, ItemDoc, ParamDoc};
 
 /// Render a [`DocModel`] as one self-contained HTML5 document.
 ///
@@ -174,7 +174,96 @@ fn render_item(out: &mut String, item: &ItemDoc) {
     out.push(' ');
     out.push_str(&html_escape(name));
     out.push_str("</h2>\n");
+
+    // Kind-specific body. Container variants get parameter / port / constraint
+    // / meta sections; the simpler variants will be wired up in later steps.
+    if let ItemDoc::Structure { params, .. } | ItemDoc::Occurrence { params, .. } = item {
+        render_params_table(out, params);
+    }
+
     out.push_str("</section>\n");
+}
+
+/// Find the first annotation matching `name` in `anns`. Returns `None` if no
+/// such annotation exists.  Mirrors `fmt_markdown::find_annotation`.
+#[allow(dead_code)]
+fn find_annotation<'a>(
+    anns: &'a [AnnotationDoc],
+    name: &str,
+) -> Option<&'a AnnotationDoc> {
+    anns.iter().find(|a| a.name == name)
+}
+
+/// Strip surrounding `"`s from a rendered string-literal annotation argument.
+/// Mirrors `fmt_markdown::unquote`.
+#[allow(dead_code)]
+fn unquote(s: &str) -> &str {
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Render the `<h3>Parameters</h3>` table.  No-op when `params` is empty.
+///
+/// Columns: Name | Type | Dimension | Default | Description.  Name and Type
+/// cells wrap in `<code>` for visual distinction; Dimension is an em-dash
+/// placeholder (mirroring markdown — the model has no `dimension` field
+/// today); Default uses `<code>` when `Some`, em-dash when `None`; Description
+/// is the `doc` text plus an `<em>hint: {arg}</em>` suffix when a
+/// `solver_hint` annotation is present on the parameter.
+fn render_params_table(out: &mut String, params: &[ParamDoc]) {
+    if params.is_empty() {
+        return;
+    }
+    out.push_str("<h3>Parameters</h3>\n");
+    out.push_str("<table>\n");
+    out.push_str("<thead><tr>");
+    out.push_str("<th>Name</th><th>Type</th><th>Dimension</th><th>Default</th><th>Description</th>");
+    out.push_str("</tr></thead>\n");
+    out.push_str("<tbody>\n");
+    for p in params {
+        out.push_str("<tr>");
+        // Name
+        out.push_str("<td><code>");
+        out.push_str(&html_escape(&p.name));
+        out.push_str("</code></td>");
+        // Type
+        out.push_str("<td><code>");
+        out.push_str(&html_escape(&p.type_repr));
+        out.push_str("</code></td>");
+        // Dimension placeholder (em-dash).
+        out.push_str("<td>—</td>");
+        // Default
+        match p.default_repr.as_deref() {
+            Some(d) => {
+                out.push_str("<td><code>");
+                out.push_str(&html_escape(d));
+                out.push_str("</code></td>");
+            }
+            None => out.push_str("<td>—</td>"),
+        }
+        // Description = doc text + optional <em>hint: ...</em> suffix.
+        out.push_str("<td>");
+        let doc_text = p.doc.as_deref().unwrap_or("").trim();
+        if !doc_text.is_empty() {
+            out.push_str(&html_escape(doc_text));
+        }
+        if let Some(hint) = find_annotation(&p.annotations, "solver_hint") {
+            let hint_arg = hint.args.first().map(|s| unquote(s)).unwrap_or("");
+            if !doc_text.is_empty() {
+                out.push(' ');
+            }
+            out.push_str("<em>hint: ");
+            out.push_str(&html_escape(hint_arg));
+            out.push_str("</em>");
+        }
+        out.push_str("</td>");
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n");
+    out.push_str("</table>\n");
 }
 
 /// Reify-source keyword displayed in the H2 heading for each `ItemDoc` variant.
