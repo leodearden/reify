@@ -4,7 +4,7 @@
 Enforces three structural invariants on top-level tasks to prevent ID/dependency
 drift after Task 1866's string-ID normalization migration:
 
-  1. Every task `id` is a string matching ``^\d+$`` (not an int, not a slug).
+  1. Every task `id` is a string matching ``^\\d+$`` (not an int, not a slug).
   2. Every entry in a task's `dependencies[]` is a string **and** references an
      existing task id (no orphan deps, no int deps).
   3. No duplicate `id` values within any tag's ``tasks[]``; tags are independent
@@ -172,7 +172,23 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
         else:
             known_ids.add(tid)
 
-    # Invariant 2: every dep is a string referencing a known id.
+    # Build the set of valid dotted subtask references in "parent_id.subtask_id"
+    # form.  TaskMaster may record a parent task's dependency on its own subtasks
+    # using this notation (e.g. task "2324" lists dep "2324.1" to express that the
+    # parent cannot start until subtask 1 completes).  These are structurally valid
+    # references even though the dotted form is not a top-level task id.
+    known_subtask_refs: set[str] = set()
+    for task in tasks:
+        tid = task.get("id")
+        if not isinstance(tid, str) or re.fullmatch(r"\d+", tid) is None:
+            continue
+        for sub in task.get("subtasks", []):
+            sid = sub.get("id")
+            if isinstance(sid, str) and re.fullmatch(r"\d+", sid) is not None:
+                known_subtask_refs.add(f"{tid}.{sid}")
+
+    # Invariant 2: every dep is a string referencing a known id or a known
+    # dotted subtask ref (parent_id.subtask_id).
     for task in tasks:
         tid = task.get("id", "?")
         deps_raw = task.get("dependencies", [])
@@ -186,7 +202,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
                 errors.append(
                     f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
-            elif dep not in known_ids:
+            elif dep not in known_ids and dep not in known_subtask_refs:
                 errors.append(
                     f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
                 )
