@@ -2422,20 +2422,34 @@ impl Engine {
         //       (arch §4.3 lines 539-540, §6.4 lines 654-660).
         //
         //       Why HERE: `cache.record_evaluation` clears `warm_state` on
-        //       every call (see cache.rs:263), so any drain BEFORE the post-
-        //       eval phases (1-4) would be wiped by guard re-elaboration,
-        //       solver re-runs, or collection-sub re-expansion. After step
-        //       (14) all such re-evaluations are done and the cache slots
-        //       are settled.
+        //       every call (see cache.rs:263). The drain MUST come after
+        //       steps (12)/(13)/(14) of this function — (12) per-cell value
+        //       eval, (13) guard re-elaboration / solver re-runs, (14)
+        //       collection-sub fingerprint re-eval — because each of those
+        //       paths can call `record_evaluation` on a seeded node and
+        //       wipe the slot. After (14) all such re-evaluations are done
+        //       and the cache slots are settled.
         //
-        //       `donate_warm_state` returns `false` (safe no-op) when no
-        //       cache entry exists for the node — this is the correct
-        //       fallback for nodes whose evaluation `edit_source` skipped
-        //       (e.g. Realization / Constraint nodes whose cache entries
-        //       are produced only by `engine_build.rs` / `check_constraints`,
-        //       not by `edit_source`'s value-cell eval loop).
+        //       Round-trip preservation when no cache entry exists yet:
+        //       `donate_warm_state` returns `false` (and consumes the
+        //       state) for a node that is not in the cache. For Value
+        //       cells `edit_source`'s eval loop (12) creates the entry,
+        //       so the seed lands. For Constraint and Realization variants
+        //       today, no cache entry exists at edit_source time —
+        //       `engine_build.rs` and `check_constraints` populate those
+        //       on demand from `build()` / `check()`. To avoid silently
+        //       dropping state that was already taken from the pool by
+        //       (4c), we probe `cache.get` first; if the entry exists the
+        //       state is seeded, otherwise it is re-donated so it remains
+        //       recoverable on a subsequent topology event. When those
+        //       variants gain edit-time cache entries the donate-back
+        //       path simply stops triggering.
         for (nid, state) in pending_warm_seeds.drain() {
-            self.cache.donate_warm_state(&nid, state);
+            if self.cache.get(&nid).is_some() {
+                self.cache.donate_warm_state(&nid, state);
+            } else {
+                self.warm_pool.donate(nid, state);
+            }
         }
 
         // (15) Install the new snapshot, dep structures, and demand; record

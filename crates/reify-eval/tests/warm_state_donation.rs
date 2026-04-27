@@ -411,3 +411,72 @@ fn donation_hook_fires_for_realization_removal() {
         "checked-out OpaqueState must downcast to the originally-injected u32 payload (0xBEEF)"
     );
 }
+
+// ── Amendment: state taken in (4c) must not be silently lost in (14b) ──────
+
+/// Pins the (4c)→(14b) round-trip preservation contract: when the
+/// `pending_warm_seeds` drain finds no cache entry for a re-added node
+/// (true today for Constraint and Realization variants — neither is
+/// populated by `edit_source`'s eval loop), the engine MUST re-donate
+/// the state to its `WarmStatePool` rather than silently drop it. This
+/// test pins that re-donation hook end-to-end.
+///
+/// Driver: pre-seed the pool with a Realization key that we know the
+/// post-eval drain step (14b) will see — bypass the cache donation so the
+/// pool entry is the ONLY copy of the state. Then run an `edit_source`
+/// where the same Realization is in the `added_realizations` set: (4c)
+/// checks it out, (14b) tries to seed the cache, fails because no
+/// Realization cache entry exists at edit_source time, and re-donates.
+/// After the edit, the pool must still hold the state — i.e. it survived
+/// the round-trip even though the cache cannot consume it yet.
+#[test]
+fn pool_state_survives_round_trip_when_cache_cannot_consume() {
+    let mut engine = fresh_engine();
+
+    // (1) Eval the canonical bracket fixture (Bracket@0 realization present).
+    let module_a = bracket_compiled_module();
+    engine.eval(&module_a);
+
+    let rid = RealizationNodeId::new("Bracket", 0);
+    let realization_node = NodeId::Realization(rid.clone());
+
+    // (2) edit_source #1: re-add the realization (no-op semantically since
+    //     it's already in the graph; what matters is wiring (4c) — but the
+    //     simpler driver is to drop, donate, re-add).
+    //
+    //     First strip the realization with an edit to a source-text bracket.
+    let module_b = parse_and_compile(bracket_with_volume_let());
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source to source-text bracket must succeed");
+
+    // (3) Inject warm state directly into the pool keyed by the
+    //     Realization NodeId. This is the only copy.
+    engine
+        .warm_pool_mut()
+        .donate(realization_node.clone(), OpaqueState::new(0xFEEDu32, 8));
+    let pool_used_before = engine.warm_pool().used_bytes();
+    assert!(
+        pool_used_before >= 8,
+        "pool must hold the seed state before the round-trip; got {} bytes",
+        pool_used_before
+    );
+
+    // (4) edit_source #2: back to a module that has Bracket@0. The
+    //     realization enters `added_realizations`, (4c) checks the pool
+    //     out, (14b) probes the cache (no entry) and re-donates.
+    engine
+        .edit_source(&module_a)
+        .expect("edit_source back to fixture-bracket must succeed");
+
+    // (5) Pool MUST still hold the state — re-donation kicked in.
+    let recovered = engine.warm_pool_mut().checkout(&realization_node).expect(
+        "after round-trip with no cache consumer, pool must still hold the state \
+         (else state was silently dropped by (4c)→(14b) — review suggestion #1)",
+    );
+    assert_eq!(
+        recovered.downcast::<u32>(),
+        Some(0xFEEDu32),
+        "re-donated OpaqueState must downcast to the originally-injected payload (0xFEED)"
+    );
+}
