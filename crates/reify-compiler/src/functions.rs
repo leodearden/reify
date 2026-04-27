@@ -356,6 +356,39 @@ pub(crate) fn compile_field(
     }
 }
 
+/// Collect the set of field cell IDs (`__field.<name>`) referenced by a
+/// composed field's compiled expression.
+///
+/// Walks `expr` via `CompiledExpr::walk` (the canonical exhaustive traversal
+/// in reify-types/src/expr.rs:298), and for every `FunctionCall` whose
+/// `function.name` matches a key in `field_registry`, emits
+/// `ValueCellId::new(FIELD_ENTITY_PREFIX, name)`. Results are deduplicated
+/// via an interim `HashSet`, then returned as a `Vec` in arbitrary order.
+///
+/// Self-references (a composed field calling its own name) are NOT filtered
+/// here; the caller in `phase_augment_composed_captures` excludes the outer
+/// field from the registry it passes in, so this helper never sees a
+/// self-referential FunctionCall.
+///
+/// Used by `phase_augment_composed_captures` (post-pass) to seed each
+/// composed lambda's `captures` Vec with the field cell IDs it transitively
+/// reads — so that `extract_dependency_trace` surfaces field-to-field deps
+/// via the existing `Lambda { captures, .. }` arm of `collect_value_refs_inner`.
+pub(crate) fn collect_composed_field_dependencies(
+    expr: &CompiledExpr,
+    field_registry: &HashMap<&str, &CompiledField>,
+) -> Vec<ValueCellId> {
+    let mut seen: HashSet<ValueCellId> = HashSet::new();
+    expr.walk(&mut |node| {
+        if let CompiledExprKind::FunctionCall { function, .. } = &node.kind
+            && field_registry.contains_key(function.name.as_str())
+        {
+            seen.insert(ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name));
+        }
+    });
+    seen.into_iter().collect()
+}
+
 /// Check field composition types in a composed field expression.
 ///
 /// Uses `CompiledExpr::walk` to traverse all 12+ expression variants,
