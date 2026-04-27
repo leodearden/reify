@@ -476,8 +476,6 @@ fn edges_parallel_to_malformed_tangent_json_returns_query_failed() {
 }
 
 /// Malformed JSON in the BoundingBox payload must produce QueryFailed.
-/// Also exercises the missing-zmin/zmax branch since the malformed string
-/// will fail the parser entirely.
 #[test]
 fn edges_at_height_malformed_bbox_json_returns_query_failed() {
     let parent = GeometryHandleId(1);
@@ -497,6 +495,39 @@ fn edges_at_height_malformed_bbox_json_returns_query_failed() {
         }
         other => panic!(
             "expected Err(QueryFailed) for malformed bbox JSON, got {:?}",
+            other
+        ),
+    }
+}
+
+/// A structurally-valid bbox JSON that omits `zmin`/`zmax` must produce
+/// QueryFailed. This drives `parse_flat_number_object` through every
+/// iteration (xmin/xmax/ymin/ymax are all tolerated at line 458 of
+/// topology_selectors.rs) and only fails at the final `Some((zmin?, zmax?))`
+/// — the per-key Some/None branch of `parse_bbox_z_extents_json` that the
+/// malformed-string fixture above does NOT exercise.
+#[test]
+fn edges_at_height_well_formed_bbox_missing_zmin_zmax_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_bbox_result(
+            e,
+            Value::String("{\"xmin\":0.0,\"xmax\":1.0,\"ymin\":0.0,\"ymax\":1.0}".into()),
+        );
+
+    let result = topology_selectors::edges_at_height(&mut kernel, parent, 0.0, 1.0);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("malformed JSON") || msg.contains("BoundingBox"),
+                "error should mention malformed JSON or BoundingBox, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for bbox missing zmin/zmax, got {:?}",
             other
         ),
     }
