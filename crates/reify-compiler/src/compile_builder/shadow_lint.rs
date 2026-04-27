@@ -113,10 +113,30 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             }
             walk_expr(&f.body.result_expr, &frames, diagnostics);
         }
+        Declaration::Constraint(cd) => {
+            // Build a frame from the constraint def's params and walk every
+            // predicate expression and every param default against it.
+            let mut frame: Frame = HashMap::new();
+            for p in &cd.params {
+                frame.insert(p.name.clone(), p.span);
+            }
+            let frames: Vec<&Frame> = vec![&frame];
+            for p in &cd.params {
+                if let Some(default) = &p.default {
+                    walk_expr(default, &frames, diagnostics);
+                }
+                if let Some(wc) = &p.where_clause {
+                    walk_expr(&wc.condition, &frames, diagnostics);
+                }
+            }
+            for predicate in &cd.predicates {
+                walk_expr(predicate, &frames, diagnostics);
+            }
+        }
         // The remaining declaration arms are wired in subsequent steps
-        // (constraint defs, traits, fields, purposes). Until then they
-        // pass through without forming a frame, matching the lint's
-        // "no frame ⇒ no shadow" invariant.
+        // (traits, fields, purposes). Until then they pass through without
+        // forming a frame, matching the lint's "no frame ⇒ no shadow"
+        // invariant.
         _ => {}
     }
 }
