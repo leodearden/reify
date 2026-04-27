@@ -25,9 +25,6 @@
 //! recurses into the chain's leaf root so that nested chains (e.g. a deep
 //! chain inside `IndexAccess.index` or a `FunctionCall.args` element) are
 //! detected too.
-//!
-//! This module is currently a syntactic gate only — emission of warnings is
-//! added in step 6.
 
 use reify_syntax::{Expr, ExprKind, ParsedModule};
 use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel};
@@ -43,9 +40,10 @@ pub(crate) const DEEP_DOT_CHAIN_THRESHOLD: usize = 4;
 /// each maximal `MemberAccess` chain whose length exceeds
 /// [`DEEP_DOT_CHAIN_THRESHOLD`].
 ///
-/// Pushed diagnostics use [`reify_types::DiagnosticCode::DeepDotChain`]. The
-/// warning message and label are added in subsequent TDD steps; this skeleton
-/// detects the chain but emits nothing.
+/// Pushed diagnostics use [`reify_types::DiagnosticCode::DeepDotChain`], with a
+/// human-readable message of the form
+/// `"deep dot-chain (depth N): <chain text> — consider intermediate let-bindings"`
+/// and a [`DiagnosticLabel`] anchored to the chain's full source span.
 pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
     for decl in &parsed.declarations {
         walk_declaration(decl, diagnostics);
