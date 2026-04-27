@@ -52,3 +52,27 @@ fn edges_by_length_inclusive_at_min_and_max_endpoints() {
         "only the middle edge should survive when min/max endpoints are just outside"
     );
 }
+
+#[test]
+fn edges_by_length_returns_query_failed_when_edge_length_is_int() {
+    // Kernels are expected to return Value::Real for EdgeLength queries.
+    // If a kernel incorrectly returns Value::Int the selector must surface
+    // a QueryFailed rather than silently skipping or panicking.
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_length_result(e, Value::Int(5)); // intentionally wrong type
+
+    let result = topology_selectors::edges_by_length(&mut kernel, parent, 0.0, 100.0);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-real value"),
+                "error message should mention 'non-real value', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed), got {:?}", other),
+    }
+}
