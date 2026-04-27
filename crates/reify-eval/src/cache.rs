@@ -2322,6 +2322,85 @@ mod tests {
         );
     }
 
+    // --- derive_output_freshness_for_node tests (task #2328, step-5) ---
+
+    /// Verifies that derive_output_freshness_for_node walks the cached dependency_trace.reads
+    /// for a let-cell and delegates to derive_output_freshness correctly.
+    #[test]
+    fn derive_output_freshness_for_node_walks_cached_dependency_trace() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let mut store = CacheStore::new();
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+        let out_id = ValueCellId::new("T", "out");
+
+        // Insert input cell 'a' with Final freshness
+        store.put(
+            NodeId::Value(a_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Insert input cell 'b' with Intermediate freshness
+        store.put(
+            NodeId::Value(b_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(2), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 3 },
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Insert output let-cell whose dependency_trace.reads = [a, b]
+        let mut out_trace = DependencyTrace::default();
+        out_trace.reads.push(a_id.clone());
+        out_trace.reads.push(b_id.clone());
+        store.put(
+            NodeId::Value(out_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(3), DeterminacyState::Determined),
+                Freshness::Final,
+                out_trace,
+                VersionId(1),
+            ),
+        );
+
+        // Case 1: 'b' is Intermediate → output should be Intermediate{7}
+        let result = store.derive_output_freshness_for_node(
+            &NodeId::Value(out_id.clone()),
+            false,
+            7,
+        );
+        assert_eq!(
+            result,
+            Freshness::Intermediate { generation: 7 },
+            "one non-Final input (b=Intermediate) must yield Intermediate output"
+        );
+
+        // Case 2: make 'b' Final → output should be Final
+        let _ = store.set_freshness(
+            &NodeId::Value(b_id.clone()),
+            Freshness::Final,
+        );
+        let result2 = store.derive_output_freshness_for_node(
+            &NodeId::Value(out_id.clone()),
+            false,
+            7,
+        );
+        assert_eq!(
+            result2,
+            Freshness::Final,
+            "all Final inputs must yield Final output"
+        );
+    }
+
     // --- derive_output_freshness Pending/Failed classification (task #2328, step-3) ---
 
     /// Guards against regressions that would special-case Pending or Failed away from
