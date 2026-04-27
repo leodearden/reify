@@ -43,9 +43,14 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     max_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
+    let queries: Vec<GeometryQuery> = edges
+        .iter()
+        .map(|id| GeometryQuery::EdgeLength(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
     let mut out = Vec::with_capacity(edges.len());
-    for id in edges {
-        let len = match kernel.query(&GeometryQuery::EdgeLength(id))? {
+    for (id, value) in edges.iter().zip(values) {
+        let len = match value {
             Value::Real(l) => l,
             other => {
                 return Err(QueryError::QueryFailed(format!(
@@ -55,7 +60,7 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
             }
         };
         if len >= min_m && len <= max_m {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
