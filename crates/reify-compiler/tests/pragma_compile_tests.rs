@@ -2497,8 +2497,11 @@ fn malformed_first_kernel_blocks_valid_second_first_wins_consumes_slot() {
             module.kernel_pragma
         );
 
-        let malformed_warns: Vec<_> = warnings_only(&module)
-            .into_iter()
+        let warns = warnings_only(&module);
+
+        let malformed_warns: Vec<_> = warns
+            .iter()
+            .copied()
             .filter(|d| d.message == "#kernel: expected #kernel(occt); ignored")
             .collect();
         assert_eq!(
@@ -2507,11 +2510,12 @@ fn malformed_first_kernel_blocks_valid_second_first_wins_consumes_slot() {
             "[{label}] expected exactly 1 malformed-first warning \
              \"#kernel: expected #kernel(occt); ignored\", got {}: {:?}",
             malformed_warns.len(),
-            warnings_only(&module)
+            warns
         );
 
-        let first_wins_warns: Vec<_> = warnings_only(&module)
-            .into_iter()
+        let first_wins_warns: Vec<_> = warns
+            .iter()
+            .copied()
             .filter(|d| d.message == "subsequent #kernel pragma ignored; first one wins")
             .collect();
         assert_eq!(
@@ -2520,16 +2524,16 @@ fn malformed_first_kernel_blocks_valid_second_first_wins_consumes_slot() {
             "[{label}] expected exactly 1 first-wins warning \
              \"subsequent #kernel pragma ignored; first one wins\", got {}: {:?}",
             first_wins_warns.len(),
-            warnings_only(&module)
+            warns
         );
 
         assert_eq!(
-            warnings_only(&module).len(),
+            warns.len(),
             2,
             "[{label}] expected exactly 2 total warnings (no unknown-pragma noise), \
              got {}: {:?}",
-            warnings_only(&module).len(),
-            warnings_only(&module)
+            warns.len(),
+            warns
         );
     }
 }
