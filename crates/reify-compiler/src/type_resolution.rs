@@ -95,60 +95,34 @@ pub(crate) fn resolve_dimension_type(
         reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
     };
-    match name {
-        // SI base dimensions
-        "Length" => Some(DimensionVector::LENGTH),
-        "Mass" => Some(DimensionVector::MASS),
-        "Time" => Some(DimensionVector::TIME),
-        "Current" => Some(DimensionVector::CURRENT),
-        "Temperature" => Some(DimensionVector::TEMPERATURE),
-        "AmountOfSubstance" => Some(DimensionVector::AMOUNT_OF_SUBSTANCE),
-        "LuminousIntensity" => Some(DimensionVector::LUMINOUS_INTENSITY),
-        "Angle" => Some(DimensionVector::ANGLE),
-        "SolidAngle" => Some(DimensionVector::SOLID_ANGLE),
-        "Money" => Some(DimensionVector::MONEY),
-        // Geometric derived dimensions
-        "Area" => Some(DimensionVector::AREA),
-        "Volume" => Some(DimensionVector::VOLUME),
-        // SI derived dimensions
-        "Force" => Some(DimensionVector::FORCE),
-        "Energy" => Some(DimensionVector::ENERGY),
-        "Power" => Some(DimensionVector::POWER),
-        "Pressure" => Some(DimensionVector::PRESSURE),
-        "Frequency" => Some(DimensionVector::FREQUENCY),
-        "Voltage" => Some(DimensionVector::VOLTAGE),
-        "Charge" => Some(DimensionVector::CHARGE),
-        "Capacitance" => Some(DimensionVector::CAPACITANCE),
-        "Resistance" => Some(DimensionVector::RESISTANCE),
-        "Conductance" => Some(DimensionVector::CONDUCTANCE),
-        "Inductance" => Some(DimensionVector::INDUCTANCE),
-        "MagneticFlux" => Some(DimensionVector::MAGNETIC_FLUX),
-        "MagneticFluxDensity" => Some(DimensionVector::MAGNETIC_FLUX_DENSITY),
-        "LuminousFlux" => Some(DimensionVector::LUMINOUS_FLUX),
-        "Illuminance" => Some(DimensionVector::ILLUMINANCE),
-        "AbsorbedDose" => Some(DimensionVector::ABSORBED_DOSE),
-        "AngularVelocity" => Some(DimensionVector::ANGULAR_VELOCITY),
-        "DynamicViscosity" => Some(DimensionVector::DYNAMIC_VISCOSITY),
-        "Dimensionless" => Some(DimensionVector::DIMENSIONLESS),
-        other => {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "unknown dimension type '{}': expected one of Length, Mass, Time, Current, \
-                     Temperature, AmountOfSubstance, LuminousIntensity, Angle, SolidAngle, \
-                     Money, Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage, \
-                     Charge, Capacitance, Resistance, Conductance, Inductance, MagneticFlux, \
-                     MagneticFluxDensity, LuminousFlux, Illuminance, AbsorbedDose, \
-                     AngularVelocity, DynamicViscosity, Dimensionless",
-                    other
-                ))
-                .with_label(DiagnosticLabel::new(
-                    type_expr.span,
-                    "unrecognized dimension type",
-                )),
-            );
-            None
-        }
+    // Scan the shared table (name → dimension direction).
+    if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS.iter().find(|(_, n)| *n == name) {
+        return Some(*dim);
     }
+    // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
+    // None for it), but resolve_dimension_type must still accept it.
+    if name == "Dimensionless" {
+        return Some(DimensionVector::DIMENSIONLESS);
+    }
+    // Unknown name: emit a diagnostic whose expected-names list is derived from the shared
+    // table chained with "Dimensionless" so it cannot drift from NAMED_DIMENSIONS.
+    let names_list = reify_types::NAMED_DIMENSIONS
+        .iter()
+        .map(|(_, n)| *n)
+        .chain(std::iter::once("Dimensionless"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "unknown dimension type '{}': expected one of {}",
+            name, names_list
+        ))
+        .with_label(DiagnosticLabel::new(
+            type_expr.span,
+            "unrecognized dimension type",
+        )),
+    );
+    None
 }
 
 /// Evaluate a constant expression to a `f64` value.
