@@ -15,12 +15,6 @@ use reify_types::{
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
 
-/// Panic message used when `eval_expr` encounters a `MetaAccess` node without a meta context.
-/// Shared between the production panic site and the `panic_on_eval_sentinel_panics_when_evaluated`
-/// regression test so the substring stays in lockstep.
-pub(crate) const META_ACCESS_NO_CONTEXT_MSG: &str =
-    "MetaAccess evaluation requires meta context in EvalContext";
-
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
     /// Current values of all cells.
@@ -430,7 +424,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::MetaAccess { entity, key } => {
             let meta_map = ctx.meta.unwrap_or_else(|| {
-                panic!("{}", META_ACCESS_NO_CONTEXT_MSG)
+                panic!("MetaAccess evaluation requires meta context in EvalContext")
             });
             let entity_meta = meta_map.get(entity.as_str()).unwrap_or_else(|| {
                 panic!("MetaAccess: entity '{}' not found in meta context", entity)
@@ -3675,18 +3669,10 @@ mod tests {
     /// the short-circuit sentinel mechanism is broken and the AND/OR short-circuit
     /// tests no longer provide reliable coverage.
     #[test]
+    #[should_panic(expected = "MetaAccess evaluation requires meta context")]
     fn panic_on_eval_sentinel_panics_when_evaluated() {
         let sentinel = panic_on_eval_sentinel();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = eval_expr(&sentinel, &EvalContext::simple(&ValueMap::new()));
-        }));
-        let payload = result
-            .expect_err("sentinel must panic when evaluated against a context without meta");
-        let msg = payload
-            .downcast_ref::<&'static str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
-        assert_eq!(msg, Some(META_ACCESS_NO_CONTEXT_MSG));
+        let _ = eval_expr(&sentinel, &EvalContext::simple(&ValueMap::new()));
     }
 
     /// Pins that `eval_and` short-circuits on a non-bool left operand:
