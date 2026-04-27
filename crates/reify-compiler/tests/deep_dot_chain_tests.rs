@@ -731,3 +731,28 @@ trait MyTrait {
         "Declaration::Trait.annotations[*].args",
     );
 }
+
+/// Position 26: `Declaration::Purpose.annotations[*].args` — deep chain inside
+/// an annotation arg on a purpose declaration.
+///
+/// The purpose body uses `let v = 0` rather than `param` because the grammar's
+/// `purpose_member` rule does not include `param_declaration` (only
+/// `constraint_declaration`, `let_declaration`, etc.). The let-value `0` is a
+/// NumberLiteral with no MemberAccess chain, so the asserted count of 1
+/// isolates the warning to the annotation-arg position. If `walk_declaration`'s
+/// Purpose arm dropped its `walk_annotations` call (dot_chain_lint.rs:101),
+/// the count would be 0 and this test would fail.
+#[test]
+fn walker_visits_purpose_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+purpose my_purpose(subject: Structure) {
+    let v = 0
+}
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Purpose.annotations[*].args",
+    );
+}
