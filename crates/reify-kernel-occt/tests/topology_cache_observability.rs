@@ -274,6 +274,44 @@ fn adjacent_faces_same_query_does_not_rebuild_cache() {
     );
 }
 
+/// Two adjacent calls to SharedEdges with the SAME (face_a, face_b) must not
+/// rebuild any cache slot — the face_map and edge_map slots are non-null after
+/// the first call, so the second call must short-circuit. Locks down the lazy-
+/// once invariant for the SharedEdges code path (parallel to
+/// `adjacent_faces_same_query_does_not_rebuild_cache`).
+#[test]
+fn shared_edges_same_query_does_not_rebuild_cache() {
+    let (kernel, box_id) = box_kernel();
+
+    query_shared_edges(&kernel, box_id, 0, 1);
+    let counts1 = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts1,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 1,
+            edge_face_map_builds: 0,
+        },
+        "after first SharedEdges call: expected (1,1,0) — SharedEdges builds \
+         face_map and edge_map but does not touch edge_face_map. Got {:?}",
+        counts1
+    );
+
+    // Second IDENTICAL call — same shape, same face pair. No slot may rebuild.
+    query_shared_edges(&kernel, box_id, 0, 1);
+    let counts2 = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts2, counts1,
+        "second identical SharedEdges call must not rebuild any cache slot; \
+         counts1={:?}, counts2={:?}",
+        counts1, counts2
+    );
+}
+
 /// After calling `AdjacentFaces` for every face of a 10×10×10 box (6 calls
 /// total), the face_map and edge_face_map caches should each have been built
 /// exactly once, and the edge_map should remain untouched (adjacent_faces
