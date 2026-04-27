@@ -75,6 +75,15 @@ pub struct WarmStatePool {
     /// fresh pool emits its own first-overflow warn — useful when multiple pools
     /// co-exist in tests.
     auto_trim_warned: bool,
+    /// Cumulative count of telemetry events silently dropped by the auto-trim
+    /// safety net (release builds only).
+    ///
+    /// Incremented by `MAX_BUFFERED_EVENTS / 2` on every trim round.  Exposed via
+    /// [`dropped_events`](Self::dropped_events) for diagnostic use (e.g. engine
+    /// health checks or the diagnostic panel).  A non-zero value indicates that
+    /// `drain_events()` is not being called at evaluation boundaries (task 2345
+    /// follow-up).  Always `0` in normal steady-state operation.
+    dropped_events: u64,
 }
 
 impl WarmStatePool {
@@ -116,6 +125,7 @@ impl WarmStatePool {
             used_bytes: 0,
             events: Vec::new(),
             auto_trim_warned: false,
+            dropped_events: 0,
         }
     }
 
@@ -276,9 +286,10 @@ impl WarmStatePool {
     /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS), causing a visible panic in
     /// `cargo test`.  This surfaces "engine never drains" loudly during development.
     ///
-    /// **Release builds** — (added in step 6) when `events.len() > MAX_BUFFERED_EVENTS`
-    /// the oldest half is auto-trimmed and a single `tracing::warn!` is emitted per
-    /// pool instance (controlled by `auto_trim_warned`).
+    /// **Release builds** — when `events.len() > MAX_BUFFERED_EVENTS` the oldest half
+    /// is auto-trimmed, the [`dropped_events`](Self::dropped_events) counter is
+    /// incremented by `MAX_BUFFERED_EVENTS / 2`, and a single `tracing::warn!` (with
+    /// the running `total_dropped` field) is emitted per pool instance.
     ///
     /// All donate/evict event emissions must go through this helper so the cap logic
     /// lives in exactly one place.
@@ -292,13 +303,15 @@ impl WarmStatePool {
         );
         self.events.push(ev);
         // Release-build seatbelt: if the buffer exceeded the cap (debug_assert!
-        // is a no-op in release mode), drop the oldest half so memory stays bounded
-        // and emit a once-per-pool-instance warn.
+        // is a no-op in release mode), drop the oldest half so memory stays bounded,
+        // track the cumulative drop count, and emit a once-per-pool-instance warn.
         if self.events.len() > Self::MAX_BUFFERED_EVENTS {
+            self.dropped_events += (Self::MAX_BUFFERED_EVENTS / 2) as u64;
             if !self.auto_trim_warned {
                 tracing::warn!(
                     cap = Self::MAX_BUFFERED_EVENTS,
                     current_len = self.events.len(),
+                    total_dropped = self.dropped_events,
                     task = "2345-followup",
                     "WarmStatePool events buffer exceeded cap; auto-trimming oldest half. \
                      Engine drain_events() not wired at evaluation boundaries."
@@ -343,6 +356,19 @@ impl WarmStatePool {
     /// `VersionId` and recorded on the diagnostic journal.
     pub fn drain_events(&mut self) -> Vec<WarmPoolEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Total number of telemetry events silently dropped by the auto-trim safety net
+    /// (release builds only; debug builds panic via `debug_assert!` instead).
+    ///
+    /// Each auto-trim round drops `MAX_BUFFERED_EVENTS / 2` events; this counter
+    /// accumulates across all rounds since the pool was constructed.
+    ///
+    /// A non-zero value is a health signal: it means `drain_events()` is not being
+    /// called at evaluation boundaries (task 2345 follow-up).  Returns `0` in the
+    /// steady-state case where the engine drains regularly.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_events
     }
 
     /// Remove all entries from the pool, reset used_bytes to 0, and clear the event buffer.
@@ -1096,6 +1122,15 @@ mod tests {
             "auto-trim must keep newest events and discard oldest; \
              last event should reference the final donated node"
         );
+
+        // (c) dropped_events counter reflects the events silently dropped by the trim.
+        // We donated MAX+100 events: that triggers exactly one trim (at the MAX+1-th
+        // push), dropping MAX/2 events from the front.
+        assert_eq!(
+            pool.dropped_events(),
+            (WarmStatePool::MAX_BUFFERED_EVENTS / 2) as u64,
+            "after one trim round, dropped_events should equal MAX_BUFFERED_EVENTS / 2"
+        );
     }
 
     /// Assert the once-per-session warn: a single `tracing::warn!` is emitted the
@@ -1145,6 +1180,56 @@ mod tests {
             "warn-once-per-session: expected exactly 1 WARN from reify_eval::warm_pool \
              when the events buffer overflows multiple times on the same pool instance; \
              subsequent overflows must be silent"
+        );
+    }
+
+    /// `dropped_events()` returns zero on a fresh pool regardless of build mode.
+    #[test]
+    fn events_buffer_dropped_events_starts_at_zero() {
+        assert_eq!(
+            WarmStatePool::unlimited().dropped_events(),
+            0,
+            "fresh pool must report zero dropped events before any trim fires"
+        );
+        assert_eq!(
+            WarmStatePool::new(1024).dropped_events(),
+            0,
+            "fresh budgeted pool must also start at zero"
+        );
+    }
+
+    /// `dropped_events()` accumulates across multiple trim rounds in release builds.
+    ///
+    /// # Why `#[cfg(not(debug_assertions))]`
+    /// Debug builds panic via `debug_assert!` before the trim path runs.
+    /// NOTE: Uses MAX_BUFFERED_EVENTS + 1 + MAX/2 ≈ 98 k donations, release-only.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn events_buffer_dropped_events_accumulates_across_trim_rounds() {
+        let mut pool = WarmStatePool::unlimited();
+
+        // Trigger the first trim: donate MAX+1 events (the (MAX+1)-th push takes
+        // events.len() to MAX+1 > MAX, firing the trim and dropping MAX/2 events).
+        for i in 0..=WarmStatePool::MAX_BUFFERED_EVENTS {
+            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+        assert_eq!(
+            pool.dropped_events(),
+            (WarmStatePool::MAX_BUFFERED_EVENTS / 2) as u64,
+            "after first trim: dropped_events == MAX/2"
+        );
+
+        // After the first trim, events.len() == MAX/2 + 1.  Donate MAX/2 more events
+        // to push len back to MAX+1 and trigger a second trim.
+        for i in 0..WarmStatePool::MAX_BUFFERED_EVENTS / 2 {
+            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("m{i}")));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+        assert_eq!(
+            pool.dropped_events(),
+            WarmStatePool::MAX_BUFFERED_EVENTS as u64,
+            "after second trim: dropped_events == MAX (two × MAX/2 rounds accumulated)"
         );
     }
 }
