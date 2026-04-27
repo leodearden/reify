@@ -903,6 +903,114 @@ fn constraint_def_body_renders() {
     );
 }
 
+/// `@deprecated("msg")` annotation must render an aside callout with a
+/// `Deprecated:` label and the unquoted message text.  The callout sits
+/// AFTER the H2 heading and BEFORE the doc paragraphs.
+#[test]
+fn deprecated_annotation_emits_callout() {
+    let item = ItemDoc::Structure {
+        name: "OldThing".into(),
+        doc: Some("Has a doc paragraph.".into()),
+        is_pub: true,
+        annotations: vec![AnnotationDoc {
+            name: "deprecated".into(),
+            args: vec!["\"use NewThing instead\"".into()],
+        }],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let out = render_one_item(item);
+
+    // Callout class wrapper present.
+    assert!(
+        out.contains("<aside class=\"deprecated\">"),
+        "expected `<aside class=\"deprecated\">` callout; got:\n{out}"
+    );
+    // Label and unquoted message text both present.
+    assert!(
+        out.contains("Deprecated:"),
+        "missing `Deprecated:` label; got:\n{out}"
+    );
+    assert!(
+        out.contains("use NewThing instead"),
+        "missing unquoted message text; got:\n{out}"
+    );
+    // Surrounding `"` of the source-rendered arg must NOT appear in the
+    // callout body.
+    assert!(
+        !out.contains("\"use NewThing instead\""),
+        "expected wrapping quotes to be stripped via unquote; got:\n{out}"
+    );
+
+    // Positional ordering: H2 → callout → doc paragraph.
+    let h2 = out
+        .find("<h2>")
+        .expect("H2 must be present");
+    let callout = out
+        .find("<aside class=\"deprecated\">")
+        .expect("callout must be present");
+    let para = out
+        .find("<p>Has a doc paragraph.</p>")
+        .expect("doc paragraph must be present");
+    assert!(
+        h2 < callout && callout < para,
+        "expected H2 < callout < paragraph; got h2@{h2} callout@{callout} para@{para}\n{out}"
+    );
+}
+
+/// `@optimized("target")` annotation must render an italicized note with
+/// the target wrapped in `<code>`, positioned BETWEEN the H2 heading and
+/// the doc paragraph.
+#[test]
+fn optimized_annotation_emits_italic_note() {
+    let item = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: Some("Has a doc paragraph.".into()),
+        is_pub: true,
+        annotations: vec![AnnotationDoc {
+            name: "optimized".into(),
+            args: vec!["\"area\"".into()],
+        }],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let out = render_one_item(item);
+
+    // Italic Optimized note with the target in <code>.
+    assert!(
+        out.contains("<em>Optimized: <code>area</code></em>"),
+        "expected `<em>Optimized: <code>area</code></em>`; got:\n{out}"
+    );
+    // Surrounding quotes stripped.
+    assert!(
+        !out.contains("\"area\""),
+        "expected wrapping quotes to be stripped via unquote; got:\n{out}"
+    );
+
+    // Positional ordering: H2 → optimized note → doc paragraph.
+    let h2 = out.find("<h2>").expect("H2 must be present");
+    let opt = out
+        .find("Optimized:")
+        .expect("optimized note must be present");
+    let para = out
+        .find("<p>Has a doc paragraph.</p>")
+        .expect("doc paragraph must be present");
+    assert!(
+        h2 < opt && opt < para,
+        "expected H2 < optimized < paragraph; got h2@{h2} opt@{opt} para@{para}\n{out}"
+    );
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
