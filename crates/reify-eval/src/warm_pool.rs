@@ -913,4 +913,21 @@ mod tests {
             "freshly donated entry remains checkable"
         );
     }
+
+    // --- Task 2457: events buffer bound / tripwire ---
+
+    /// Pin the cap value so it can't drift silently.
+    ///
+    /// `MAX_BUFFERED_EVENTS` is the single constant shared by both the
+    /// `debug_assert!` tripwire (step 3/4) and the release-mode auto-trim
+    /// (step 5/6).  This test exists to force the constant into existence and
+    /// prevent accidental changes without a conscious decision.
+    #[test]
+    fn events_buffer_max_constant_is_64k() {
+        assert_eq!(
+            WarmStatePool::MAX_BUFFERED_EVENTS,
+            65_536,
+            "MAX_BUFFERED_EVENTS must be 65_536 (64 K events ≈ 4 MiB ceiling)"
+        );
+    }
 }
