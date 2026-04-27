@@ -1991,3 +1991,41 @@ fn kernel_pragma_with_other_ident_emits_v02_deferred_error() {
         module.kernel_pragma
     );
 }
+
+/// `#kernel` (no args) emits exactly one warning whose message contains
+/// `#kernel`, `expected`, and `occt` (the canonical valid value); zero errors;
+/// `kernel_pragma` stays None. Mirrors the no-args branch of
+/// `solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none`,
+/// but PRD §4 explicitly requires zero-args to be a warning, not an error.
+#[test]
+fn kernel_pragma_with_zero_args_warns_and_leaves_none() {
+    let module = compile_source("#kernel\nstructure S { param x : Real }");
+
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors for #kernel (no args, must be warning per PRD §4): {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.kernel_pragma.is_none(),
+        "expected kernel_pragma None for malformed #kernel, got {:?}",
+        module.kernel_pragma
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("#kernel")
+                && d.message.contains("expected")
+                && d.message.contains("occt")
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning naming '#kernel' + 'expected' + 'occt' for #kernel (no args), \
+         got {}: {:?}",
+        warns.len(),
+        warnings_only(&module)
+    );
+}
