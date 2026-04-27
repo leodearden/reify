@@ -49,8 +49,15 @@ pub enum EngineError {
     /// The supplied value's dimension does not match the cell's declared type.
     DimensionMismatch {
         cell: reify_types::ValueCellId,
-        expected: reify_types::DimensionVector,
-        got: reify_types::DimensionVector,
+        // Boxed to keep the variant — and therefore `Result<_, EngineError>` —
+        // small enough to satisfy `clippy::result_large_err`. Task 2377 grew
+        // `DimensionVector` from `[Rational; 9]` to `[Rational; 10]` (36→40
+        // bytes), which pushed this variant to 128 bytes (= the lint
+        // threshold). Boxing each `DimensionVector` keeps the variant ≤ 64
+        // bytes so call-sites returning `EngineError` continue to compile
+        // under `-Dclippy::result_large_err`.
+        expected: Box<reify_types::DimensionVector>,
+        got: Box<reify_types::DimensionVector>,
     },
     /// The supplied value's type variant does not match the cell's declared type kind.
     /// (e.g., passing Value::Bool to a Type::Scalar cell.)
@@ -81,7 +88,7 @@ impl std::fmt::Display for EngineError {
                 write!(
                     f,
                     "dimension mismatch for {cell}: expected {:?}, got {:?}",
-                    expected, got
+                    *expected, *got
                 )
             }
             EngineError::TypeKindMismatch {

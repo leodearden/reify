@@ -527,7 +527,11 @@ impl Engine {
                 });
             }
             Err(ParamOverrideRejection::ScalarDimensionMismatch { expected, got }) => {
-                return Err(EngineError::DimensionMismatch { cell, expected, got });
+                return Err(EngineError::DimensionMismatch {
+                    cell,
+                    expected: Box::new(expected),
+                    got: Box::new(got),
+                });
             }
         }
 
