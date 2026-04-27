@@ -1207,7 +1207,7 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
     use reify_test_support::mocks::SequencedMockConstraintSolver;
-    use reify_types::{Diagnostic, Severity, SolveResult};
+    use reify_types::{Diagnostic, SolveResult};
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1222,13 +1222,7 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
             unique: true,
         },
         SolveResult::Infeasible {
-            diagnostics: vec![Diagnostic {
-                severity: Severity::Error,
-                message: "constraint x > a is infeasible".to_string(),
-                labels: Vec::new(),
-                code: None,
-                candidates: Vec::new(),
-            }],
+            diagnostics: vec![Diagnostic::error("constraint x > a is infeasible")],
         },
     ]);
 
