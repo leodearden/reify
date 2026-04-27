@@ -106,12 +106,15 @@ pub(crate) fn resolve_dimension_type(
     }
     // Unknown name: emit a diagnostic whose expected-names list is derived from the shared
     // table chained with "Dimensionless" so it cannot drift from NAMED_DIMENSIONS.
-    let names_list = reify_types::NAMED_DIMENSIONS
+    // The list is exposed both in the prose message and in the structured `candidates` field;
+    // downstream consumers (LSP quick-fixes, IDE tooling) should prefer the structured field
+    // rather than parsing the prose.
+    let candidates: Vec<String> = reify_types::NAMED_DIMENSIONS
         .iter()
-        .map(|(_, n)| *n)
-        .chain(std::iter::once("Dimensionless"))
-        .collect::<Vec<_>>()
-        .join(", ");
+        .map(|(_, n)| (*n).to_string())
+        .chain(std::iter::once("Dimensionless".to_string()))
+        .collect();
+    let names_list = candidates.join(", ");
     diagnostics.push(
         Diagnostic::error(format!(
             "unknown dimension type '{}': expected one of {}",
@@ -120,7 +123,8 @@ pub(crate) fn resolve_dimension_type(
         .with_label(DiagnosticLabel::new(
             type_expr.span,
             "unrecognized dimension type",
-        )),
+        ))
+        .with_candidates(candidates),
     );
     None
 }
