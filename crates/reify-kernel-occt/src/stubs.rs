@@ -54,11 +54,19 @@ impl OcctKernel {
         Err(TessError::TessellationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Returns [`GeometryError::InvalidReference`] for every handle.
+    ///
+    /// The stub registers no shapes, so every handle is unknown by definition.
+    /// This matches the real impl's documented contract (see `lib.rs`
+    /// `topology_cache_build_counts`), which also returns `InvalidReference`
+    /// for unknown handles via `get_shape`. Returning the same error variant
+    /// keeps callers that pattern-match on `InvalidReference` compatible
+    /// across `has_occt` and `!has_occt` builds without special-casing.
     pub fn topology_cache_build_counts(
         &self,
-        _handle: GeometryHandleId,
+        handle: GeometryHandleId,
     ) -> Result<TopologyCacheBuildCounts, GeometryError> {
-        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+        Err(GeometryError::InvalidReference(handle))
     }
 }
 
