@@ -136,6 +136,7 @@ impl Engine {
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),
+            solvers: HashMap::new(),
         }
     }
 
@@ -240,6 +241,41 @@ impl Engine {
     pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
         self.solver = Some(solver);
         self
+    }
+
+    /// Register a named constraint solver selectable via the `#solver(<name>)`
+    /// module pragma (Task 2300).
+    ///
+    /// Modules whose `solver_pragma.name` matches `name` route their solver
+    /// invocations to `solver` instead of the default `self.solver` set via
+    /// `with_solver`. If `name` is not the value of any module's
+    /// `#solver(<name>)`, the registered solver is never invoked.
+    ///
+    /// If a solver is already registered for `name`, it is silently overwritten
+    /// and the previous solver is dropped. Mirrors `register_optimized_impl`'s
+    /// `HashMap::insert` semantics; intentional to support hot-reload and test
+    /// fixture scenarios where callers swap impls between runs.
+    pub fn register_solver(
+        &mut self,
+        name: impl Into<String>,
+        solver: Box<dyn ConstraintSolver>,
+    ) {
+        self.solvers.insert(name.into(), solver);
+    }
+
+    /// Remove a previously registered named solver. Returns `true` if a solver
+    /// was registered (and has now been dropped), `false` otherwise. Mirrors
+    /// `unregister_optimized_impl`.
+    pub fn unregister_solver(&mut self, name: &str) -> bool {
+        self.solvers.remove(name).is_some()
+    }
+
+    /// Iterate over the names that currently have a registered solver, in
+    /// unspecified order. Primarily intended for diagnostics and test
+    /// assertions ("was this back-end registered?"). Mirrors
+    /// `optimized_targets`.
+    pub fn registered_solvers(&self) -> impl Iterator<Item = &str> {
+        self.solvers.keys().map(String::as_str)
     }
 
     /// Access the cache store (for testing/inspection).
