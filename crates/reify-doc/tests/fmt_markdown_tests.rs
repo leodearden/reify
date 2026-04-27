@@ -142,14 +142,21 @@ fn module_header_without_doc() {
 /// Table-driven coverage for the H2 heading + anchor on every ItemDoc variant.
 ///
 /// Each case names the variant, supplies the item built with `name = "Foo"`,
-/// and expects the rendered output to contain a substring including the
-/// language keyword and the anchor `<a id="Foo"></a>`.
+/// and expects the rendered output to contain *exactly* the heading line for
+/// that variant — keyword, visibility, name, and anchor.  Asserting the full
+/// expected string (rather than a disjunction of substrings) catches
+/// regressions that mis-emit any one of those four pieces; a permissive
+/// disjunction lets a wrong combo (e.g. dropping the keyword on a public
+/// item) silently satisfy one of the alternates.  See suggestion #7 in the
+/// reviewer's amendment notes.
 #[test]
 fn item_h2_headings_per_variant() {
     fn item_with_name(maker: impl FnOnce(&str) -> ItemDoc) -> ItemDoc {
         maker("Foo")
     }
 
+    // Each tuple is `(kind, item, expected_heading_line)`.  The expected
+    // heading line is the *entire* H2 line including the explicit anchor.
     let cases: Vec<(&str, ItemDoc, &str)> = vec![
         (
             "structure",
@@ -159,7 +166,7 @@ fn item_h2_headings_per_variant() {
                 ports: vec![], constraints: vec![], sub_components: vec![],
                 realizations: vec![], meta: vec![],
             }),
-            "pub structure",
+            "## `pub structure Foo` <a id=\"Foo\"></a>",
         ),
         (
             "occurrence",
@@ -169,7 +176,7 @@ fn item_h2_headings_per_variant() {
                 ports: vec![], constraints: vec![], sub_components: vec![],
                 realizations: vec![], meta: vec![],
             }),
-            "occurrence",
+            "## `occurrence Foo` <a id=\"Foo\"></a>",
         ),
         (
             "trait",
@@ -177,7 +184,7 @@ fn item_h2_headings_per_variant() {
                 name: n.into(), doc: None, is_pub: true,
                 annotations: vec![], pragmas: vec![], members: vec![],
             }),
-            "pub trait",
+            "## `pub trait Foo` <a id=\"Foo\"></a>",
         ),
         (
             "function",
@@ -186,7 +193,7 @@ fn item_h2_headings_per_variant() {
                 annotations: vec![], pragmas: vec![],
                 signature: "fn Foo()".into(),
             }),
-            "fn",
+            "## `fn Foo` <a id=\"Foo\"></a>",
         ),
         (
             "field",
@@ -195,7 +202,7 @@ fn item_h2_headings_per_variant() {
                 annotations: vec![], pragmas: vec![],
                 type_repr: "i32".into(), default_repr: None,
             }),
-            "let",
+            "## `let Foo` <a id=\"Foo\"></a>",
         ),
         (
             "purpose",
@@ -204,7 +211,7 @@ fn item_h2_headings_per_variant() {
                 annotations: vec![], pragmas: vec![],
                 expr_repr: "x".into(), direction: "minimize".into(),
             }),
-            "purpose",
+            "## `purpose Foo` <a id=\"Foo\"></a>",
         ),
         (
             "enum",
@@ -212,7 +219,7 @@ fn item_h2_headings_per_variant() {
                 name: n.into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![], variants: vec![],
             }),
-            "enum",
+            "## `enum Foo` <a id=\"Foo\"></a>",
         ),
         (
             "unit",
@@ -221,7 +228,7 @@ fn item_h2_headings_per_variant() {
                 annotations: vec![], pragmas: vec![],
                 base_unit: "Meter".into(), scale: "1.0".into(),
             }),
-            "unit",
+            "## `unit Foo` <a id=\"Foo\"></a>",
         ),
         (
             "type_alias",
@@ -230,7 +237,7 @@ fn item_h2_headings_per_variant() {
                 annotations: vec![], pragmas: vec![],
                 type_repr: "f64".into(),
             }),
-            "type",
+            "## `type Foo` <a id=\"Foo\"></a>",
         ),
         (
             "constraint_def",
@@ -239,32 +246,15 @@ fn item_h2_headings_per_variant() {
                 annotations: vec![], pragmas: vec![],
                 expr_repr: "x > 0".into(),
             }),
-            "constraint",
+            "## `constraint Foo` <a id=\"Foo\"></a>",
         ),
     ];
 
-    for (kind, item, expected_keyword) in cases {
+    for (kind, item, expected_heading) in cases {
         let out = render_one_item(item);
-        // Must contain an H2 heading line containing the keyword and `Foo`
-        // wrapped in backticks.  Skip the `## Contents` TOC H2 so we find the
-        // *item* heading.
-        let header_line = out.lines().find(|l| l.starts_with("## `"));
-        let header_line = header_line
-            .unwrap_or_else(|| panic!("variant={kind}: no item H2 in output:\n{out}"));
         assert!(
-            header_line.contains(expected_keyword),
-            "variant={kind}: H2 missing keyword {expected_keyword:?}: {header_line}"
-        );
-        assert!(
-            header_line.contains("`Foo`")
-                || header_line.contains("`pub structure Foo`")
-                || header_line.contains(&format!("`{} Foo`", expected_keyword))
-                || header_line.contains(&format!("`pub {} Foo`", expected_keyword)),
-            "variant={kind}: H2 missing `Foo` backticked: {header_line}"
-        );
-        assert!(
-            header_line.contains(r#"<a id="Foo">"#),
-            "variant={kind}: H2 missing anchor: {header_line}"
+            out.contains(expected_heading),
+            "variant={kind}: missing exact H2 heading {expected_heading:?}\n--- output ---\n{out}"
         );
     }
 }
@@ -1608,6 +1598,12 @@ fn snapshot_integration_full_v01_single_mode() {
 /// Split mode snapshot.  Builds the inline fixture and compares each
 /// `(filename, body)` entry to a per-file golden under
 /// `tests/snapshots/integration_full_v01.split.{filename}`.
+///
+/// Pins the *exact* generated filename set up-front (before per-file body
+/// comparisons) so a renderer regression that drops or duplicates a file
+/// fails this test loudly instead of silently passing on the surviving
+/// file-by-file body checks.  See suggestion #2 in the reviewer's amendment
+/// notes.
 #[test]
 fn snapshot_integration_full_v01_split_mode() {
     let model = build_integration_full_v01_fixture();
@@ -1616,8 +1612,122 @@ fn snapshot_integration_full_v01_split_mode() {
         MarkdownOutput::Single(_) => panic!("expected Split output for split: true"),
         MarkdownOutput::Split(v) => v,
     };
+
+    // Pin the expected filename set: the formatter must emit `index.md` plus
+    // exactly one per-item file per ItemDoc in the fixture (12 items at the
+    // time of writing).  Listed in the order render_split is documented to
+    // produce — index first, then items in module-declaration order.  This
+    // catches dropped or extra files independently of body-level snapshots.
+    let expected_filenames: Vec<&str> = vec![
+        "index.md",
+        "type_alias-Pressure.md",
+        "unit-mil.md",
+        "enum-Grade.md",
+        "function-safety_factor.md",
+        "trait-Physical.md",
+        "constraint_def-Positive.md",
+        "purpose-minimize_area.md",
+        "structure-Bolt.md",
+        "structure-Board.md",
+        "occurrence-MCU.md",
+        "structure-OldThing.md",
+        "structure-TestSelfWeight.md",
+    ];
+    let actual_filenames: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        actual_filenames, expected_filenames,
+        "split-mode filename set drifted; expected exactly {expected_filenames:?}, got {actual_filenames:?}"
+    );
+
     for (filename, body) in &files {
         let snapshot_name = format!("integration_full_v01.split.{filename}");
         assert_or_update_snapshot(&snapshot_name, body);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-module split mode (per reviewer suggestion #1)
+// ---------------------------------------------------------------------------
+
+/// Render a two-module model with same-named items in each module to exercise
+/// the otherwise-untested multi-module branch of `render_split`.  Verifies:
+///
+/// - per-item filenames are prefixed by the module path (`{path}/{kind}-{name}.md`),
+/// - per-item bodies use `../index.md` for the back-link (one level up from
+///   the nested module subdirectory), and
+/// - same-named items in different modules resolve to *distinct* files.
+#[test]
+fn split_mode_multi_module_prefixes_and_backlinks() {
+    let board_a = ItemDoc::Structure {
+        name: "Board".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let board_b = ItemDoc::Structure {
+        name: "Board".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![
+            ModuleDoc {
+                path: "alpha".into(),
+                items: vec![board_a],
+                ..Default::default()
+            },
+            ModuleDoc {
+                path: "beta".into(),
+                items: vec![board_b],
+                ..Default::default()
+            },
+        ],
+    };
+    let files = match render_markdown(&model, None, &MarkdownOptions { split: true }) {
+        MarkdownOutput::Single(_) => panic!("expected Split output for split: true"),
+        MarkdownOutput::Split(v) => v,
+    };
+
+    // (a) Filenames prefixed by module path. Two same-named items must land
+    // in distinct files.
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"alpha/structure-Board.md"),
+        "expected alpha/structure-Board.md in {names:?}"
+    );
+    assert!(
+        names.contains(&"beta/structure-Board.md"),
+        "expected beta/structure-Board.md in {names:?}"
+    );
+    // (c) Same-name collision resolves to two distinct files.
+    let board_files: Vec<&&str> = names
+        .iter()
+        .filter(|n| n.ends_with("/structure-Board.md"))
+        .collect();
+    assert_eq!(
+        board_files.len(),
+        2,
+        "expected exactly two Board files (one per module), got: {board_files:?}"
+    );
+
+    // (b) Per-item bodies use `../index.md` for the back-link.
+    for (name, body) in &files {
+        if name == "index.md" {
+            continue;
+        }
+        assert!(
+            body.contains("[← Index](../index.md)"),
+            "per-item file {name} must use `../index.md` back-link, got body:\n{body}"
+        );
+        assert!(
+            !body.contains("[← Index](index.md)"),
+            "per-item file {name} must NOT use the flat `index.md` back-link \
+             (multi-module case), got body:\n{body}"
+        );
     }
 }
