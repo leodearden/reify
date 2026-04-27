@@ -603,6 +603,47 @@ mod tests {
     }
 
     #[test]
+    fn faces_by_normal_uses_query_many_once() {
+        // Three faces with normals (+Z, +X, -Z). Filter on +Z direction
+        // with 1 deg tolerance: only the +Z face is accepted (anti-
+        // parallel -Z is rejected per the documented contract).
+        let face_ids = vec![
+            GeometryHandleId(301),
+            GeometryHandleId(302),
+            GeometryHandleId(303),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
+            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(
+                face_ids[2],
+                Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()),
+            );
+
+        let source = GeometryHandleId(1);
+        let result = faces_by_normal(
+            &mut kernel,
+            source,
+            [0.0, 0.0, 1.0],
+            1f64.to_radians(),
+        )
+        .expect("selector should succeed");
+
+        assert_eq!(result, vec![face_ids[0]], "expected only the +Z face");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "faces_by_normal must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "faces_by_normal must not loop over per-element query"
+        );
+    }
+
+    #[test]
     fn faces_by_area_uses_query_many_once() {
         // Three faces with surface areas 200, 300, 600 in mm^2 (i.e.
         // 200e-6, 300e-6, 600e-6 m^2). The window [199e-6, 201e-6] m^2
