@@ -222,6 +222,24 @@ impl Engine {
 /// The walk mirrors `CompiledExpr::remap_entity`'s arm-by-arm traversal so a
 /// future variant addition only touches the same places.
 ///
+/// Missing-cell branch (wiring inconsistency): when the resolved query
+/// references a `ValueCellId` that is absent from `value_cells`, the
+/// lookup misses and the branch:
+///   1. Emits `tracing::warn!` (observable at `RUST_LOG=warn` without
+///      manual tuning) with structured fields `entity`, `param`,
+///      `query`, and `missing_cell` identifying the discrepancy.
+///   2. Fires `debug_assert!(false, ...)` — halt loudly in debug builds
+///      (same posture as the `PurposeReflectiveAggregation` arm in
+///      `eval_expr`, `crates/reify-expr/src/lib.rs`).
+///   3. Falls back to `Type::Real` for release-build anti-cascade safety.
+/// This is qualitatively different from the empty-list case (absent
+/// `ResolvedSchemaQuery` — intentional vacuous-true) and the present-cell
+/// case (normal cell-type lockstep): a missing cell means the template
+/// and the runtime entity diverged, or a wiring bug picked the wrong
+/// `entity_ref`. The order — warn first, debug_assert second, fallback
+/// third — ensures the tracing event increments before any panic, so a
+/// `catch_unwind` caller can still read the counter.
+///
 /// CONTRACT — content-hash staleness: replacing a placeholder node updates
 /// that node's `content_hash` (via `CompiledExpr::list_literal`), but
 /// **does not** rebuild ancestor hashes (e.g. the enclosing `Quantifier`
@@ -290,14 +308,55 @@ fn expand_purpose_reflective_placeholders(
             };
 
             // Build ValueRef elements with cell-type lockstep.
+            // Extract string slices so the closure below can capture them
+            // by shared reference without fighting the &mut bindings from
+            // the outer match arm.
+            let param_name_str = param_name.as_str();
+            let query_kind_str = query_kind.as_str();
             let elements: Vec<CompiledExpr> = members
                 .iter()
                 .map(|member| {
                     let cell_id = ValueCellId::new(entity_ref, member);
-                    let elem_type = value_cells
-                        .get(&cell_id)
-                        .map(|node| node.cell_type.clone())
-                        .unwrap_or(Type::Real);
+                    let elem_type = match value_cells.get(&cell_id) {
+                        Some(node) => node.cell_type.clone(),
+                        None => {
+                            // Graph-vs-resolved-query wiring inconsistency:
+                            // `resolved_ids` is populated by compile_purpose
+                            // against the template; the runtime entity_ref is
+                            // expected to expose the same members. A miss here
+                            // means the template and the runtime entity
+                            // diverged, or a wiring bug picked the wrong
+                            // entity_ref. Warn first (visible in release
+                            // builds), debug_assert second (halts in debug),
+                            // then fall back to Type::Real for anti-cascade
+                            // safety (matches the Value::Undef posture in the
+                            // PurposeReflectiveAggregation arm of eval_expr).
+                            tracing::warn!(
+                                target: "reify_eval::engine_purposes",
+                                entity = %entity_ref,
+                                param = %param_name_str,
+                                query = %query_kind_str,
+                                missing_cell = %cell_id,
+                                "graph-vs-resolved-query inconsistency: \
+                                 ResolvedSchemaQuery references a value cell \
+                                 missing from snapshot.graph.value_cells; \
+                                 falling back to Type::Real"
+                            );
+                            debug_assert!(
+                                false,
+                                "expand_purpose_reflective_placeholders: \
+                                 resolved-query cell {:?} missing from \
+                                 snapshot.graph.value_cells \
+                                 (purpose param={:?}, query_kind={:?}, \
+                                 entity={:?})",
+                                cell_id,
+                                param_name_str,
+                                query_kind_str,
+                                entity_ref
+                            );
+                            Type::Real
+                        }
+                    };
                     CompiledExpr::value_ref(cell_id, elem_type)
                 })
                 .collect();
