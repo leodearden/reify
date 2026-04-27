@@ -84,6 +84,17 @@ pub struct WarmStatePool {
     /// `drain_events()` is not being called at evaluation boundaries (task 2345
     /// follow-up).  Always `0` in normal steady-state operation.
     dropped_events: u64,
+    /// Test-only override for the events buffer cap.
+    ///
+    /// When `Some(n)`, [`push_event`](Self::push_event) uses `n` instead of
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS).  This lets field-schema
+    /// tests (e.g. `auto_trim_warn_omits_invariant_current_len_field`) fire the
+    /// auto-trim warn with ~17 donations instead of 65 537, dramatically reducing
+    /// unnecessary allocations in tests that only care about the warn's field set.
+    ///
+    /// Only present in test builds; has no effect on production behaviour.
+    #[cfg(test)]
+    test_events_cap: Option<usize>,
 }
 
 impl WarmStatePool {
@@ -126,6 +137,8 @@ impl WarmStatePool {
             events: Vec::new(),
             auto_trim_warned: false,
             dropped_events: 0,
+            #[cfg(test)]
+            test_events_cap: None,
         }
     }
 
@@ -183,6 +196,23 @@ impl WarmStatePool {
             },
         };
         Self::with_budget(budget)
+    }
+
+    /// Create an unlimited pool with a test-only override for the events buffer cap.
+    ///
+    /// Intended for field-schema tests that need to trigger the auto-trim warn without
+    /// pushing [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS) (65 536) events.  With
+    /// `cap = 16`, for example, only 17 donations are needed to force one trim round.
+    ///
+    /// Note: the `debug_assert!` in [`push_event`](Self::push_event) fires at `cap` in
+    /// debug builds, so callers must remain gated `#[cfg(not(debug_assertions))]` — the
+    /// debug assertion still enforces the cap; only the *trim path* (release-only) is
+    /// exercised by tests using this constructor.
+    #[cfg(test)]
+    pub(crate) fn with_test_events_cap(cap: usize) -> Self {
+        let mut pool = Self::unlimited();
+        pool.test_events_cap = Some(cap);
+        pool
     }
 
     /// Store warm-start state for a node with an explicit cost-per-byte estimate.
@@ -278,6 +308,23 @@ impl WarmStatePool {
         }
     }
 
+    /// Returns the effective events buffer cap.
+    ///
+    /// In production builds this is always [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS).
+    /// In test builds it returns the test-only override when one has been set via
+    /// [`with_test_events_cap`](Self::with_test_events_cap), falling back to
+    /// `MAX_BUFFERED_EVENTS` otherwise.  Using this helper in [`push_event`](Self::push_event)
+    /// keeps the cap logic in one place and lets test fixtures fire the auto-trim path with
+    /// a tiny cap (~17 events) rather than 65 537.
+    #[inline]
+    fn events_cap_effective(&self) -> usize {
+        #[cfg(test)]
+        if let Some(n) = self.test_events_cap {
+            return n;
+        }
+        Self::MAX_BUFFERED_EVENTS
+    }
+
     /// Append one telemetry event to the internal buffer, enforcing the cap.
     ///
     /// # Cap enforcement (layered safety nets)
@@ -294,22 +341,23 @@ impl WarmStatePool {
     /// All donate/evict event emissions must go through this helper so the cap logic
     /// lives in exactly one place.
     fn push_event(&mut self, ev: WarmPoolEvent) {
+        let cap = self.events_cap_effective();
         debug_assert!(
-            self.events.len() < Self::MAX_BUFFERED_EVENTS,
+            self.events.len() < cap,
             "WarmStatePool events buffer reached cap of {}; \
              engine drain_events() is not wired at evaluation boundaries \
              (task 2345 follow-up)",
-            Self::MAX_BUFFERED_EVENTS
+            cap
         );
         self.events.push(ev);
         // Release-build seatbelt: if the buffer exceeded the cap (debug_assert!
         // is a no-op in release mode), drop the oldest half so memory stays bounded,
         // track the cumulative drop count, and emit a once-per-pool-instance warn.
-        if self.events.len() > Self::MAX_BUFFERED_EVENTS {
-            self.dropped_events += (Self::MAX_BUFFERED_EVENTS / 2) as u64;
+        if self.events.len() > cap {
+            self.dropped_events += (cap / 2) as u64;
             if !self.auto_trim_warned {
                 tracing::warn!(
-                    cap = Self::MAX_BUFFERED_EVENTS,
+                    cap,
                     total_dropped = self.dropped_events,
                     task = "2345-followup",
                     "WarmStatePool events buffer exceeded cap; auto-trimming oldest half. \
@@ -317,7 +365,7 @@ impl WarmStatePool {
                 );
                 self.auto_trim_warned = true;
             }
-            self.events.drain(..Self::MAX_BUFFERED_EVENTS / 2);
+            self.events.drain(..cap / 2);
         }
     }
 
@@ -1241,23 +1289,37 @@ mod tests {
     /// This test also positively pins that `cap` and `total_dropped` ARE present, so
     /// we're verifying the auto-trim warn and not some unrelated warn from the pool.
     ///
+    /// Uses [`WarmStatePool::with_test_events_cap`] to set the cap to 16, so only 17
+    /// donations are needed to trigger the trim rather than 65 537.  None of the
+    /// existing auto-trim tests pin the warn's field schema, so this is the only test
+    /// for the negative `current_len` assertion; there is nothing to fold it into.
+    ///
     /// # Why `#[cfg(not(debug_assertions))]`
-    /// In debug builds, `push_event`'s `debug_assert!` fires at the cap, so the
-    /// auto-trim and warn paths are never reached.  This test covers the release-mode
-    /// path exercised by the orchestrator's `cargo test -p reify-eval --release` pass.
+    /// In debug builds, `push_event`'s `debug_assert!` fires at the (effective) cap,
+    /// halting execution before the auto-trim and warn paths are reached.  Running this
+    /// test in debug mode would require bypassing that assert, which would undermine the
+    /// existing debug-mode safety net for "engine never drains" (see the option-a
+    /// discussion in the code-review comments for task 2520).  This test therefore covers
+    /// the release-mode path, exercised by `cargo test -p reify-eval --release` — the CI
+    /// lane mandated by the orchestrator's verify pipeline for all release-gated tests.
     #[test]
     #[cfg(not(debug_assertions))]
     fn auto_trim_warn_omits_invariant_current_len_field() {
         use reify_test_support::warn_capturing_subscriber;
 
+        // Use a tiny cap so only 17 donations (instead of 65 537) are needed to
+        // trigger one auto-trim round.  The warn field schema is identical regardless
+        // of which cap value fires the trim.
+        const TEST_CAP: usize = 16;
+
         let (subscriber, capture) = warn_capturing_subscriber();
 
         tracing::subscriber::with_default(subscriber, || {
-            let mut pool = WarmStatePool::unlimited();
+            let mut pool = WarmStatePool::with_test_events_cap(TEST_CAP);
 
-            // Donate MAX+1 events: the (MAX+1)-th push takes events.len() to
-            // MAX+1 > MAX, firing exactly one auto-trim round and one warn.
-            for i in 0..=WarmStatePool::MAX_BUFFERED_EVENTS {
+            // Donate TEST_CAP+1 events: the (TEST_CAP+1)-th push takes events.len()
+            // to TEST_CAP+1 > TEST_CAP, firing exactly one auto-trim round and one warn.
+            for i in 0..=TEST_CAP {
                 let node =
                     NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
                 pool.donate(node, OpaqueState::new(0u8, 1));
@@ -1284,8 +1346,8 @@ mod tests {
         assert!(
             !event_fields.contains_key("current_len"),
             "`current_len` must NOT appear in the auto-trim warn (it is always \
-             MAX_BUFFERED_EVENTS+1, a constant — zero diagnostic signal); \
-             got fields: {event_fields:?}"
+             cap+1 before the drain — a constant derivable from `cap`, zero diagnostic \
+             signal); got fields: {event_fields:?}"
         );
     }
 }
