@@ -38,6 +38,20 @@ fn has_money_and_force_label(errors: &[&reify_types::Diagnostic]) -> bool {
     })
 }
 
+/// Helper: assert no error diagnostic mentions "duplicate unit declaration".
+///
+/// Used to catch regressions where a test source redeclares a unit that is already
+/// present in the stdlib prelude (e.g. `pub unit USD : Money` in
+/// `crates/reify-compiler/stdlib/units.ri`).
+///
+/// Substring-based rather than code-based because the duplicate-unit producer in
+/// `compile_builder/units_phase.rs` does not currently attach a `DiagnosticCode`.
+fn has_no_duplicate_unit_declaration(errors: &[&reify_types::Diagnostic]) -> bool {
+    !errors
+        .iter()
+        .any(|d| d.message.contains("duplicate unit declaration"))
+}
+
 /// `25USD + 5N` should produce a DimensionMismatch error with "Money" and "Force" in labels.
 #[test]
 fn money_plus_force_has_dimension_mismatch_code() {
@@ -69,6 +83,12 @@ structure def S {
         has_money_and_force_label(&errors),
         "expected a label containing both 'Money' and 'Force' for 25USD + 5N, labels: {:?}",
         errors.iter().flat_map(|d| d.labels.iter().map(|l| &l.message)).collect::<Vec<_>>()
+    );
+
+    assert!(
+        has_no_duplicate_unit_declaration(&errors),
+        "unexpected 'duplicate unit declaration' error in test source: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // Non-empty span on the first dimension-mismatch label
@@ -108,6 +128,11 @@ structure def S {
         has_money_and_force_label(&errors),
         "expected label with 'Money' and 'Force' for 25USD - 5N"
     );
+    assert!(
+        has_no_duplicate_unit_declaration(&errors),
+        "unexpected 'duplicate unit declaration' error in test source: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 /// `5N + 25USD` (reverse polarity) should also produce the enriched diagnostic.
@@ -131,6 +156,11 @@ structure def S {
     assert!(
         has_money_and_force_label(&errors),
         "expected label with 'Money' and 'Force' for 5N + 25USD"
+    );
+    assert!(
+        has_no_duplicate_unit_declaration(&errors),
+        "unexpected 'duplicate unit declaration' error in test source: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -172,6 +202,12 @@ structure def S {
         has_money_and_force_label(&errors),
         "expected a label containing both 'Money' and 'Force' for 25USD..5N, labels: {:?}",
         errors.iter().flat_map(|d| d.labels.iter().map(|l| &l.message)).collect::<Vec<_>>()
+    );
+
+    assert!(
+        has_no_duplicate_unit_declaration(&errors),
+        "unexpected 'duplicate unit declaration' error in test source: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // Non-empty span
