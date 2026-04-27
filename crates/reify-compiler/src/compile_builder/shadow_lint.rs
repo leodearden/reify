@@ -83,7 +83,12 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             walk_members(&o.members, &frames, diagnostics);
         }
         // Imports do NOT participate in upward visibility per spec §8.11.
-        // Match explicitly and pass through; no frame is built.
+        // Match the variant explicitly and pass through: no frame is built,
+        // no module-scope frame aggregates imports, and `walk_declaration`
+        // does not extract names from `ImportDecl`. A `let` (or any later
+        // decl) with the same name as an imported symbol therefore CANNOT
+        // be flagged as shadowing the import — the import simply does not
+        // exist as far as this lint is concerned.
         Declaration::Import(_) => {}
         // The remaining declaration arms are wired in subsequent steps
         // (functions, constraint defs, traits, fields, purposes). Until then
