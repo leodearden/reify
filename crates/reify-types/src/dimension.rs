@@ -603,4 +603,21 @@ mod tests {
         let r2 = Rational::new(300, 2);
         assert_eq!(format!("{}", r2), "150");
     }
+
+    #[test]
+    fn money_constant_populates_slot_9() {
+        // Slot 9 must be ONE; all other slots must be ZERO.
+        assert_eq!(DimensionVector::MONEY.0[9], Rational::ONE);
+        for i in 0..9 {
+            assert_eq!(
+                DimensionVector::MONEY.0[i],
+                Rational::ZERO,
+                "slot {} should be zero",
+                i
+            );
+        }
+        // MONEY is not DIMENSIONLESS and not SOLID_ANGLE.
+        assert_ne!(DimensionVector::MONEY, DimensionVector::DIMENSIONLESS);
+        assert_ne!(DimensionVector::MONEY, DimensionVector::SOLID_ANGLE);
+    }
 }
