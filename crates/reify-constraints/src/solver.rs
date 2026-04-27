@@ -670,16 +670,11 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
             };
         }
         return SolveResult::Infeasible {
-            diagnostics: vec![reify_types::Diagnostic {
-                severity: reify_types::Severity::Error,
-                message: format!(
+            diagnostics: vec![reify_types::Diagnostic::error(format!(
                     "constraints could not be satisfied (max absolute residual: {:.2e})",
                     final_max_residual
-                ),
-                labels: vec![],
-                code: Some(DiagnosticCode::ConstraintUnsatisfiable),
-                candidates: Vec::new(),
-            }],
+                ))
+                .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
         };
     }
 
@@ -882,16 +877,12 @@ impl ConstraintSolver for DimensionalSolver {
                         // perturbation-based check found a different solution,
                         // indicating the problem is underdetermined.
                         SolveResult::Infeasible {
-                            diagnostics: vec![reify_types::Diagnostic {
-                                severity: reify_types::Severity::Error,
-                                message: "strict auto parameter resolution is not uniquely \
+                            diagnostics: vec![reify_types::Diagnostic::error(
+                                    "strict auto parameter resolution is not uniquely \
                                           determined \u{2014} consider using auto(free) \
-                                          for exploration"
-                                    .to_string(),
-                                labels: vec![],
-                                code: Some(DiagnosticCode::ConstraintNonUnique),
-                                candidates: Vec::new(),
-                            }],
+                                          for exploration",
+                                )
+                                .with_code(DiagnosticCode::ConstraintNonUnique)],
                         }
                     }
                 } else {
