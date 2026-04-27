@@ -14,6 +14,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_joint("prismatic", args[0].clone(), args[1].clone())
         }
+        "revolute" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            make_joint("revolute", args[0].clone(), args[1].clone())
+        }
         _ => return None,
     })
 }
