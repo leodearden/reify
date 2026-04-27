@@ -425,6 +425,114 @@ fn cubic_2d(
     cubic_1d(grid_x, &row, qx)
 }
 
+// ---------------------------------------------------------------------------
+// Public 3D entry point
+// ---------------------------------------------------------------------------
+
+/// Row-major flat-index for a 3D grid with `ny` and `nz` columns/depths:
+/// `values[i * ny * nz + j * nz + k]` is the sample at
+/// `(grid_x[i], grid_y[j], grid_z[k])`.
+#[inline]
+fn index_3d(i: usize, j: usize, k: usize, ny: usize, nz: usize) -> usize {
+    i * ny * nz + j * nz + k
+}
+
+/// Interpolate a 3D scalar grid at `query = (x, y, z)`.
+///
+/// `grid_x`, `grid_y`, `grid_z` must each be strictly ascending. `values` is a
+/// row-major flattened slice of shape `(grid_x.len(), grid_y.len(), grid_z.len())`
+/// using the layout `values[i * ny * nz + j * nz + k]` — i.e. `z` varies
+/// fastest, then `y`, then `x`.
+///
+/// Out-of-range queries clamp each axis independently to the nearest endpoint
+/// (constant extrapolation). `Rbf`/`Kriging` fall back to `Linear` and emit a
+/// single deferred-method warning.
+///
+/// Panics if any axis has fewer than 2 points or `values.len()` does not match
+/// `grid_x.len() * grid_y.len() * grid_z.len()`.
+pub fn interpolate_3d(
+    method: InterpolationMethod,
+    grid_x: &[f64],
+    grid_y: &[f64],
+    grid_z: &[f64],
+    values: &[f64],
+    query: (f64, f64, f64),
+) -> InterpolationResult {
+    assert!(
+        grid_x.len() >= 2,
+        "interpolate_3d: grid_x must have at least 2 points"
+    );
+    assert!(
+        grid_y.len() >= 2,
+        "interpolate_3d: grid_y must have at least 2 points"
+    );
+    assert!(
+        grid_z.len() >= 2,
+        "interpolate_3d: grid_z must have at least 2 points"
+    );
+    assert_eq!(
+        values.len(),
+        grid_x.len() * grid_y.len() * grid_z.len(),
+        "interpolate_3d: values length {} does not match grid shape ({}, {}, {})",
+        values.len(),
+        grid_x.len(),
+        grid_y.len(),
+        grid_z.len()
+    );
+
+    match method {
+        InterpolationMethod::Linear => {
+            let value = linear_3d(grid_x, grid_y, grid_z, values, query);
+            InterpolationResult {
+                value,
+                diagnostics: Vec::new(),
+            }
+        }
+        InterpolationMethod::NearestNeighbor => unreachable!(
+            "InterpolationMethod::NearestNeighbor 3D not yet implemented"
+        ),
+        InterpolationMethod::Cubic => unreachable!(
+            "InterpolationMethod::Cubic 3D not yet implemented"
+        ),
+        InterpolationMethod::Rbf => unreachable!(
+            "InterpolationMethod::Rbf 3D not yet implemented"
+        ),
+        InterpolationMethod::Kriging => unreachable!(
+            "InterpolationMethod::Kriging 3D not yet implemented"
+        ),
+    }
+}
+
+/// Trilinear kernel for a 3D grid. Computed by collapsing the z-axis first:
+/// for each `(i, j)`, interpolate the z-column at `qz` to produce a 2D slice
+/// of shape `(nx, ny)`; then evaluate that slice at `(qx, qy)` via the 2D
+/// bilinear kernel. Reusing [`linear_2d`] for the trailing step inherits the
+/// independent-axis boundary clamp policy.
+fn linear_3d(
+    grid_x: &[f64],
+    grid_y: &[f64],
+    grid_z: &[f64],
+    values: &[f64],
+    query: (f64, f64, f64),
+) -> f64 {
+    let (qx, qy, qz) = query;
+    let nx = grid_x.len();
+    let ny = grid_y.len();
+    let nz = grid_z.len();
+
+    let mut col = vec![0.0f64; nz];
+    let mut slice2d = vec![0.0f64; nx * ny];
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                col[k] = values[index_3d(i, j, k, ny, nz)];
+            }
+            slice2d[index_2d(i, j, ny)] = linear_1d(grid_z, &col, qz);
+        }
+    }
+    linear_2d(grid_x, grid_y, &slice2d, (qx, qy))
+}
+
 /// Locate a cell on a single axis with constant-extrapolation clamping.
 /// Returns `(cell_index, t)` where `t ∈ [0, 1]` is the local cell parameter,
 /// clamped to `0.0` or `1.0` for out-of-range queries. The grid must have at
