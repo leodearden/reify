@@ -728,4 +728,59 @@ mod tests {
             "faces_by_area must not loop over per-element query"
         );
     }
+
+    #[test]
+    fn edges_at_height_uses_query_many_once() {
+        // Three edges:
+        //   * edge_ids[0]: top edge — flat at z = +5mm (zmin == zmax == 5e-3).
+        //   * edge_ids[1]: vertical edge spanning -5mm to +5mm.
+        //   * edge_ids[2]: bottom edge — flat at z = -5mm.
+        // Filter on z = +5mm with 1e-6 m tolerance: only the top edge is
+        // retained (the vertical edge fails because zmin is 10mm away,
+        // and the bottom edge fails on both extents).
+        let edge_ids = vec![
+            GeometryHandleId(501),
+            GeometryHandleId(502),
+            GeometryHandleId(503),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(
+                edge_ids[0],
+                Value::String(
+                    "{\"xmin\":0,\"ymin\":0,\"zmin\":0.005,\"xmax\":0.01,\"ymax\":0,\"zmax\":0.005}"
+                        .into(),
+                ),
+            )
+            .with_response(
+                edge_ids[1],
+                Value::String(
+                    "{\"xmin\":0,\"ymin\":0,\"zmin\":-0.005,\"xmax\":0,\"ymax\":0,\"zmax\":0.005}"
+                        .into(),
+                ),
+            )
+            .with_response(
+                edge_ids[2],
+                Value::String(
+                    "{\"xmin\":0,\"ymin\":0,\"zmin\":-0.005,\"xmax\":0.01,\"ymax\":0,\"zmax\":-0.005}"
+                        .into(),
+                ),
+            );
+
+        let source = GeometryHandleId(1);
+        let result =
+            edges_at_height(&mut kernel, source, 5e-3, 1e-6).expect("selector should succeed");
+
+        assert_eq!(result, vec![edge_ids[0]], "expected only the top edge");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "edges_at_height must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "edges_at_height must not loop over per-element query"
+        );
+    }
 }
