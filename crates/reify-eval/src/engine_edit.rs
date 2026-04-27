@@ -2388,7 +2388,7 @@ mod tests {
 
     use super::{
         deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged,
-        reelaborate_guarded_group,
+        phase3_take_guard_val, reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
@@ -3296,6 +3296,23 @@ mod tests {
         let needs =
             group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
         assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
+    }
+
+    /// Happy path: `phase3_take_guard_val` returns `Some(value)` when the guard
+    /// cell is present in `values`.  The returned value is a clone of the stored
+    /// entry — callers may mutate `values` independently afterwards.
+    #[test]
+    fn phase3_take_guard_val_returns_some_when_guard_present() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+
+        let result = phase3_take_guard_val(&values, &guard_cell);
+        assert_eq!(
+            result,
+            Some(Value::Bool(true)),
+            "phase3_take_guard_val must return Some(Bool(true)) when the guard cell is present"
+        );
     }
 
 }
