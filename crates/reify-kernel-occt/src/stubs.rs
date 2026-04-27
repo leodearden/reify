@@ -267,4 +267,56 @@ mod tests {
             ),
         }
     }
+
+    /// Helper: assert a string mentions "OCCT" or "not available", matching
+    /// the stub crate's `NOT_AVAILABLE` constant verbatim.
+    fn assert_stub_message(msg: &str) {
+        assert!(
+            msg.contains("OCCT") || msg.contains("not available"),
+            "stub error message should mention OCCT or 'not available', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn stub_kernel_extract_edges_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.extract_edges(GeometryHandleId(1));
+        let err = result.expect_err("stub extract_edges should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_extract_faces_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.extract_faces(GeometryHandleId(1));
+        let err = result.expect_err("stub extract_faces should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_query_edge_length_returns_error() {
+        let kernel = OcctKernel::new();
+        let result =
+            kernel.query(&reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1)));
+        let err = result.expect_err("stub query EdgeLength should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_query_face_normal_returns_error() {
+        let kernel = OcctKernel::new();
+        let result =
+            kernel.query(&reify_types::GeometryQuery::FaceNormal(GeometryHandleId(1)));
+        let err = result.expect_err("stub query FaceNormal should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_query_edge_tangent_returns_error() {
+        let kernel = OcctKernel::new();
+        let result =
+            kernel.query(&reify_types::GeometryQuery::EdgeTangent(GeometryHandleId(1)));
+        let err = result.expect_err("stub query EdgeTangent should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
 }
