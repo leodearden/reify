@@ -8,6 +8,7 @@
 use reify_expr::interp::{
     InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d, interpolate_3d,
 };
+use reify_types::{DiagnosticCode, Severity};
 
 const TOL: f64 = 1e-12;
 
@@ -1074,4 +1075,163 @@ fn linear_2d_4x4_cell_midpoint_is_corner_mean() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Deferred methods (Rbf / Kriging) — fall back to Linear with a single warning
+// ---------------------------------------------------------------------------
+
+/// Helper: assert a single deferred-method warning whose message mentions both
+/// the method name and "Linear".
+fn assert_deferred_warning(diags: &[reify_types::Diagnostic], method_name: &str) {
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 diagnostic, got {}",
+        diags.len()
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning, "expected Warning severity");
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::InterpolationDeferred),
+        "expected InterpolationDeferred code"
+    );
+    let msg_lower = d.message.to_lowercase();
+    let needle_lower = method_name.to_lowercase();
+    assert!(
+        msg_lower.contains(&needle_lower),
+        "message {:?} does not mention {:?}",
+        d.message,
+        method_name
+    );
+    assert!(
+        d.message.contains("Linear"),
+        "message {:?} does not mention 'Linear'",
+        d.message
+    );
+}
+
+/// 1D: `Rbf` and `Kriging` produce the same value as `Linear`, plus a single
+/// deferred-method warning that references the chosen method and "Linear".
+#[test]
+fn deferred_methods_1d_match_linear_and_warn() {
+    let grid = [0.0f64, 1.0, 3.0, 6.0];
+    let values = [0.0f64, 10.0, 30.0, 90.0];
+    let q = 1.7;
+    let expected =
+        interpolate_1d(InterpolationMethod::Linear, &grid, &values, q).value;
+    for (method, name) in [
+        (InterpolationMethod::Rbf, "RBF"),
+        (InterpolationMethod::Kriging, "Kriging"),
+    ] {
+        let r = interpolate_1d(method, &grid, &values, q);
+        assert_eq!(r.value, expected, "{name} 1D value must equal Linear");
+        assert_deferred_warning(&r.diagnostics, name);
+    }
+}
+
+/// 2D: `Rbf` and `Kriging` produce the same value as `Linear`, plus a single
+/// deferred-method warning.
+#[test]
+fn deferred_methods_2d_match_linear_and_warn() {
+    let gx = vec![0.0f64, 1.0, 3.0];
+    let gy = vec![0.0f64, 2.0, 5.0];
+    let f = |x: f64, y: f64| 1.0 + 2.0 * x - 0.5 * y + 0.3 * x * y;
+    let values = build_2d(&gx, &gy, f);
+    let q = (1.4f64, 3.7f64);
+    let expected =
+        interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, q).value;
+    for (method, name) in [
+        (InterpolationMethod::Rbf, "RBF"),
+        (InterpolationMethod::Kriging, "Kriging"),
+    ] {
+        let r = interpolate_2d(method, &gx, &gy, &values, q);
+        assert_eq!(r.value, expected, "{name} 2D value must equal Linear");
+        assert_deferred_warning(&r.diagnostics, name);
+    }
+}
+
+/// 3D: `Rbf` and `Kriging` produce the same value as `Linear`, plus a single
+/// deferred-method warning.
+#[test]
+fn deferred_methods_3d_match_linear_and_warn() {
+    let gx = vec![0.0f64, 1.0, 3.0];
+    let gy = vec![0.0f64, 2.0, 5.0];
+    let gz = vec![0.0f64, 1.0, 4.0];
+    let f =
+        |x: f64, y: f64, z: f64| 1.0 + 2.0 * x - 0.5 * y + 0.7 * z + 0.1 * x * y - 0.3 * y * z;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let q = (1.4f64, 3.7f64, 2.0f64);
+    let expected =
+        interpolate_3d(InterpolationMethod::Linear, &gx, &gy, &gz, &values, q).value;
+    for (method, name) in [
+        (InterpolationMethod::Rbf, "RBF"),
+        (InterpolationMethod::Kriging, "Kriging"),
+    ] {
+        let r = interpolate_3d(method, &gx, &gy, &gz, &values, q);
+        assert_eq!(r.value, expected, "{name} 3D value must equal Linear");
+        assert_deferred_warning(&r.diagnostics, name);
+    }
+}
+
+/// Non-deferred methods (Linear, NearestNeighbor, Cubic) produce empty
+/// `diagnostics` vectors across all three dimensions — sanity-check that
+/// the deferred-method warning is the *only* diagnostic source.
+#[test]
+fn non_deferred_methods_produce_no_diagnostics() {
+    // 1D
+    let g1 = [0.0f64, 1.0, 2.0];
+    let v1 = [10.0f64, 20.0, 30.0];
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        let r = interpolate_1d(m, &g1, &v1, 0.5);
+        assert!(r.diagnostics.is_empty(), "1D {:?} emitted diagnostics", m);
+    }
+
+    // 2D
+    let g2x = [0.0f64, 1.0, 2.0];
+    let g2y = [0.0f64, 1.0, 2.0];
+    let v2 = build_2d(&g2x, &g2y, |x, y| x + y);
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        let r = interpolate_2d(m, &g2x, &g2y, &v2, (0.5, 0.5));
+        assert!(r.diagnostics.is_empty(), "2D {:?} emitted diagnostics", m);
+    }
+
+    // 3D
+    let g3x = [0.0f64, 1.0, 2.0];
+    let g3y = [0.0f64, 1.0, 2.0];
+    let g3z = [0.0f64, 1.0, 2.0];
+    let v3 = build_3d(&g3x, &g3y, &g3z, |x, y, z| x + y + z);
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        let r = interpolate_3d(m, &g3x, &g3y, &g3z, &v3, (0.5, 0.5, 0.5));
+        assert!(r.diagnostics.is_empty(), "3D {:?} emitted diagnostics", m);
+    }
+}
+
+/// Silences `unused_variables` warnings — `InterpolationResult` is read in many
+/// of the assertions above; we deliberately also reference it here so the
+/// import is not flagged as dead in the unlikely case all other tests are
+/// `#[ignore]`d at once.
+#[test]
+fn interpolation_result_struct_is_constructible() {
+    let r: InterpolationResult = interpolate_1d(
+        InterpolationMethod::Linear,
+        &[0.0, 1.0],
+        &[0.0, 1.0],
+        0.5,
+    );
+    assert_eq!(r.value, 0.5);
+    assert!(r.diagnostics.is_empty());
 }
