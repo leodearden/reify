@@ -236,10 +236,11 @@ fn item_h2_headings_per_variant() {
     for (kind, item, expected_keyword) in cases {
         let out = render_one_item(item);
         // Must contain an H2 heading line containing the keyword and `Foo`
-        // wrapped in backticks.
-        let header_line = out.lines().find(|l| l.starts_with("## "));
+        // wrapped in backticks.  Skip the `## Contents` TOC H2 so we find the
+        // *item* heading.
+        let header_line = out.lines().find(|l| l.starts_with("## `"));
         let header_line = header_line
-            .unwrap_or_else(|| panic!("variant={kind}: no H2 in output:\n{out}"));
+            .unwrap_or_else(|| panic!("variant={kind}: no item H2 in output:\n{out}"));
         assert!(
             header_line.contains(expected_keyword),
             "variant={kind}: H2 missing keyword {expected_keyword:?}: {header_line}"

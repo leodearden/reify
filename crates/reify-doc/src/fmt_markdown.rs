@@ -74,6 +74,8 @@ fn render_single(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
             .items
             .iter()
             .partition(|i| find_annotation(item_annotations(i), "test").is_none());
+        // Table of contents — sits between the H1/doc and the first item H2.
+        render_toc(&mut out, &non_tests);
         for item in &non_tests {
             render_item(&mut out, item, cross_refs);
         }
@@ -85,6 +87,68 @@ fn render_single(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
         }
     }
     out
+}
+
+/// Stable group label for the TOC. Returns `None` if the item should not
+/// appear in the TOC (currently nothing is hidden, but the option leaves
+/// room for future filtering).
+///
+/// "Constants" buckets the long tail of value-like declarations (Field,
+/// Unit, TypeAlias, ConstraintDef, Purpose) per the PRD's six-group TOC.
+fn item_group(item: &ItemDoc) -> &'static str {
+    match item {
+        ItemDoc::Trait { .. } => "Traits",
+        ItemDoc::Structure { .. } => "Structures",
+        ItemDoc::Occurrence { .. } => "Occurrences",
+        ItemDoc::Enum { .. } => "Enums",
+        ItemDoc::Function { .. } => "Functions",
+        ItemDoc::Field { .. }
+        | ItemDoc::Unit { .. }
+        | ItemDoc::TypeAlias { .. }
+        | ItemDoc::ConstraintDef { .. }
+        | ItemDoc::Purpose { .. } => "Constants",
+    }
+}
+
+/// Render the table of contents under a `## Contents` H2, with one `### {Kind}`
+/// H3 per non-empty group and a bullet list of anchor links inside.  Within a
+/// group, items sort alphabetically by name.  Empty groups are omitted.  No-op
+/// when `items` is empty.
+fn render_toc(out: &mut String, items: &[&ItemDoc]) {
+    if items.is_empty() {
+        return;
+    }
+    // Fixed group order matching the PRD spec.
+    const GROUPS: &[&str] = &[
+        "Traits",
+        "Structures",
+        "Occurrences",
+        "Enums",
+        "Functions",
+        "Constants",
+    ];
+
+    out.push_str("## Contents\n\n");
+    for &group in GROUPS {
+        let mut in_group: Vec<&&ItemDoc> =
+            items.iter().filter(|i| item_group(i) == group).collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        in_group.sort_by(|a, b| item_name(a).cmp(item_name(b)));
+        out.push_str("### ");
+        out.push_str(group);
+        out.push_str("\n\n");
+        for it in in_group {
+            let n = item_name(it);
+            out.push_str("- [`");
+            out.push_str(n);
+            out.push_str("`](#");
+            out.push_str(n);
+            out.push_str(")\n");
+        }
+        out.push('\n');
+    }
 }
 
 /// Emit a doc-comment string as one or more Markdown paragraphs.
