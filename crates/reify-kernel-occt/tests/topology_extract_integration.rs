@@ -8,7 +8,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, Value};
+use reify_types::{GeometryHandleId, GeometryOp, QueryError, Value};
 
 /// Helper: build a kernel containing one box of the given mm dimensions
 /// and return the kernel + its handle id.
@@ -55,5 +55,25 @@ fn extract_edges_box_returns_twelve_distinct_handles() {
             "duplicate edge handle id {:?} in extract_edges result",
             id
         );
+    }
+}
+
+#[test]
+fn extract_edges_invalid_handle_returns_invalid_reference() {
+    // Fresh kernel — no shapes registered, so handle id 999 is unknown.
+    let mut kernel = OcctKernel::new();
+    let bad = GeometryHandleId(999);
+
+    let result = kernel.extract_edges(bad);
+
+    match result {
+        Err(QueryError::InvalidHandle(id)) => {
+            assert_eq!(
+                id, bad,
+                "InvalidHandle should carry the bad handle id verbatim"
+            );
+        }
+        Ok(v) => panic!("expected Err(InvalidHandle), got Ok({:?})", v),
+        Err(other) => panic!("expected Err(InvalidHandle), got Err({:?})", other),
     }
 }
