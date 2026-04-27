@@ -997,6 +997,30 @@ impl OcctKernel {
                     edges.into_iter().map(|i| Value::Int(i as i64)).collect(),
                 ))
             }
+            GeometryQuery::IsWatertight(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_watertight(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
+            GeometryQuery::IsManifold(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_manifold(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
+            GeometryQuery::IsOrientable(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_orientable(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
         }
     }
 

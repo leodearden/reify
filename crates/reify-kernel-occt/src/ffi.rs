@@ -285,6 +285,22 @@ pub mod ffi {
             face_b_index: u32,
         ) -> Result<Vec<u32>>;
 
+        // --- Conformance queries ---
+
+        /// Check whether `shape` is watertight (closed, no free edges).
+        /// Returns false immediately for FACE/WIRE/EDGE/VERTEX types (shape-type guard).
+        /// Backed by BRepCheck_Analyzer.IsValid() for SOLID/COMPSOLID/COMPOUND/SHELL.
+        fn is_watertight(shape: &OcctShape) -> Result<bool>;
+
+        /// Check whether every edge of `shape` has at most 2 parent faces.
+        /// Backed by walking the cached edge_face_map.
+        fn is_manifold(shape: &OcctShape) -> Result<bool>;
+
+        /// Check whether all shells of `shape` are consistently oriented.
+        /// Backed by ShapeAnalysis_Shell::CheckOrientedShells(shape, alsofree=false).
+        /// Trivially true for shapes with no shells (wires, isolated faces, vertices).
+        fn is_orientable(shape: &OcctShape) -> Result<bool>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

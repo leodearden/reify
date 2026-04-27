@@ -3,6 +3,8 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <ShapeAnalysis_Shell.hxx>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -265,6 +267,31 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
 /// returned in ascending order. Throws std::runtime_error if either index is
 /// out of range.
 rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
+
+// --- Conformance queries ---
+
+/// Check whether `shape` is watertight (closed, no free edges).
+///
+/// Backed by `BRepCheck_Analyzer.IsValid()`. Returns `false` for shape types
+/// other than SOLID/COMPSOLID/COMPOUND/SHELL without running the analyzer,
+/// because valid wires and faces are not "watertight" in the geometry-trait
+/// sense (they do not enclose a volume).
+bool is_watertight(const OcctShape& shape);
+
+/// Check whether every edge of `shape` has at most 2 parent faces.
+///
+/// Backed by walking the cached `edge_face_map` (lazy `TopExp::MapShapesAndAncestors`).
+/// Returns `false` iff any edge has 3+ incident faces. Shapes with no face
+/// incidence (wires, edges, vertices) trivially return `true`.
+bool is_manifold(const OcctShape& shape);
+
+/// Check whether all shells of `shape` are consistently oriented.
+///
+/// Backed by `ShapeAnalysis_Shell::CheckOrientedShells(shape, alsofree=Standard_False)`.
+/// Returns `true` iff every connected edge has opposite (FORWARD/REVERSED)
+/// orientations on its two incident faces. Shapes with no shells loaded
+/// (wires, isolated faces, vertices) trivially return `true`.
+bool is_orientable(const OcctShape& shape);
 
 // --- Export ---
 

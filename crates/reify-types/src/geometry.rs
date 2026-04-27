@@ -329,6 +329,26 @@ pub enum GeometryQuery {
         face_a: usize,
         face_b: usize,
     },
+    /// Check whether a shape is watertight (closed, no free edges).
+    ///
+    /// Backed by `BRepCheck_Analyzer.IsValid()`. Returns `Value::Bool(true)` for
+    /// valid SOLID/COMPSOLID/COMPOUND/SHELL shapes. Returns `Value::Bool(false)`
+    /// for FACE/WIRE/EDGE/VERTEX shapes (shape-type guard — they are geometrically
+    /// valid but not "watertight" in the sense of enclosing a volume).
+    IsWatertight(GeometryHandleId),
+    /// Check whether every edge of a shape has at most 2 parent faces.
+    ///
+    /// Backed by walking the cached `edge_face_map`. Returns `Value::Bool(true)`
+    /// iff every edge in the shape has ≤ 2 incident faces. Shapes with no face
+    /// incidence (wires, edges, vertices) trivially return `true`.
+    IsManifold(GeometryHandleId),
+    /// Check whether all shells in a shape are consistently oriented.
+    ///
+    /// Backed by `ShapeAnalysis_Shell::CheckOrientedShells(shape, alsofree=false)`.
+    /// Returns `Value::Bool(true)` iff every connected edge has opposite
+    /// (FORWARD/REVERSED) orientations on its two incident faces. Shapes with
+    /// no shells loaded (wires, isolated faces, vertices) trivially return `true`.
+    IsOrientable(GeometryHandleId),
 }
 
 /// Export formats for geometry.
@@ -741,6 +761,27 @@ mod tests {
                 assert_eq!(*degree, 3);
             }
             _ => panic!("expected NurbsCurve variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_query_conformance_variants_can_be_constructed_and_matched() {
+        let wt = GeometryQuery::IsWatertight(GeometryHandleId(1));
+        match &wt {
+            GeometryQuery::IsWatertight(id) => assert_eq!(*id, GeometryHandleId(1)),
+            _ => panic!("expected IsWatertight variant"),
+        }
+
+        let mf = GeometryQuery::IsManifold(GeometryHandleId(2));
+        match &mf {
+            GeometryQuery::IsManifold(id) => assert_eq!(*id, GeometryHandleId(2)),
+            _ => panic!("expected IsManifold variant"),
+        }
+
+        let or = GeometryQuery::IsOrientable(GeometryHandleId(3));
+        match &or {
+            GeometryQuery::IsOrientable(id) => assert_eq!(*id, GeometryHandleId(3)),
+            _ => panic!("expected IsOrientable variant"),
         }
     }
 

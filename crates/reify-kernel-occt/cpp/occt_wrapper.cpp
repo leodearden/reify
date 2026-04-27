@@ -94,6 +94,10 @@
 // OCCT distance
 #include <BRepExtrema_DistShapeShape.hxx>
 
+// OCCT conformance queries
+#include <BRepCheck_Analyzer.hxx>
+#include <ShapeAnalysis_Shell.hxx>
+
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -1500,6 +1504,72 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
         throw std::runtime_error(std::string("OCCT query_moment_of_inertia: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT query_moment_of_inertia: unknown C++ exception");
+    }
+}
+
+// --- Conformance queries ---
+
+bool is_watertight(const OcctShape& shape) {
+    try {
+        // Shape-type guard: wires, faces, edges, and vertices are geometrically
+        // valid but not "watertight" — they do not enclose a volume.
+        // Short-circuit before running BRepCheck_Analyzer to match the
+        // geometry-trait semantics (Watertight : Closed + Manifold targets solids).
+        TopAbs_ShapeEnum type = shape.shape.ShapeType();
+        if (type != TopAbs_SOLID && type != TopAbs_COMPSOLID
+                && type != TopAbs_COMPOUND && type != TopAbs_SHELL) {
+            return false;
+        }
+        BRepCheck_Analyzer analyzer(shape.shape);
+        return analyzer.IsValid();
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT is_watertight: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT is_watertight: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT is_watertight: unknown C++ exception");
+    }
+}
+
+bool is_manifold(const OcctShape& shape) {
+    try {
+        // Walk the cached edge→face incidence map. Every edge that has more
+        // than 2 parent faces violates manifoldness. Shapes with no face
+        // incidence (wires, edges, vertices) trivially return true.
+        const auto& m = shape.edge_face_map();
+        for (Standard_Integer i = 1; i <= m.Extent(); ++i) {
+            if (m.FindFromIndex(i).Extent() > 2) {
+                return false;
+            }
+        }
+        return true;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT is_manifold: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT is_manifold: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT is_manifold: unknown C++ exception");
+    }
+}
+
+bool is_orientable(const OcctShape& shape) {
+    try {
+        ShapeAnalysis_Shell sa;
+        sa.LoadShells(shape.shape);
+        if (sa.NbLoaded() == 0) {
+            // No shells: wires, isolated faces, vertices are trivially orientable.
+            return true;
+        }
+        // CheckOrientedShells returns Standard_True when it finds "bad" edges
+        // (edges with inconsistent orientation), i.e. true = problems found.
+        // We invert: orientable iff no problems found.
+        return !sa.CheckOrientedShells(shape.shape, Standard_False);
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT is_orientable: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT is_orientable: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT is_orientable: unknown C++ exception");
     }
 }
 
