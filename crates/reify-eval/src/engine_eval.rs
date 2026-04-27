@@ -1661,39 +1661,39 @@ impl Engine {
                     // Use override if available (with validation), otherwise evaluate default.
                     // Reuses `override_entry` computed above — no second call to validate_param_override.
                     // Mirrors eval() lines 603-622: on mismatch fall back to default.
-                    // Returns (Value, DeterminacyState): rejected-override-with-no-default
-                    // yields (Undef, Undetermined) matching eval()'s DeterminacyState path.
+                    //
+                    // `default_or` is parameterised by the DeterminacyState to use when there is
+                    // no default expression: `Undetermined` for the rejected-override arm (mirrors
+                    // eval()'s DeterminacyState path) and `Determined` for the no-override arm.
+                    // This eliminates the duplicated `if cell.default_expr { … } else { … }` block.
                     //
                     // `Some((override_val, Ok(())))` is the only site that clones: the &Value
                     // borrow is moved out of override_entry and cloned here to produce the owned
                     // Value written to the cache.  Validate-once invariant is preserved — the
                     // Result in override_entry.1 is the same one computed at the top.
+                    let default_or = |no_default_state: DeterminacyState| -> (Value, DeterminacyState) {
+                        if let Some(ref expr) = cell.default_expr {
+                            (
+                                reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                                ),
+                                DeterminacyState::Determined,
+                            )
+                        } else {
+                            (reify_types::Value::Undef, no_default_state)
+                        }
+                    };
                     let (val, det) = match override_entry {
                         Some((override_val, Ok(()))) => {
                             (override_val.clone(), DeterminacyState::Determined)
                         }
                         Some((_, Err(_))) => {
                             // Diagnostic already pushed by the unconditional pre-check above.
-                            // fall back to default; Undetermined if no default (mirrors eval())
-                            if let Some(ref expr) = cell.default_expr {
-                                (reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                ), DeterminacyState::Determined)
-                            } else {
-                                (reify_types::Value::Undef, DeterminacyState::Undetermined)
-                            }
+                            // Fall back to default; Undetermined if no default (mirrors eval()).
+                            default_or(DeterminacyState::Undetermined)
                         }
-                        None => {
-                            if let Some(ref expr) = cell.default_expr {
-                                (reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                ), DeterminacyState::Determined)
-                            } else {
-                                (reify_types::Value::Undef, DeterminacyState::Determined)
-                            }
-                        }
+                        None => default_or(DeterminacyState::Determined),
                     };
 
                     // Build dependency trace (params have no reads - they are roots)
