@@ -182,6 +182,22 @@ structure S {
          expected message to NOT contain `a.b.c.d.e.f`, got: {:?}",
         warning.message
     );
+
+    // Positive control on the rendered chain text. The IndexAccess root is
+    // not a bare Ident or EnumAccess, so render_chain_text intentionally
+    // substitutes the literal `<expr>` placeholder for the root segment in
+    // v0.1 (see the doc on `render_chain_text`). The diagnostic span still
+    // anchors the squiggle correctly in editor output, but bare CLI
+    // renderings will see the placeholder. This assertion pins that
+    // contract so future authors who change the placeholder know to update
+    // the test (or to extend the root-rendering arm with prettier output).
+    assert!(
+        warning.message.contains("<expr>.c.d.e.f"),
+        "DeepDotChain warning for an IndexAccess-rooted chain must render \
+         the chain text with `<expr>` standing in for the IndexAccess root \
+         (v0.1 contract — see `render_chain_text` doc), got: {:?}",
+        warning.message
+    );
 }
 
 /// `Direction.In.a.b.c` parses as `MA(MA(MA(EnumAccess(Direction, In), "a"),
