@@ -83,8 +83,8 @@ impl ConstraintChecker for SimpleConstraintChecker {
 mod tests {
     use super::*;
     use reify_types::{
-        BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, DimensionVector, Type, Value,
-        ValueCellId, ValueMap,
+        BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type,
+        Value, ValueCellId, ValueMap,
     };
 
     fn mm(v: f64) -> Value {
