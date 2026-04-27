@@ -365,6 +365,11 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 /// regardless of validation outcome (too-new error, too-old warning, or
 /// in-range silent), so downstream tooling can render the user's intent
 /// verbatim. Only malformed args and duplicates leave it `None`.
+///
+/// The first-wins slot is consumed only when a `#version` pragma is
+/// successfully parsed into a `(MAJOR, MINOR)` tuple — malformed first pragmas
+/// (bad string, wrong arg shape) do not consume the slot, so a following
+/// well-formed `#version` is still recognised.
 fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -383,7 +388,10 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             );
             continue;
         }
-        first_seen = true;
+
+        // NOTE: first_seen is set only when the arg is successfully parsed into
+        // a (MAJOR, MINOR) tuple — malformed first pragmas (bad string, wrong
+        // arg shape) do not consume the first-wins slot.
 
         // First-seen pragma: interpret its args.
         let parsed_version: Option<(u16, u16)> = match pragma.args.as_slice() {
@@ -482,6 +490,11 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         };
 
         if let Some((maj, min)) = parsed_version {
+            // A successfully parsed (maj, min) consumes the first-wins slot
+            // regardless of whether the version is in-range, too-new, or
+            // too-old — all three are well-formed parses.
+            first_seen = true;
+
             // Storage reflects the user-declared tuple regardless of
             // validation outcome (see task design decision).
             module.declared_version = Some((maj, min));
