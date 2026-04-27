@@ -24,6 +24,7 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     apply_version_pragma(parsed, module);
     apply_solver_pragma(parsed, module);
     warn_block_level_precision(module);
+    warn_block_level_solver(module);
 }
 
 /// The maximum target language version this compiler can compile.
@@ -35,10 +36,13 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 /// specifies the wording template, not a literal version string.
 const COMPILER_SUPPORTED_VERSION: (u16, u16) = (0, 1);
 
-/// Append the spans of every `#precision` pragma in `pragmas` to `out`.
-fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
+/// Append the spans of every pragma whose `name` matches `target_name` in
+/// `pragmas` to `out`. Shared by `warn_block_level_precision` and
+/// `warn_block_level_solver` so a future container-set change updates both
+/// passes from a single edit.
+fn collect_named_pragma_spans(target_name: &str, pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
     for pragma in pragmas {
-        if pragma.name == "precision" {
+        if pragma.name == target_name {
             out.push(pragma.span);
         }
     }
@@ -59,28 +63,66 @@ fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
 /// fields are: `templates` (`TopologyTemplate`), `trait_defs` (`CompiledTrait`),
 /// `compiled_purposes` (`CompiledPurpose`), and `constraint_defs`
 /// (`CompiledConstraintDef`). If a future PR adds a fifth pragma-bearing
-/// container (e.g. `compiled_functions`), append a matching loop below or the
-/// new container will silently bypass the deferred-to-v0.2 warning.
+/// container (e.g. `compiled_functions`), append a matching loop below — and
+/// also update the sibling `warn_block_level_solver`, which walks the same
+/// four containers for `#solver`.
 fn warn_block_level_precision(module: &mut CompiledModule) {
     let mut spans: Vec<SourceSpan> = Vec::new();
 
     for tmpl in &module.templates {
-        collect_precision_spans(&tmpl.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &tmpl.pragmas, &mut spans);
     }
     for trait_def in &module.trait_defs {
-        collect_precision_spans(&trait_def.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &trait_def.pragmas, &mut spans);
     }
     for purpose in &module.compiled_purposes {
-        collect_precision_spans(&purpose.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &purpose.pragmas, &mut spans);
     }
     for constraint_def in &module.constraint_defs {
-        collect_precision_spans(&constraint_def.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &constraint_def.pragmas, &mut spans);
     }
 
     for span in spans {
         module.diagnostics.push(
             Diagnostic::warning(
                 "#precision is ignored in v0.1; per-block tolerance deferred to v0.2",
+            )
+            .with_label(DiagnosticLabel::new(span, "ignored in v0.1")),
+        );
+    }
+}
+
+/// Walk every block-level pragma container on the assembled module and emit
+/// one "ignored in v0.1; per-block solver tuning deferred to v0.2" warning
+/// per `#solver` pragma found.
+///
+/// PRD §3: per-block solver selection is deferred to v0.2. The complementary
+/// `validate_pragmas` pre-pass deliberately does NOT warn on `#solver` (it
+/// is in `KNOWN_BLOCK_PRAGMAS`), so this is the single site that flags
+/// block-level usage.
+///
+/// Mirrors `warn_block_level_precision`; see that function's container-set
+/// invariant doc for the contract on adding a fifth pragma-bearing container.
+fn warn_block_level_solver(module: &mut CompiledModule) {
+    let mut spans: Vec<SourceSpan> = Vec::new();
+
+    for tmpl in &module.templates {
+        collect_named_pragma_spans("solver", &tmpl.pragmas, &mut spans);
+    }
+    for trait_def in &module.trait_defs {
+        collect_named_pragma_spans("solver", &trait_def.pragmas, &mut spans);
+    }
+    for purpose in &module.compiled_purposes {
+        collect_named_pragma_spans("solver", &purpose.pragmas, &mut spans);
+    }
+    for constraint_def in &module.constraint_defs {
+        collect_named_pragma_spans("solver", &constraint_def.pragmas, &mut spans);
+    }
+
+    for span in spans {
+        module.diagnostics.push(
+            Diagnostic::warning(
+                "#solver is ignored in v0.1; per-block solver tuning deferred to v0.2",
             )
             .with_label(DiagnosticLabel::new(span, "ignored in v0.1")),
         );
