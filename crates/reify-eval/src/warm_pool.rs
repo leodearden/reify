@@ -235,10 +235,25 @@ impl WarmStatePool {
     ///
     /// Returns the `OpaqueState` if present, removing it from the pool.
     /// A second call for the same node returns `None`.
+    ///
+    /// See also: [`checkout`](Self::checkout) — the architecturally-named alias
+    /// for the same operation (arch §4.3 line 539).
     pub fn retrieve(&mut self, node_id: &NodeId) -> Option<OpaqueState> {
         let entry = self.pool.remove(node_id)?;
         self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         Some(entry.state)
+    }
+
+    /// Check out warm-start state for a node (take semantics).
+    ///
+    /// Architecturally-named alias for [`retrieve`](Self::retrieve), matching
+    /// the term used in arch §4.3 line 539. Returns `Some(OpaqueState)` when
+    /// the entry is present (and removes it from the pool); returns `None`
+    /// when the entry is absent OR has been LRU-evicted. Both names remain
+    /// valid for back-compat — call sites that consume warm state on topology
+    /// addition should prefer `checkout`.
+    pub fn checkout(&mut self, node_id: &NodeId) -> Option<OpaqueState> {
+        self.retrieve(node_id)
     }
 
     /// Current estimated memory usage in bytes.
