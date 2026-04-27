@@ -1,3 +1,11 @@
 // Stdlib: Manufacturing-stock collections (std.stock).
 // Provides standard bolt length and sheet thickness series referenced by
 // @solver_hint annotations (e.g. @solver_hint("discrete_set", standard_bolt_lengths)).
+
+/// Standard ISO 4014 / ISO 4017 bolt length series, 8 mm through 100 mm.
+/// Values are the canonical preferred increments used in fastener catalogues.
+/// Reference this as the second arg of `@solver_hint("discrete_set", standard_bolt_lengths)`.
+pub fn standard_bolt_lengths() -> List<Length> {
+    [8mm, 10mm, 12mm, 14mm, 16mm, 20mm, 25mm, 30mm, 35mm, 40mm,
+     45mm, 50mm, 55mm, 60mm, 65mm, 70mm, 75mm, 80mm, 90mm, 100mm]
+}
