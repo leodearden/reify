@@ -272,32 +272,14 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Sampled { config } => {
-            // Intentional asymmetry with the Imported arm below: we walk and compile
-            // the config block before emitting the deferral diagnostic so that
-            // (a) any malformed config expressions surface secondary diagnostics
-            // rather than being silently dropped, and (b) the resulting
-            // `CompiledFieldSource::Sampled { config }` is well-formed — keeping
-            // the `engine_eval.rs` Undef defence-in-depth arm reachable and the
-            // content-hash at lines below stable.  The compiled config is otherwise
-            // dead at runtime (engine_eval returns Undef for Sampled).
-            let compiled_config: Vec<(String, CompiledExpr)> = config
-                .iter()
-                .map(|(key, val_expr)| {
-                    // In sampled config, bare identifiers are treated as string
-                    // constants (e.g., `interpolation = linear` -> "linear").
-                    let compiled = if let reify_syntax::ExprKind::Ident(name) = &val_expr.kind {
-                        if scope.resolve(name).is_none() {
-                            CompiledExpr::literal(Value::String(name.clone()), Type::String)
-                        } else {
-                            compile_expr(val_expr, &scope, enum_defs, functions, diagnostics)
-                        }
-                    } else {
-                        compile_expr(val_expr, &scope, enum_defs, functions, diagnostics)
-                    };
-                    (key.clone(), compiled)
-                })
-                .collect();
+        reify_syntax::FieldSource::Sampled { .. } => {
+            // Mirrors the Imported arm: v0.2 deferral — emit the diagnostic and
+            // return a payload-less variant.  The config block is intentionally not
+            // walked here; engine_eval.rs:652-653 maps Sampled { .. } unconditionally
+            // to Value::Undef, so the compiled config has no runtime consumer.
+            // Secondary lint diagnostics for malformed sub-expressions are still
+            // surfaced by dot_chain_lint.rs:101-105 (AST-level walk, independent of
+            // compile_field).
             diagnostics.push(
                 Diagnostic::error(
                     "sampled field sources are deferred to v0.2; v0.1 supports analytical and composed only",
@@ -309,7 +291,7 @@ pub(crate) fn compile_field(
                 )),
             );
             CompiledFieldSource::Sampled {
-                config: compiled_config,
+                config: Vec::new(),
             }
         }
         reify_syntax::FieldSource::Composed { expr } => {
