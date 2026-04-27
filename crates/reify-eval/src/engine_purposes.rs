@@ -837,4 +837,133 @@ mod tests {
             "fallback scan must sort alphabetically for determinism"
         );
     }
+
+    /// Helper used by the recursion regression-pin tests below. Returns `true`
+    /// if any node anywhere in `expr`'s tree is a
+    /// `PurposeReflectiveAggregation` node. Uses the canonical
+    /// `CompiledExpr::walk` traversal so the check automatically follows new
+    /// variants when the walker is updated.
+    fn tree_contains_placeholder(expr: &CompiledExpr) -> bool {
+        let mut found = false;
+        expr.walk(&mut |e: &CompiledExpr| {
+            if matches!(e.kind, CompiledExprKind::PurposeReflectiveAggregation { .. }) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    /// Regression pin: `expand_purpose_reflective_placeholders` must recurse
+    /// into every child slot of `Conditional` and `Match` nodes. A future
+    /// refactor that drops any of these recursive arms would not be caught by
+    /// the existing top-level tests (which only place the placeholder at the
+    /// root).
+    ///
+    /// Acceptance-criterion literal pins: Conditional (all three child slots)
+    /// and Match arm body.
+    #[test]
+    fn expand_recurses_through_branching_wrappers() {
+        use reify_test_support::conditional_expr;
+        use reify_types::{CompiledMatchArm, Value};
+
+        let entity = "Foo";
+        let cell_x = ValueCellId::new(entity, "x");
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_x.clone()],
+        }];
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        value_cells.insert(
+            cell_x.clone(),
+            ValueCellNode {
+                id: cell_x.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("x"),
+            },
+        );
+        let make_placeholder = || {
+            CompiledExpr::purpose_reflective_aggregation(
+                "subject".to_string(),
+                "params".to_string(),
+                Type::List(Box::new(Type::Real)),
+            )
+        };
+
+        type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
+        let wrappers: Vec<(&str, WrapFn)> = vec![
+            (
+                "Conditional condition",
+                Box::new(|ph| {
+                    conditional_expr(
+                        ph,
+                        CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                        CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                    )
+                }),
+            ),
+            (
+                "Conditional then_branch",
+                Box::new(|ph| {
+                    conditional_expr(
+                        CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                        ph,
+                        CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                    )
+                }),
+            ),
+            (
+                "Conditional else_branch",
+                Box::new(|ph| {
+                    conditional_expr(
+                        CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                        CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                        ph,
+                    )
+                }),
+            ),
+            (
+                "Match discriminant",
+                Box::new(|ph| {
+                    CompiledExpr::match_expr(
+                        ph,
+                        vec![CompiledMatchArm {
+                            patterns: vec!["_".to_string()],
+                            body: CompiledExpr::literal(Value::Int(0), Type::Int),
+                        }],
+                        Type::Int,
+                    )
+                }),
+            ),
+            (
+                "Match arm body",
+                Box::new(|ph| {
+                    CompiledExpr::match_expr(
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        vec![CompiledMatchArm {
+                            patterns: vec!["_".to_string()],
+                            body: ph,
+                        }],
+                        Type::List(Box::new(Type::Real)),
+                    )
+                }),
+            ),
+        ];
+
+        let mut failures: Vec<&str> = Vec::new();
+        for (label, wrap) in &wrappers {
+            let mut wrapped = wrap(make_placeholder());
+            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
+            if tree_contains_placeholder(&wrapped) {
+                failures.push(label);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "placeholder not rewritten under: {:?}",
+            failures
+        );
+    }
 }
