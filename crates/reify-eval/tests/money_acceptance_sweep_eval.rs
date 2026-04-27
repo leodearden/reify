@@ -3,6 +3,30 @@
 use reify_test_support::eval_source;
 use reify_types::{DimensionVector, Rational, Value, ValueCellId};
 
+/// Fetch the cell at `entity.member` from `result`, assert it is a
+/// `Value::Scalar`, and return its `DimensionVector`. Panics with a
+/// localised message if the cell is missing or has a non-Scalar variant.
+/// `#[track_caller]` keeps panic line numbers pointing at the test's call site.
+#[track_caller]
+fn extract_scalar_dimension(
+    result: &reify_eval::EvalResult,
+    entity: &str,
+    member: &str,
+) -> DimensionVector {
+    let id = ValueCellId::new(entity, member);
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'{}.{}' not found in eval result", entity, member));
+    match val {
+        Value::Scalar { dimension, .. } => *dimension,
+        other => panic!(
+            "expected '{}.{}' to be Value::Scalar, got {:?}",
+            entity, member, other
+        ),
+    }
+}
+
 // ─── Length × Mass does not set Money slot 9 at runtime ─────────────────────
 
 /// At runtime, `2m * 3kg` (Length × Mass = Momentum) must evaluate to a
@@ -104,7 +128,10 @@ fn eval_torque_and_energy_remain_distinct_at_runtime_with_and_without_money_fact
     let ct_dim = extract_scalar_dimension(&result, "S", "cost_torque");
     let ce_dim = extract_scalar_dimension(&result, "S", "cost_energy");
 
-    assert_ne!(t_dim, e_dim, "Torque and Energy must have distinct runtime dimensions");
+    assert_ne!(
+        t_dim, e_dim,
+        "Torque and Energy must have distinct runtime dimensions"
+    );
     assert_eq!(
         t_dim.0[7],
         Rational::new(-1, 1),
@@ -118,8 +145,7 @@ fn eval_torque_and_energy_remain_distinct_at_runtime_with_and_without_money_fact
         e_dim
     );
     assert_ne!(
-        ct_dim,
-        ce_dim,
+        ct_dim, ce_dim,
         "Money·Torque and Money·Energy must have distinct runtime dimensions"
     );
     assert_eq!(
