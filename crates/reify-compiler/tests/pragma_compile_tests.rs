@@ -2126,3 +2126,132 @@ fn multiple_module_level_kernel_pragmas_first_wins() {
         warns
     );
 }
+
+/// Helper: filter warnings that match the block-level `#kernel` "deferred to
+/// v0.2" shape — message contains "#kernel" AND "ignored in v0.1" AND
+/// ("v0.2" OR "per-block"). Sibling of `deferred_v02_solver_warnings`.
+fn deferred_v02_kernel_warnings<'a>(
+    module: &'a reify_compiler::CompiledModule,
+) -> Vec<&'a reify_types::Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("#kernel")
+                && d.message.contains("ignored in v0.1")
+                && (d.message.contains("v0.2") || d.message.contains("per-block"))
+        })
+        .collect()
+}
+
+/// Block-level `#kernel` on a structure emits exactly one "ignored in v0.1;
+/// per-block kernel selection deferred to v0.2" warning, leaves
+/// `kernel_pragma` unset, and produces no errors. Pins the four-container
+/// invariant alongside the other three block-level tests below.
+#[test]
+fn block_level_kernel_pragma_on_structure_emits_deferred_warning() {
+    let module = compile_source(r#"structure S { #kernel(occt) param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.kernel_pragma.is_none(),
+        "block-level #kernel must NOT set the module field, got {:?}",
+        module.kernel_pragma
+    );
+
+    let warns = deferred_v02_kernel_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for structure-level #kernel, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for trait-level `#kernel`.
+#[test]
+fn block_level_kernel_pragma_on_trait_emits_deferred_warning() {
+    let module = compile_source(r#"trait T { #kernel(occt) param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.kernel_pragma.is_none(),
+        "trait-level #kernel must NOT set the module field, got {:?}",
+        module.kernel_pragma
+    );
+
+    let warns = deferred_v02_kernel_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for trait-level #kernel, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for purpose-level `#kernel`.
+#[test]
+fn block_level_kernel_pragma_on_purpose_emits_deferred_warning() {
+    let source = r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #kernel(occt)
+            constraint 1 > 0
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.kernel_pragma.is_none(),
+        "purpose-level #kernel must NOT set the module field, got {:?}",
+        module.kernel_pragma
+    );
+
+    let warns = deferred_v02_kernel_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for purpose-level #kernel, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for `constraint def`-level `#kernel`.
+#[test]
+fn block_level_kernel_pragma_on_constraint_def_emits_deferred_warning() {
+    let source = r#"
+        constraint def C { #kernel(occt) param x : Real }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.kernel_pragma.is_none(),
+        "constraint-def-level #kernel must NOT set the module field, got {:?}",
+        module.kernel_pragma
+    );
+
+    let warns = deferred_v02_kernel_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for constraint-def-level #kernel, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
