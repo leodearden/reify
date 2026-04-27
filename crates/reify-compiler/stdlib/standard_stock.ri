@@ -4,7 +4,8 @@
 
 /// Standard ISO 4014 / ISO 4017 bolt length series, 8 mm through 100 mm.
 /// Values are the canonical preferred increments used in fastener catalogues.
-/// Reference this as the second arg of `@solver_hint("discrete_set", standard_bolt_lengths)`.
+/// Intended to be referenced as the second arg of `@solver_hint("discrete_set", standard_bolt_lengths)`
+/// once solver-hint collection resolution is wired (see task #276).
 pub fn standard_bolt_lengths() -> List<Length> {
     [8mm, 10mm, 12mm, 14mm, 16mm, 20mm, 25mm, 30mm, 35mm, 40mm,
      45mm, 50mm, 55mm, 60mm, 65mm, 70mm, 75mm, 80mm, 90mm, 100mm]
@@ -12,7 +13,8 @@ pub fn standard_bolt_lengths() -> List<Length> {
 
 /// Common metal sheet stock thicknesses, 0.5 mm through 10 mm.
 /// Covers the typical gauges used in cold-rolled steel and aluminum sheet stock.
-/// Reference this as the second arg of `@solver_hint("prefer_stock", standard_sheet_thicknesses)`.
+/// Intended to be referenced as the second arg of `@solver_hint("prefer_stock", standard_sheet_thicknesses)`
+/// once solver-hint collection resolution is wired (see task #276).
 pub fn standard_sheet_thicknesses() -> List<Length> {
     [0.5mm, 0.8mm, 1.0mm, 1.2mm, 1.5mm, 2.0mm, 2.5mm, 3.0mm,
      4.0mm, 5.0mm, 6.0mm, 8.0mm, 10.0mm]
