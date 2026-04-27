@@ -236,6 +236,12 @@ impl CacheStore {
 
     /// Record an evaluation result and determine if it changed (early cutoff).
     ///
+    /// Thin wrapper around [`CacheStore::record_evaluation_with_freshness`] that always
+    /// writes `Freshness::Final`. All existing call sites outside `evaluate_let_bindings`
+    /// (incremental re-eval, engine_edit.rs, concurrent.rs, warm-state seeding) rely on
+    /// Final being the implicit freshness — this wrapper preserves byte-identical behaviour
+    /// for those sites. See arch §7.2 and task #2328 for the propagation design.
+    ///
     /// Compares the new result's content hash with the existing cache entry.
     /// - If same hash: updates basis_version only (early cutoff), returns Unchanged.
     /// - If different or no prior cache: updates full cache entry, returns Changed.
@@ -246,20 +252,44 @@ impl CacheStore {
         version: VersionId,
         trace: DependencyTrace,
     ) -> EvalOutcome {
+        self.record_evaluation_with_freshness(node, new_result, version, trace, Freshness::Final)
+    }
+
+    /// Record an evaluation result with a caller-supplied freshness.
+    ///
+    /// Implements arch §7.2 propagation at the write layer: the wire site in
+    /// `evaluate_let_bindings` calls this with a derived freshness from
+    /// [`CacheStore::derive_output_freshness_for_node`]; all other call sites use
+    /// [`CacheStore::record_evaluation`] which hard-codes `Freshness::Final`.
+    ///
+    /// Compares the new result's content hash with the existing cache entry.
+    /// - If same hash: updates basis_version, dependency_trace, and freshness (early cutoff),
+    ///   returns `Unchanged`.
+    /// - If different or no prior cache: writes full cache entry with supplied `freshness`,
+    ///   returns `Changed`.
+    ///
+    /// Hash-only cutoff is intentional. NaN payloads are canonicalized by
+    /// `Value::content_hash` (every NaN bit-pattern collapses to `f64::NAN.to_bits()`),
+    /// so two results differing only in NaN payload are treated as Unchanged here.
+    /// See `Value::content_hash` doc — 'Known intentional exception — incremental
+    /// cache' — in `crates/reify-types/src/value.rs`.
+    pub fn record_evaluation_with_freshness(
+        &mut self,
+        node: NodeId,
+        new_result: CachedResult,
+        version: VersionId,
+        trace: DependencyTrace,
+        freshness: Freshness,
+    ) -> EvalOutcome {
         let new_hash = new_result.content_hash();
 
-        // Hash-only cutoff is intentional. NaN payloads are canonicalized by
-        // Value::content_hash (every NaN bit-pattern collapses to f64::NAN.to_bits()),
-        // so two results differing only in NaN payload are treated as Unchanged here.
-        // See `Value::content_hash` doc — 'Known intentional exception — incremental
-        // cache' — in crates/reify-types/src/value.rs.
         if let Some(existing) = self.caches.get_mut(&node)
             && existing.result_hash == new_hash
         {
-            // Early cutoff: result unchanged, just update version
+            // Early cutoff: result unchanged, just update version and freshness
             existing.basis_version = version;
             existing.dependency_trace = trace;
-            existing.freshness = Freshness::Final;
+            existing.freshness = freshness;
             existing.warm_state = None; // old warm state is stale after re-evaluation
             return EvalOutcome::Unchanged;
         }
@@ -270,7 +300,7 @@ impl CacheStore {
             NodeCache {
                 result: new_result,
                 result_hash: new_hash,
-                freshness: Freshness::Final,
+                freshness,
                 dependency_trace: trace,
                 basis_version: version,
                 warm_state: None,
