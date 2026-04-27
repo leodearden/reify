@@ -259,9 +259,10 @@ fn insulating_refines_electrically_characterized_with_constraint() {
 
 // ─── (d2) Insulating has dielectric_strength > 0 constraint ─────────────────
 
-/// Insulating must carry a constraint `dielectric_strength > 0.0` — the
-/// numerical recapture of the spec's `determined(dielectric_strength)` intent.
-/// An insulating material with zero breakdown field is physically contradictory.
+/// Insulating must carry a `dielectric_strength > 0.0` physical-validity
+/// bound: zero breakdown field is degenerate for an insulator. This is the
+/// most direct bound expressible in the current grammar (no `determined()`
+/// form available); see Decision #3 in materials_electrical.ri.
 #[test]
 fn insulating_has_dielectric_strength_positive_constraint() {
     let module = load_stdlib_module();
@@ -335,6 +336,82 @@ structure def Copper : Conductive {
     assert!(
         resistivity_constraint.is_some(),
         "expected a constraint referencing 'resistivity' in Copper template, got constraints: {:?}",
+        template.constraints
+    );
+}
+
+// ─── (f) Glass : Insulating conformance test with inherited constraints ────────
+
+/// A structure conforming to Insulating must compile cleanly via the full
+/// stdlib pipeline, carry Insulating as a trait bound, and have the inherited
+/// `dielectric_strength > 0.0` constraint injected into template.constraints.
+///
+/// # Deferred: negative eval-level test
+///
+/// A test asserting that `Glass { dielectric_strength = 0.0 }` produces a
+/// constraint-violation diagnostic cannot be written at this layer. The
+/// compiler injects constraints structurally (see entity.rs,
+/// `MemberDecl::ConstraintInst` handler) but does not evaluate them against
+/// literal values at compile time. Constraint satisfaction is enforced by
+/// the runtime evaluator/solver. A runtime-level negative test should be
+/// added once that evaluation layer exists.
+#[test]
+fn glass_conforms_to_insulating_with_constraint_injection() {
+    // resistivity = 1_000_000_000.0 (1e9 Ω·m, typical glass) — clears the > 1e6
+    // Insulating constraint.  dielectric_strength = 10_000_000.0 (1e7 V/m,
+    // typical soda-lime glass) — clears the > 0.0 bound.
+    // Decimal form avoids the parser's scientific-notation edge cases.
+    let source = r#"
+structure def Glass : Insulating {
+    param density : Real = 2500.0
+    param name : String = "glass"
+    param resistivity : Real = 1000000000.0
+    param dielectric_constant : Real = 7.0
+    param dielectric_strength : Real = 10000000.0
+    param magnetic_permeability : Real = 1.0
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Glass : Insulating should compile cleanly, got errors: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Glass")
+        .expect("expected 'Glass' template in compiled module");
+
+    assert!(
+        template.trait_bounds.contains(&"Insulating".to_string()),
+        "Glass must have 'Insulating' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // Both inherited constraints must be injected (resistivity > 1e6 and
+    // dielectric_strength > 0.0).
+    assert!(
+        !template.constraints.is_empty(),
+        "Glass template must have injected constraints from Insulating trait"
+    );
+
+    // Verify the dielectric_strength > 0.0 constraint is injected via a BinOp.
+    let ds_constraint = template.constraints.iter().find(|cc| {
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
+            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "dielectric_strength"))
+    });
+    assert!(
+        ds_constraint.is_some(),
+        "expected a constraint referencing 'dielectric_strength' in Glass template, got constraints: {:?}",
         template.constraints
     );
 }
