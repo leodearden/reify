@@ -249,9 +249,13 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         )
     })?;
     let faces = kernel.extract_faces(handle)?;
+    let queries: Vec<GeometryQuery> = faces
+        .iter()
+        .map(|id| GeometryQuery::FaceNormal(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
     let mut out = Vec::with_capacity(faces.len());
-    for id in faces {
-        let normal_value = kernel.query(&GeometryQuery::FaceNormal(id))?;
+    for (id, normal_value) in faces.iter().zip(values) {
         let raw = parse_xyz_value(&normal_value, "FaceNormal")?;
         let normal = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
@@ -262,7 +266,7 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         let cos = dot3(normal, target).clamp(-1.0, 1.0);
         let angle = cos.acos();
         if angle <= angular_tol_rad {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
