@@ -83,7 +83,10 @@ fn build_fixture() -> DocModel {
                     constraints: vec![],
                     sub_components: vec![],
                     realizations: vec![],
-                    meta: vec![],
+                    meta: vec![
+                        ("part_number".into(), "ISO-4014-M8x25".into()),
+                        ("revision".into(), "B".into()),
+                    ],
                 },
                 // Enum — Grade (rank 3)
                 ItemDoc::Enum {
