@@ -37,7 +37,7 @@
 //! `crates/reify-compiler/src/conformance/mod.rs`'s
 //! `E_GEOMETRY_UNBOUNDED` emission for real source.
 
-use crate::types::PrimitiveKind;
+use crate::types::{CurveKind, PrimitiveKind};
 
 /// The three compile-time-inferred geometry traits.
 ///
@@ -187,5 +187,78 @@ pub const fn combine_intersection(a: InferredTraits, b: InferredTraits) -> Infer
         bounded: a.bounded || b.bounded,
         connected: false,
         convex: a.convex && b.convex,
+    }
+}
+
+/// Transform propagation rule (translate/rotate/scale/rotate_around).
+///
+/// All three traits are preserved: rigid motions and uniform scaling are
+/// bijective continuous maps (and convexity-preserving). The IR-level
+/// inference does not distinguish between transform variants — the rule
+/// is a single all-preserving identity.
+pub const fn combine_transform(input: InferredTraits) -> InferredTraits {
+    input
+}
+
+/// Modify propagation rule (fillet/chamfer/shell/draft/thicken).
+///
+/// `bounded` and `connected` are preserved (modify ops are local
+/// single-body operations on a single solid). `convex` is dropped:
+/// shelling, drafting, and even filleting can produce non-convex
+/// remainders.
+pub const fn combine_modify(input: InferredTraits) -> InferredTraits {
+    InferredTraits {
+        bounded: input.bounded,
+        connected: input.connected,
+        convex: false,
+    }
+}
+
+/// Pattern propagation rule (linear/circular/mirror/linear_2d/arbitrary).
+///
+/// `bounded` is preserved (a finite pattern of bounded inputs stays
+/// bounded). `connected` is always dropped (multiple disjoint copies).
+/// `convex` is dropped (multiple convex pieces ≠ one convex set).
+pub const fn combine_pattern(input: InferredTraits) -> InferredTraits {
+    InferredTraits {
+        bounded: input.bounded,
+        connected: false,
+        convex: false,
+    }
+}
+
+/// Sweep propagation rule (loft/extrude/revolve/sweep/extrude_symmetric/
+/// sweep_guided/loft_guided/pipe).
+///
+/// `bounded` and `connected` are inherited from the **profile** (a
+/// bounded, connected profile swept along a finite path stays bounded
+/// and connected). `convex` is always dropped: even a convex profile
+/// swept along a curved path produces a non-convex solid in general.
+pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
+    InferredTraits {
+        bounded: profile.bounded,
+        connected: profile.connected,
+        convex: false,
+    }
+}
+
+/// Look up the inferred traits for a curve constructor.
+///
+/// Curves are 1-D primitives consumed as sweep inputs. All current
+/// `CurveKind` variants (line_segment, arc, helix, interp, bezier, nurbs)
+/// are treated as Bounded+Connected+Convex: the propagation through
+/// `combine_sweep` will drop Convex anyway, so encoding all curves as
+/// `all()` keeps the table uniform and lets `combine_sweep` remain the
+/// single decision point for sweep-output convexity. (A future infinite
+/// curve, e.g. a parametric ray, would slot in here as `none()` or a
+/// tuned subset.)
+pub const fn infer_curve(kind: CurveKind) -> InferredTraits {
+    match kind {
+        CurveKind::LineSegment
+        | CurveKind::Arc
+        | CurveKind::Helix
+        | CurveKind::InterpCurve
+        | CurveKind::BezierCurve
+        | CurveKind::NurbsCurve => InferredTraits::all(),
     }
 }
