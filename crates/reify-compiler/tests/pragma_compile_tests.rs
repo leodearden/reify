@@ -2029,3 +2029,66 @@ fn kernel_pragma_with_zero_args_warns_and_leaves_none() {
         warnings_only(&module)
     );
 }
+
+/// Malformed `#kernel` arg shapes (non-Ident bare values, key-value-first)
+/// leave `kernel_pragma` as None, produce zero errors, and emit exactly one
+/// warning whose message contains '#kernel' + 'expected' + 'occt'. Mirrors
+/// `solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none`.
+///
+/// Note: bare-string `#kernel("occt")` is intentionally NOT accepted — only
+/// the Ident form is valid in v0.1, matching PRD §4's `#kernel(<ident>)` shape.
+#[test]
+fn kernel_pragma_malformed_args_emit_warning_and_leave_kernel_pragma_none() {
+    let cases: &[(&str, &str)] = &[
+        // (source, label-for-failure-message)
+        ("#kernel(42)\nstructure S { param x : Real }", "bare-number"),
+        (
+            "#kernel(true)\nstructure S { param x : Real }",
+            "bare-bool",
+        ),
+        (
+            "#kernel(\"occt\")\nstructure S { param x : Real }",
+            "bare-string",
+        ),
+        (
+            "#kernel(0.001m)\nstructure S { param x : Real }",
+            "bare-quantity",
+        ),
+        (
+            "#kernel(name=\"occt\")\nstructure S { param x : Real }",
+            "key-value-first",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        assert!(
+            errors_only(&module).is_empty(),
+            "[{label}] unexpected errors for malformed #kernel: {:?}",
+            errors_only(&module)
+        );
+        assert!(
+            module.kernel_pragma.is_none(),
+            "[{label}] expected kernel_pragma None for malformed #kernel, got {:?}",
+            module.kernel_pragma
+        );
+
+        let warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("#kernel")
+                    && d.message.contains("expected")
+                    && d.message.contains("occt")
+            })
+            .collect();
+        assert_eq!(
+            warns.len(),
+            1,
+            "[{label}] expected exactly 1 malformed-#kernel warning mentioning \
+             '#kernel' + 'expected' + 'occt', got {}: {:?}",
+            warns.len(),
+            warnings_only(&module)
+        );
+    }
+}
