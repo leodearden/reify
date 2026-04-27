@@ -356,6 +356,51 @@ structure def S {
     );
 }
 
+// ── Task 2343 step-11: composed-field lazy evaluation per sample ─────────
+//
+// Pin the lazy-evaluation guarantee from the task spec: the composed
+// lambda body is evaluated per `sample()` call against the supplied
+// point — never pre-applied at elaboration time. Regression guard
+// against any future change that would cache lambda body output across
+// sample points (e.g. memoizing the first-sample result inside
+// `Value::Field` and short-circuiting subsequent `sample()` calls).
+//
+// Sample the same composed field at two distinct points within the same
+// structure body. If the body were eagerly evaluated at elaboration, the
+// two `sample()` calls would return identical values; instead they must
+// reflect the supplied point. The composed body `|p| 2.0 * p + 1.0` is a
+// non-constant function of its argument, so any short-circuit collapse
+// to a single value would be detected.
+
+/// `composed_f(p) = 2*p + 1` sampled at p=0 (→ 1.0) and p=10 (→ 21.0)
+/// within a single structure body. Pins the per-sample evaluation
+/// contract: the composed lambda body must be re-applied to each
+/// supplied point, not collapsed to a single cached value.
+#[test]
+fn eval_composed_field_lazy_per_sample() {
+    let source = r#"
+field def composed_f : Real -> Real { source = composed { |p| 2.0 * p + 1.0 } }
+
+structure def S {
+    let val_at_zero = sample(composed_f, 0.0)
+    let val_at_ten = sample(composed_f, 10.0)
+}
+"#;
+    let result = eval_source(source);
+
+    let val_at_zero = result
+        .values
+        .get(&ValueCellId::new("S", "val_at_zero"))
+        .unwrap_or_else(|| panic!("'S.val_at_zero' not found in eval result"));
+    assert_numeric_approx(val_at_zero, 1.0, "S.val_at_zero (p=0)");
+
+    let val_at_ten = result
+        .values
+        .get(&ValueCellId::new("S", "val_at_ten"))
+        .unwrap_or_else(|| panic!("'S.val_at_ten' not found in eval result"));
+    assert_numeric_approx(val_at_ten, 21.0, "S.val_at_ten (p=10)");
+}
+
 /// Like `assert_real_approx` but also accepts `Value::Int` whose value matches
 /// the expected magnitude. Reify's literal parser can collapse integer-valued
 /// Real literals (e.g. `30.0`) to `Value::Int` along certain compile/eval
