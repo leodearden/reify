@@ -118,6 +118,9 @@ impl Engine {
             last_guard_phase_group_evals: 0,
             last_role_flip_probes: 0,
             last_diff_value_cells: None,
+            last_param_override_type_kind_rejections: 0,
+            last_param_override_dimension_rejections: 0,
+            last_sub_component_unknown_structure_errors: 0,
             journal: EventJournal::new(),
             functions: Arc::new(Vec::new()),
             compiled_purposes: Vec::new(),
@@ -371,6 +374,45 @@ impl Engine {
         &self,
     ) -> Option<&crate::engine_edit::ValueCellDiff> {
         self.last_diff_value_cells.as_ref()
+    }
+
+    /// Returns the number of param-override rejections due to `TypeKindMismatch`
+    /// during the most recent `eval()` or `eval_cached()` call. Reset to 0 at
+    /// the start of each call.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    /// LSP tests reach it via `crates/reify-lsp/Cargo.toml` dev-dep (task 2276).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_param_override_type_kind_rejections(&self) -> usize {
+        self.last_param_override_type_kind_rejections
+    }
+
+    /// Returns the number of param-override rejections due to `ScalarDimensionMismatch`
+    /// during the most recent `eval()` or `eval_cached()` call. Reset to 0 at
+    /// the start of each call.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    /// LSP tests reach it via `crates/reify-lsp/Cargo.toml` dev-dep (task 2276).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_param_override_dimension_rejections(&self) -> usize {
+        self.last_param_override_dimension_rejections
+    }
+
+    /// Returns the number of sub-component elaboration errors due to an unknown
+    /// structure reference during the most recent `eval()` or `eval_cached()`
+    /// call. Reset to 0 at the start of each call.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    /// LSP tests reach it via `crates/reify-lsp/Cargo.toml` dev-dep (task 2276).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_sub_component_unknown_structure_errors(&self) -> usize {
+        self.last_sub_component_unknown_structure_errors
     }
 
     /// Access the event journal (for testing/inspection).
