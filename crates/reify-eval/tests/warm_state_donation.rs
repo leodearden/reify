@@ -135,3 +135,61 @@ fn edit_source_donates_warm_state_for_removed_value_cell() {
         "checked-out OpaqueState must downcast to the originally-injected u32 payload"
     );
 }
+
+// ── Step-7: donation reuse — remove-then-reappear seeds cache.warm_state ──
+
+/// After `edit_source` removes a cell whose cache had warm state (donated to
+/// the pool), a subsequent `edit_source` that re-adds the same `NodeId`
+/// (path-based identity) must seed the new cache entry's `warm_state` slot
+/// from the pool. Verifies the full donate → pool → checkout → seed
+/// round-trip wired through the canonical edit_source path. Test fails until
+/// step-8 wires the checkout-and-seed phase into edit_source's add path.
+#[test]
+fn donation_reuse_remove_then_reappear_seeds_cache_warm_state() {
+    let mut engine = fresh_engine();
+
+    // (1) Eval module_a (with `volume`).
+    let module_a = parse_and_compile(bracket_with_volume_let());
+    engine.eval(&module_a);
+
+    let volume_id = ValueCellId::new("Bracket", "volume");
+    let volume_node = NodeId::Value(volume_id.clone());
+
+    // (2) Inject warm state into `volume`'s cache entry.
+    let donated = engine
+        .cache_store_mut()
+        .donate_warm_state(&volume_node, OpaqueState::new(0xDEADBEEFu32, 16));
+    assert!(donated, "donate_warm_state on cached volume must succeed");
+
+    // (3) edit_source #1: drop `volume` (donation fires per step-6).
+    let module_b = parse_and_compile(bracket_without_volume_let());
+    engine
+        .edit_source(&module_b)
+        .expect("first edit_source must succeed");
+
+    // Sanity: pool now holds the state.
+    assert!(
+        engine.warm_pool().used_bytes() >= 16,
+        "post-removal pool must hold ≥16 bytes"
+    );
+
+    // (4) edit_source #2: re-add `volume` (same path-based NodeId).
+    let module_c = parse_and_compile(bracket_with_volume_let());
+    engine
+        .edit_source(&module_c)
+        .expect("second edit_source must succeed");
+
+    // (5) The new cache entry's `warm_state` slot must contain the donated payload.
+    let cache = engine.cache_store();
+    let entry = cache.get(&volume_node).expect(
+        "after edit_source re-adds `volume`, its cache entry must exist (eval populated it)",
+    );
+    let warm = entry.warm_state.as_ref().expect(
+        "post-checkout-and-seed cache entry must carry the donated warm_state",
+    );
+    assert_eq!(
+        warm.downcast_ref::<u32>().copied(),
+        Some(0xDEADBEEFu32),
+        "seeded warm_state must downcast to the originally-injected u32 payload"
+    );
+}
