@@ -209,6 +209,41 @@ mod tests {
     }
 
     #[test]
+    fn test_forall_statement_in_where_block() {
+        let mut parser = make_parser();
+        let source = b"structure S { \
+            param needs_cooling : Bool \
+            where needs_cooling { \
+                forall v in vents: connect v.inlet -> housing.air_channel \
+            } \
+        }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall-in-where-block source: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"guarded_block".to_string()),
+            "expected guarded_block node, got: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"forall_statement".to_string()),
+            "expected forall_statement inside guarded_block, got: {kinds:?}"
+        );
+
+        // Verify forall_statement is a direct child of the guarded_block
+        let guarded = find_node_by_kind(tree.root_node(), "guarded_block")
+            .expect("guarded_block not found");
+        let kinds_inside = collect_kinds(guarded);
+        assert!(
+            kinds_inside.contains(&"forall_statement".to_string()),
+            "expected forall_statement to be nested inside guarded_block, got: {kinds_inside:?}"
+        );
+    }
+
+    #[test]
     fn test_hash_not_parsed_as_comment() {
         let mut parser = make_parser();
         // # is not a valid comment in Reify; it should produce an ERROR node
