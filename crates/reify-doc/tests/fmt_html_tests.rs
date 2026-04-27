@@ -1012,6 +1012,105 @@ fn optimized_annotation_emits_italic_note() {
     );
 }
 
+/// The embedded stylesheet must satisfy several substantive constraints:
+/// sticky TOC, body width, monospace family, generous line-height; and must
+/// NOT reach for any external resource (`@import`, remote `url(...)`).  Also
+/// asserts a soft length cap (≤100 non-empty lines) so the style block stays
+/// within the budget the design decision in plan.json sets.
+#[test]
+fn embedded_stylesheet_meets_constraints() {
+    let item = ItemDoc::Structure {
+        name: "Foo".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![item],
+            ..Default::default()
+        }],
+    };
+    let out = render_html(&model, None);
+
+    // Extract the substring between `<style>` and `</style>`.
+    let style_open = out.find("<style>").expect("missing <style>") + "<style>".len();
+    let style_close = out.find("</style>").expect("missing </style>");
+    assert!(style_open < style_close, "<style> must precede </style>");
+    let style = &out[style_open..style_close];
+
+    // Sticky TOC: must declare position: sticky AND top: 0.
+    assert!(
+        style.contains("position: sticky"),
+        "expected `position: sticky` in stylesheet; got:\n{style}"
+    );
+    assert!(
+        style.contains("top: 0"),
+        "expected `top: 0` in stylesheet; got:\n{style}"
+    );
+
+    // Body width: must declare max-width: 900px (mirrors PRD/plan).
+    assert!(
+        style.contains("max-width: 900px"),
+        "expected `max-width: 900px` in stylesheet; got:\n{style}"
+    );
+
+    // Monospace family declared (the keyword `monospace` must appear in some
+    // font-family chain).
+    assert!(
+        style.contains("monospace"),
+        "expected a `monospace` font-family declaration; got:\n{style}"
+    );
+
+    // line-height must appear with a value ≥ 1.4.  Parse out the first
+    // line-height declaration and check the numeric value.
+    let lh_idx = style
+        .find("line-height:")
+        .expect("expected a `line-height:` declaration");
+    let lh_tail = &style[lh_idx + "line-height:".len()..];
+    let lh_val: f64 = lh_tail
+        .trim_start()
+        .split(|c: char| c == ';' || c == '\n' || c == '}')
+        .next()
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("line-height value must parse as f64");
+    assert!(
+        lh_val >= 1.4,
+        "expected line-height ≥ 1.4; got {lh_val}\nstyle:\n{style}"
+    );
+
+    // Negative: no @import, no remote url(...).
+    assert!(
+        !style.contains("@import"),
+        "expected no `@import` in stylesheet; got:\n{style}"
+    );
+    assert!(
+        !style.contains("url(http://"),
+        "expected no `url(http://...)` in stylesheet; got:\n{style}"
+    );
+    assert!(
+        !style.contains("url(https://"),
+        "expected no `url(https://...)` in stylesheet; got:\n{style}"
+    );
+
+    // Soft length cap: ≤100 non-empty lines between <style> and </style>.
+    let nonempty_lines = style.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        nonempty_lines <= 100,
+        "stylesheet exceeds 100 non-empty lines ({nonempty_lines}); style:\n{style}"
+    );
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
