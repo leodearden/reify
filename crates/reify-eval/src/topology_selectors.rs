@@ -98,3 +98,128 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     }
     Ok(out)
 }
+
+/// Parse a `Value::String` that the kernel formatted as JSON
+/// `{"x":...,"y":...,"z":...}` (the Centroid / EdgeTangent / FaceNormal
+/// encoding) into an `[f64; 3]`.
+///
+/// Returns `QueryError::QueryFailed` on any deviation from the expected
+/// shape (non-string Value, malformed JSON, missing numeric fields).
+fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryError> {
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "{query_label} returned non-string value: {other:?}"
+            )));
+        }
+    };
+    // Minimal JSON parse — the kernel always emits exactly the
+    // `{"x":..,"y":..,"z":..}` shape, so a strict regex-free scan is
+    // sufficient and avoids pulling in serde_json as a non-dev dependency.
+    let parsed = parse_xyz_json(s).ok_or_else(|| {
+        QueryError::QueryFailed(format!(
+            "{query_label} returned malformed JSON Point3: {s:?}"
+        ))
+    })?;
+    Ok(parsed)
+}
+
+/// Parse `{"x":NUMBER,"y":NUMBER,"z":NUMBER}` (with arbitrary whitespace)
+/// into `[x, y, z]`. Returns `None` on any structural deviation. Used
+/// internally by the filter selectors to read the kernel's Point3 JSON
+/// without taking on a serde_json dependency.
+fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
+    let mut x: Option<f64> = None;
+    let mut y: Option<f64> = None;
+    let mut z: Option<f64> = None;
+    // Strip leading/trailing whitespace and outer braces, then split on
+    // commas. The kernel-emitted format never contains nested objects or
+    // strings, so this naive split is safe.
+    let inner = s.trim();
+    let inner = inner.strip_prefix('{')?.strip_suffix('}')?;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv.next()?.trim().trim_matches('"');
+        let val = kv.next()?.trim();
+        let num: f64 = val.parse().ok()?;
+        match key {
+            "x" => x = Some(num),
+            "y" => y = Some(num),
+            "z" => z = Some(num),
+            _ => return None,
+        }
+    }
+    Some([x?, y?, z?])
+}
+
+/// Normalize a 3-vector. Returns `None` (caller should treat as a
+/// degenerate / unfilterable face/edge) if the magnitude is below
+/// `f64::EPSILON`.
+fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if mag < f64::EPSILON {
+        return None;
+    }
+    Some([v[0] / mag, v[1] / mag, v[2] / mag])
+}
+
+/// Dot product of two 3-vectors.
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Return the subset of `extract_faces(handle)` whose surface normal at
+/// the face's centroid is within `angular_tol_rad` of the `target`
+/// direction.
+///
+/// The face normal is queried via `GeometryQuery::FaceNormal`, parsed
+/// from the kernel's `{"x":..,"y":..,"z":..}` JSON encoding, normalized,
+/// and compared to the (also normalized) `target` via
+/// `acos(clamp(dot, -1, 1))`. Faces whose normal differs from `target`
+/// by more than `angular_tol_rad` are dropped.
+///
+/// Direction matters: a face whose normal is anti-parallel to `target`
+/// (180° off) is **not** accepted. This is intentional — `faces_by_normal`
+/// distinguishes "front" vs "back" of a sheet, e.g. selecting only the
+/// outward `+z` face of a closed solid (kernels return the topologically-
+/// oriented outward normal for solid-shell faces). For orientation-
+/// agnostic edge filtering, see `edges_parallel_to`.
+///
+/// # Panics
+///
+/// Panics if `target` is the zero vector (an undefined direction).
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_faces`.
+/// - Propagates any error from a per-face `FaceNormal` query.
+/// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal`
+///   payload (non-string, non-JSON, missing fields) or on a degenerate
+///   face whose normal magnitude is below `f64::EPSILON`.
+pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    target: [f64; 3],
+    angular_tol_rad: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let target = normalize3(target).expect("faces_by_normal: target direction must be non-zero");
+    let faces = kernel.extract_faces(handle)?;
+    let mut out = Vec::with_capacity(faces.len());
+    for id in faces {
+        let normal_value = kernel.query(&GeometryQuery::FaceNormal(id))?;
+        let raw = parse_xyz_value(&normal_value, "FaceNormal")?;
+        let normal = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                id
+            ))
+        })?;
+        let cos = dot3(normal, target).clamp(-1.0, 1.0);
+        let angle = cos.acos();
+        if angle <= angular_tol_rad {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
