@@ -35,11 +35,12 @@ use reify_types::{
     ValueCellId, ValueMap, VersionId,
 };
 
-use crate::cache::{CachedResult, EvalOutcome, NodeId};
+use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
+use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup, build_meta_map,
     eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
@@ -502,6 +503,66 @@ pub(crate) fn diff_realizations(
     diff_nodes(&old_graph.realizations, &new_graph.realizations, |n| {
         n.content_hash
     })
+}
+
+/// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap` and
+/// attempt to checkout warm state from `pool`. On `Some(state)`, insert into
+/// `sink`; on `None` (absent or LRU-evicted), the node falls through with
+/// no seed — observable equivalence to a cold-only run, per arch §4.3
+/// lines 539-540.
+///
+/// Used by `edit_source` step (4c) to drive the checkout half of the
+/// WarmStatePool round-trip uniformly across the `added` /
+/// `added_constraints` / `added_realizations` sets. The pool API itself
+/// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
+/// once a `diff_resolutions` exists, or `ComputeNode` once it becomes a
+/// variant) drops in as a single additional call.
+fn checkout_added_warm_seeds<'a, I, T, F>(
+    pool: &mut WarmStatePool,
+    ids: I,
+    wrap: F,
+    sink: &mut HashMap<NodeId, reify_types::OpaqueState>,
+) where
+    I: IntoIterator<Item = &'a T>,
+    T: Clone + 'a,
+    F: Fn(T) -> NodeId,
+{
+    for id in ids {
+        let nid = wrap(id.clone());
+        if let Some(state) = pool.checkout(&nid) {
+            sink.insert(nid, state);
+        }
+    }
+}
+
+/// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap`,
+/// donate any cached warm state to `pool` (when present), then invalidate
+/// the cache entry. Donated state is keyed by `NodeId` and counts against
+/// the pool's `memory_budget_bytes`; LRU eviction inside the pool is the
+/// only memory bound (no engine-level eviction logic here), per arch §4.3
+/// lines 539-540 and §6.4 lines 654-660.
+///
+/// Used by `edit_source` step (9) to drive the donation half of the
+/// WarmStatePool round-trip uniformly across the `removed` /
+/// `removed_constraints` / `removed_realizations` sets. A future `NodeId`
+/// variant slots in as a single additional call.
+fn donate_removed_warm_state<'a, I, T, F>(
+    pool: &mut WarmStatePool,
+    cache: &mut CacheStore,
+    ids: I,
+    wrap: F,
+) where
+    I: IntoIterator<Item = &'a T>,
+    T: Clone + 'a,
+    F: Fn(T) -> NodeId,
+{
+    for id in ids {
+        let nid = wrap(id.clone());
+        if let Some(state) = cache.get_warm_state(&nid) {
+            pool.donate(nid.clone(), state);
+        }
+        cache.invalidate(&nid);
+    }
 }
 
 impl Engine {
@@ -1382,31 +1443,31 @@ impl Engine {
         //      re-elaboration that re-evaluates the seeded node.
         //
         //      Symmetric across all three NodeId variants currently produced
-        //      by `diff_*` helpers — Value, Constraint, Realization.
-        //      Resolution is not yet in any `diff_*` helper (see
-        //      TODO(resolution-diff) above); ComputeNode is not yet a NodeId
-        //      variant. The pool API itself is variant-agnostic, so any
-        //      future variant slots in automatically when its `diff_*`
-        //      helper is added.
+        //      by `diff_*` helpers — Value, Constraint, Realization — via
+        //      the shared `checkout_added_warm_seeds` helper. Resolution is
+        //      not yet in any `diff_*` helper (see TODO(resolution-diff)
+        //      above); ComputeNode is not yet a NodeId variant. The pool API
+        //      itself is variant-agnostic, so any future variant slots in
+        //      as a single additional call to the helper.
         let mut pending_warm_seeds: HashMap<NodeId, reify_types::OpaqueState> = HashMap::new();
-        for id in &added {
-            let nid = NodeId::Value(id.clone());
-            if let Some(state) = self.warm_pool.checkout(&nid) {
-                pending_warm_seeds.insert(nid, state);
-            }
-        }
-        for cid in &added_constraints {
-            let nid = NodeId::Constraint(cid.clone());
-            if let Some(state) = self.warm_pool.checkout(&nid) {
-                pending_warm_seeds.insert(nid, state);
-            }
-        }
-        for rid in &added_realizations {
-            let nid = NodeId::Realization(rid.clone());
-            if let Some(state) = self.warm_pool.checkout(&nid) {
-                pending_warm_seeds.insert(nid, state);
-            }
-        }
+        checkout_added_warm_seeds(
+            &mut self.warm_pool,
+            &added,
+            NodeId::Value,
+            &mut pending_warm_seeds,
+        );
+        checkout_added_warm_seeds(
+            &mut self.warm_pool,
+            &added_constraints,
+            NodeId::Constraint,
+            &mut pending_warm_seeds,
+        );
+        checkout_added_warm_seeds(
+            &mut self.warm_pool,
+            &added_realizations,
+            NodeId::Realization,
+            &mut pending_warm_seeds,
+        );
 
         // (5) Compute the dirty cone over changed ∪ added using the NEW
         //     reverse index (which reflects post-edit dependencies). The
@@ -1570,39 +1631,37 @@ impl Engine {
         // state to the pool keyed by `NodeId`; LRU eviction inside the pool
         // is the only memory bound (no engine-level eviction logic). Symmetric
         // across all three NodeId variants currently produced by `diff_*`
-        // helpers — Value, Constraint, Realization. Resolution is not yet in
-        // any `diff_*` helper (see TODO(resolution-diff) above), so it does
-        // not donate today; ComputeNode is not yet a NodeId variant.
+        // helpers — Value, Constraint, Realization — via the shared
+        // `donate_removed_warm_state` helper. Resolution is not yet in any
+        // `diff_*` helper (see TODO(resolution-diff) above), so it does not
+        // donate today; ComputeNode is not yet a NodeId variant.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
-        for id in &removed {
-            let nid = NodeId::Value(id.clone());
-            if let Some(state) = self.cache.get_warm_state(&nid) {
-                self.warm_pool.donate(nid.clone(), state);
-            }
-            self.cache.invalidate(&nid);
-        }
+        donate_removed_warm_state(
+            &mut self.warm_pool,
+            &mut self.cache,
+            &removed,
+            NodeId::Value,
+        );
         for cid in &changed_constraints {
             self.cache.invalidate(&NodeId::Constraint(cid.clone()));
         }
-        for cid in &removed_constraints {
-            let nid = NodeId::Constraint(cid.clone());
-            if let Some(state) = self.cache.get_warm_state(&nid) {
-                self.warm_pool.donate(nid.clone(), state);
-            }
-            self.cache.invalidate(&nid);
-        }
+        donate_removed_warm_state(
+            &mut self.warm_pool,
+            &mut self.cache,
+            &removed_constraints,
+            NodeId::Constraint,
+        );
         for rid in &changed_realizations {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
-        for rid in &removed_realizations {
-            let nid = NodeId::Realization(rid.clone());
-            if let Some(state) = self.cache.get_warm_state(&nid) {
-                self.warm_pool.donate(nid.clone(), state);
-            }
-            self.cache.invalidate(&nid);
-        }
+        donate_removed_warm_state(
+            &mut self.warm_pool,
+            &mut self.cache,
+            &removed_realizations,
+            NodeId::Realization,
+        );
 
         // (10) Attach provenance: Edit with the value-cell-level changed set
         //      (constraints / realizations remain implicit in the new graph;
