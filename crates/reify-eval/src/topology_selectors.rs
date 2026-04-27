@@ -155,10 +155,14 @@ fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
 
 /// Normalize a 3-vector. Returns `None` (caller should treat as a
 /// degenerate / unfilterable face/edge) if the magnitude is below
-/// `f64::EPSILON`.
+/// `f64::EPSILON` or non-finite.
+///
+/// The `!mag.is_finite()` guard rejects NaN and ±∞ inputs before they
+/// poison downstream `acos` / `clamp` arithmetic — `mag < f64::EPSILON`
+/// alone does not catch NaN (any comparison with NaN is false).
 fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
     let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if mag < f64::EPSILON {
+    if !mag.is_finite() || mag < f64::EPSILON {
         return None;
     }
     Some([v[0] / mag, v[1] / mag, v[2] / mag])
@@ -186,12 +190,10 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// oriented outward normal for solid-shell faces). For orientation-
 /// agnostic edge filtering, see `edges_parallel_to`.
 ///
-/// # Panics
-///
-/// Panics if `target` is the zero vector (an undefined direction).
-///
 /// # Errors
 ///
+/// - Returns `QueryError::QueryFailed` if `target` is the zero vector or
+///   contains a non-finite component (an undefined direction).
 /// - Propagates any error from `extract_faces`.
 /// - Propagates any error from a per-face `FaceNormal` query.
 /// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal`
@@ -203,7 +205,11 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     target: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let target = normalize3(target).expect("faces_by_normal: target direction must be non-zero");
+    let target = normalize3(target).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "faces_by_normal: target direction must be non-zero and finite".into(),
+        )
+    })?;
     let faces = kernel.extract_faces(handle)?;
     let mut out = Vec::with_capacity(faces.len());
     for id in faces {
@@ -238,12 +244,10 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
 /// `|t · axis| >= cos(angular_tol_rad)`. This formulation avoids two
 /// `acos` calls per edge and is well-conditioned at small tolerances.
 ///
-/// # Panics
-///
-/// Panics if `axis` is the zero vector (an undefined direction).
-///
 /// # Errors
 ///
+/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
+///   contains a non-finite component (an undefined direction).
 /// - Propagates any error from `extract_edges`.
 /// - Propagates any error from a per-edge `EdgeTangent` query.
 /// - Returns `QueryError::QueryFailed` on a malformed tangent payload
@@ -254,7 +258,11 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let axis = normalize3(axis).expect("edges_parallel_to: axis direction must be non-zero");
+    let axis = normalize3(axis).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "edges_parallel_to: axis direction must be non-zero and finite".into(),
+        )
+    })?;
     // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
