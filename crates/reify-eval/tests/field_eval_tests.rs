@@ -179,7 +179,7 @@ fn eval_field_snapshot_consistency() {
     );
 }
 
-// ── Task 2343 step-7: composed-field invalidation on dep change ──────────
+// ── Task 2343 step-7: composed-field resampling after param edit ─────────
 //
 // Pin the integration of composed-field re-elaboration with `edit_param`.
 // The chain `composed → analytical` is sampled inside a structure body via
@@ -193,13 +193,33 @@ fn eval_field_snapshot_consistency() {
 // through the sample-point arm — the structure param `k` is the second
 // argument to `sample`. The plan's expected values are preserved by
 // scaling: `scaled(p) = base(p) * 30`, so `sample(scaled, k) = k * 30`.
+//
+// TODO(v0.1 limitation): This test does NOT exercise the step-8
+// re-elaboration loop (`engine_edit.rs::edit_param`'s composed-field
+// rebuild gated on `dirty_cone.contains(field_node)`). The change here is
+// `S.k`, a structure param that is NOT in any field's captured set, so no
+// field lambda is re-elaborated. What the test does pin: (a) the let
+// cell's resample under the new param, (b) the reverse-index plumbing
+// from step-6 (the let cell consuming `sample(scaled, k)` lands in the
+// dirty cone and re-evaluates), and (c) the runtime field-call dispatch
+// from step-7b (`base(p)` inside the composed lambda body resolves to
+// the captured `__field.base` cell). The step-8 loop's positive path —
+// a captured field cell changing and triggering a composed field's
+// lambda Arc to be rebuilt — has no end-to-end edit_param-driven test
+// in v0.1 because field lambdas cannot capture structure params. It is
+// covered at the unit level by `reverse_index_includes_composed_field_dependencies`
+// in `crates/reify-eval/src/deps.rs`. The negative half (no
+// re-elaboration when no captured dep changes) is pinned by
+// `eval_composed_field_invalidates_only_when_dep_changes` below.
 
 /// Initial eval at k=2.0 yields 60.0; after `edit_param(k=5.0)`, the let
-/// binding `val = sample(scaled, k)` re-evaluates to 150.0.  Pins the
+/// binding `val = sample(scaled, k)` re-evaluates to 150.0. Pins the
 /// edit-cycle through a composed-field sample point and exercises the
-/// reverse-index plumbing wired in step-6.
+/// reverse-index plumbing wired in step-6 plus the runtime field-call
+/// dispatch from step-7b. See the TODO above for the scope limitation
+/// vs. the step-8 re-elaboration loop.
 #[test]
-fn eval_composed_field_invalidates_on_dep_change() {
+fn eval_composed_field_resamples_after_param_edit() {
     let source = r#"
 field def base : Real -> Real { source = analytical { |p| p } }
 field def scaled : Real -> Real { source = composed { |p| base(p) * 30.0 } }
@@ -249,7 +269,7 @@ structure def S {
 // which exercises the runtime field-call dispatch fallback (step-7b) and
 // confirms that re-evaluating downstream `Let` cells against fresh values
 // produces correct results — is covered by step-7's
-// `eval_composed_field_invalidates_on_dep_change`.
+// `eval_composed_field_resamples_after_param_edit`.
 
 /// After cold-start eval, capture every field's lambda Arc from
 /// `snapshot.values`. Edit a structure param that is NOT a dep of any field
