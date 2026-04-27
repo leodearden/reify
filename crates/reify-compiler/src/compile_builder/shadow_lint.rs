@@ -90,9 +90,32 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
         // be flagged as shadowing the import — the import simply does not
         // exist as far as this lint is concerned.
         Declaration::Import(_) => {}
+        Declaration::Function(f) => {
+            // Build a single body frame from the fn's params and the let
+            // bindings inside its body. Both register into the SAME frame
+            // (the fn body is one lexical scope from the lint's POV — let
+            // bindings are siblings of params, not a child scope). Walk
+            // every let-binding value and the result expression against
+            // that frame.
+            let mut frame: Frame = HashMap::new();
+            for p in &f.params {
+                frame.insert(p.name.clone(), p.span);
+            }
+            for l in &f.body.let_bindings {
+                frame.insert(l.name.clone(), l.span);
+            }
+            let frames: Vec<&Frame> = vec![&frame];
+            for l in &f.body.let_bindings {
+                walk_expr(&l.value, &frames, diagnostics);
+                if let Some(wc) = &l.where_clause {
+                    walk_expr(&wc.condition, &frames, diagnostics);
+                }
+            }
+            walk_expr(&f.body.result_expr, &frames, diagnostics);
+        }
         // The remaining declaration arms are wired in subsequent steps
-        // (functions, constraint defs, traits, fields, purposes). Until then
-        // they pass through without forming a frame, matching the lint's
+        // (constraint defs, traits, fields, purposes). Until then they
+        // pass through without forming a frame, matching the lint's
         // "no frame ⇒ no shadow" invariant.
         _ => {}
     }
