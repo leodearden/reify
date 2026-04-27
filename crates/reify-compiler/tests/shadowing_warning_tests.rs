@@ -483,3 +483,79 @@ fn lambda_in_fn_body_shadows_fn_param() {
         l0.span
     );
 }
+
+/// A lambda inside a constraint-def predicate shadows the constraint def's
+/// own param. Source:
+///
+/// ```text
+/// constraint def C {
+///     param wall : Real
+///     (|wall| wall > 0.0)(wall)
+/// }
+/// ```
+///
+/// The `(|wall| ...)` lambda binds `wall` in its body, shadowing the
+/// constraint def's `param wall`. Exactly ONE Shadowing warning is expected;
+/// the original-decl span lies on the constraint def's `param wall` and
+/// the child-site span on the lambda's `|wall|`.
+#[test]
+fn lambda_in_constraint_def_predicate_shadows_param() {
+    let source = r#"constraint def C {
+    param wall : Real
+    (|wall| wall > 0.0)(wall)
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda |wall| vs constraint def param wall), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'wall'"),
+        "expected the warning to be about `wall`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    // Locate `param wall` and the inner lambda binder `|wall|`.
+    let param_wall = source
+        .find("param wall")
+        .expect("source must contain `param wall`");
+    let lambda_wall = source
+        .find("|wall|")
+        .expect("source must contain `|wall|`");
+
+    let l0 = &warning.labels[0]; // child site
+    let l1 = &warning.labels[1]; // original-decl site
+    assert!(
+        (l1.span.start as usize) >= param_wall
+            && (l1.span.start as usize) < lambda_wall,
+        "original-decl span must point at the constraint def `param wall` \
+         (between byte {} and {}), got {:?}",
+        param_wall,
+        lambda_wall,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= lambda_wall,
+        "child-site span must point at the lambda's `|wall|` (>= byte {}), \
+         got {:?}",
+        lambda_wall,
+        l0.span
+    );
+}
