@@ -1,0 +1,16 @@
+// Stdlib: I/O — Source, Sink, Input, Buy, Output, Discard, Provenance
+// Provides core traits and types for representing where design geometry comes
+// from (sources) and where it goes to (sinks).
+//
+// Reference: docs/reify-stdlib-reference.md §9.
+//
+// Deviations from the §9 spec (forced by current language scope):
+//   1. `Scalar<Money>` → bare `Money`.  The type resolver only parameterises
+//      List/Set/Map/Option; writing `Scalar<Money>` degrades to Length-dimension.
+//      Bare `Money` resolves correctly to DimensionVector::MONEY.
+//   2. `= undef` defaults dropped.  The Reify grammar has no `undef` keyword;
+//      no `= undef` appears in any existing stdlib .ri file.  Params without
+//      defaults are required at conformance time, matching the convention in
+//      materials_mechanical.ri and tolerancing.ri.
+//   3. Provenance is declared before trait Input so that `Input.provenance :
+//      Provenance` resolves through the structure-name set in the pre-pass.
