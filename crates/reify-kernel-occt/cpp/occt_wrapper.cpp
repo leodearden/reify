@@ -1394,7 +1394,7 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
     // Three planar faces sharing a common edge along the X axis from
     // (0,0,0) to (10mm,0,0). The shared edge has 3 incident faces, so
     // edge_face_map().FindFromIndex(i).Extent() == 3 > 2 for that edge.
-    try {
+    return wrap_occt_call("make_nonmanifold_compound", [&]() {
         // Create the shared edge first; add it as the FIRST edge of each wire
         // so BRepBuilderAPI_MakeWire does not need to stitch it and preserves
         // its TShape identity across all three wires/faces.
@@ -1442,20 +1442,14 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
         auto result = std::make_unique<OcctShape>();
         result->shape = compound;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonmanifold_compound: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonmanifold_compound: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_nonmanifold_compound: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
     // Build a 10×10×10 mm box, extract 5 of its 6 faces into a shell,
     // wrap the open shell in a solid. The 4 edges that connected to the
     // removed face are now free → BRepCheck_Analyzer::IsValid() returns false.
-    try {
+    return wrap_occt_call("make_malformed_solid", [&]() {
         BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
         box_maker.Build();
         if (!box_maker.IsDone()) {
@@ -1480,13 +1474,7 @@ std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
         auto result = std::make_unique<OcctShape>();
         result->shape = solid;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_malformed_solid: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_malformed_solid: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_malformed_solid: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
@@ -1494,7 +1482,7 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
     // FORWARD — violates the requirement that adjacent faces must use each
     // non-free edge with opposite orientations. ShapeAnalysis_Shell::
     // CheckOrientedShells returns Standard_True (problems found) for this shell.
-    try {
+    return wrap_occt_call("make_nonorientable_shell", [&]() {
         // Shared edge along X: (0,0,0) → (10mm,0,0). Added first to both
         // wires to prevent BRepBuilderAPI_MakeWire from reversing it.
         BRepBuilderAPI_MakeEdge e_shared(gp_Pnt(0.0,0.0,0.0), gp_Pnt(0.01,0.0,0.0));
@@ -1530,13 +1518,7 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
         auto result = std::make_unique<OcctShape>();
         result->shape = shell;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonorientable_shell: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_nonorientable_shell: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_nonorientable_shell: unknown C++ exception");
-    }
+    });
 }
 
 // --- OcctShape lazy accessor implementations ---
@@ -1732,7 +1714,7 @@ static std::mutex g_step_export_mutex;
 
 rust::String export_step(const OcctShape& shape) {
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
-    try {
+    return wrap_occt_call("export_step", [&]() {
         STEPControl_Writer writer;
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
@@ -1757,19 +1739,13 @@ rust::String export_step(const OcctShape& shape) {
         std::remove(tmpname);
 
         return rust::String(content);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT export_step: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT export_step: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT export_step: unknown C++ exception");
-    }
+    });
 }
 
 // --- BRep serialization ---
 
 rust::String serialize_brep(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("serialize_brep", [&]() {
         std::ostringstream oss;
         ::BRepTools::Write(shape.shape, oss);
         std::string content = oss.str();
@@ -1777,17 +1753,11 @@ rust::String serialize_brep(const OcctShape& shape) {
             throw std::runtime_error("BRepTools::Write produced empty output");
         }
         return rust::String(content);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT serialize_brep: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT serialize_brep: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT serialize_brep: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> deserialize_brep(const std::string& data) {
-    try {
+    return wrap_occt_call("deserialize_brep", [&]() {
         ::BRep_Builder builder;
         auto result = std::make_unique<OcctShape>();
         std::istringstream iss(data);
@@ -1796,19 +1766,13 @@ std::unique_ptr<OcctShape> deserialize_brep(const std::string& data) {
             throw std::runtime_error("BRepTools::Read produced null shape");
         }
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT deserialize_brep: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT deserialize_brep: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT deserialize_brep: unknown C++ exception");
-    }
+    });
 }
 
 // --- Tessellation ---
 
 TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
-    try {
+    return wrap_occt_call("tessellate_shape", [&]() {
         BRepMesh_IncrementalMesh mesh(shape.shape, tolerance);
         mesh.Perform();
         if (!mesh.IsDone()) {
@@ -1893,13 +1857,7 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
         }
 
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT tessellate_shape: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT tessellate_shape: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT tessellate_shape: unknown C++ exception");
-    }
+    });
 }
 
 } // namespace occt
