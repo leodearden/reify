@@ -1375,7 +1375,7 @@ std::unique_ptr<OcctShape> make_rect_face(double width, double height,
 // --- Wire queries ---
 
 Point3 wire_start_tangent(const OcctShape& wire_shape) {
-    try {
+    return wrap_occt_call("wire_start_tangent", [&]() {
         TopoDS_Wire w = TopoDS::Wire(wire_shape.shape);
         if (w.IsNull()) {
             throw std::runtime_error("wire_start_tangent: shape is not a wire");
@@ -1390,13 +1390,7 @@ Point3 wire_start_tangent(const OcctShape& wire_shape) {
             throw std::runtime_error("wire_start_tangent: degenerate curve (zero tangent)");
         }
         return Point3{ v.X() / m, v.Y() / m, v.Z() / m };
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT wire_start_tangent: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT wire_start_tangent: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT wire_start_tangent: unknown C++ exception");
-    }
+    });
 }
 
 // --- Queries ---
@@ -1440,7 +1434,7 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
 }
 
 double query_volume(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_volume", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         double vol = props.Mass();
@@ -1450,74 +1444,44 @@ double query_volume(const OcctShape& shape) {
             vol = mesh_based_volume(shape.shape, 0.01);
         }
         return vol;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_volume: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_volume: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_volume: unknown C++ exception");
-    }
+    });
 }
 
 double query_area(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_area", [&]() {
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         return props.Mass();
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_area: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_area: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_area: unknown C++ exception");
-    }
+    });
 }
 
 Point3 query_centroid(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_centroid", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
         return Point3{c.X(), c.Y(), c.Z()};
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_centroid: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_centroid: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_centroid: unknown C++ exception");
-    }
+    });
 }
 
 BBox query_bbox(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("query_bbox", [&]() {
         Bnd_Box box;
         BRepBndLib::Add(shape.shape, box);
         double xmin, ymin, zmin, xmax, ymax, zmax;
         box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
         return BBox{xmin, ymin, zmin, xmax, ymax, zmax};
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_bbox: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_bbox: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_bbox: unknown C++ exception");
-    }
+    });
 }
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2) {
-    try {
+    return wrap_occt_call("query_distance", [&]() {
         BRepExtrema_DistShapeShape dist(shape1.shape, shape2.shape);
         if (!dist.IsDone()) {
             throw std::runtime_error("BRepExtrema_DistShapeShape failed");
         }
         return dist.Value();
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_distance: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_distance: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_distance: unknown C++ exception");
-    }
+    });
 }
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
