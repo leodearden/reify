@@ -4,6 +4,7 @@
 //! `fmt_html.rs` so that golden snapshots can be loaded from sibling
 //! `tests/snapshots/` files without polluting the library binary.
 
+use reify_doc::cross_refs::CrossRefs;
 use reify_doc::fmt_html::render_html;
 use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc,
@@ -1022,4 +1023,175 @@ fn toc_nav_omitted_when_no_items() {
     };
     let out = render_html(&model, None);
     assert!(!out.contains("<nav>"), "expected no <nav> for empty module; got:\n{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Cross-refs section tests (step-25): "Conforms to" / "Used by" anchors.
+// ---------------------------------------------------------------------------
+
+/// Helper: build a `DocModel` with one item plus its declared trait/container
+/// peer items in the same module so anchor targets exist.
+fn render_model_with_cross_refs(items: Vec<ItemDoc>, xrefs: &CrossRefs) -> String {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items,
+            ..Default::default()
+        }],
+    };
+    render_html(&model, Some(xrefs))
+}
+
+/// A Structure that conforms to a trait must render `<h3>Conforms to</h3>`
+/// with an `<a href="#TraitName">TraitName</a>` link inside the structure's
+/// `<section>`.
+#[test]
+fn cross_refs_conforms_to_renders_for_structure() {
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .trait_to_conformers
+        .insert("Fastener".into(), vec!["Bolt".into()]);
+
+    let out = render_model_with_cross_refs(vec![bolt], &xrefs);
+
+    assert!(
+        out.contains("<h3>Conforms to</h3>"),
+        "expected `<h3>Conforms to</h3>` heading; got:\n{out}"
+    );
+    assert!(
+        out.contains("<a href=\"#Fastener\">Fastener</a>"),
+        "expected anchor `<a href=\"#Fastener\">Fastener</a>`; got:\n{out}"
+    );
+
+    // The conforms-to section must be inside Bolt's own <section>, between the
+    // section's open tag and its close tag.
+    let section_start = out
+        .find("<section id=\"Bolt\">")
+        .expect("Bolt section must be present");
+    let conforms_pos = out[section_start..]
+        .find("<h3>Conforms to</h3>")
+        .map(|p| section_start + p)
+        .expect("Conforms to heading must follow Bolt section");
+    let section_end = out[section_start..]
+        .find("</section>")
+        .map(|p| section_start + p)
+        .expect("Bolt section must close");
+    assert!(
+        conforms_pos < section_end,
+        "Conforms to heading must appear inside Bolt's <section>; got conforms@{conforms_pos} end@{section_end}\n{out}"
+    );
+}
+
+/// An Occurrence that is used as a sub-component of another template must
+/// render `<h3>Used by</h3>` with an `<a href="#Container">Container</a>` link
+/// inside the occurrence's `<section>`.
+#[test]
+fn cross_refs_used_by_renders_for_occurrence() {
+    let mcu = ItemDoc::Occurrence {
+        name: "MCU".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .entity_to_containers
+        .insert("MCU".into(), vec!["Board".into()]);
+
+    let out = render_model_with_cross_refs(vec![mcu], &xrefs);
+
+    assert!(
+        out.contains("<h3>Used by</h3>"),
+        "expected `<h3>Used by</h3>` heading; got:\n{out}"
+    );
+    assert!(
+        out.contains("<a href=\"#Board\">Board</a>"),
+        "expected anchor `<a href=\"#Board\">Board</a>`; got:\n{out}"
+    );
+
+    // The used-by section must be inside MCU's own <section>.
+    let section_start = out
+        .find("<section id=\"MCU\">")
+        .expect("MCU section must be present");
+    let used_by_pos = out[section_start..]
+        .find("<h3>Used by</h3>")
+        .map(|p| section_start + p)
+        .expect("Used by heading must follow MCU section");
+    let section_end = out[section_start..]
+        .find("</section>")
+        .map(|p| section_start + p)
+        .expect("MCU section must close");
+    assert!(
+        used_by_pos < section_end,
+        "Used by heading must appear inside MCU's <section>; got used_by@{used_by_pos} end@{section_end}\n{out}"
+    );
+}
+
+/// `cross_refs = None` and `cross_refs = Some(&CrossRefs::default())` must
+/// both omit the Conforms-to / Used-by sections.
+#[test]
+fn cross_refs_omitted_when_absent_or_empty() {
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![bolt],
+            ..Default::default()
+        }],
+    };
+
+    // None: no cross-refs supplied.
+    let out_none = render_html(&model, None);
+    assert!(
+        !out_none.contains("<h3>Conforms to</h3>"),
+        "expected no `<h3>Conforms to</h3>` when cross_refs is None; got:\n{out_none}"
+    );
+    assert!(
+        !out_none.contains("<h3>Used by</h3>"),
+        "expected no `<h3>Used by</h3>` when cross_refs is None; got:\n{out_none}"
+    );
+
+    // Empty: cross_refs supplied but no entries for Bolt.
+    let empty = CrossRefs::default();
+    let out_empty = render_html(&model, Some(&empty));
+    assert!(
+        !out_empty.contains("<h3>Conforms to</h3>"),
+        "expected no `<h3>Conforms to</h3>` when cross_refs is empty; got:\n{out_empty}"
+    );
+    assert!(
+        !out_empty.contains("<h3>Used by</h3>"),
+        "expected no `<h3>Used by</h3>` when cross_refs is empty; got:\n{out_empty}"
+    );
 }
