@@ -549,6 +549,48 @@ mod tests {
         ));
     }
 
+    // --- step-1: new EventKind variant tests (RED until step-2 adds the variants) ---
+
+    #[test]
+    fn event_kind_evicted() {
+        let kind = EventKind::Evicted { size_bytes: 1024 };
+        let _ = format!("{:?}", kind); // Debug works
+        let cloned = kind.clone(); // Clone works
+        assert!(matches!(cloned, EventKind::Evicted { size_bytes: 1024 }));
+    }
+
+    #[test]
+    fn event_kind_donated() {
+        let kind = EventKind::Donated { size_bytes: 2048 };
+        let _ = format!("{:?}", kind);
+        let cloned = kind.clone();
+        assert!(matches!(cloned, EventKind::Donated { size_bytes: 2048 }));
+    }
+
+    #[test]
+    fn journal_records_evicted_and_donated_events() {
+        let mut journal = EventJournal::new();
+        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
+        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
+
+        journal.record(make_event("a", EventKind::Evicted { size_bytes: 512 }, 0));
+        journal.record(make_event("b", EventKind::Donated { size_bytes: 4096 }, 1));
+
+        let a_events = journal.events_for_node(&node_a);
+        assert_eq!(a_events.len(), 1);
+        assert!(matches!(
+            a_events[0].kind,
+            EventKind::Evicted { size_bytes: 512 }
+        ));
+
+        let b_events = journal.events_for_node(&node_b);
+        assert_eq!(b_events.len(), 1);
+        assert!(matches!(
+            b_events[0].kind,
+            EventKind::Donated { size_bytes: 4096 }
+        ));
+    }
+
     #[test]
     fn eval_event_construction() {
         let event = EvalEvent {
