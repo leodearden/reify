@@ -67,6 +67,14 @@ pub struct WarmStatePool {
     /// boundary and add an integration test asserting the buffer stays near-empty
     /// in steady state.
     events: Vec<WarmPoolEvent>,
+    /// Guards the once-per-pool-instance `tracing::warn!` emitted when the
+    /// events buffer overflows and is auto-trimmed in release builds.
+    ///
+    /// Set to `true` on first trim; subsequent trim rounds on the same pool
+    /// instance are silent to avoid log spam.  Per-instance scoping means each
+    /// fresh pool emits its own first-overflow warn — useful when multiple pools
+    /// co-exist in tests.
+    auto_trim_warned: bool,
 }
 
 impl WarmStatePool {
@@ -107,6 +115,7 @@ impl WarmStatePool {
             budget_bytes,
             used_bytes: 0,
             events: Vec::new(),
+            auto_trim_warned: false,
         }
     }
 
@@ -283,10 +292,19 @@ impl WarmStatePool {
         );
         self.events.push(ev);
         // Release-build seatbelt: if the buffer exceeded the cap (debug_assert!
-        // is a no-op in release mode), drop the oldest half so memory stays bounded.
-        // The warn-once field (auto_trim_warned) is added in step 8; for now
-        // the trim itself is in place.
+        // is a no-op in release mode), drop the oldest half so memory stays bounded
+        // and emit a once-per-pool-instance warn.
         if self.events.len() > Self::MAX_BUFFERED_EVENTS {
+            if !self.auto_trim_warned {
+                tracing::warn!(
+                    cap = Self::MAX_BUFFERED_EVENTS,
+                    current_len = self.events.len(),
+                    task = "2345-followup",
+                    "WarmStatePool events buffer exceeded cap; auto-trimming oldest half. \
+                     Engine drain_events() not wired at evaluation boundaries."
+                );
+                self.auto_trim_warned = true;
+            }
             self.events.drain(..Self::MAX_BUFFERED_EVENTS / 2);
         }
     }
