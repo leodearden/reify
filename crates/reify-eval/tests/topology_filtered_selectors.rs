@@ -76,6 +76,37 @@ fn edges_by_length_box_10x20x30_filters_to_x_axis_edges() {
 }
 
 #[test]
+fn edges_at_height_box_top_z_5mm_returns_four() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // 10×10×10 mm box centered at origin → z extent is [-5e-3, +5e-3].
+    // The four edges that lie entirely at z = +5e-3 form the top
+    // rectangle; similarly there are four at z = -5e-3 (bottom) and
+    // four vertical edges spanning [-5e-3, +5e-3]. Filtering by
+    // (z = +5e-3, tol = 1e-9) must select exactly the top four.
+    let (mut kernel, box_id) = box_handle(10.0, 10.0, 10.0);
+
+    let result = topology_selectors::edges_at_height(&mut kernel, box_id, 5e-3, 1e-9)
+        .expect("edges_at_height on a valid box should succeed");
+
+    assert_eq!(
+        result.len(),
+        4,
+        "edges_at_height(z=+5e-3, tol=1e-9) on a 10x10x10 box should return the 4 top edges, got {}",
+        result.len()
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for id in &result {
+        assert_ne!(*id, box_id, "filtered id must differ from the source box");
+        assert!(seen.insert(*id), "duplicate filtered id {:?}", id);
+    }
+}
+
+#[test]
 fn edges_parallel_to_box_x_axis_one_degree_tolerance_returns_four() {
     if !OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
