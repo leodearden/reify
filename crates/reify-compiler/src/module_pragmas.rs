@@ -129,6 +129,22 @@ fn warn_block_level_solver(module: &mut CompiledModule) {
     }
 }
 
+/// Solver back-end names recognised by the v0.1 compiler.
+///
+/// PRD §3 enumerates the v0.1 known back-ends: `libslvs` (geometric / 2D
+/// dimensional constraints) and `argmin` (numerical optimisation). Any other
+/// name is allowed through `apply_solver_pragma` — `solver_pragma` is still
+/// populated per the storage-reflects-declared design decision (mirroring
+/// `#version`'s policy) — but emits a compile-time warning surfaced via the
+/// LSP diagnostic layer to catch typos like `#solver(libslsv)` early.
+///
+/// This list is intentionally hardcoded: the runtime `Engine.solvers` registry
+/// (registered via `register_solver`) is a separate axis. An embedder can run
+/// reify-eval with only `argmin` registered, in which case `#solver(libslvs)`
+/// parses cleanly here (no compile warning) but still falls through to the
+/// default at solve time. Both warnings are independently useful.
+const KNOWN_SOLVER_BACKENDS: &[&str] = &["libslvs", "argmin"];
+
 /// Sane upper bound for the global tessellation tolerance, in SI metres.
 ///
 /// Values larger than this are almost certainly a unit mistake (e.g. the user
@@ -502,6 +518,20 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                             );
                         }
                     }
+                }
+                // Compile-time check: warn if the back-end name is not in the
+                // v0.1 known list. Storage of `solver_pragma` happens
+                // unconditionally, mirroring `#version`'s
+                // storage-reflects-declared policy — downstream tooling and the
+                // runtime registry still need to see the user's verbatim name.
+                if !KNOWN_SOLVER_BACKENDS.contains(&name.as_str()) {
+                    module.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "#solver: unknown back-end '{name}'; v0.1 supports \
+                             {{libslvs, argmin}} \u{2014} falling back to default at runtime"
+                        ))
+                        .with_label(DiagnosticLabel::new(pragma.span, "unknown back-end")),
+                    );
                 }
                 module.solver_pragma = Some(SolverPragma {
                     name: name.clone(),
