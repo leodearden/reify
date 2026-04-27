@@ -133,24 +133,52 @@ fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
     let mut x: Option<f64> = None;
     let mut y: Option<f64> = None;
     let mut z: Option<f64> = None;
+    parse_flat_number_object(s, |key, num| match key {
+        "x" => {
+            x = Some(num);
+            true
+        }
+        "y" => {
+            y = Some(num);
+            true
+        }
+        "z" => {
+            z = Some(num);
+            true
+        }
+        _ => false,
+    })?;
+    Some([x?, y?, z?])
+}
+
+/// Walk a flat JSON object of the form
+/// `{"key1":NUMBER,"key2":NUMBER,...}` (arbitrary whitespace, no nested
+/// objects, no string values), invoking `on_pair(key, num)` for every
+/// entry. The closure returns `false` to reject an unknown / unexpected
+/// key, in which case the helper short-circuits and returns `None`.
+///
+/// Returns `None` on any structural deviation: missing outer braces,
+/// missing colon between key and value, or a value that fails to parse
+/// as `f64`. The kernel never emits nested objects or string values for
+/// the payloads consumed here, so a naive comma-split is safe.
+fn parse_flat_number_object<F>(s: &str, mut on_pair: F) -> Option<()>
+where
+    F: FnMut(&str, f64) -> bool,
+{
     // Strip leading/trailing whitespace and outer braces, then split on
     // commas. The kernel-emitted format never contains nested objects or
     // strings, so this naive split is safe.
-    let inner = s.trim();
-    let inner = inner.strip_prefix('{')?.strip_suffix('}')?;
+    let inner = s.trim().strip_prefix('{')?.strip_suffix('}')?;
     for part in inner.split(',') {
         let mut kv = part.splitn(2, ':');
         let key = kv.next()?.trim().trim_matches('"');
         let val = kv.next()?.trim();
         let num: f64 = val.parse().ok()?;
-        match key {
-            "x" => x = Some(num),
-            "y" => y = Some(num),
-            "z" => z = Some(num),
-            _ => return None,
+        if !on_pair(key, num) {
+            return None;
         }
     }
-    Some([x?, y?, z?])
+    Some(())
 }
 
 /// Normalize a 3-vector. Returns `None` (caller should treat as a
@@ -351,22 +379,21 @@ fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
 /// for the `zmin` and `zmax` keys, ignoring the other axis extents.
 /// Returns `None` on any structural deviation.
 fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
-    let inner = s.trim().strip_prefix('{')?.strip_suffix('}')?;
     let mut zmin: Option<f64> = None;
     let mut zmax: Option<f64> = None;
-    for part in inner.split(',') {
-        let mut kv = part.splitn(2, ':');
-        let key = kv.next()?.trim().trim_matches('"');
-        let val = kv.next()?.trim();
-        let num: f64 = val.parse().ok()?;
-        match key {
-            "zmin" => zmin = Some(num),
-            "zmax" => zmax = Some(num),
-            // xmin/xmax/ymin/ymax are part of the well-formed payload but
-            // not needed for this selector; tolerate them silently.
-            "xmin" | "xmax" | "ymin" | "ymax" => {}
-            _ => return None,
+    parse_flat_number_object(s, |key, num| match key {
+        "zmin" => {
+            zmin = Some(num);
+            true
         }
-    }
+        "zmax" => {
+            zmax = Some(num);
+            true
+        }
+        // xmin/xmax/ymin/ymax are part of the well-formed payload but
+        // not needed for this selector; tolerate them silently.
+        "xmin" | "xmax" | "ymin" | "ymax" => true,
+        _ => false,
+    })?;
     Some((zmin?, zmax?))
 }
