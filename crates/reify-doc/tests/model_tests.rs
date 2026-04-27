@@ -148,7 +148,11 @@ fn build_fixture() -> DocModel {
             ],
             annotations: vec![],
             pragmas: vec![],
-            cross_refs: ModuleCrossRefs::default(),
+            cross_refs: ModuleCrossRefs {
+                referenced_modules: vec![],
+                referenced_items: vec![],
+                referenced_traits: vec!["Physical".into()],
+            },
         }],
     }
 }
