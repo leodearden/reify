@@ -623,6 +623,16 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 );
                 module.kernel_pragma = Some(name.clone());
             }
+            // Zero args: `#kernel` with no arg list. Warning per PRD §4 (NOT
+            // error — the error-level diagnostic is reserved for non-occt
+            // idents to keep the v0.1 limitation discoverable). Leaves
+            // `kernel_pragma` as None.
+            [] => {
+                module.diagnostics.push(
+                    Diagnostic::warning("#kernel: expected #kernel(occt); ignored")
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
             _ => {
                 // Other malformed arms handled in later steps.
             }
