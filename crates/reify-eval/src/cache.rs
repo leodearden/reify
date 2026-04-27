@@ -258,15 +258,23 @@ impl CacheStore {
     /// Record an evaluation result with a caller-supplied freshness.
     ///
     /// Implements arch §7.2 propagation at the write layer: the wire site in
-    /// `evaluate_let_bindings` calls this with a derived freshness from
-    /// [`CacheStore::derive_output_freshness_for_node`]; all other call sites use
+    /// `evaluate_let_bindings` calls [`CacheStore::record_evaluation_propagating_freshness`]
+    /// (which derives freshness and delegates here); all other call sites use
     /// [`CacheStore::record_evaluation`] which hard-codes `Freshness::Final`.
     ///
     /// Compares the new result's content hash with the existing cache entry.
-    /// - If same hash: updates basis_version, dependency_trace, and freshness (early cutoff),
-    ///   returns `Unchanged`.
+    /// - If same hash: updates `basis_version`, `dependency_trace`, and `freshness`
+    ///   (early cutoff), returns `Unchanged`.
     /// - If different or no prior cache: writes full cache entry with supplied `freshness`,
     ///   returns `Changed`.
+    ///
+    /// **Early-cutoff trace overwrite:** the `dependency_trace = trace` assignment on the
+    /// early-cutoff path was already present in `record_evaluation` before task #2328
+    /// (verified by reviewing the pre-2328 git history).  It is intentional: even when the
+    /// result hash is unchanged, the freshly-computed trace replaces the old one so the
+    /// cache stays consistent with the current expression structure.  All existing callers
+    /// via [`CacheStore::record_evaluation`] (engine_edit.rs, unfold.rs, concurrent.rs) have
+    /// always observed this behaviour and can rely on it.
     ///
     /// Hash-only cutoff is intentional. NaN payloads are canonicalized by
     /// `Value::content_hash` (every NaN bit-pattern collapses to `f64::NAN.to_bits()`),
@@ -307,6 +315,37 @@ impl CacheStore {
             },
         );
         EvalOutcome::Changed
+    }
+
+    /// Record an evaluation result, deriving freshness from the supplied trace per arch §7.2.
+    ///
+    /// Convenience combinator: derives the output freshness by calling
+    /// [`CacheStore::derive_output_freshness_from_trace`] on the **supplied** `trace`
+    /// (so freshness is keyed off the just-computed reads, not a stale cached trace),
+    /// then writes the entry via [`CacheStore::record_evaluation_with_freshness`].
+    ///
+    /// This is the single-call ergonomic entry point for the `evaluate_let_bindings`
+    /// wire site and any future caller that evaluates a node with a fresh trace and
+    /// wants arch §7.2 propagation atomically.
+    ///
+    /// Compares the new result's content hash with the existing cache entry.
+    /// - If same hash: updates basis_version, dependency_trace, and freshness (early cutoff),
+    ///   returns `Unchanged`.
+    /// - If different or no prior cache: writes full cache entry with derived `freshness`,
+    ///   returns `Changed`.
+    pub fn record_evaluation_propagating_freshness(
+        &mut self,
+        node: NodeId,
+        new_result: CachedResult,
+        version: VersionId,
+        trace: DependencyTrace,
+        still_refining: bool,
+        generation: u64,
+    ) -> EvalOutcome {
+        // Derive freshness from the supplied trace BEFORE passing ownership of `trace`
+        // into record_evaluation_with_freshness (borrow-checker: sequential immutable+mutable borrows on self).
+        let freshness = self.derive_output_freshness_from_trace(&trace, still_refining, generation);
+        self.record_evaluation_with_freshness(node, new_result, version, trace, freshness)
     }
 
     /// Mark all cached nodes whose dependency trace reads any of the changed
@@ -498,13 +537,52 @@ impl CacheStore {
         }
     }
 
-    /// Derive the output freshness for a cached node by walking its dependency trace.
+    /// Derive the output freshness from a **supplied** dependency trace.
     ///
     /// Implements arch §7.2 (`docs/reify-implementation-architecture.md`, lines 730-749)
-    /// at the cache level: looks up each input cell in `dependency_trace.reads`, retrieves
-    /// its freshness via the existing [`CacheStore::freshness`] reader (which defaults to
-    /// `Final` for absent entries — see task #2326), then delegates to the pure
-    /// [`derive_output_freshness`] helper.
+    /// using a freshly-computed `trace` rather than whatever trace is currently cached
+    /// for the output node.  Callers that hold the just-evaluated trace (e.g. the wire
+    /// site in `evaluate_let_bindings`) should prefer this over
+    /// [`derive_output_freshness_for_node`] to avoid keying off a stale prior trace.
+    ///
+    /// For each `ValueCellId` in `trace.reads`, retrieves the input's freshness via
+    /// [`CacheStore::freshness`] (defaults to `Final` for absent entries — see task #2326),
+    /// then delegates to the pure [`derive_output_freshness`] helper.
+    ///
+    /// Returns the derived freshness:
+    /// - If `still_refining`, always `Intermediate { generation }`.
+    /// - If any input is non-Final, `Intermediate { generation }`.
+    /// - Otherwise, `Final`.
+    pub fn derive_output_freshness_from_trace(
+        &self,
+        trace: &DependencyTrace,
+        still_refining: bool,
+        generation: u64,
+    ) -> Freshness {
+        // Collect to a Vec to avoid borrow-checker conflict: `self.freshness(...)` needs
+        // `&self.caches` and `trace.reads` is already borrowed — collect first, delegate after.
+        let input_freshnesses: Vec<Freshness> = trace
+            .reads
+            .iter()
+            .map(|read| self.freshness(&NodeId::Value(read.clone())))
+            .collect();
+        derive_output_freshness(still_refining, input_freshnesses.iter(), generation)
+    }
+
+    /// Derive the output freshness for a cached node by walking its **cached** dependency trace.
+    ///
+    /// Implements arch §7.2 (`docs/reify-implementation-architecture.md`, lines 730-749)
+    /// at the cache level: looks up the node's **previously cached** `dependency_trace.reads`
+    /// (the trace from its last evaluation), retrieves each input's freshness via the existing
+    /// [`CacheStore::freshness`] reader (which defaults to `Final` for absent entries — see
+    /// task #2326), then delegates to the pure [`derive_output_freshness`] helper.
+    ///
+    /// **Old-trace semantics:** this method reads the trace that was stored during the
+    /// *prior* evaluation of `node_id`, not a freshly-computed one.  At the wire site in
+    /// `evaluate_let_bindings` the just-computed `trace` is available locally; prefer
+    /// [`derive_output_freshness_from_trace`] there to avoid keying off a stale trace.
+    /// This method is the right choice for callers that only have a `NodeId` and do not
+    /// hold the current trace (e.g. diagnostics, tests that verify post-eval state).
     ///
     /// Returns the derived freshness:
     /// - If `still_refining`, always `Intermediate { generation }`.
@@ -525,16 +603,7 @@ impl CacheStore {
             // Absent node: no trace, treat as empty-input (§7.2: no inputs ⇒ Final)
             return derive_output_freshness(still_refining, std::iter::empty(), generation);
         };
-        // Collect freshnesses to a Vec to avoid borrow-checker conflict on &self:
-        // `self.freshness(...)` borrows `self.caches` immutably, but `entry` already
-        // borrows it — collect first, then delegate.
-        let input_freshnesses: Vec<Freshness> = entry
-            .dependency_trace
-            .reads
-            .iter()
-            .map(|read| self.freshness(&NodeId::Value(read.clone())))
-            .collect();
-        derive_output_freshness(still_refining, input_freshnesses.iter(), generation)
+        self.derive_output_freshness_from_trace(&entry.dependency_trace.clone(), still_refining, generation)
     }
 
     /// Insert a synthetic cache entry for a Realization node so that tests can
@@ -2561,6 +2630,154 @@ mod tests {
             derive_output_freshness(false, std::slice::from_ref(&failed).iter(), g),
             Freshness::Intermediate { generation: g },
             "Failed input must yield Intermediate output (Failed is non-Final per §7.2)"
+        );
+    }
+
+    // --- derive_output_freshness_from_trace tests (task #2328 amendment) ---
+
+    /// Verifies that derive_output_freshness_from_trace uses the *supplied* trace
+    /// (not whatever is cached for a node) and delegates to the §7.2 rule correctly.
+    #[test]
+    fn derive_output_freshness_from_trace_uses_supplied_trace() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let mut store = CacheStore::new();
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+
+        // Insert `a` with Final freshness and `b` with Intermediate freshness
+        store.put(
+            NodeId::Value(a_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        store.put(
+            NodeId::Value(b_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(2), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 3 },
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // A trace that only reads `a` (Final) → should yield Final
+        let trace_a_only = DependencyTrace { reads: vec![a_id.clone()] };
+        assert_eq!(
+            store.derive_output_freshness_from_trace(&trace_a_only, false, 7),
+            Freshness::Final,
+            "trace reading only Final input must yield Final"
+        );
+
+        // A trace that reads `b` (Intermediate) → should yield Intermediate
+        let trace_b_only = DependencyTrace { reads: vec![b_id.clone()] };
+        assert_eq!(
+            store.derive_output_freshness_from_trace(&trace_b_only, false, 7),
+            Freshness::Intermediate { generation: 7 },
+            "trace reading Intermediate input must yield Intermediate"
+        );
+
+        // still_refining=true overrides all: even all-Final trace yields Intermediate
+        assert_eq!(
+            store.derive_output_freshness_from_trace(&trace_a_only, true, 7),
+            Freshness::Intermediate { generation: 7 },
+            "still_refining=true must always yield Intermediate regardless of inputs"
+        );
+    }
+
+    /// Verifies that the early-cutoff path in record_evaluation_with_freshness
+    /// overwrites dependency_trace with the newly supplied value.
+    /// This behavior was already present before task #2328 (verified by reviewing
+    /// the pre-2328 git history) and is intentional: even on early cutoff, the
+    /// freshly-computed trace replaces the old one to keep the cache consistent.
+    #[test]
+    fn record_evaluation_with_freshness_early_cutoff_updates_trace() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+
+        // Cold-start: trace reads `a`
+        let trace_a = DependencyTrace { reads: vec![a_id.clone()] };
+        store.record_evaluation_with_freshness(
+            node.clone(),
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
+            VersionId(1),
+            trace_a,
+            Freshness::Final,
+        );
+        assert_eq!(
+            store.get(&node).unwrap().dependency_trace.reads,
+            vec![a_id.clone()],
+            "after cold start, trace must contain the supplied reads"
+        );
+
+        // Early cutoff: same hash, but different trace (reads `b` now)
+        let trace_b = DependencyTrace { reads: vec![b_id.clone()] };
+        let outcome = store.record_evaluation_with_freshness(
+            node.clone(),
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
+            VersionId(2),
+            trace_b,
+            Freshness::Final,
+        );
+        assert_eq!(outcome, EvalOutcome::Unchanged, "same hash must trigger early cutoff");
+        // Early-cutoff path must still overwrite the trace with the newly supplied one
+        assert_eq!(
+            store.get(&node).unwrap().dependency_trace.reads,
+            vec![b_id.clone()],
+            "early-cutoff must overwrite dependency_trace with the newly supplied trace"
+        );
+    }
+
+    // --- record_evaluation_propagating_freshness tests (task #2328 amendment) ---
+
+    /// Verifies that record_evaluation_propagating_freshness derives freshness from the
+    /// supplied trace (not the old cached trace) and writes it atomically.
+    #[test]
+    fn record_evaluation_propagating_freshness_derives_from_supplied_trace() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let mut store = CacheStore::new();
+
+        let a_id = ValueCellId::new("T", "a");
+        let out_id = ValueCellId::new("T", "out");
+
+        // Insert `a` with Intermediate freshness
+        store.put(
+            NodeId::Value(a_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(5.0), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 2 },
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Call record_evaluation_propagating_freshness with a trace that reads `a`
+        let trace = DependencyTrace { reads: vec![a_id.clone()] };
+        let out_node = NodeId::Value(out_id.clone());
+        let outcome = store.record_evaluation_propagating_freshness(
+            out_node.clone(),
+            CachedResult::Value(Value::Real(10.0), DeterminacyState::Determined),
+            VersionId(1),
+            trace,
+            false, // still_refining
+            7,     // generation
+        );
+        assert_eq!(outcome, EvalOutcome::Changed, "cold start must return Changed");
+        // Freshness must be derived from `a`'s Intermediate state → Intermediate{generation: 7}
+        assert_eq!(
+            store.freshness(&out_node),
+            Freshness::Intermediate { generation: 7 },
+            "freshness must be derived from the supplied trace's input (a=Intermediate)"
         );
     }
 

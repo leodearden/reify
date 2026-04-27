@@ -32,6 +32,30 @@ fn two_cell_module() -> reify_compiler::CompiledModule {
         .build()
 }
 
+/// End-to-end regression guard: after a cold-start `Engine::eval()`, the let-binding `b`
+/// must have `Freshness::Final` in the cache.
+///
+/// This test does NOT depend on being able to observe non-Final freshness end-to-end
+/// (params are all-Final before let-bindings run), but it does pin that the wire-in in
+/// `evaluate_let_bindings` actually writes the correct freshness via
+/// `record_evaluation_propagating_freshness`. If that call were removed or broken,
+/// this test would fail.
+#[test]
+fn let_binding_freshness_is_final_after_cold_start_eval() {
+    let module = two_cell_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+
+    let b_id = ValueCellId::new("T", "b");
+    let b_node = NodeId::Value(b_id);
+    assert_eq!(
+        engine.cache_store().freshness(&b_node),
+        Freshness::Final,
+        "let binding b must be Final after cold-start eval with all-Final param inputs"
+    );
+}
+
 /// Arch §7.2 truth table at integration level over a real Engine + 2-cell module.
 ///
 /// Injects synthetic input freshness on `a` via `cache_store_mut()`, then

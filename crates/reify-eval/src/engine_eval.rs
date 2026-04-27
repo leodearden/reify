@@ -2034,17 +2034,17 @@ impl Engine {
             let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
             // Arch §7.2 propagation rule (docs/reify-implementation-architecture.md lines 730-749):
             // output freshness = derive(still_refining=false, input_freshnesses, generation=version_id).
-            // `still_refining=false` is the only valid value today — no progressive nodes exist yet
-            // (that is PRD task 4+ scope). `version_id` is the monotonic generation source per §7.1.
-            let derived_freshness =
-                self.cache
-                    .derive_output_freshness_for_node(&node_id, false, version_id);
-            let outcome = self.cache.record_evaluation_with_freshness(
+            // Uses the freshly-computed `trace` (not the old cached trace) so derivation is
+            // always keyed off the current reads.  `still_refining=false` is the only valid
+            // value today — no progressive nodes exist yet (that is PRD task 4+ scope).
+            // `version_id` is the monotonic generation source per §7.1.
+            let outcome = self.cache.record_evaluation_propagating_freshness(
                 node_id.clone(),
                 cached_result,
                 VersionId(version_id),
                 trace,
-                derived_freshness,
+                false,
+                version_id,
             );
 
             self.journal.record(EvalEvent {
