@@ -504,3 +504,25 @@ fn my_fn(w: Real) -> Real {
 "#;
     assert_deep_chain_warning_count(source, 1, "FnBody.result_expr");
 }
+
+/// Position 15: `Declaration::*.annotations[*].args` — deep chain inside a
+/// top-level annotation arg (e.g. `@deprecated(a.b.c.d.e)`).
+///
+/// The structure body deliberately contains NO deep chain so the asserted
+/// count of 1 isolates the warning to the annotation-arg position. If
+/// `walk_declaration` silently skips annotations (the coverage hole), the
+/// count is 0 and this test FAILS — which is what we want pre-impl.
+#[test]
+fn walker_visits_top_level_declaration_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+structure S {
+    param x: Real = 0
+}
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Structure.annotations[*].args",
+    );
+}
