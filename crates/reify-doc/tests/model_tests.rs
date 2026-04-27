@@ -179,6 +179,54 @@ fn doc_strings_flow_into_item_doc() {
     }
 }
 
+/// Assert that `@test` annotation is on Bolt (Structure) and `@deprecated` is on
+/// safety_factor (Function), each with the correct args.
+///
+/// TODO(build_doc_model): Once the lowering pass lands, the annotations are
+/// populated from the compiled item's annotation list rather than from
+/// build_fixture(). The assertion logic itself stays unchanged.
+#[test]
+fn structure_test_annotation_and_function_deprecated_annotation_present() {
+    let model = build_fixture();
+    let items = &model.modules[0].items;
+
+    // Bolt must carry @test with no args
+    let bolt = items
+        .iter()
+        .find(|i| matches!(i, ItemDoc::Structure { name, .. } if name == "Bolt"))
+        .expect("Structure 'Bolt' not found");
+    match bolt {
+        ItemDoc::Structure { annotations, .. } => {
+            let test_ann = annotations.iter().find(|a| a.name == "test");
+            let test_ann = test_ann.expect("@test annotation not found on Bolt");
+            assert!(
+                test_ann.args.is_empty(),
+                "@test args should be empty, got: {:?}",
+                test_ann.args
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    // safety_factor must carry @deprecated with one quoted arg
+    let sf = items
+        .iter()
+        .find(|i| matches!(i, ItemDoc::Function { name, .. } if name == "safety_factor"))
+        .expect("Function 'safety_factor' not found");
+    match sf {
+        ItemDoc::Function { annotations, .. } => {
+            let dep_ann = annotations.iter().find(|a| a.name == "deprecated");
+            let dep_ann = dep_ann.expect("@deprecated annotation not found on safety_factor");
+            assert_eq!(
+                dep_ann.args,
+                vec!["\"superseded by safety_margin\"".to_string()],
+                "@deprecated args mismatch"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// Assert the fixture module path and top-level doc-comment are correct.
 ///
 /// TODO(build_doc_model): This test will require no changes once `build_doc_model`
