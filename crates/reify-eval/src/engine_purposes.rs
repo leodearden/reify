@@ -553,8 +553,8 @@ mod tests {
     /// (the second cargo-test call in the two-pass pattern documented at
     /// `orchestrator.yaml:19`). The *debug-mode posture* (panic + no expr
     /// mutation) is pinned by the sibling test
-    /// `expand_missing_cell_debug_mode_halts_via_debug_assert`; run it via
-    /// `cargo test -p reify-eval -- --ignored`.
+    /// `expand_missing_cell_debug_mode_halts_via_debug_assert`, which runs
+    /// automatically under default `cargo test -p reify-eval` in debug builds.
     #[test]
     fn expand_signals_when_resolved_query_cell_missing_from_value_cells() {
         use std::panic::AssertUnwindSafe;
@@ -633,7 +633,9 @@ mod tests {
         // --release` invocation (the second cargo-test call in the two-pass
         // pattern documented at `orchestrator.yaml:19`). The *debug-mode
         // posture* (panic + no expr mutation + warn fires first) is pinned by
-        // the sibling test `expand_missing_cell_debug_mode_halts_via_debug_assert`.
+        // the sibling test `expand_missing_cell_debug_mode_halts_via_debug_assert`,
+        // which runs automatically under default `cargo test -p reify-eval` in
+        // debug builds.
         #[cfg(not(debug_assertions))]
         {
             let elements = match &expr.kind {
@@ -686,16 +688,20 @@ mod tests {
     ///   never runs, and the expression retains its pre-call shape.
     ///
     /// Gated with `#[cfg(debug_assertions)]` because in release builds
-    /// `debug_assert!(false)` is a no-op and `catch_unwind` would return `Ok`.
-    /// Marked `#[ignore]` because `catch_unwind` still allows libtest's panic
-    /// hook to emit a stacktrace to stderr, cluttering default `cargo test`
-    /// output; opt in via `cargo test -- --ignored`.
+    /// `debug_assert!(false)` is a no-op and `catch_unwind` would return `Ok`,
+    /// causing the `result.is_err()` assertion to fail.
+    ///
+    /// Stderr panic-noise suppression: the test swaps the global panic hook for
+    /// a no-op around the controlled `debug_assert!(false)` panic, then restores
+    /// the original hook before the assertions execute. This keeps default
+    /// `cargo test` output clean without requiring `#[ignore]`. The swap is
+    /// sound here because `orchestrator.yaml:28` enforces `-- --test-threads=1`
+    /// for `cargo test -p reify-eval` (both debug and release passes), so no
+    /// concurrent test thread observes the no-op hook; and restoring *before*
+    /// the assertions ensures a failing assertion still surfaces through the
+    /// original libtest hook.
     #[test]
     #[cfg(debug_assertions)]
-    #[ignore = "verifies debug-mode panic posture for missing-cell branch; emits panic stacktrace \
-                to stderr — opt in via `cargo test -- --ignored`. Release-mode structural contract \
-                is in the sibling test, exercised by orchestrator.yaml's \
-                `cargo test -p reify-eval --release` pass."]
     fn expand_missing_cell_debug_mode_halts_via_debug_assert() {
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
@@ -739,9 +745,15 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        // In debug builds debug_assert!(false) fires, unwinding the thread.
-        // catch_unwind captures the panic so this test can make assertions
-        // about the post-call state.
+        // Silence libtest's default panic hook for the duration of the controlled
+        // debug_assert!(false) panic so this test runs cleanly under default
+        // `cargo test` output. Safe because orchestrator.yaml:28 enforces
+        // `-- --test-threads=1` for reify-eval, so no concurrent test thread
+        // observes the no-op hook. Restored *before* the assertions below so any
+        // assertion-failure panic still surfaces through the original hook.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
                 expand_purpose_reflective_placeholders(
@@ -752,6 +764,8 @@ mod tests {
                 );
             });
         }));
+
+        std::panic::set_hook(prev_hook);
 
         assert!(
             result.is_err(),
