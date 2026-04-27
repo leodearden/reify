@@ -89,10 +89,6 @@ subprojects:
         why: "ModuleDag exists from task #69 and the test suite uses it, but the user-facing tools went through compile_with_stdlib which only collects imports. Stdlib types resolve via the prelude context (task #2176), so this is specifically about user `import \"foo.ri\"` declarations."
         tracking: "2226"
 
-      - what: "Call-site trait conformance bypasses Option<TraitObject> and collection-typed (e.g. Vec<TraitObject>) params — only the bare TraitObject form is checked"
-        why: "Wrapping a trait type in Option or a collection currently passes silently. Marked TODO(follow-up) at conformance/mod.rs:152 with 'known gap, not forgotten'."
-        tracking: "2227"
-
     exclude:
       - ".worktrees/ — orchestrator working copies, not reviewed"
       - "tree-sitter-reify/src/ — generated C parser output"
