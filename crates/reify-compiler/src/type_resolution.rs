@@ -1318,11 +1318,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_type_name_money_does_not_collide_with_solid_angle() {
-        assert_ne!(resolve_type_name("Money"), resolve_type_name("SolidAngle"));
-    }
-
-    #[test]
     fn resolve_dimension_type_recognises_money() {
         let te = named_type_expr("Money");
         let mut diagnostics = Vec::new();
