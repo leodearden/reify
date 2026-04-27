@@ -13,7 +13,7 @@
 //! - Mixed bounds: only geometry marker bounds trip the lint.
 //! - Parametric: every stdlib geometry marker name triggers exactly one warning.
 
-use reify_test_support::{compile_source_with_stdlib, warnings_only, EXPECTED_GEOMETRY_TRAITS};
+use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only, EXPECTED_GEOMETRY_TRAITS};
 use reify_types::{DiagnosticCode, Severity};
 
 /// A structure with a single Watertight bound must emit exactly one
@@ -244,6 +244,11 @@ structure def Foo_{trait_name} : {trait_name} {{
 "#
         );
         let module = compile_source_with_stdlib(&source);
+        assert!(
+            errors_only(&module).is_empty(),
+            "trait '{trait_name}': expected no compile errors, got: {:#?}",
+            errors_only(&module)
+        );
         let warnings = warnings_only(&module);
         let asserted: Vec<_> = warnings
             .iter()
