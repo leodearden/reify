@@ -5121,4 +5121,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inertia_tensor_large_shape_returns_symmetric_tensor() {
+        let mut kernel = OcctKernel::new();
+        // 1000×1000×1000 cube, density 1.0.
+        // Diagonal inertia: m·L²/6 = (1e9)·1e6/6 ≈ 1.67e14 — well above 1e6, the
+        // regime where floating-point noise can exceed the old 1e-6 absolute threshold.
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(1000.0),
+                height: Value::Real(1000.0),
+                depth: Value::Real(1000.0),
+            })
+            .unwrap();
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: box_h.id,
+                density: 1.0,
+            })
+            .expect("query_inertia_tensor must not spuriously fail on large shapes (tensor entries ≫ 1e6)");
+        // Extract the nine Real entries from the returned 3×3 list-of-lists.
+        let rows = match result {
+            Value::List(rows) => {
+                assert_eq!(rows.len(), 3, "expected 3 rows, got {}", rows.len());
+                rows
+            }
+            other => panic!("expected Value::List(rows), got {:?}", other),
+        };
+        let mut entries = [[0.0f64; 3]; 3];
+        for (i, row) in rows.iter().enumerate() {
+            let cols = match row {
+                Value::List(cols) => {
+                    assert_eq!(cols.len(), 3, "row {} expected 3 cols, got {}", i, cols.len());
+                    cols
+                }
+                other => panic!("row {} expected Value::List, got {:?}", i, other),
+            };
+            for (j, col) in cols.iter().enumerate() {
+                entries[i][j] = match col {
+                    Value::Real(v) => *v,
+                    other => panic!("entry [{i}][{j}] expected Value::Real, got {:?}", other),
+                };
+            }
+        }
+        // Diagonal entries must be positive, finite, and in the large-shape regime.
+        for i in 0..3 {
+            assert!(
+                entries[i][i].is_finite() && entries[i][i] > 0.0,
+                "diagonal [{i}][{i}] must be positive and finite, got {}",
+                entries[i][i]
+            );
+            assert!(
+                entries[i][i] > 1e6,
+                "diagonal [{i}][{i}] must be > 1e6 (large-shape sanity), got {}",
+                entries[i][i]
+            );
+        }
+        // Off-diagonal symmetric pairs must be bit-exactly equal after the averaging fix.
+        assert_eq!(
+            entries[0][1], entries[1][0],
+            "m12 vs m21 must be bit-equal after averaging fix"
+        );
+        assert_eq!(
+            entries[0][2], entries[2][0],
+            "m13 vs m31 must be bit-equal after averaging fix"
+        );
+        assert_eq!(
+            entries[1][2], entries[2][1],
+            "m23 vs m32 must be bit-equal after averaging fix"
+        );
+    }
+
 }
