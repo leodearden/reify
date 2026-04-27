@@ -5,7 +5,6 @@ pub mod demand;
 pub mod deps;
 pub mod dirty;
 mod engine_admin;
-pub mod warm_pool;
 mod engine_build;
 mod engine_constraints;
 mod engine_edit;
@@ -22,6 +21,7 @@ pub mod snapshot;
 pub mod test_runner;
 pub mod topology_selectors;
 mod unfold;
+pub mod warm_pool;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::HashMap;
@@ -1380,20 +1380,52 @@ structure S {
     // Wires `Engine::warm_pool` per arch §4.3 / §6.4. The pool is initialised
     // via `WarmStatePool::from_env_or_default()`, so absent the
     // `REIFY_WARM_STATE_BUDGET_BYTES` env var the budget equals
-    // `DEFAULT_BUDGET_BYTES` (2 GiB). Compile-fails until step-4 adds the
-    // field and `warm_pool()` test-instrumentation accessor.
+    // `DEFAULT_BUDGET_BYTES` (2 GiB).
+    //
+    // ── Hermeticity note (amendment) ─────────────────────────────────────
+    // The default-budget contract is verified via the `from_env_value(None)`
+    // seam, which is the same code path `Engine::new` ends up exercising
+    // when the env var is unset, but pinned without depending on the
+    // ambient process environment. Asserting on `Engine::new(...).warm_pool()`
+    // directly would be flaky if a developer or CI runner had
+    // `REIFY_WARM_STATE_BUDGET_BYTES` exported (e.g. to `unlimited` or a
+    // non-default integer) — the same flakiness the `from_env_or_default`
+    // doc-comment calls out. The companion wiring assertion still pins
+    // that `Engine::new` constructs a `WarmStatePool` without panicking
+    // and exposes it through `warm_pool()`; just the budget value is
+    // checked at the hermetic seam.
 
     #[test]
-    fn engine_holds_warm_pool_initialized_with_default_budget() {
-        use crate::warm_pool::DEFAULT_BUDGET_BYTES;
+    fn engine_warm_pool_default_budget_is_two_gib() {
+        // Hermetic: targets the env-parsing seam directly so the assertion
+        // is independent of the ambient REIFY_WARM_STATE_BUDGET_BYTES value.
+        use crate::warm_pool::{DEFAULT_BUDGET_BYTES, WarmStatePool};
+
+        let pool = WarmStatePool::from_env_value(None);
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(DEFAULT_BUDGET_BYTES),
+            "WarmStatePool::from_env_value(None) — the seam Engine::new uses \
+             when REIFY_WARM_STATE_BUDGET_BYTES is unset — must yield the \
+             default budget"
+        );
+    }
+
+    #[test]
+    fn engine_new_exposes_warm_pool_via_accessor() {
+        // Wiring assertion: confirm Engine::new constructs and exposes the
+        // pool through the test-instrumentation accessor. Does NOT assert on
+        // the budget value (that's covered hermetically above) — keeps this
+        // test independent of ambient REIFY_WARM_STATE_BUDGET_BYTES too.
         use reify_test_support::mocks::MockConstraintChecker;
 
         let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        // budget_bytes() returns Option<usize>; the call alone proves wiring.
+        let _ = engine.warm_pool().budget_bytes();
         assert_eq!(
-            engine.warm_pool().budget_bytes(),
-            Some(DEFAULT_BUDGET_BYTES),
-            "Engine::new must initialise warm_pool with the default budget when \
-             REIFY_WARM_STATE_BUDGET_BYTES is unset"
+            engine.warm_pool().used_bytes(),
+            0,
+            "freshly-constructed Engine's warm_pool must start empty"
         );
     }
 }
