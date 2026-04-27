@@ -133,8 +133,23 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
                 walk_expr(predicate, &frames, diagnostics);
             }
         }
+        Declaration::Trait(t) => {
+            // Build the trait's body frame from its `members` (params, lets,
+            // sub-decls, ports, guarded-group members; same shape as the
+            // entity body via `collect_body_frame`) and walk every embedded
+            // expression (param defaults, let values, constraint expressions,
+            // etc.) against that frame.
+            //
+            // The trait's `refinements` (super-traits) are NOT folded in —
+            // upstream trait member sets do not contribute to this trait's
+            // own lexical scope. This mirrors the structure-side §8.8
+            // single-source iteration rule applied to trait merging.
+            let frame = collect_body_frame(&t.members);
+            let frames: Vec<&Frame> = vec![&frame];
+            walk_members(&t.members, &frames, diagnostics);
+        }
         // The remaining declaration arms are wired in subsequent steps
-        // (traits, fields, purposes). Until then they pass through without
+        // (fields, purposes). Until then they pass through without
         // forming a frame, matching the lint's "no frame ⇒ no shadow"
         // invariant.
         _ => {}
