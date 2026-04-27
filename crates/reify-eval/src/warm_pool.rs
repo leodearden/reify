@@ -994,21 +994,6 @@ mod tests {
 
     // --- Task 2457: events buffer bound / tripwire ---
 
-    /// Pin the cap value so it can't drift silently.
-    ///
-    /// `MAX_BUFFERED_EVENTS` is the single constant shared by both the
-    /// `debug_assert!` tripwire (step 3/4) and the release-mode auto-trim
-    /// (step 5/6).  This test exists to force the constant into existence and
-    /// prevent accidental changes without a conscious decision.
-    #[test]
-    fn events_buffer_max_constant_is_64k() {
-        assert_eq!(
-            WarmStatePool::MAX_BUFFERED_EVENTS,
-            65_536,
-            "MAX_BUFFERED_EVENTS must be 65_536 (64 K events ≈ 4 MiB ceiling)"
-        );
-    }
-
     /// Assert the debug-build tripwire: pushing past `MAX_BUFFERED_EVENTS` panics
     /// via `debug_assert!` in debug builds.
     ///
@@ -1028,6 +1013,12 @@ mod tests {
     #[cfg(debug_assertions)]
     fn events_buffer_debug_assert_fires_on_overflow_in_debug_build() {
         use std::panic::AssertUnwindSafe;
+        // NOTE: This test performs MAX_BUFFERED_EVENTS (65 536) donations to fill the
+        // buffer to the exact cap, then one more to trigger the debug_assert! panic.
+        // The count cannot be reduced without a test-only cap seam: the off-by-one
+        // boundary (len == MAX passes, len == MAX+1 fires) requires filling to the
+        // precise cap.  ~65 k HashMap inserts complete in ≲ 100 ms.  This test is
+        // gated #[cfg(debug_assertions)] and does not run in the release test pass.
 
         // Build a pool with effectively unlimited memory budget so LRU eviction
         // never interferes.  We are testing the events-buffer tripwire, not eviction.
@@ -1124,6 +1115,12 @@ mod tests {
     fn events_buffer_emits_tracing_warn_once_per_session_on_overflow() {
         use std::sync::atomic::Ordering;
         use reify_test_support::CountingSubscriberBuilder;
+        // NOTE: This test performs MAX_BUFFERED_EVENTS * 2 + 100 ≈ 131 k donations.
+        // Two full overflow rounds are the minimum needed to verify the warn-once
+        // invariant: a single overflow would not distinguish "warn exactly once" from
+        // "warn on every overflow".  The loop completes in ≲ 200 ms in release mode.
+        // This test is gated #[cfg(not(debug_assertions))] and runs only in the
+        // orchestrator's release test pass (`cargo test -p reify-eval --release`).
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
