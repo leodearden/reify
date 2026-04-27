@@ -29,7 +29,7 @@
 //! the rest of reify's geometry kernel — see `revolve` / `rotate_shape`
 //! which also take `angle_rad`).
 
-use reify_types::{GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
+use reify_types::{FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
 
 /// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
 /// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
@@ -409,6 +409,60 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
     let values = query_per_subshape(kernel, &edges, "edges_at_height", GeometryQuery::BoundingBox)?;
+    let mut out = Vec::with_capacity(edges.len());
+    for (id, bbox_value) in edges.iter().zip(values) {
+        let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
+        if (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
+
+/// Return the subset of `extract_edges(parent_handle)` that lie entirely within
+/// `tol_m` (metres) of the horizontal plane `z = z_m`, while also recording a
+/// [`FeatureTag`] for every extracted edge in `table`.
+///
+/// This is a proof-of-concept variant of [`edges_at_height`] that demonstrates
+/// the feature-tag runtime table (task 2323). It mirrors `edges_at_height`'s
+/// logic exactly — same filter predicate, same canonical sub-shape order — while
+/// additionally populating `table` with per-edge tags derived from `parent_tag`:
+/// each edge at position `i` in the extracted list gets a tag whose
+/// `source_span` and `step_kind` are copied from `parent_tag` and whose
+/// `sub_index` is `i as u32`.
+///
+/// Tags are recorded for **all** extracted edges (before the z-filter runs),
+/// so callers can query the table even for edges that do not pass the filter.
+///
+/// # Errors
+///
+/// Same as [`edges_at_height`].
+pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    table: &mut FeatureTagTable,
+    parent_handle: GeometryHandleId,
+    parent_tag: FeatureTag,
+    z_m: f64,
+    tol_m: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let edges = kernel.extract_edges(parent_handle)?;
+    // Record a per-edge tag for every extracted edge (before filtering).
+    for (i, edge_id) in edges.iter().enumerate() {
+        table.record(
+            *edge_id,
+            FeatureTag {
+                source_span: parent_tag.source_span,
+                step_kind: parent_tag.step_kind,
+                sub_index: i as u32,
+            },
+        );
+    }
+    let values = query_per_subshape(
+        kernel,
+        &edges,
+        "edges_at_height_with_tags",
+        GeometryQuery::BoundingBox,
+    )?;
     let mut out = Vec::with_capacity(edges.len());
     for (id, bbox_value) in edges.iter().zip(values) {
         let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
