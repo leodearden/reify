@@ -1366,6 +1366,48 @@ impl Engine {
         let (changed_realizations, added_realizations, removed_realizations) =
             diff_realizations(&eval_state.snapshot.graph, &new_snapshot.graph);
 
+        // (4c) Checkout warm state from the pool for every node entering the
+        //      topology in this edit, keyed by `NodeId`. Per arch §4.3 lines
+        //      539-540 and §6.4 lines 654-660: a re-appearing node gets its
+        //      previously-donated warm state if the pool still holds it; a
+        //      `None` checkout means the entry was LRU-evicted and evaluation
+        //      falls through the cold path with no seeded warm state.
+        //
+        //      We collect into a local `pending_warm_seeds` map (transient,
+        //      scoped to this edit_source call) and drain it into the cache
+        //      AFTER all post-eval phases complete (see step (14b) below).
+        //      The drain MUST come after phases 1-4 because
+        //      `cache.record_evaluation` clears `warm_state` on every call —
+        //      seeding earlier would be wiped by any guard/solver
+        //      re-elaboration that re-evaluates the seeded node.
+        //
+        //      Symmetric across all three NodeId variants currently produced
+        //      by `diff_*` helpers — Value, Constraint, Realization.
+        //      Resolution is not yet in any `diff_*` helper (see
+        //      TODO(resolution-diff) above); ComputeNode is not yet a NodeId
+        //      variant. The pool API itself is variant-agnostic, so any
+        //      future variant slots in automatically when its `diff_*`
+        //      helper is added.
+        let mut pending_warm_seeds: HashMap<NodeId, reify_types::OpaqueState> = HashMap::new();
+        for id in &added {
+            let nid = NodeId::Value(id.clone());
+            if let Some(state) = self.warm_pool.checkout(&nid) {
+                pending_warm_seeds.insert(nid, state);
+            }
+        }
+        for cid in &added_constraints {
+            let nid = NodeId::Constraint(cid.clone());
+            if let Some(state) = self.warm_pool.checkout(&nid) {
+                pending_warm_seeds.insert(nid, state);
+            }
+        }
+        for rid in &added_realizations {
+            let nid = NodeId::Realization(rid.clone());
+            if let Some(state) = self.warm_pool.checkout(&nid) {
+                pending_warm_seeds.insert(nid, state);
+            }
+        }
+
         // (5) Compute the dirty cone over changed ∪ added using the NEW
         //     reverse index (which reflects post-edit dependencies). The
         //     compute_dirty_cone helper excludes the roots themselves, so
@@ -2373,6 +2415,27 @@ impl Engine {
                     .topology_fingerprint()
                     .combine(count_state_hash);
             }
+        }
+
+        // (14b) Drain `pending_warm_seeds` into the cache, completing the
+        //       checkout-and-seed half of the WarmStatePool round-trip
+        //       (arch §4.3 lines 539-540, §6.4 lines 654-660).
+        //
+        //       Why HERE: `cache.record_evaluation` clears `warm_state` on
+        //       every call (see cache.rs:263), so any drain BEFORE the post-
+        //       eval phases (1-4) would be wiped by guard re-elaboration,
+        //       solver re-runs, or collection-sub re-expansion. After step
+        //       (14) all such re-evaluations are done and the cache slots
+        //       are settled.
+        //
+        //       `donate_warm_state` returns `false` (safe no-op) when no
+        //       cache entry exists for the node — this is the correct
+        //       fallback for nodes whose evaluation `edit_source` skipped
+        //       (e.g. Realization / Constraint nodes whose cache entries
+        //       are produced only by `engine_build.rs` / `check_constraints`,
+        //       not by `edit_source`'s value-cell eval loop).
+        for (nid, state) in pending_warm_seeds.drain() {
+            self.cache.donate_warm_state(&nid, state);
         }
 
         // (15) Install the new snapshot, dep structures, and demand; record
