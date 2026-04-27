@@ -908,6 +908,40 @@ mod tests {
     }
 
     #[test]
+    fn edges_by_length_detects_query_many_overlong_reply() {
+        // Three edges, kernel returns FOUR values (len(queries)+1): selector
+        // must surface `QueryError::QueryFailed` instead of silently ignoring
+        // the extra value. `ShortQueryManyKernel` is reused here — its
+        // `short_reply` field has no length constraint.
+        let edge_ids = vec![
+            GeometryHandleId(601),
+            GeometryHandleId(602),
+            GeometryHandleId(603),
+        ];
+        let mut kernel = ShortQueryManyKernel {
+            edges: edge_ids,
+            short_reply: vec![
+                Value::Real(0.005),
+                Value::Real(0.010),
+                Value::Real(0.015),
+                Value::Real(0.020), // one extra — overlong reply
+            ],
+        };
+        let err = edges_by_length(&mut kernel, GeometryHandleId(1), 0.0, 1.0)
+            .expect_err("selector must reject overlong query_many output");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("edges_by_length") && msg.contains("length invariant"),
+                    "expected length-invariant message, got {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn expect_real_error_message_names_query_label_and_id() {
         // Direct sanity test of the helper: a non-Real value yields a
         // QueryFailed whose message names the query label and id.
