@@ -251,7 +251,7 @@ fn group_needs_phase3(
 /// before the `debug_assert!` so that a `CountingSubscriber` (used in the
 /// dual-mode test) can observe the counter increment even when the
 /// `debug_assert!` subsequently unwinds the thread.
-fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
+fn phase3_get_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
     match values.get(guard_cell) {
         Some(v) => Some(v.clone()),
         None => {
@@ -266,7 +266,7 @@ fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<
             );
             debug_assert!(
                 false,
-                "phase3_take_guard_val: guard cell {:?} absent from `values` after \
+                "phase3_get_guard_val: guard cell {:?} absent from `values` after \
                  group_needs_phase3 returned true — unreachable in current flow but \
                  possible after a future refactor that narrows structure_controlling \
                  (task 2229)",
@@ -1053,7 +1053,7 @@ impl Engine {
                     // those defensively rather than panic; the old snapshot's guard value
                     // will be used for the downstream diff in subsequent edits. Symmetric
                     // with edit_source Phase 3 (task 2229).
-                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
+                    let Some(guard_val) = phase3_get_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
@@ -2143,7 +2143,7 @@ impl Engine {
                     // than panic; the old snapshot's guard value will be used for
                     // the downstream diff in subsequent edits. Symmetric with
                     // edit_param Phase 3 (task 2229).
-                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
+                    let Some(guard_val) = phase3_get_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
@@ -2422,7 +2422,7 @@ mod tests {
 
     use super::{
         deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged,
-        phase3_take_guard_val, reelaborate_guarded_group,
+        phase3_get_guard_val, reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
@@ -3332,25 +3332,25 @@ mod tests {
         assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
     }
 
-    /// Happy path: `phase3_take_guard_val` returns `Some(value)` when the guard
+    /// Happy path: `phase3_get_guard_val` returns `Some(value)` when the guard
     /// cell is present in `values`.  The returned value is a clone of the stored
     /// entry — callers may mutate `values` independently afterwards.
     #[test]
-    fn phase3_take_guard_val_returns_some_when_guard_present() {
+    fn phase3_get_guard_val_returns_some_when_guard_present() {
         let guard_cell = ValueCellId::new("E", "guard");
         let mut values = ValueMap::default();
         values.insert(guard_cell.clone(), Value::Bool(true));
 
-        let result = phase3_take_guard_val(&values, &guard_cell);
+        let result = phase3_get_guard_val(&values, &guard_cell);
         assert_eq!(
             result,
             Some(Value::Bool(true)),
-            "phase3_take_guard_val must return Some(Bool(true)) when the guard cell is present"
+            "phase3_get_guard_val must return Some(Bool(true)) when the guard cell is present"
         );
     }
 
     /// Dual-mode absent-guard contract: when the guard cell is absent from
-    /// `values`, `phase3_take_guard_val` must emit exactly one WARN event
+    /// `values`, `phase3_get_guard_val` must emit exactly one WARN event
     /// scoped to `reify_eval::engine_edit` and return `None`.
     ///
     /// The test wraps the call in `catch_unwind(AssertUnwindSafe(...))` so it
@@ -3363,7 +3363,7 @@ mod tests {
     /// returned `None` (in debug builds the `debug_assert!(false)` unwinds
     /// before `None` is returned, so there is no return value to observe).
     #[test]
-    fn phase3_take_guard_val_warns_and_returns_none_when_guard_absent() {
+    fn phase3_get_guard_val_warns_and_returns_none_when_guard_absent() {
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
         use reify_test_support::CountingSubscriberBuilder;
@@ -3385,7 +3385,7 @@ mod tests {
 
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let ret = tracing::subscriber::with_default(subscriber, || {
-                phase3_take_guard_val(&values, &guard_cell)
+                phase3_get_guard_val(&values, &guard_cell)
             });
             #[cfg(not(debug_assertions))]
             result_was_none.store(ret.is_none(), Ordering::Release);
@@ -3406,7 +3406,7 @@ mod tests {
         );
     }
 
-    /// Debug-mode posture: `phase3_take_guard_val` panics via `debug_assert!`
+    /// Debug-mode posture: `phase3_get_guard_val` panics via `debug_assert!`
     /// when the guard cell is absent (WARN still fires before the assert).
     ///
     /// Mirrors `engine_purposes.rs::expand_missing_cell_debug_mode_halts_via_debug_assert`.
@@ -3418,14 +3418,14 @@ mod tests {
     ///
     /// Note: unlike the `engine_purposes.rs` precedent (which can assert that
     /// `expr.kind` remained unchanged because the panic occurred mid-`.collect()`
-    /// before the `*expr =` reassignment), `phase3_take_guard_val` has no
+    /// before the `*expr =` reassignment), `phase3_get_guard_val` has no
     /// out-parameter side-effect — the `return None` is unreachable in debug builds
     /// because `debug_assert!(false)` fires first.  There is therefore no post-call
     /// structural state to assert; the test is complete after confirming `Err(_)`
     /// and WARN counter == 1.
     #[test]
     #[cfg(debug_assertions)]
-    fn phase3_take_guard_val_debug_mode_halts_via_debug_assert() {
+    fn phase3_get_guard_val_debug_mode_halts_via_debug_assert() {
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
         use reify_test_support::CountingSubscriberBuilder;
@@ -3443,7 +3443,7 @@ mod tests {
         // assertions after it fires.
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                phase3_take_guard_val(&values, &guard_cell)
+                phase3_get_guard_val(&values, &guard_cell)
             })
         }));
 
