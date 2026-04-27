@@ -1661,6 +1661,77 @@ fn multiple_version_pragmas_emit_error_at_most_one() {
     );
 }
 
+/// Malformed first `#version` does not consume the "first wins" slot:
+/// `#version("foo")` (unparseable string) emits exactly one "MAJOR.MINOR"
+/// warning, but leaves the slot open so the following `#version(1.2)`
+/// (too-new but well-formed) is still recognised and stored.
+///
+/// Regression test for the bug where `first_seen = true` fired before the
+/// arg parse, causing the second well-formed pragma to be treated as a
+/// duplicate ("at most one #version declaration per module" error).
+#[test]
+fn malformed_then_valid_version_pragmas_recover() {
+    let module = compile_source(
+        "#version(\"foo\")\n#version(1.2)\nstructure S { param x : Real }",
+    );
+
+    // (a) The well-formed second pragma's tuple must be stored.
+    assert_eq!(
+        module.declared_version,
+        Some((1, 2)),
+        "expected declared_version Some((1, 2)) from the well-formed second #version, \
+         got {:?}",
+        module.declared_version
+    );
+
+    // (b) Exactly one warning mentioning "version" + "MAJOR.MINOR" — from the
+    // malformed first pragma's bad string "foo".
+    let form_hint_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("version") && d.message.contains("MAJOR.MINOR"))
+        .collect();
+    assert_eq!(
+        form_hint_warns.len(),
+        1,
+        "expected exactly 1 warning mentioning 'version' + 'MAJOR.MINOR' for #version(\"foo\"), \
+         got {}: {:?}",
+        form_hint_warns.len(),
+        warnings_only(&module)
+    );
+
+    // (c) Exactly one error containing "module declares version 1.2" and
+    // "this compiler supports up to 0.1" — the too-new error for the valid
+    // second pragma being recognised.
+    let too_new_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("module declares version 1.2")
+                && d.message.contains("this compiler supports up to 0.1")
+        })
+        .collect();
+    assert_eq!(
+        too_new_errors.len(),
+        1,
+        "expected exactly 1 too-new error for #version(1.2), got {}: {:?}",
+        too_new_errors.len(),
+        errors_only(&module)
+    );
+
+    // (d) Zero errors containing "at most one #version declaration per module" —
+    // the valid second pragma must NOT be flagged as a duplicate.
+    let at_most_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("at most one #version declaration per module"))
+        .collect();
+    assert!(
+        at_most_errs.is_empty(),
+        "expected zero 'at most one' errors (second well-formed #version must not be \
+         treated as duplicate), got {}: {:?}",
+        at_most_errs.len(),
+        at_most_errs
+    );
+}
+
 /// Malformed `#version` arg shapes emit exactly one warning mentioning
 /// "version" + "expected" + the form hint "MAJOR.MINOR", produce zero
 /// errors, and leave `module.declared_version` as None. Covers representative
