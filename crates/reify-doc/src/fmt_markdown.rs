@@ -8,7 +8,7 @@
 //!   [`MarkdownOptions::split`] to either single-file or split-file rendering.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{DocModel, ItemDoc};
+use crate::model::{DocModel, ItemDoc, ParamDoc, PortDoc};
 
 /// Knobs controlling how the formatter emits Markdown.
 ///
@@ -167,8 +167,8 @@ fn item_doc(item: &ItemDoc) -> Option<&str> {
 /// Render a single `ItemDoc` to `out`.
 ///
 /// Emits the H2 heading with explicit anchor, then the optional doc paragraphs.
-/// Kind-specific bodies (params/ports tables, signatures, members, etc.) are
-/// added in subsequent impl steps; this stub focuses on the heading shape.
+/// For container variants (Structure / Occurrence) renders the parameters and
+/// ports tables.  Other kind-specific bodies are added in subsequent impl steps.
 fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>) {
     let name = item_name(item);
     let kw = item_keyword(item);
@@ -186,6 +186,86 @@ fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>
     if let Some(doc) = item_doc(item) {
         emit_paragraphs(out, doc);
     }
+
+    // Container variants (Structure / Occurrence) get parameter and port tables.
+    match item {
+        ItemDoc::Structure { params, ports, .. }
+        | ItemDoc::Occurrence { params, ports, .. } => {
+            render_params_table(out, params);
+            render_ports_table(out, ports);
+        }
+        _ => {}
+    }
+}
+
+/// Escape a single Markdown table cell value.
+///
+/// `|` characters are backslash-escaped (otherwise they'd be parsed as a
+/// column boundary) and embedded newlines collapse to a single space so the
+/// row stays on one line.
+fn md_cell_escape(s: &str) -> String {
+    s.replace('|', "\\|").replace('\n', " ")
+}
+
+/// Render the `### Parameters` GFM table.  No-op when `params` is empty.
+fn render_params_table(out: &mut String, params: &[ParamDoc]) {
+    if params.is_empty() {
+        return;
+    }
+    out.push_str("### Parameters\n\n");
+    out.push_str("| Name | Type | Dimension | Default | Description |\n");
+    out.push_str("| --- | --- | --- | --- | --- |\n");
+    for p in params {
+        let default_cell = match p.default_repr.as_deref() {
+            Some(d) => format!("`{}`", md_cell_escape(d)),
+            None => "—".to_string(),
+        };
+        let description = p.doc.as_deref().unwrap_or("").trim();
+        out.push_str("| `");
+        out.push_str(&md_cell_escape(&p.name));
+        out.push_str("` | `");
+        out.push_str(&md_cell_escape(&p.type_repr));
+        out.push_str("` | ");
+        // Dimension is not exposed on ParamDoc today; emit em-dash placeholder.
+        out.push_str("—");
+        out.push_str(" | ");
+        out.push_str(&default_cell);
+        out.push_str(" | ");
+        out.push_str(&md_cell_escape(description));
+        out.push_str(" |\n");
+    }
+    out.push('\n');
+}
+
+/// Render the `### Ports` GFM table.  No-op when `ports` is empty.
+fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
+    if ports.is_empty() {
+        return;
+    }
+    out.push_str("### Ports\n\n");
+    out.push_str("| Name | Kind | Role | Type | Description |\n");
+    out.push_str("| --- | --- | --- | --- | --- |\n");
+    for p in ports {
+        // Kind column has no PortDoc field today; emit em-dash placeholder.
+        out.push_str("| `");
+        out.push_str(&md_cell_escape(&p.name));
+        out.push_str("` | ");
+        out.push_str("—");
+        out.push_str(" | ");
+        out.push_str(&md_cell_escape(&p.direction));
+        out.push_str(" | `");
+        out.push_str(&md_cell_escape(&p.type_name));
+        out.push_str("` | ");
+        // Description: derived from members list, if present.
+        if p.members.is_empty() {
+            out.push_str("—");
+        } else {
+            let joined = p.members.join(", ");
+            out.push_str(&md_cell_escape(&joined));
+        }
+        out.push_str(" |\n");
+    }
+    out.push('\n');
 }
 
 /// Build the split-file (filename, body) list.
