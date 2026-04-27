@@ -240,14 +240,9 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
             // `object` remains `MemberAccess`).
             let mut hops: usize = 1; // for the outermost `.member`
             let mut cursor: &Expr = object;
-            loop {
-                match &cursor.kind {
-                    ExprKind::MemberAccess { object: inner, .. } => {
-                        hops += 1;
-                        cursor = inner;
-                    }
-                    _ => break,
-                }
+            while let ExprKind::MemberAccess { object: inner, .. } = &cursor.kind {
+                hops += 1;
+                cursor = inner;
             }
             // `cursor` now points at the chain's leaf root (a non-MemberAccess).
             let chain_len = 1 + hops; // 1 for root + N member-hops
@@ -367,14 +362,9 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
 fn render_chain_text(outermost: &Expr) -> String {
     let mut members_outer_to_inner: Vec<&str> = Vec::new();
     let mut cursor: &Expr = outermost;
-    loop {
-        match &cursor.kind {
-            ExprKind::MemberAccess { object, member } => {
-                members_outer_to_inner.push(member.as_str());
-                cursor = object;
-            }
-            _ => break,
-        }
+    while let ExprKind::MemberAccess { object, member } = &cursor.kind {
+        members_outer_to_inner.push(member.as_str());
+        cursor = object;
     }
     debug_assert!(
         !members_outer_to_inner.is_empty(),
