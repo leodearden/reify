@@ -657,7 +657,8 @@ module.exports = grammar({
     // ── Forall statement (member-level) ──────────────────────
     // forall x in collection: connect ...
     // forall x in collection: constraint ...
-    // Disambiguation: token after ':' must be 'connect' or 'constraint'.
+    // forall x in collection: chain ...
+    // Disambiguation: token after ':' must be 'connect', 'constraint', or 'chain'.
     // Reachable only through _member (not through _expression), so there is
     // no GLR conflict with quantifier_expression.
     //
@@ -665,7 +666,7 @@ module.exports = grammar({
     // quantifier_expression (i.e. a nested forall is valid grammar).
     // Nested-quantifier collections are unrealistic in practice and are not
     // separately tested; GLR resolves them correctly because the outer body
-    // still requires a leading 'connect' or 'constraint' keyword.
+    // still requires a leading 'connect', 'constraint', or 'chain' keyword.
     forall_statement: $ => seq(
       'forall',
       field('variable', $.identifier),
@@ -674,6 +675,7 @@ module.exports = grammar({
       ':',
       field('body', choice(
         $.connect_statement,
+        $.chain_statement,
         $.constraint_declaration,
         $.constraint_instantiation,
       )),
