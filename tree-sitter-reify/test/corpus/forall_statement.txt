@@ -1,0 +1,163 @@
+================================================================================
+forall statement with connect body
+================================================================================
+
+structure S {
+  forall v in vents: connect v.inlet -> housing.air_channel
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (forall_statement
+      variable: (identifier)
+      collection: (identifier)
+      body: (connect_statement
+        left: (member_access
+          object: (identifier)
+          member: (identifier))
+        operator: (connect_operator)
+        right: (member_access
+          object: (identifier)
+          member: (identifier))))))
+
+================================================================================
+forall statement with constraint_declaration body
+================================================================================
+
+structure S {
+  forall v in vents: constraint v.mass < 50
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (forall_statement
+      variable: (identifier)
+      collection: (identifier)
+      body: (constraint_declaration
+        expr: (binary_expression
+          left: (member_access
+            object: (identifier)
+            member: (identifier))
+          right: (number_literal))))))
+
+================================================================================
+forall expression-form unchanged (regression)
+================================================================================
+
+structure S {
+  let items = [1, 2, 3]
+  constraint forall x in items: x > 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (list_literal
+        (number_literal)
+        (number_literal)
+        (number_literal)))
+    (constraint_declaration
+      expr: (quantifier_expression
+        variable: (identifier)
+        collection: (identifier)
+        predicate: (binary_expression
+          left: (identifier)
+          right: (number_literal))))))
+
+================================================================================
+forall statement inside where-block (guarded_block)
+================================================================================
+
+structure S {
+  param needs_cooling : Bool
+  where needs_cooling {
+    forall v in vents: connect v.inlet -> housing.air_channel
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (guarded_block
+      condition: (identifier)
+      (forall_statement
+        variable: (identifier)
+        collection: (identifier)
+        body: (connect_statement
+          left: (member_access
+            object: (identifier)
+            member: (identifier))
+          operator: (connect_operator)
+          right: (member_access
+            object: (identifier)
+            member: (identifier)))))))
+
+================================================================================
+forall statement with connect body including connect_body block
+================================================================================
+
+structure S {
+  forall v in vents: connect v.inlet -> housing.air_channel { rate = 1 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (forall_statement
+      variable: (identifier)
+      collection: (identifier)
+      body: (connect_statement
+        left: (member_access
+          object: (identifier)
+          member: (identifier))
+        operator: (connect_operator)
+        right: (member_access
+          object: (identifier)
+          member: (identifier))
+        body: (connect_body
+          (connect_param_assignment
+            name: (identifier)
+            value: (number_literal)))))))
+
+================================================================================
+forall statement with constraint_instantiation body
+================================================================================
+
+structure S {
+  forall v in vents: constraint MinDistance(point: v.center)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (forall_statement
+      variable: (identifier)
+      collection: (identifier)
+      body: (constraint_instantiation
+        name: (identifier)
+        (named_argument_list
+          (named_argument
+            name: (identifier)
+            value: (member_access
+              object: (identifier)
+              member: (identifier))))))))
