@@ -621,6 +621,57 @@ fn field_body_omits_default_when_none() {
     );
 }
 
+/// Field body uses safe inline-code fencing when `type_repr` or
+/// `default_repr` contains a literal backtick.
+///
+/// * `type_repr = "Map<\`Key\`, V>"` — one internal backtick, no leading/trailing
+///   → fence_len = 2, no pad → `` ``Map<`Key`, V>`` ``
+/// * `default_repr = "\`zero\`"` — starts AND ends with backtick
+///   → fence_len = 2, pad required → `` `` `zero` `` ``
+#[test]
+fn field_body_uses_safe_inline_code_fence() {
+    let type_repr = "Map<`Key`, V>";
+    let default_repr = "`zero`";
+    let item = ItemDoc::Field {
+        name: "store".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: type_repr.into(),
+        default_repr: Some(default_repr.into()),
+    };
+    let out = render_one_item(item);
+
+    // (a) Verbatim values must appear.
+    assert!(out.contains(type_repr), "type_repr not verbatim:\n{out}");
+    assert!(out.contains(default_repr), "default_repr not verbatim:\n{out}");
+
+    // (b) Single-backtick forms must NOT appear.
+    assert!(
+        !out.contains(&format!("`{type_repr}`")),
+        "type uses single-backtick form:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("`{default_repr}`")),
+        "default uses single-backtick form:\n{out}"
+    );
+
+    // (c) Type line: no leading/trailing backtick in value → no pad.
+    let type_fenced = format!("**Type:** ``{type_repr}``");
+    assert!(
+        out.contains(&type_fenced),
+        "Type line not correctly fenced (`{type_fenced}`):\n{out}"
+    );
+
+    // (d) Default line: starts & ends with backtick → pad required.
+    let default_fenced = format!("**Default:** `` {default_repr} ``");
+    assert!(
+        out.contains(&default_fenced),
+        "Default line not correctly fenced (`{default_fenced}`):\n{out}"
+    );
+}
+
 /// Purpose variant emits `**Direction:** {direction}` and
 /// `**Expression:** \`{expr_repr}\`` lines.
 #[test]
