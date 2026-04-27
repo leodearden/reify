@@ -400,21 +400,21 @@ fn render_cross_refs(out: &mut String, name: &str, cross_refs: Option<&CrossRefs
     }
 
     // Used by: direct lookup in entity_to_containers.
-    if let Some(containers) = xrefs.entity_to_containers.get(name) {
-        if !containers.is_empty() {
-            let mut sorted: Vec<&str> = containers.iter().map(|s| s.as_str()).collect();
-            sorted.sort();
-            sorted.dedup();
-            out.push_str("### Used by\n\n");
-            for c in sorted {
-                out.push_str("- [`");
-                out.push_str(c);
-                out.push_str("`](#");
-                out.push_str(c);
-                out.push_str(")\n");
-            }
-            out.push('\n');
+    if let Some(containers) = xrefs.entity_to_containers.get(name)
+        && !containers.is_empty()
+    {
+        let mut sorted: Vec<&str> = containers.iter().map(|s| s.as_str()).collect();
+        sorted.sort();
+        sorted.dedup();
+        out.push_str("### Used by\n\n");
+        for c in sorted {
+            out.push_str("- [`");
+            out.push_str(c);
+            out.push_str("`](#");
+            out.push_str(c);
+            out.push_str(")\n");
         }
+        out.push('\n');
     }
 }
 
@@ -539,7 +539,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         out.push_str(&md_cell_escape(&p.type_repr));
         out.push_str("` | ");
         // Dimension is not exposed on ParamDoc today; emit em-dash placeholder.
-        out.push_str("—");
+        out.push('—');
         out.push_str(" | ");
         out.push_str(&default_cell);
         out.push_str(" | ");
@@ -611,7 +611,7 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
         out.push_str("| `");
         out.push_str(&md_cell_escape(&p.name));
         out.push_str("` | ");
-        out.push_str("—");
+        out.push('—');
         out.push_str(" | ");
         out.push_str(&md_cell_escape(&p.direction));
         out.push_str(" | `");
@@ -619,7 +619,7 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
         out.push_str("` | ");
         // Description: derived from members list, if present.
         if p.members.is_empty() {
-            out.push_str("—");
+            out.push('—');
         } else {
             let joined = p.members.join(", ");
             out.push_str(&md_cell_escape(&joined));
