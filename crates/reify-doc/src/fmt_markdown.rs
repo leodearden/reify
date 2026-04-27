@@ -629,17 +629,99 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     out.push('\n');
 }
 
+/// Snake_case kind tag matching `#[serde(tag="kind", rename_all="snake_case")]`
+/// on `ItemDoc`.  Used as the prefix in split-mode filenames so multi-kind name
+/// collisions (e.g. trait `Board` vs structure `Board`) stay distinct.
+fn item_kind_slug(item: &ItemDoc) -> &'static str {
+    match item {
+        ItemDoc::Structure { .. } => "structure",
+        ItemDoc::Occurrence { .. } => "occurrence",
+        ItemDoc::Trait { .. } => "trait",
+        ItemDoc::Function { .. } => "function",
+        ItemDoc::Field { .. } => "field",
+        ItemDoc::Purpose { .. } => "purpose",
+        ItemDoc::Enum { .. } => "enum",
+        ItemDoc::Unit { .. } => "unit",
+        ItemDoc::TypeAlias { .. } => "type_alias",
+        ItemDoc::ConstraintDef { .. } => "constraint_def",
+    }
+}
+
+/// Build the per-item filename for split-mode output: `{kind_slug}-{name}.md`,
+/// optionally prefixed by the module path when more than one module is being
+/// rendered (so cross-module name clashes resolve to distinct files).
+fn item_filename(item: &ItemDoc, module_prefix: Option<&str>) -> String {
+    let base = format!("{}-{}.md", item_kind_slug(item), item_name(item));
+    match module_prefix {
+        Some(p) => format!("{p}/{base}"),
+        None => base,
+    }
+}
+
 /// Build the split-file (filename, body) list.
 ///
-/// Always emits at least the `index.md` placeholder so callers can rely on its
-/// presence.
-fn render_split(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> Vec<(String, String)> {
+/// Layout:
+/// - `index.md` first — module H1 / doc paragraph + the table of contents.
+/// - One per-item file per declared item (including `@test`-annotated ones),
+///   each containing the module H1, a back-link to `index.md`, and the full
+///   item rendering.
+///
+/// Filenames use the `{kind_slug}-{name}.md` shape; multi-module models are
+/// disambiguated by prefixing each item file with the module path so e.g. a
+/// `Board` structure in two different modules doesn't collide.  Single-module
+/// models stay flat (matches the PRD example).
+///
+/// Always emits at least the `index.md` placeholder, so callers can rely on
+/// its presence.
+fn render_split(model: &DocModel, cross_refs: Option<&CrossRefs>) -> Vec<(String, String)> {
     let mut files: Vec<(String, String)> = Vec::new();
-    let index_body = String::new();
-    files.push(("index.md".to_string(), index_body));
-    for _module in &model.modules {
-        // Per-item files are added in subsequent impl steps; the empty-model
-        // case yields just the index placeholder.
+    let multi_module = model.modules.len() > 1;
+
+    // Build the index body first: per-module H1 (and doc) followed by the TOC
+    // of all (non-test) items declared in that module.  Tests are linked from
+    // the per-item files only, mirroring the single-mode "## Tests" trailer.
+    let mut index_body = String::new();
+    for module in &model.modules {
+        index_body.push_str("# ");
+        index_body.push_str(&module.path);
+        index_body.push_str("\n\n");
+        if let Some(doc) = module.doc.as_deref() {
+            emit_paragraphs(&mut index_body, doc);
+        }
+        let items_for_toc: Vec<&ItemDoc> = module
+            .items
+            .iter()
+            .filter(|i| find_annotation(item_annotations(i), "test").is_none())
+            .collect();
+        render_toc(&mut index_body, &items_for_toc);
     }
+    files.push(("index.md".to_string(), index_body));
+
+    // Per-item files.
+    for module in &model.modules {
+        let module_prefix = if multi_module {
+            Some(module.path.as_str())
+        } else {
+            None
+        };
+        for item in &module.items {
+            let mut body = String::new();
+            // Module H1 + back-link give the page basic navigational context
+            // when viewed in isolation (e.g. on GitHub blob view).
+            body.push_str("# ");
+            body.push_str(&module.path);
+            body.push_str("\n\n");
+            // Back-link to the TOC index.  Path is relative to the per-item
+            // file, so single-module flat layout uses `index.md` directly and
+            // multi-module nested layout walks up one directory.
+            let back = if multi_module { "../index.md" } else { "index.md" };
+            body.push_str("[← Index](");
+            body.push_str(back);
+            body.push_str(")\n\n");
+            render_item(&mut body, item, cross_refs);
+            files.push((item_filename(item, module_prefix), body));
+        }
+    }
+
     files
 }
