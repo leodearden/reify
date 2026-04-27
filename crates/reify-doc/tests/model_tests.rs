@@ -220,6 +220,43 @@ fn doc_strings_flow_into_item_doc() {
     }
 }
 
+/// Assert that trait conformance is captured via `ModuleCrossRefs.referenced_traits`.
+///
+/// ## TODO(build_doc_model) — trait_bounds field gap
+///
+/// The PRD (docs/prds/reify-doc-tool.md lines 51-67) specifies an abstract
+/// `ItemDoc { …, trait_bounds: Vec<String>, … }` field, but the *concrete*
+/// `ItemDoc::Structure` variant in `crates/reify-doc/src/model.rs` (lines 176-193)
+/// does not yet have this field.
+///
+/// Until a future model-extension task adds `trait_bounds` to `ItemDoc::Structure`,
+/// the closest available signal is `ModuleCrossRefs.referenced_traits`.  This test
+/// asserts the proxy: `modules[0].cross_refs.referenced_traits == vec!["Physical"]`.
+///
+/// **Migration note:** Once `trait_bounds` is added to `ItemDoc::Structure`, pivot
+/// this assertion to:
+/// ```rust
+/// match &items[bolt_index] {
+///     ItemDoc::Structure { trait_bounds, .. } => {
+///         assert_eq!(trait_bounds, &["Physical"]);
+///     }
+///     _ => unreachable!(),
+/// }
+/// ```
+/// and remove or update the `referenced_traits` proxy assertion.
+#[test]
+fn structure_trait_bounds_populated_via_module_cross_refs() {
+    let model = build_fixture();
+    let m = &model.modules[0];
+    // Proxy assertion: the module records that "Physical" is referenced as a trait.
+    // TODO(build_doc_model): pivot to ItemDoc::Structure.trait_bounds once that field exists.
+    assert_eq!(
+        m.cross_refs.referenced_traits,
+        vec!["Physical".to_string()],
+        "module cross_refs.referenced_traits must include 'Physical'"
+    );
+}
+
 /// Assert that `ConstraintDoc.expr_repr` matches a byte-range slice of the source string.
 ///
 /// `FIXTURE_SOURCE[32..50] == "length >= diameter"` is asserted as a sanity preamble,
