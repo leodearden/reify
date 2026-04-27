@@ -29,7 +29,7 @@ pub struct ModuleDoc {
     pub pragmas: Vec<PragmaDoc>,
     /// Cross-reference data for this module (referenced modules / items / traits).
     /// Populated by the lowering slice; absent in serialized JSON from earlier slices.
-    pub cross_refs: CrossRefs,
+    pub cross_refs: ModuleCrossRefs,
 }
 
 /// Documentation for a single `@annotation(...)` attached to a declaration.
@@ -139,7 +139,7 @@ pub struct RealizationDoc {
 /// dependency on the schema without needing to wait for the lowering pass.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CrossRefs {
+pub struct ModuleCrossRefs {
     /// Fully-qualified paths of modules imported or referenced.
     pub referenced_modules: Vec<String>,
     /// Qualified names of items (structures, occurrences, functions, …) referenced.
@@ -156,7 +156,7 @@ pub struct CrossRefs {
 ///
 /// Note: `Import` declarations from `reify_syntax::Declaration` are
 /// intentionally omitted here — imported modules are reflected instead via
-/// `CrossRefs::referenced_modules` and each module's `ModuleDoc.path`.
+/// `ModuleCrossRefs::referenced_modules` and each module's `ModuleDoc.path`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ItemDoc {
@@ -571,7 +571,7 @@ mod tests {
             ],
             annotations: vec![AnnotationDoc { name: "version".to_string(), args: vec!["\"1.0\"".to_string()] }],
             pragmas: vec![PragmaDoc { name: "stability".to_string(), args: vec!["stable".to_string()] }],
-            cross_refs: CrossRefs {
+            cross_refs: ModuleCrossRefs {
                 referenced_modules: vec!["mechanics.base".to_string()],
                 referenced_items: vec!["MCU".to_string()],
                 referenced_traits: vec![],
@@ -692,27 +692,27 @@ mod tests {
         let legacy_json = r#"{"path":"old.module","doc":null,"items":[],"annotations":[],"pragmas":[]}"#;
         let m: ModuleDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
         assert_eq!(m.path, "old.module");
-        assert_eq!(m.cross_refs, CrossRefs::default());
+        assert_eq!(m.cross_refs, ModuleCrossRefs::default());
     }
 
     #[test]
     fn cross_refs_serde_round_trip() {
-        let xrefs = CrossRefs {
+        let xrefs = ModuleCrossRefs {
             referenced_modules: vec!["electronics.power".to_string(), "mechanics.base".to_string()],
             referenced_items: vec!["Board".to_string(), "MCU".to_string(), "Connector".to_string()],
             referenced_traits: vec!["HasPower".to_string(), "HasSignal".to_string()],
         };
         let json = serde_json::to_string(&xrefs).expect("serialize");
-        let back: CrossRefs = serde_json::from_str(&json).expect("deserialize");
+        let back: ModuleCrossRefs = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(xrefs, back);
         assert_eq!(back.referenced_modules.len(), 2);
         assert_eq!(back.referenced_items.len(), 3);
         assert_eq!(back.referenced_traits.len(), 2);
 
         // Default round-trip produces an empty value.
-        let empty = CrossRefs::default();
+        let empty = ModuleCrossRefs::default();
         let json = serde_json::to_string(&empty).expect("serialize empty");
-        let back: CrossRefs = serde_json::from_str(&json).expect("deserialize empty");
+        let back: ModuleCrossRefs = serde_json::from_str(&json).expect("deserialize empty");
         assert_eq!(empty, back);
         assert!(back.referenced_modules.is_empty());
         assert!(back.referenced_items.is_empty());

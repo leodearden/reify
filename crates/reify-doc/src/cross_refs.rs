@@ -18,12 +18,12 @@
 //! to preserve this crate's serde-only embeddability — downstream consumers that
 //! only need the data model do not need to pull in the full compiler stack.
 //!
-//! # Relationship to `model::CrossRefs`
+//! # Relationship to `model::ModuleCrossRefs`
 //!
-//! The name `CrossRefs` is deliberately shared with [`crate::model::CrossRefs`],
+//! The name `CrossRefs` is deliberately shared with [`crate::model::ModuleCrossRefs`],
 //! but the two types are **semantically distinct**:
 //!
-//! - [`crate::model::CrossRefs`] holds *per-module outgoing references* (which
+//! - [`crate::model::ModuleCrossRefs`] holds *per-module outgoing references* (which
 //!   other modules, items, or traits a given module refers to).  It is attached
 //!   to each [`crate::model::ModuleDoc`] and populated by the lowering slice.
 //!
@@ -32,7 +32,7 @@
 //!   a separate artefact consumed by the formatter / renderer layer.
 //!
 //! Both types are disambiguated by module path:
-//! `reify_doc::cross_refs::CrossRefs` vs `reify_doc::model::CrossRefs`.
+//! `reify_doc::cross_refs::CrossRefs` vs `reify_doc::model::ModuleCrossRefs`.
 //! Neither is re-exported at the crate root to prevent name ambiguity at use sites.
 
 use std::collections::BTreeMap;
@@ -43,11 +43,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// Produced by [`build_cross_refs`] from a slice of compiled topology templates.
 ///
-/// # Relationship to `model::CrossRefs`
+/// # Relationship to `model::ModuleCrossRefs`
 ///
-/// This struct is **semantically distinct** from [`crate::model::CrossRefs`]:
+/// This struct is **semantically distinct** from [`crate::model::ModuleCrossRefs`]:
 ///
-/// - [`crate::model::CrossRefs`] holds *per-module outgoing references*
+/// - [`crate::model::ModuleCrossRefs`] holds *per-module outgoing references*
 ///   (which other modules, items, or traits a given module refers to).
 ///
 /// - This [`CrossRefs`] holds *cross-template inverted indices* — it answers
