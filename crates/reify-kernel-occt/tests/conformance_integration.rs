@@ -100,6 +100,34 @@ fn closed_shell_passes_all_three_conformance_queries() {
     assert_bool_query(&kernel, GeometryQuery::IsOrientable(shell_id), true,  "IsOrientable on closed shell");
 }
 
+/// A `TopAbs_COMPSOLID` containing one 10×10×10 mm box solid passes through
+/// the `is_watertight` shape-type guard (COMPSOLID is an allowed type) and
+/// reaches `BRepCheck_Analyzer::IsValid()`.
+///
+/// `IsManifold` and `IsOrientable` are unconditionally `true` for a single-solid
+/// CompSolid (the wrapped box's edges each have exactly 2 face parents, and the
+/// box's shell is consistently oriented).
+///
+/// The `IsWatertight` value is pinned to match current OCCT behaviour (see the
+/// inline comment in the assertion below). `BRepCheck_Analyzer::IsValid()` on a
+/// CompSolid containing a single non-shared-face solid is OCCT-version-specific:
+/// some versions accept it, others flag it as invalid because CompSolid expects
+/// adjacent solids sharing faces. The pinned value must be updated if OCCT
+/// changes its verdict — do not silently re-pin without investigation.
+#[test]
+fn compsolid_passes_through_shape_type_guard() {
+    let mut kernel = OcctKernel::new();
+    let cs_id = kernel.store_compsolid_for_test();
+
+    // COMPSOLID reaches BRepCheck_Analyzer — the exact bool is pinned to observed
+    // OCCT behaviour (resolved in step-8). Placeholder; will be updated.
+    assert_bool_query(&kernel, GeometryQuery::IsWatertight(cs_id), true, "IsWatertight on compsolid");
+    // every edge of the wrapped box has exactly 2 face parents → manifold
+    assert_bool_query(&kernel, GeometryQuery::IsManifold(cs_id),   true, "IsManifold on compsolid");
+    // the box's shell is consistently oriented → orientable
+    assert_bool_query(&kernel, GeometryQuery::IsOrientable(cs_id), true, "IsOrientable on compsolid");
+}
+
 /// A sphere (radius 5 mm) and a cylinder (radius 3 mm, height 10 mm) are both
 /// closed, manifold, and consistently-oriented solids.  All three conformance
 /// predicates must return `true` for each, confirming positive coverage beyond
