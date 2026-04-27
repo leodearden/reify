@@ -1257,6 +1257,14 @@ double query_area(const OcctShape& shape) {
     });
 }
 
+double query_edge_length(const OcctShape& shape) {
+    return wrap_occt_call("query_edge_length", [&]() {
+        GProp_GProps props;
+        BRepGProp::LinearProperties(shape.shape, props);
+        return props.Mass();
+    });
+}
+
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         GProp_GProps props;

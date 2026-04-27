@@ -295,6 +295,12 @@ std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape);
 /// `TopoDS_Shape::IsSame`). Reuses the cached `face_map()`.
 std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 
+/// Compute the total arc length of an edge (or any 1-dimensional sub-shape)
+/// in the same length units as the shape's coordinates. Backed by
+/// `BRepGProp::LinearProperties` followed by `props.Mass()` — for edges,
+/// "mass" under the linear density is the arc length.
+double query_edge_length(const OcctShape& shape);
+
 // --- Conformance queries ---
 
 /// Check whether `shape` is watertight (closed, no free edges).

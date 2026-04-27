@@ -1145,9 +1145,14 @@ impl OcctKernel {
             // respectively. Pre-emptive arms keep the workspace compiling
             // after the new variants are added in reify-types; they will be
             // replaced with real FFI dispatches in the impl steps.
-            GeometryQuery::EdgeLength(_) => Err(QueryError::QueryFailed(
-                "EdgeLength query not yet implemented".into(),
-            )),
+            GeometryQuery::EdgeLength(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let len = ffi::ffi::query_edge_length(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Real(len))
+            }
             GeometryQuery::EdgeTangent(_) => Err(QueryError::QueryFailed(
                 "EdgeTangent query not yet implemented".into(),
             )),

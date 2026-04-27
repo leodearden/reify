@@ -282,6 +282,7 @@ pub mod ffi {
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
+        fn query_edge_length(shape: &OcctShape) -> Result<f64>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
 
