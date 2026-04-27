@@ -614,6 +614,35 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::Shadowing).unwrap();
         assert_eq!(s, "\"Shadowing\"");
     }
+
+    // --- TraitUserAsserted tests (task 2321 — W_TRAIT_USER_ASSERTED) ---
+    // Pairs with the per-bound lint in `crates/reify-compiler/src/entity.rs`
+    // (trait_bound iteration). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TraitUserAsserted` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"TraitUserAsserted"`.
+    /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`; a future
+    /// enum reorganisation that drops `TraitUserAsserted` is caught here.
+    #[test]
+    fn diagnostic_code_trait_user_asserted_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::TraitUserAsserted);
+        assert_eq!(d.code, Some(DiagnosticCode::TraitUserAsserted));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::TraitUserAsserted),
+            "TraitUserAsserted"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TraitUserAsserted` serializes as
+    /// `"TraitUserAsserted"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_trait_user_asserted_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TraitUserAsserted).unwrap();
+        assert_eq!(s, "\"TraitUserAsserted\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
