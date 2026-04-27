@@ -84,8 +84,13 @@ fn check_query_many_len(
 /// The selector-specific predicate loop (extract scalar, parse JSON, apply
 /// window / cone / dot test) stays in each selector body; only this boilerplate
 /// trio moves here.
+///
+/// Takes `kernel` by shared reference (`&K`) — the helper does not mutate the
+/// kernel and is callable from `&self`/`&K` contexts. Callers that hold
+/// `&mut K` (needed for the preceding `extract_edges`/`extract_faces` call)
+/// compile unchanged via `&mut K → &K` auto-reborrow.
 fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
-    kernel: &mut K,
+    kernel: &K,
     ids: &[GeometryHandleId],
     selector: &'static str,
     mk_query: F,
