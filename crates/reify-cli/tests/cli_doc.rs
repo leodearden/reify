@@ -154,6 +154,44 @@ fn doc_format_markdown_emits_markdown_to_stdout() {
 }
 
 #[test]
+fn doc_default_format_is_html_stub() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&[&path]);
+
+    assert!(
+        status.success(),
+        "reify doc with no --format must default to html and exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.starts_with("<!DOCTYPE html>"),
+        "default html stub must start with '<!DOCTYPE html>', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("<html"),
+        "html output must contain '<html', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("</html>"),
+        "html output must contain '</html>', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("<title>bracket</title>"),
+        "html output must contain '<title>bracket</title>' (from the \
+         minimal DocModel's module path), got: {stdout}"
+    );
+    assert!(
+        stdout.contains("<pre>"),
+        "html stub must wrap markdown body in a <pre> block, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("# bracket"),
+        "html stub's <pre> body must contain the markdown H1 '# bracket', \
+         got: {stdout}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
