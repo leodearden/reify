@@ -427,18 +427,8 @@ impl Engine {
 mod tests {
     use super::ParamOverrideRejection;
 
-    /// Pin that `ParamOverrideRejection` fits within 32 bytes.
-    ///
-    /// Pre-boxing the variant holds two unboxed `DimensionVector` fields
-    /// (`[Rational; 10]` each, where `Rational` is `(i16, i16)` — 40 bytes
-    /// per field, 80 bytes for the pair) pushing the enum to ~88 bytes.
-    /// After boxing both fields the variant shrinks to two pointers + tag,
-    /// bringing the enum to ~24 bytes.
-    ///
-    /// This is upstream of the already-boxed `EngineError::DimensionMismatch`
-    /// — see task 2430 / lib.rs:50-54.  The threshold of 32 sits comfortably
-    /// between ~88 (pre-change, fails) and ~24 (post-change, passes) and has
-    /// enough headroom for minor rustc layout adjustments.
+    // Pin that `ParamOverrideRejection` fits within 32 bytes.
+    // See `ParamOverrideRejection::ScalarDimensionMismatch` doc for rationale.
     #[test]
     fn param_override_rejection_max_variant_is_small() {
         assert!(
