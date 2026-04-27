@@ -1608,8 +1608,14 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
 /// (e.g. "DimensionVector([Rational{…},…])").
 ///
 /// Setup:
-///   Module A  — `param p: Mass = 5kg`   (MASS cell; override stored as MASS)
-///   Module B  — `param p: Money = auto` (MONEY cell; MASS override mismatches)
+///   Module A  — `param p: Mass = 5kg`     (MASS Param cell; override stored as MASS)
+///   Module B  — `param p: Money = 0.0`    (MONEY Param cell; MASS override mismatches)
+///
+/// Note: `auto` is intentionally NOT used for the Money param default because
+/// `param p: Money = auto` compiles to `ValueCellKind::Auto`, which is pruned by
+/// `prune_param_overrides_against` (it only retains `ValueCellKind::Param` cells).
+/// A concrete default (`0.0`) keeps the cell as `Param` kind so the override
+/// survives pruning and reaches `validate_param_override`.
 ///
 /// Expected warning: "dimension mismatch (expected USD, got kg)" — both units
 /// in source form.  Today this FAILS because engine_eval.rs:443 still uses
@@ -1619,8 +1625,7 @@ fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
     let mut engine = fresh_engine();
     let p_id = ValueCellId::new("S", "p");
 
-    // Module A: param p is Mass.  Register a MASS-dimensioned override so that
-    // when Module B (Money) is compiled the override/cell dimension mismatch fires.
+    // Module A: param p is Mass (Param kind).  Register a MASS-dimensioned override.
     let module_a = compile_source("structure S { param p: Mass = 5kg }");
     let _ = engine.eval(&module_a);
     let mass_override = Value::Scalar {
@@ -1629,8 +1634,10 @@ fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
     };
     engine.set_param_and_invalidate(&p_id, mass_override);
 
-    // Module B: param p is Money.  The stored MASS override mismatches → warning.
-    let module_b = compile_source("structure S { param p: Money = auto }");
+    // Module B: param p is Money (Param kind — non-auto default preserves Param kind
+    // so the override survives prune_param_overrides_against).
+    // The MASS override mismatches the MONEY cell_type → ScalarDimensionMismatch warning.
+    let module_b = compile_source("structure S { param p: Money = 0.0 }");
     let result_b = engine.eval(&module_b);
 
     // Exactly one Warning mentioning S.p must be emitted.
