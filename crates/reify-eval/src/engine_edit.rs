@@ -1021,16 +1021,18 @@ impl Engine {
                     if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
-                    // `group_needs_phase3` only returns `true` here when `values` contains the
-                    // guard cell (the `None` arm returns `false` when `old_guard_val` is `None`,
-                    // so an absent guard cell with no prior snapshot value is always skipped).
-                    // A guard cell absent from `values` but present in the old snapshot is a
-                    // logic error (structural removal without going through Phase 1) — the
-                    // `.expect()` below surfaces it as a panic rather than silently skipping.
-                    let guard_val = values
-                        .get(&group.guard_cell)
-                        .cloned()
-                        .expect("guard cell must have a value after initial evaluation");
+                    // Phase 1 (the dirty-cone-triggered branch above) seeds every guard
+                    // cell value into `values`, but Phase 3 is separately gated by
+                    // `guard_changed` (value diff vs. old snapshot) — and `group_needs_phase3`
+                    // returns true in the absent-guard arm (`old_guard_val.is_some() &&
+                    // new_val.is_none()`, post-task-2146). A future refactor that narrows
+                    // `structure_controlling` could leave a guard_cell unevaluated here. Skip
+                    // those defensively rather than panic; the old snapshot's guard value
+                    // will be used for the downstream diff in subsequent edits. Symmetric
+                    // with edit_source Phase 3 (task 2229).
+                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
+                        continue;
+                    };
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
                         graph,
@@ -2116,8 +2118,9 @@ impl Engine {
                     // refactor that narrows structure_controlling could leave a
                     // guard_cell unevaluated here. Skip those defensively rather
                     // than panic; the old snapshot's guard value will be used for
-                    // the downstream diff in subsequent edits.
-                    let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
+                    // the downstream diff in subsequent edits. Symmetric with
+                    // edit_param Phase 3 (task 2229).
+                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
