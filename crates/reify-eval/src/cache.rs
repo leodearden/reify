@@ -387,8 +387,21 @@ impl CacheStore {
     /// has no value/result/trace to seed (see task #2326 design decision). Use
     /// `put(node, NodeCache::new(...))` to insert a fresh entry.
     ///
-    /// Domain-specific helpers `mark_pending`/`restore_final` continue to
-    /// coexist; they additionally manipulate `last_substantive`.
+    /// # Warning: do not pass `Freshness::Pending` directly
+    ///
+    /// `mark_pending` must be used instead of `set_freshness(node,
+    /// Freshness::Pending { ... })` when transitioning a node to the Pending
+    /// state. `mark_pending` derives `last_substantive` from the current cached
+    /// `result_hash` (ensuring consistency) and increments `pending_transition_count`
+    /// (a diagnostic counter). Passing `Freshness::Pending` through this method
+    /// bypasses both invariants silently.
+    ///
+    /// `restore_final` and `mark_pending` continue to coexist as domain-specific
+    /// helpers. `mark_pending` additionally captures `result_hash` into
+    /// `last_substantive` and bumps `pending_transition_count`; `restore_final`
+    /// is today equivalent to `set_freshness(node, Freshness::Final)` but is
+    /// retained for readability at its call sites.
+    #[must_use = "set_freshness returns false when the node is absent; check or explicitly discard"]
     pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = freshness;
@@ -2069,7 +2082,7 @@ mod tests {
 
     #[test]
     fn cache_store_set_freshness_returns_false_for_missing_and_writes_for_present() {
-        use reify_types::{ErrorRef, Freshness, VersionId};
+        use reify_types::{ErrorRef, Freshness};
 
         // (a) Missing node → set_freshness returns false and store stays empty (no auto-create).
         let mut store = CacheStore::new();
@@ -2096,6 +2109,40 @@ mod tests {
                 error: ErrorRef::new("boom"),
             },
             "freshness() must read back the value written by set_freshness()"
+        );
+    }
+
+    // --- set_freshness does NOT bump pending_transition_count (task #2326 amendment) ---
+
+    #[test]
+    fn set_freshness_pending_does_not_bump_pending_transition_count() {
+        use reify_types::{ContentHash, Freshness, ResultRef};
+
+        // Insert a node and reset the counter to a known baseline.
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(1, 1));
+        store.reset_pending_transition_count();
+        assert_eq!(
+            store.pending_transition_count(),
+            0,
+            "baseline: counter must be 0 after reset"
+        );
+
+        // Call set_freshness(Pending) — bypasses mark_pending's counter logic intentionally.
+        let _ = store.set_freshness(
+            &node,
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(ContentHash(0)),
+            },
+        );
+
+        // Counter must be unchanged — set_freshness is intentionally NOT the path
+        // for Pending transitions (use mark_pending instead).
+        assert_eq!(
+            store.pending_transition_count(),
+            0,
+            "set_freshness must NOT increment pending_transition_count; use mark_pending for that"
         );
     }
 
