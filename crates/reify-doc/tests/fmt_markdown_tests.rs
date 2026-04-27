@@ -754,6 +754,45 @@ fn unit_body_renders_base_and_scale() {
     assert!(out.contains("**Scale:** `0.001`"), "Scale line missing:\n{out}");
 }
 
+/// Unit body uses safe inline-code fencing when `base_unit` or `scale`
+/// contains a literal backtick.
+///
+/// * `base_unit = "\`Ampere\`"` — starts AND ends with backtick → pad required.
+/// * `scale = "1\`e\`-3"` — one internal backtick, no leading/trailing.
+#[test]
+fn unit_body_uses_safe_inline_code_fence() {
+    let base_unit = "`Ampere`"; // starts and ends with backtick → pad
+    let scale = "1`e`-3";      // internal backtick, no leading/trailing → no pad
+    let item = ItemDoc::Unit {
+        name: "Milliamp2".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        base_unit: base_unit.into(),
+        scale: scale.into(),
+    };
+    let out = render_one_item(item);
+
+    // (a) Verbatim values must appear.
+    assert!(out.contains(base_unit), "base_unit not verbatim:\n{out}");
+    assert!(out.contains(scale), "scale not verbatim:\n{out}");
+
+    // (b) Base line: starts & ends with backtick → double-fence + pad.
+    let base_fenced = format!("**Base:** `` {base_unit} ``");
+    assert!(
+        out.contains(&base_fenced),
+        "Base line not correctly fenced (`{base_fenced}`):\n{out}"
+    );
+
+    // (c) Scale line: internal backtick only → double-fence, no pad.
+    let scale_fenced = format!("**Scale:** ``{scale}``");
+    assert!(
+        out.contains(&scale_fenced),
+        "Scale line not correctly fenced (`{scale_fenced}`):\n{out}"
+    );
+}
+
 /// TypeAlias variant emits a single `= \`{type_repr}\`` line.
 #[test]
 fn type_alias_body_renders_rhs() {
