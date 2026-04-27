@@ -5051,6 +5051,39 @@ mod tests {
         }
     }
 
+    /// Query InertiaTensor with a handle that was never inserted into the kernel.
+    /// The kernel must return `Err(QueryError::InvalidHandle(id))` with the same
+    /// `GeometryHandleId` that was queried — not `Ok(_)` or any other error variant.
+    ///
+    /// Kept separate from `center_of_mass_invalid_handle_returns_invalid_handle_err`
+    /// so a regression that breaks only one query variant has unambiguous attribution.
+    ///
+    /// This pins the contract already implemented at lib.rs:968–973, where the
+    /// `query` dispatch arm for InertiaTensor maps an unknown handle to
+    /// `Err(QueryError::InvalidHandle(*handle))`.
+    #[test]
+    fn inertia_tensor_invalid_handle_returns_invalid_handle_err() {
+        let mut kernel = OcctKernel::new();
+        let bad_id = GeometryHandleId(9999);
+        let result = kernel.query(&GeometryQuery::InertiaTensor { handle: bad_id, density: 1.0 });
+        match result {
+            Err(QueryError::InvalidHandle(id)) => {
+                assert_eq!(
+                    id, bad_id,
+                    "InvalidHandle must carry the same handle ID that was queried"
+                );
+            }
+            Ok(v) => panic!(
+                "expected Err(QueryError::InvalidHandle({:?})), got Ok({:?})",
+                bad_id, v
+            ),
+            Err(other) => panic!(
+                "expected Err(QueryError::InvalidHandle({:?})), got Err({:?})",
+                bad_id, other
+            ),
+        }
+    }
+
     #[test]
     fn inertia_tensor_box_with_density_analytic() {
         let mut kernel = OcctKernel::new();
