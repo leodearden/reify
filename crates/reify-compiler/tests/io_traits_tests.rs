@@ -179,8 +179,8 @@ fn provenance_structure_present_with_correct_fields() {
 
 // ─── step-5: enums ───────────────────────────────────────────────────────────
 
-/// DiscardReason, DisposalMethod, and OutputFormat are present with the exact
-/// variant sets from docs/reify-stdlib-reference.md §9.
+/// DiscardReason, DisposalMethod, and OutputFormat are present with the variant
+/// set from docs/reify-stdlib-reference.md §9.
 #[test]
 fn io_enums_present_with_expected_variants() {
     let module = io_module();
