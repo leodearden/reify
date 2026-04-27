@@ -633,10 +633,19 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
             errors
         );
 
+        let expected_name = format!("Test{}", trait_name);
         let template = compiled
             .templates
-            .first()
-            .expect("expected at least 1 template");
+            .iter()
+            .find(|t| t.name == expected_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "'{}': expected compiled template named '{}', got templates: {:?}",
+                    trait_name,
+                    expected_name,
+                    compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
         assert!(
             template.trait_bounds.contains(&trait_name.to_string()),
             "'{}': compiled template should have trait bound, got: {:?}",
