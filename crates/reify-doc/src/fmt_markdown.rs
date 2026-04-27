@@ -283,10 +283,10 @@ fn unquote(s: &str) -> &str {
 
 /// Render a single `ItemDoc` to `out`.
 ///
-/// Emits the H2 heading with explicit anchor, then the optional doc paragraphs.
-/// For container variants (Structure / Occurrence) renders the parameters and
-/// ports tables.  Other kind-specific bodies are added in subsequent impl steps.
-fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>) {
+/// Emits the H2 heading with explicit anchor, optional annotation callouts,
+/// the doc paragraphs, the kind-specific body, then optional cross-reference
+/// sections derived from `cross_refs`.
+fn render_item(out: &mut String, item: &ItemDoc, cross_refs: Option<&CrossRefs>) {
     let name = item_name(item);
     let kw = item_keyword(item);
     let vis = if item_is_pub(item) { "pub " } else { "" };
@@ -362,6 +362,58 @@ fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>
         }
         ItemDoc::ConstraintDef { expr_repr, .. } => {
             render_constraint_def_body(out, expr_repr);
+        }
+    }
+
+    // Cross-reference sections, if any. Looks up `name` in both inverted
+    // indices and emits "Conforms to" / "Used by" bullets when populated.
+    render_cross_refs(out, name, cross_refs);
+}
+
+/// Render the `### Conforms to` and `### Used by` sections from `cross_refs`,
+/// keyed on this item's name.  Each section is emitted only when its bullet
+/// list is non-empty.  Bullet entries are sorted, deduplicated anchor links.
+fn render_cross_refs(out: &mut String, name: &str, cross_refs: Option<&CrossRefs>) {
+    let Some(xrefs) = cross_refs else {
+        return;
+    };
+    // Conforms to: scan trait_to_conformers, collect every trait whose
+    // conformer list contains this item's name.
+    let mut conforms: Vec<&str> = xrefs
+        .trait_to_conformers
+        .iter()
+        .filter(|(_, conformers)| conformers.iter().any(|c| c == name))
+        .map(|(trait_name, _)| trait_name.as_str())
+        .collect();
+    conforms.sort();
+    conforms.dedup();
+    if !conforms.is_empty() {
+        out.push_str("### Conforms to\n\n");
+        for t in conforms {
+            out.push_str("- [`");
+            out.push_str(t);
+            out.push_str("`](#");
+            out.push_str(t);
+            out.push_str(")\n");
+        }
+        out.push('\n');
+    }
+
+    // Used by: direct lookup in entity_to_containers.
+    if let Some(containers) = xrefs.entity_to_containers.get(name) {
+        if !containers.is_empty() {
+            let mut sorted: Vec<&str> = containers.iter().map(|s| s.as_str()).collect();
+            sorted.sort();
+            sorted.dedup();
+            out.push_str("### Used by\n\n");
+            for c in sorted {
+                out.push_str("- [`");
+                out.push_str(c);
+                out.push_str("`](#");
+                out.push_str(c);
+                out.push_str(")\n");
+            }
+            out.push('\n');
         }
     }
 }
