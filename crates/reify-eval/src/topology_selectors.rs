@@ -308,9 +308,13 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
+    let queries: Vec<GeometryQuery> = edges
+        .iter()
+        .map(|id| GeometryQuery::EdgeTangent(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
     let mut out = Vec::with_capacity(edges.len());
-    for id in edges {
-        let tan_value = kernel.query(&GeometryQuery::EdgeTangent(id))?;
+    for (id, tan_value) in edges.iter().zip(values) {
         let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
         let tan = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
@@ -323,7 +327,7 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
         // angle <= tol is equivalent to cos(angle) >= cos(tol). For the
         // sign-tolerant variant we use |cos|.
         if abs_dot >= cos_tol {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
