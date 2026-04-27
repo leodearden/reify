@@ -188,6 +188,46 @@ fn doc_strings_flow_into_item_doc() {
     }
 }
 
+/// Assert that `@solver_hint("discrete_set", standard_bolt_lengths)` on the `length`
+/// param surfaces as `AnnotationDoc { name: "solver_hint", args: ["\"discrete_set\"",
+/// "standard_bolt_lengths"] }` on the param.
+///
+/// Two-arg form: first arg is a quoted string literal, second is a bare identifier.
+/// This follows the task spec literally rather than the single-concatenated-arg form
+/// used in fmt_markdown_tests.rs (which is a different fixture for a different test).
+///
+/// TODO(build_doc_model): Once the lowering pass lands, ParamDoc.annotations are
+/// populated from the compiled param's annotation list. Assertion logic stays unchanged.
+#[test]
+fn param_solver_hint_surfaces_as_annotation_doc_with_two_args() {
+    let model = build_fixture();
+    let items = &model.modules[0].items;
+    let bolt = items
+        .iter()
+        .find(|i| matches!(i, ItemDoc::Structure { name, .. } if name == "Bolt"))
+        .expect("Structure 'Bolt' not found");
+    match bolt {
+        ItemDoc::Structure { params, .. } => {
+            let length = params.iter().find(|p| p.name == "length");
+            let length = length.expect("param 'length' not found on Bolt");
+            assert_eq!(length.type_repr, "Length", "length type_repr mismatch");
+            assert_eq!(
+                length.default_repr.as_deref(),
+                Some("100 mm"),
+                "length default_repr mismatch"
+            );
+            let hint = length.annotations.iter().find(|a| a.name == "solver_hint");
+            let hint = hint.expect("@solver_hint not found on length param");
+            assert_eq!(
+                hint.args,
+                vec!["\"discrete_set\"".to_string(), "standard_bolt_lengths".to_string()],
+                "@solver_hint args mismatch"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// Assert that Bolt's meta block is copied verbatim preserving insertion order.
 ///
 /// `meta: Vec<(String, String)>` (model.rs:192) uses ordered pairs precisely so
