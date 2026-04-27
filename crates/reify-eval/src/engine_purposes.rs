@@ -966,4 +966,90 @@ mod tests {
             failures
         );
     }
+
+    /// Regression pin: `expand_purpose_reflective_placeholders` must recurse
+    /// into both child slots of `Quantifier` nodes (collection and predicate).
+    ///
+    /// Acceptance-criterion literal pin: nested Quantifier collection.
+    /// The predicate position is included for symmetry — both recursive arms
+    /// in the `Quantifier` match arm are exercised.
+    #[test]
+    fn expand_recurses_through_quantifier_components() {
+        use reify_types::{QuantifierKind, Value};
+
+        let entity = "Foo";
+        let cell_x = ValueCellId::new(entity, "x");
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_x.clone()],
+        }];
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        value_cells.insert(
+            cell_x.clone(),
+            ValueCellNode {
+                id: cell_x.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("x"),
+            },
+        );
+        let make_placeholder = || {
+            CompiledExpr::purpose_reflective_aggregation(
+                "subject".to_string(),
+                "params".to_string(),
+                Type::List(Box::new(Type::Real)),
+            )
+        };
+        let variable_id = ValueCellId::new("Q", "i");
+
+        type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
+        let wrappers: Vec<(&str, WrapFn)> = vec![
+            (
+                "Quantifier collection",
+                Box::new({
+                    let variable_id = variable_id.clone();
+                    move |ph| {
+                        CompiledExpr::quantifier(
+                            QuantifierKind::ForAll,
+                            "i".to_string(),
+                            variable_id.clone(),
+                            ph,
+                            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                        )
+                    }
+                }),
+            ),
+            (
+                "Quantifier predicate",
+                Box::new({
+                    let variable_id = variable_id.clone();
+                    move |ph| {
+                        CompiledExpr::quantifier(
+                            QuantifierKind::ForAll,
+                            "i".to_string(),
+                            variable_id.clone(),
+                            CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real))),
+                            ph,
+                        )
+                    }
+                }),
+            ),
+        ];
+
+        let mut failures: Vec<&str> = Vec::new();
+        for (label, wrap) in &wrappers {
+            let mut wrapped = wrap(make_placeholder());
+            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
+            if tree_contains_placeholder(&wrapped) {
+                failures.push(label);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "placeholder not rewritten under: {:?}",
+            failures
+        );
+    }
 }
