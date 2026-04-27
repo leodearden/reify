@@ -15,6 +15,91 @@ use std::collections::BTreeMap;
 use crate::cross_refs::CrossRefs;
 use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
 
+/// Hand-written CSS embedded inside the document's `<style>` block.
+///
+/// Constraints (asserted by `embedded_stylesheet_meets_constraints`):
+/// - sticky TOC (`position: sticky; top: 0;`)
+/// - bounded body width (`max-width: 900px`)
+/// - explicit monospace fallback for code/pre
+/// - `line-height` ≥ 1.4 for readable paragraphs
+/// - no `@import`, no remote `url(...)` references (self-contained)
+/// - ≤100 non-empty lines (so the document inlining cost stays modest)
+const EMBEDDED_STYLESHEET: &str = "\
+body {
+  max-width: 900px;
+  margin: 2em auto;
+  padding: 0 1em;
+  font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  color: #222;
+}
+nav {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  padding: 0.5em 0;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 1.5em;
+}
+nav h2 {
+  margin: 0 0 0.25em 0;
+}
+nav h3 {
+  margin: 0.5em 0 0.25em 0;
+}
+nav ul {
+  margin: 0 0 0.5em 1em;
+  padding: 0;
+}
+code, pre {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+pre {
+  padding: 0.5em;
+  background: #f6f8fa;
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+th, td {
+  border: 1px solid #ddd;
+  padding: 0.4em 0.6em;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: #f6f8fa;
+}
+dl {
+  margin: 0.5em 0 1em 0;
+}
+dt {
+  font-weight: bold;
+}
+dd {
+  margin: 0 0 0.5em 1em;
+}
+h1, h2, h3 {
+  line-height: 1.2;
+}
+section {
+  margin: 1.5em 0;
+}
+aside.deprecated {
+  padding: 0.5em 1em;
+  background: #fff8e1;
+  border-left: 4px solid #f0ad4e;
+  margin: 0.5em 0;
+}
+p.optimized {
+  color: #555;
+  margin: 0.25em 0;
+}
+";
+
 /// A `CrossRefs` plus a precomputed *inverse* map from conformer name to the
 /// list of traits the conformer implements.
 ///
@@ -79,7 +164,7 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
     out.push_str(&html_escape(title));
     out.push_str("</title>\n");
     out.push_str("<style>\n");
-    out.push_str("/* embedded stylesheet placeholder; populated in step-30 */\n");
+    out.push_str(EMBEDDED_STYLESHEET);
     out.push_str("</style>\n");
     out.push_str("</head>\n");
     out.push_str("<body>\n");
