@@ -132,6 +132,22 @@ impl EventJournal {
             .unwrap_or_default()
     }
 
+    /// Number of `EventKind::Donated` events recorded in this journal.
+    pub fn count_donated(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::Donated { .. }))
+            .count()
+    }
+
+    /// Number of `EventKind::Evicted` events recorded in this journal.
+    pub fn count_evicted(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::Evicted { .. }))
+            .count()
+    }
+
     /// The most recent event for a specific node, or None if no events exist.
     pub fn latest_for_node(&self, node_id: &NodeId) -> Option<&EvalEvent> {
         self.by_node
