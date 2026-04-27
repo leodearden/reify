@@ -440,7 +440,7 @@ fn emit_param_override_rejection_warning(
         ParamOverrideRejection::ScalarDimensionMismatch { expected, got } => {
             *dimension_counter += 1;
             diagnostics.push(Diagnostic::warning(format!(
-                "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                "param_override for `{}` skipped: dimension mismatch (expected {}, got {})",
                 cell_id, expected, got
             )));
         }
