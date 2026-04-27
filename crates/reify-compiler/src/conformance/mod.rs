@@ -3573,4 +3573,42 @@ mod tests {
             "Expected Type::Real defensive fallback when no annotation and no inferred expression"
         );
     }
+
+    /// `emit_geometry_unbounded` pushes exactly one `Diagnostic` with severity
+    /// `Error`, code `Some(DiagnosticCode::GeometryUnbounded)`, a message
+    /// mentioning the arg name and the `Bounded` trait, and a `DiagnosticLabel`
+    /// at the supplied span. This pins the diagnostic-shape contract
+    /// independent of the conformance-walker integration (which is exercised
+    /// end-to-end by the inference test file's positive case).
+    #[test]
+    fn emit_geometry_unbounded_helper_produces_error_with_code_and_label() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = SourceSpan::new(7, 19);
+        emit_geometry_unbounded("g", span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "emit_geometry_unbounded should push exactly one diagnostic"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryUnbounded));
+        assert!(
+            d.message.contains("Bounded"),
+            "message should mention the Bounded trait, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'g'"),
+            "message should mention the arg name 'g', got: {}",
+            d.message
+        );
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly one label attached at the supplied span"
+        );
+        assert_eq!(d.labels[0].span, span);
+    }
 }
