@@ -2673,4 +2673,24 @@ mod tests {
             err
         );
     }
+
+    #[test]
+    fn mock_with_inertia_tensor_result_returns_for_inertia_tensor_query() {
+        let id = GeometryHandleId(1);
+        // Build a diagonal 3×3 tensor as a Value::List of lists.
+        let expected = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        let kernel =
+            MockGeometryKernel::new().with_inertia_tensor_result(id, 7850.0, expected.clone());
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 7850.0,
+            })
+            .unwrap();
+        assert_eq!(result, expected);
+    }
 }
