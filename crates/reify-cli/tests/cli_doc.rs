@@ -445,6 +445,39 @@ fn doc_format_without_value_exits_two() {
 }
 
 #[test]
+fn doc_format_with_invalid_value_exits_two() {
+    // Characterization test: pins the unknown-`--format` value path handled by
+    // `Format::from_str_or_usage_err` (and its inline successor after cleanup).
+    // The input positional is required because cmd_doc's missing-input check
+    // runs *before* format resolution, so omitting it would test the wrong branch.
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "xml", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format xml must exit 2 (usage error).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unknown --format value"),
+        "stderr should contain 'unknown --format value', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("xml"),
+        "stderr should name the offending value 'xml', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("expected html|markdown|json"),
+        "stderr should guide the user to valid choices 'expected html|markdown|json', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "stderr should contain 'Usage: reify doc' (DOC_USAGE line), got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_o_without_value_exits_two() {
     // Pins the `-o` requires-a-value branch in cmd_doc's arg loop.
     let (status, stdout, stderr) = run_doc(&["-o"]);
