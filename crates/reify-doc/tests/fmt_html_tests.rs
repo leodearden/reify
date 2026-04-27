@@ -101,6 +101,53 @@ fn module_header_and_doc_paragraphs_render() {
     assert!(p2_pos < p3_pos, "Para two must precede Para three");
 }
 
+/// A multi-module `DocModel` must render every module's `<h1>` in declaration
+/// order inside `<body>`, while `<title>` keeps just the first module's path.
+///
+/// Pins the v0.1 single-file rendering contract: subsequent modules are
+/// included in the body but not advertised in `<head>` (matching
+/// `fmt_markdown`'s behaviour).  Without this guard, a future regression that
+/// dropped modules 2..N from the body would not surface in any other test —
+/// every other `fmt_html_tests` case uses a one-module model.
+#[test]
+fn multi_module_renders_all_h1s_in_declaration_order() {
+    let model = DocModel {
+        modules: vec![
+            ModuleDoc {
+                path: "first.module".into(),
+                ..Default::default()
+            },
+            ModuleDoc {
+                path: "second.module".into(),
+                ..Default::default()
+            },
+        ],
+    };
+    let out = render_html(&model, None);
+
+    // <title> reflects ONLY the first module's path.
+    assert!(
+        out.contains("<title>first.module</title>"),
+        "expected first module path in <title>; got:\n{out}"
+    );
+    assert!(
+        !out.contains("<title>second.module</title>"),
+        "<title> must not contain the second module's path; got:\n{out}"
+    );
+
+    // Both <h1>s present in body, in declaration order.
+    let h1_first = out
+        .find("<h1>first.module</h1>")
+        .unwrap_or_else(|| panic!("missing <h1>first.module</h1>; got:\n{out}"));
+    let h1_second = out
+        .find("<h1>second.module</h1>")
+        .unwrap_or_else(|| panic!("missing <h1>second.module</h1>; got:\n{out}"));
+    assert!(
+        h1_first < h1_second,
+        "expected first.module before second.module in body; got first@{h1_first} second@{h1_second}\n{out}"
+    );
+}
+
 /// User-supplied content must be escaped before being inserted into HTML.
 /// Asserts that `<`, `>`, `&`, `"`, `'` are translated to their entity
 /// references in module path / doc strings.
