@@ -299,6 +299,25 @@ pub enum DiagnosticCode {
     /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
     /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
     Shadowing,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (trait_bound iteration).
+    /// Canonical message form:
+    /// `"geometry trait '<TraitName>' on '<EntityName>' is treated as a user assertion; runtime conformance check is suppressed"`.
+    ///
+    /// Emitted as a `Warning` once per `(structure_def, geometry_marker_bound)` pair
+    /// when a structure (or occurrence) explicitly declares one of the seven stdlib
+    /// geometry-conformance marker traits (`Bounded`, `Closed`, `Manifold`,
+    /// `Orientable`, `Convex`, `Connected`, `Watertight`) in its `trait_bounds`
+    /// list. The declaration is treated as a user assertion that bypasses any future
+    /// runtime conformance check (PRD tasks 4/5 — OCCT BRepCheck hook — are not
+    /// yet wired; today the warning is the only observable effect).
+    ///
+    /// Detection is name-based against the canonical seven (case-sensitive) — see
+    /// [`crates/reify-compiler/src/geometry_traits_inference.rs`]'s
+    /// `is_geometry_marker_trait` helper and the design decision in task 2321.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TRAIT_USER_ASSERTED`
+    /// (see `docs/prds/geometry-traits.md` §"Scope" point 5).
+    TraitUserAsserted,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -613,6 +632,34 @@ mod tests {
     fn diagnostic_code_shadowing_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::Shadowing).unwrap();
         assert_eq!(s, "\"Shadowing\"");
+    }
+
+    // --- TraitUserAsserted tests (task 2321 — W_TRAIT_USER_ASSERTED) ---
+    // Pairs with the per-bound lint in `crates/reify-compiler/src/entity.rs`
+    // (trait_bound iteration). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TraitUserAsserted` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.  Shape mirrors
+    /// `diagnostic_code_shadowing_with_code_round_trips`; a future enum
+    /// reorganisation that drops `TraitUserAsserted` is caught here.
+    /// (The `Debug` rendering assertion is omitted — it would only pin the
+    /// identifier spelling, which any rename touches on both sides simultaneously.
+    /// The serde wire-format test below provides the real external-contract pin.)
+    #[test]
+    fn diagnostic_code_trait_user_asserted_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::TraitUserAsserted);
+        assert_eq!(d.code, Some(DiagnosticCode::TraitUserAsserted));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TraitUserAsserted` serializes as
+    /// `"TraitUserAsserted"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_trait_user_asserted_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TraitUserAsserted).unwrap();
+        assert_eq!(s, "\"TraitUserAsserted\"");
     }
 }
 

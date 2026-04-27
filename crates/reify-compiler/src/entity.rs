@@ -621,6 +621,24 @@ pub(crate) fn compile_entity(
                     diagnostics,
                 );
             }
+            // Geometry-marker escape hatch: if the bound names one of the seven stdlib
+            // geometry-conformance marker traits, emit W_TRAIT_USER_ASSERTED. The
+            // declaration is treated as a user assertion that bypasses any future runtime
+            // conformance check (PRD geometry-traits.md task 6 / W_TRAIT_USER_ASSERTED).
+            // Detection is name-based (case-sensitive) — see design decision §1 of task 2321.
+            if crate::geometry_traits_inference::is_geometry_marker_trait(&trait_bound.name) {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "geometry trait '{}' on '{}' is treated as a user assertion; runtime conformance check is suppressed",
+                        trait_bound.name, structure.name
+                    ))
+                    .with_code(DiagnosticCode::TraitUserAsserted)
+                    .with_label(DiagnosticLabel::new(
+                        trait_bound.span,
+                        "user-asserted geometry trait",
+                    )),
+                );
+            }
             // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
             // to the post-compilation pass so forward references are resolved correctly.
             if !trait_bound.type_args.is_empty()

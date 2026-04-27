@@ -123,6 +123,19 @@ structure def TrustedShell : Watertight {
    `warn[W_TRAIT_USER_ASSERTED]` diagnostic the first time the structure is
    determined. (Compile-time inferred traits aren't relevant to the escape
    hatch — there's nothing to escape from.)
+
+   *As implemented (task 2321):* compile-time emission lives in
+   `crates/reify-compiler/src/entity.rs` (per-bound iteration in the existing
+   `trait_bounds` loop). The diagnostic code is
+   `DiagnosticCode::TraitUserAsserted` (PRD mnemonic `W_TRAIT_USER_ASSERTED`).
+   Canonical message form:
+   `"geometry trait '<Trait>' on '<Entity>' is treated as a user assertion; runtime conformance check is suppressed"`.
+   The warning carries a single label at the bound's source span. Detection is
+   name-based via `crates/reify-compiler/src/geometry_traits_inference.rs`
+   `is_geometry_marker_trait(name: &str) -> bool` (case-sensitive, covers all
+   seven). **Runtime-side suppression is a forward stub** — the eval-time
+   BRepCheck hook (PRD tasks 4/5) is not yet wired into eval, so today the
+   warning is the only observable effect.
 6. **Tests**: per-op trait inference (full table), Boolean propagation rules,
    `E_GEOMETRY_UNBOUNDED` diagnostic, `is_watertight`/`is_manifold` against
    known-good (`box`) and known-bad (`union(box, translated_box)` separated)
@@ -146,8 +159,11 @@ structure def TrustedShell : Watertight {
   `is_watertight`/`is_manifold`/`is_orientable` against fixture shapes.
 - `cargo test -p reify-eval -- conformance_runtime` covers the
   `conforms(g, Watertight)` end-to-end path.
-- Specialization escape hatch warning fires exactly once per structure
-  determination and is suppressed thereafter.
+- Specialization escape hatch warning (`W_TRAIT_USER_ASSERTED` /
+  `DiagnosticCode::TraitUserAsserted`) fires exactly once per
+  `(structure_def, geometry_marker_bound)` pair at compile time; eval-time
+  suppression of the runtime conformance check is deferred until the OCCT
+  runtime hook (PRD tasks 4/5) is wired into eval.
 
 ## Task breakdown (queueing aim: 6 tasks)
 
