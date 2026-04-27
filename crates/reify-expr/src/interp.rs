@@ -16,11 +16,14 @@
 //! - [`InterpolationMethod::NearestNeighbor`] — snap to nearest grid sample,
 //!   axis-independent ties broken with `f64::round_ties_even` (banker's
 //!   rounding) for reproducibility across platforms.
-//! - [`InterpolationMethod::Cubic`] — uniform Catmull-Rom in 1D, tensor product
-//!   bicubic in 2D, tricubic in 3D. Edge cells extend the 4-point stencil with
-//!   linear-extrapolated ghost points so cubic behaviour is preserved
-//!   throughout the interior and both endpoints of every edge cell still
-//!   reproduce the true sample value.
+//! - [`InterpolationMethod::Cubic`] — 4-point Lagrange cubic in 1D (i.e.
+//!   the unique cubic polynomial through four equally-spaced control values),
+//!   tensor product bicubic in 2D, tricubic in 3D. Edge cells extend the
+//!   4-point stencil with linear-extrapolated ghost points so cubic behaviour
+//!   is preserved throughout the interior and both endpoints of every edge
+//!   cell still reproduce the true sample value. The Lagrange (rather than
+//!   Catmull-Rom) formulation is chosen so cubic polynomials are reproduced
+//!   exactly within interior cells.
 //! - [`InterpolationMethod::Rbf`] / [`InterpolationMethod::Kriging`] — deferred
 //!   to post-v0.1. Selecting either falls back to `Linear` and emits a single
 //!   warning diagnostic with code `DiagnosticCode::InterpolationDeferred`.
@@ -181,9 +184,13 @@ pub fn interpolate_1d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::Cubic => unreachable!(
-            "InterpolationMethod::Cubic 1D not yet implemented"
-        ),
+        InterpolationMethod::Cubic => {
+            let value = cubic_1d(grid, values, query);
+            InterpolationResult {
+                value,
+                diagnostics: Vec::new(),
+            }
+        }
         InterpolationMethod::Rbf => unreachable!(
             "InterpolationMethod::Rbf 1D not yet implemented"
         ),
@@ -191,6 +198,72 @@ pub fn interpolate_1d(
             "InterpolationMethod::Kriging 1D not yet implemented"
         ),
     }
+}
+
+/// Evaluate the 4-point Lagrange cubic interpolating `(p0, p1, p2, p3)` at
+/// equally-spaced parameters `(-1, 0, 1, 2)` for query parameter `t ∈ [0, 1]`.
+///
+/// Returns `p1` at `t=0` and `p2` at `t=1`. Reproduces any cubic polynomial
+/// exactly when the four control values come from the polynomial at the
+/// matching parameters — this is the property required by the v0.1
+/// `cubic_1d_reproduces_cubic_polynomial_in_interior` test.
+///
+/// # Note on naming
+///
+/// The original task plan referred to this kernel as Catmull-Rom. Standard
+/// Catmull-Rom (a cardinal cubic Hermite spline with tangents
+/// `(p_{i+1} - p_{i-1})/2`) does *not* reproduce arbitrary cubic polynomials
+/// — centred-difference tangent estimates carry an `O(h^2)` error in the
+/// cubic term. The 4-point Lagrange formulation does reproduce cubics
+/// exactly, which is the binding test contract. Both formulations agree at
+/// `t ∈ {0, 0.5, 1}` but diverge at all other parameter values.
+#[inline]
+fn cubic4_eval(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    // Lagrange basis at parameters (-1, 0, 1, 2):
+    //   L_{-1}(t) = -t(t-1)(t-2)/6
+    //   L_{0}(t)  =  (t+1)(t-1)(t-2)/2
+    //   L_{1}(t)  = -(t+1)t(t-2)/2
+    //   L_{2}(t)  =  (t+1)t(t-1)/6
+    let tm1 = t - 1.0;
+    let tm2 = t - 2.0;
+    let tp1 = t + 1.0;
+    let l0 = -t * tm1 * tm2 / 6.0;
+    let l1 = tp1 * tm1 * tm2 / 2.0;
+    let l2 = -tp1 * t * tm2 / 2.0;
+    let l3 = tp1 * t * tm1 / 6.0;
+    l0 * p0 + l1 * p1 + l2 * p2 + l3 * p3
+}
+
+/// 4-point cubic kernel for a 1D grid. Boundary cells synthesise missing
+/// control values via linear extrapolation (`p_{-1} = 2*p1 - p2` /
+/// `p_{n} = 2*p2 - p1`), so cubic behaviour is preserved everywhere in the
+/// interior and the 2-point degenerate case collapses to linear (an
+/// algebraic identity verifiable by substituting the ghost expressions into
+/// the Lagrange basis sum). Constant-extrapolates outside the convex hull.
+fn cubic_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
+    if query <= grid[0] {
+        return values[0];
+    }
+    let last = grid.len() - 1;
+    if query >= grid[last] {
+        return values[last];
+    }
+    let i = locate_cell(grid, query).expect("in-range query bracketed");
+    let span = grid[i + 1] - grid[i];
+    if span <= 0.0 {
+        return values[i];
+    }
+    let t = (query - grid[i]) / span;
+
+    let p1 = values[i];
+    let p2 = values[i + 1];
+    let p0 = if i == 0 { 2.0 * p1 - p2 } else { values[i - 1] };
+    let p3 = if i + 2 > last {
+        2.0 * p2 - p1
+    } else {
+        values[i + 2]
+    };
+    cubic4_eval(p0, p1, p2, p3, t)
 }
 
 /// Linear interpolation kernel for a 1D grid. Constant-extrapolates outside
