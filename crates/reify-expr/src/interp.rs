@@ -268,36 +268,49 @@ fn cubic4_eval(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     l0 * p0 + l1 * p1 + l2 * p2 + l3 * p3
 }
 
-/// 4-point cubic kernel for a 1D grid. Boundary cells synthesise missing
-/// control values via linear extrapolation (`p_{-1} = 2*p1 - p2` /
-/// `p_{n} = 2*p2 - p1`), so cubic behaviour is preserved everywhere in the
-/// interior and the 2-point degenerate case collapses to linear (an
-/// algebraic identity verifiable by substituting the ghost expressions into
-/// the Lagrange basis sum). Constant-extrapolates outside the convex hull.
-fn cubic_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
+/// 4-point cubic kernel for a 1D grid that reads sample values via a closure.
+///
+/// This is the canonical cubic implementation; [`cubic_1d`] is a thin wrapper
+/// that supplies a slice-indexing accessor. Allowing a closure-based accessor
+/// lets the higher-dimensional kernels evaluate a tensor-product cubic without
+/// materialising any intermediate row/column/slice `Vec`s — they read only
+/// the (≤4) bracketing samples on each axis directly.
+///
+/// Boundary cells synthesise missing control values via linear extrapolation
+/// (`p_{-1} = 2*p1 - p2` / `p_{n} = 2*p2 - p1`), so cubic behaviour is
+/// preserved everywhere in the interior and the 2-point degenerate case
+/// collapses to linear (an algebraic identity verifiable by substituting the
+/// ghost expressions into the Lagrange basis sum). Constant-extrapolates
+/// outside the convex hull. Reads at most 4 samples (1 at boundaries).
+fn cubic_1d_kernel<F: Fn(usize) -> f64>(grid: &[f64], query: f64, val: F) -> f64 {
     if query <= grid[0] {
-        return values[0];
+        return val(0);
     }
     let last = grid.len() - 1;
     if query >= grid[last] {
-        return values[last];
+        return val(last);
     }
     let i = locate_cell(grid, query).expect("in-range query bracketed");
     let span = grid[i + 1] - grid[i];
     if span <= 0.0 {
-        return values[i];
+        return val(i);
     }
     let t = (query - grid[i]) / span;
 
-    let p1 = values[i];
-    let p2 = values[i + 1];
-    let p0 = if i == 0 { 2.0 * p1 - p2 } else { values[i - 1] };
+    let p1 = val(i);
+    let p2 = val(i + 1);
+    let p0 = if i == 0 { 2.0 * p1 - p2 } else { val(i - 1) };
     let p3 = if i + 2 > last {
         2.0 * p2 - p1
     } else {
-        values[i + 2]
+        val(i + 2)
     };
     cubic4_eval(p0, p1, p2, p3, t)
+}
+
+/// Slice-based 1D cubic kernel — thin wrapper over [`cubic_1d_kernel`].
+fn cubic_1d(grid: &[f64], values: &[f64], query: f64) -> f64 {
+    cubic_1d_kernel(grid, query, |i| values[i])
 }
 
 /// Row-major flat-index for a 2D grid with `ny` columns: `values[i * ny + j]`
@@ -403,9 +416,14 @@ pub fn interpolate_2d(
     }
 }
 
-/// Bilinear kernel for a 2D grid. Implemented as two 1D-linear sweeps:
-/// along `x` for the two y-rows bracketing the query, then along `y` over
-/// the two intermediate values.
+/// Bilinear kernel for a 2D grid. Reads only the four corner values
+/// bracketing the query and applies two `lerp`s along `x` followed by one
+/// along `y`. O(1) per query — no allocations.
+///
+/// Out-of-range queries are handled by [`locate_cell_with_clamp`], which
+/// returns a valid cell index `(i, i+1)` and a `t ∈ {0.0, 1.0}` clamped
+/// against the boundary; the final `lerp(v_lo, v_hi, ty)` then collapses
+/// to whichever row is on the in-range side.
 fn linear_2d(
     grid_x: &[f64],
     grid_y: &[f64],
@@ -414,32 +432,69 @@ fn linear_2d(
 ) -> f64 {
     let (qx, qy) = query;
     let ny = grid_y.len();
-
-    // Locate y-cell first (we'll use j and j+1 as the two bracketing rows).
-    // Out-of-range on y degenerates to a single row.
+    let (i, tx) = locate_cell_with_clamp(grid_x, qx);
     let (j, ty) = locate_cell_with_clamp(grid_y, qy);
-    // Two rows of values along x for y = grid_y[j] and y = grid_y[j+1] (or
-    // equal rows if the query was clamped to a y-boundary, but we still
-    // use the same 2-row structure for uniformity).
-    let row_lo: Vec<f64> = (0..grid_x.len()).map(|i| values[index_2d(i, j, ny)]).collect();
-    let j_hi = if j + 1 < grid_y.len() { j + 1 } else { j };
-    let row_hi: Vec<f64> = (0..grid_x.len()).map(|i| values[index_2d(i, j_hi, ny)]).collect();
-
-    let v_lo = linear_1d(grid_x, &row_lo, qx);
-    let v_hi = linear_1d(grid_x, &row_hi, qx);
+    // Four corner samples bracketing the query cell.
+    let v00 = values[index_2d(i, j, ny)];
+    let v01 = values[index_2d(i, j + 1, ny)];
+    let v10 = values[index_2d(i + 1, j, ny)];
+    let v11 = values[index_2d(i + 1, j + 1, ny)];
+    // Collapse along x for the two y-rows, then along y.
+    let v_lo = lerp(v00, v10, tx);
+    let v_hi = lerp(v01, v11, tx);
     lerp(v_lo, v_hi, ty)
 }
 
-/// Bicubic kernel for a 2D grid, computed as a tensor product of 1D cubic
-/// interpolations: for each x-index `i`, interpolate the column of values
-/// `values[i, *]` along the y-axis at `qy` to produce a row of length
-/// `grid_x.len()`; then interpolate that row along the x-axis at `qx`.
+/// Bicubic kernel for a 2D grid that reads sample values via a closure.
 ///
-/// Reuses [`cubic_1d`] so that boundary cells inherit the same
-/// linear-extrapolated ghost-point convention. The full row is materialised
-/// (rather than only the four bracketing values) so that the result matches
-/// the natural `interpolate_1d`-of-`interpolate_1d` separability identity that
-/// callers can verify directly.
+/// Computed as a tensor product of 1D cubic interpolations via
+/// [`cubic_1d_kernel`]: for each of the (≤4) x-indices in the bracketing
+/// 4×4 stencil, evaluate the cubic along `y` to collapse the column to a
+/// single value, then evaluate the cubic along `x` over those intermediates.
+/// Boundary cells inherit the linear-extrapolated ghost-point convention.
+/// Reads at most 16 samples per query — no `Vec` allocations.
+fn cubic_2d_kernel<F: Fn(usize, usize) -> f64>(
+    grid_x: &[f64],
+    grid_y: &[f64],
+    qx: f64,
+    qy: f64,
+    val: F,
+) -> f64 {
+    let last_x = grid_x.len() - 1;
+    // Collapse the y-axis at a fixed x-index to a single cubic-interpolated
+    // value. Uses the same closure-driven kernel as the 1D entry point, so
+    // boundary clamps and ghost points behave identically.
+    let y_collapse = |i_idx: usize| cubic_1d_kernel(grid_y, qy, |j| val(i_idx, j));
+
+    if qx <= grid_x[0] {
+        return y_collapse(0);
+    }
+    if qx >= grid_x[last_x] {
+        return y_collapse(last_x);
+    }
+    let i = locate_cell(grid_x, qx).expect("in-range query bracketed");
+    let span_x = grid_x[i + 1] - grid_x[i];
+    if span_x <= 0.0 {
+        return y_collapse(i);
+    }
+    let tx = (qx - grid_x[i]) / span_x;
+
+    let p1 = y_collapse(i);
+    let p2 = y_collapse(i + 1);
+    let p0 = if i == 0 {
+        2.0 * p1 - p2
+    } else {
+        y_collapse(i - 1)
+    };
+    let p3 = if i + 2 > last_x {
+        2.0 * p2 - p1
+    } else {
+        y_collapse(i + 2)
+    };
+    cubic4_eval(p0, p1, p2, p3, tx)
+}
+
+/// Slice-based 2D cubic kernel — thin wrapper over [`cubic_2d_kernel`].
 fn cubic_2d(
     grid_x: &[f64],
     grid_y: &[f64],
@@ -447,18 +502,8 @@ fn cubic_2d(
     query: (f64, f64),
 ) -> f64 {
     let (qx, qy) = query;
-    let nx = grid_x.len();
     let ny = grid_y.len();
-
-    let mut col = vec![0.0f64; ny];
-    let mut row = vec![0.0f64; nx];
-    for i in 0..nx {
-        for j in 0..ny {
-            col[j] = values[index_2d(i, j, ny)];
-        }
-        row[i] = cubic_1d(grid_y, &col, qy);
-    }
-    cubic_1d(grid_x, &row, qx)
+    cubic_2d_kernel(grid_x, grid_y, qx, qy, |i, j| values[index_2d(i, j, ny)])
 }
 
 // ---------------------------------------------------------------------------
@@ -551,11 +596,15 @@ pub fn interpolate_3d(
     }
 }
 
-/// Trilinear kernel for a 3D grid. Computed by collapsing the z-axis first:
-/// for each `(i, j)`, interpolate the z-column at `qz` to produce a 2D slice
-/// of shape `(nx, ny)`; then evaluate that slice at `(qx, qy)` via the 2D
-/// bilinear kernel. Reusing [`linear_2d`] for the trailing step inherits the
-/// independent-axis boundary clamp policy.
+/// Trilinear kernel for a 3D grid. Reads only the eight corner values
+/// bracketing the query cell and applies seven `lerp`s in the order
+/// `z → y → x` (matching the natural separability identity asserted in the
+/// test suite). O(1) per query — no allocations.
+///
+/// Out-of-range queries are handled by [`locate_cell_with_clamp`], which
+/// returns clamped `t` values that collapse the corresponding axis lerp to
+/// one of its endpoints — equivalent to the per-axis constant-extrapolation
+/// policy of the 1D and 2D kernels.
 fn linear_3d(
     grid_x: &[f64],
     grid_y: &[f64],
@@ -564,30 +613,38 @@ fn linear_3d(
     query: (f64, f64, f64),
 ) -> f64 {
     let (qx, qy, qz) = query;
-    let nx = grid_x.len();
     let ny = grid_y.len();
     let nz = grid_z.len();
-
-    let mut col = vec![0.0f64; nz];
-    let mut slice2d = vec![0.0f64; nx * ny];
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                col[k] = values[index_3d(i, j, k, ny, nz)];
-            }
-            slice2d[index_2d(i, j, ny)] = linear_1d(grid_z, &col, qz);
-        }
-    }
-    linear_2d(grid_x, grid_y, &slice2d, (qx, qy))
+    let (i, tx) = locate_cell_with_clamp(grid_x, qx);
+    let (j, ty) = locate_cell_with_clamp(grid_y, qy);
+    let (k, tz) = locate_cell_with_clamp(grid_z, qz);
+    // Eight corner samples bracketing the query cell.
+    let v000 = values[index_3d(i, j, k, ny, nz)];
+    let v001 = values[index_3d(i, j, k + 1, ny, nz)];
+    let v010 = values[index_3d(i, j + 1, k, ny, nz)];
+    let v011 = values[index_3d(i, j + 1, k + 1, ny, nz)];
+    let v100 = values[index_3d(i + 1, j, k, ny, nz)];
+    let v101 = values[index_3d(i + 1, j, k + 1, ny, nz)];
+    let v110 = values[index_3d(i + 1, j + 1, k, ny, nz)];
+    let v111 = values[index_3d(i + 1, j + 1, k + 1, ny, nz)];
+    // Collapse z, then y, then x.
+    let v00 = lerp(v000, v001, tz);
+    let v01 = lerp(v010, v011, tz);
+    let v10 = lerp(v100, v101, tz);
+    let v11 = lerp(v110, v111, tz);
+    let v0 = lerp(v00, v01, ty);
+    let v1 = lerp(v10, v11, ty);
+    lerp(v0, v1, tx)
 }
 
 /// Tricubic kernel for a 3D grid, computed as the natural tensor product:
-/// for each x-index `i`, gather the `(y, z)` slice of values at `x=grid_x[i]`
-/// and evaluate the bicubic [`cubic_2d`] at `(qy, qz)` to produce a row of
-/// length `nx`; then evaluate the 1D [`cubic_1d`] kernel along the x-axis at
-/// `qx`. This collapses the axes in the order `z → y → x` (since `cubic_2d`
-/// itself collapses its trailing axis first), which matches the separability
-/// identity asserted in the test suite.
+/// for each of the (≤4) x-indices in the bracketing 4×4×4 stencil, evaluate
+/// the bicubic [`cubic_2d_kernel`] over the (y, z) slice at `(qy, qz)`; then
+/// evaluate the 1D cubic along the x-axis over those intermediates. The
+/// axis-collapse order is `z → y → x` (since `cubic_2d_kernel` collapses
+/// its trailing axis first), matching the separability identity asserted in
+/// the test suite. Reads at most 64 samples per query — no `Vec`
+/// allocations.
 fn cubic_3d(
     grid_x: &[f64],
     grid_y: &[f64],
@@ -596,21 +653,45 @@ fn cubic_3d(
     query: (f64, f64, f64),
 ) -> f64 {
     let (qx, qy, qz) = query;
-    let nx = grid_x.len();
     let ny = grid_y.len();
     let nz = grid_z.len();
+    let last_x = grid_x.len() - 1;
 
-    let mut row = vec![0.0f64; nx];
-    let mut slice = vec![0.0f64; ny * nz];
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                slice[index_2d(j, k, nz)] = values[index_3d(i, j, k, ny, nz)];
-            }
-        }
-        row[i] = cubic_2d(grid_y, grid_z, &slice, (qy, qz));
+    // For a fixed x-index `i_idx`, collapse the (y, z) slice to a single
+    // bicubic-interpolated value at (qy, qz). Reuses `cubic_2d_kernel` so
+    // ghost-point and boundary-clamp behaviour matches the 2D entry point.
+    let yz_collapse = |i_idx: usize| {
+        cubic_2d_kernel(grid_y, grid_z, qy, qz, |j, k| {
+            values[index_3d(i_idx, j, k, ny, nz)]
+        })
+    };
+
+    if qx <= grid_x[0] {
+        return yz_collapse(0);
     }
-    cubic_1d(grid_x, &row, qx)
+    if qx >= grid_x[last_x] {
+        return yz_collapse(last_x);
+    }
+    let i = locate_cell(grid_x, qx).expect("in-range query bracketed");
+    let span_x = grid_x[i + 1] - grid_x[i];
+    if span_x <= 0.0 {
+        return yz_collapse(i);
+    }
+    let tx = (qx - grid_x[i]) / span_x;
+
+    let p1 = yz_collapse(i);
+    let p2 = yz_collapse(i + 1);
+    let p0 = if i == 0 {
+        2.0 * p1 - p2
+    } else {
+        yz_collapse(i - 1)
+    };
+    let p3 = if i + 2 > last_x {
+        2.0 * p2 - p1
+    } else {
+        yz_collapse(i + 2)
+    };
+    cubic4_eval(p0, p1, p2, p3, tx)
 }
 
 /// Locate a cell on a single axis with constant-extrapolation clamping.
