@@ -31,6 +31,53 @@ fn load_stdlib_module() -> &'static CompiledModule {
         .expect("stdlib should contain std/materials/chemical module")
 }
 
+/// Assert that `inline` and `stdlib` enum slices are bidirectionally equivalent:
+///
+/// 1. The sorted set of enum names is identical on both sides — catching a
+///    stdlib-only addition (the original blind spot) as well as an inline-only
+///    addition (e.g., a typo redeclaration).
+/// 2. For every shared name, the sorted set of variants is identical — catching
+///    variant additions, removals, and renames on either side.
+///
+/// The panic message always includes both the inline and stdlib lists verbatim,
+/// so `#[should_panic(expected = "…")]` can key off a specific missing name.
+fn assert_inline_enums_match_stdlib_bidirectionally(inline: &[EnumDef], stdlib: &[EnumDef]) {
+    // (1) Enum name sets must be identical.
+    let mut inline_names: Vec<&str> = inline.iter().map(|e| e.name.as_str()).collect();
+    let mut stdlib_names: Vec<&str> = stdlib.iter().map(|e| e.name.as_str()).collect();
+    inline_names.sort_unstable();
+    stdlib_names.sort_unstable();
+    assert_eq!(
+        inline_names,
+        stdlib_names,
+        "enum name sets differ — inline={:?}, stdlib={:?}",
+        inline_names,
+        stdlib_names
+    );
+
+    // (2) For each name, variant sets must be identical.
+    for name in &inline_names {
+        let inline_enum = inline.iter().find(|e| e.name == *name).unwrap();
+        let stdlib_enum = stdlib.iter().find(|e| e.name == *name).unwrap();
+
+        let mut inline_variants: Vec<&str> =
+            inline_enum.variants.iter().map(String::as_str).collect();
+        let mut stdlib_variants: Vec<&str> =
+            stdlib_enum.variants.iter().map(String::as_str).collect();
+        inline_variants.sort_unstable();
+        stdlib_variants.sort_unstable();
+
+        assert_eq!(
+            inline_variants,
+            stdlib_variants,
+            "enum '{}' variants differ — inline={:?}, stdlib={:?}",
+            name,
+            inline_variants,
+            stdlib_variants
+        );
+    }
+}
+
 // ─── (a) module loads cleanly with two trait defs and two enum defs ───────────
 
 /// The std/materials/chemical module must load with zero error-severity
@@ -237,13 +284,15 @@ fn biocompatible_refines_material_spec_with_enum_param() {
 // ─── (f-guard) Inline enum re-declarations match stdlib definitions ───────────
 
 /// The inline enum re-declarations used in the TitaniumImplant conformance test
-/// (and in `examples/drivebelt_trait_bounds.ri`) must stay byte-identical to the
-/// stdlib definitions in `materials_chemical.ri`.  This test compares variant
-/// sets so that future additions or renames to the stdlib enums show up here
-/// rather than silently diverging from the inline copies.
+/// (and in `examples/drivebelt_trait_bounds.ri`) must stay in sync with the
+/// stdlib definitions in `materials_chemical.ri`.  This check is now
+/// bidirectional: both stdlib-side additions (a new enum in stdlib that the
+/// inline copies omit) and inline-side additions (a typo or extra redeclaration)
+/// are caught, as are variant additions, removals, and renames on either side.
 ///
 /// Pattern:  compile a source with ONLY the inline enum decls, then compare the
-/// resulting enum_defs against `load_stdlib_module().enum_defs`.
+/// resulting enum_defs against `load_stdlib_module().enum_defs` using the
+/// bidirectional helper.
 #[test]
 fn inline_enum_redeclarations_match_stdlib_definitions() {
     let inline_source = r#"
@@ -254,36 +303,7 @@ enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
     let compiled = compile_source_with_stdlib(inline_source);
     let stdlib = load_stdlib_module();
 
-    // Verify every inline enum matches the corresponding stdlib enum variant-for-variant.
-    for inline_enum in &compiled.enum_defs {
-        let stdlib_enum = stdlib
-            .enum_defs
-            .iter()
-            .find(|e| e.name == inline_enum.name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "inline enum '{}' not found in stdlib; stdlib enums: {:?}",
-                    inline_enum.name,
-                    stdlib.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
-                )
-            });
-
-        let mut inline_variants: Vec<&str> =
-            inline_enum.variants.iter().map(String::as_str).collect();
-        let mut stdlib_variants: Vec<&str> =
-            stdlib_enum.variants.iter().map(String::as_str).collect();
-        inline_variants.sort_unstable();
-        stdlib_variants.sort_unstable();
-
-        assert_eq!(
-            inline_variants,
-            stdlib_variants,
-            "inline enum '{}' variants diverge from stdlib: inline={:?}, stdlib={:?}",
-            inline_enum.name,
-            inline_variants,
-            stdlib_variants
-        );
-    }
+    assert_inline_enums_match_stdlib_bidirectionally(&compiled.enum_defs, &stdlib.enum_defs);
 }
 
 /// Regression guard: `assert_inline_enums_match_stdlib_bidirectionally` must
