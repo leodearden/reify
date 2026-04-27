@@ -264,43 +264,47 @@ fn solver_hint_multiple_on_same_param() {
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
 
-// ── Step-5 (task 2339): preferred_strategy accepts any ident, no compile-time warning ──
+// ── Task 2339: preferred_strategy accepts any ident — table-driven ──────────
+//
+// Covers argmin_default (principal), slvs_default (second initial recognised
+// name), and an arbitrary unknown ident.  All three must compile with no errors
+// and no warnings, locking the spec §12.2 advisory invariant.
 
 #[test]
 fn solver_hint_preferred_strategy_accepts_any_ident() {
-    // Verify slvs_default (second initial recognised name from task description)
-    let source_slvs = r#"structure S { @solver_hint("preferred_strategy", slvs_default) param length : Length = auto }"#;
-    let module_slvs = compile_source(source_slvs);
-    assert!(
-        errors_only(&module_slvs).is_empty(),
-        "slvs_default errors: {:?}",
-        errors_only(&module_slvs)
-    );
-    assert!(
-        warnings_only(&module_slvs).is_empty(),
-        "slvs_default: expected no compile-time warnings (spec §12.2 advisory invariant), got: {:?}",
-        warnings_only(&module_slvs)
-    );
-    let cell_slvs = &module_slvs.templates[0].value_cells[0];
-    assert_eq!(cell_slvs.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferredStrategy);
-    assert_eq!(cell_slvs.solver_hints[0].collection, "slvs_default");
-
-    // Verify an arbitrary unknown ident also produces NO compile-time warning
-    let source_custom = r#"structure S { @solver_hint("preferred_strategy", custom_xyz_strategy) param length : Length = auto }"#;
-    let module_custom = compile_source(source_custom);
-    assert!(
-        errors_only(&module_custom).is_empty(),
-        "custom_xyz_strategy errors: {:?}",
-        errors_only(&module_custom)
-    );
-    assert!(
-        warnings_only(&module_custom).is_empty(),
-        "custom_xyz_strategy: expected no compile-time warnings (spec §12.2 advisory invariant), got: {:?}",
-        warnings_only(&module_custom)
-    );
-    let cell_custom = &module_custom.templates[0].value_cells[0];
-    assert_eq!(cell_custom.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferredStrategy);
-    assert_eq!(cell_custom.solver_hints[0].collection, "custom_xyz_strategy");
+    for ident in ["argmin_default", "slvs_default", "custom_xyz_strategy"] {
+        let source = format!(
+            r#"structure S {{ @solver_hint("preferred_strategy", {ident}) param length : Length = auto }}"#
+        );
+        let module = compile_source(&source);
+        assert!(
+            errors_only(&module).is_empty(),
+            "{ident}: expected no errors, got: {:?}",
+            errors_only(&module)
+        );
+        assert!(
+            warnings_only(&module).is_empty(),
+            "{ident}: expected no compile-time warnings (spec §12.2 advisory invariant), got: {:?}",
+            warnings_only(&module)
+        );
+        let cell = &module.templates[0].value_cells[0];
+        assert_eq!(
+            cell.solver_hints.len(),
+            1,
+            "{ident}: expected 1 solver hint, got {:?}",
+            cell.solver_hints
+        );
+        assert_eq!(
+            cell.solver_hints[0].kind,
+            reify_compiler::SolverHintKind::PreferredStrategy,
+            "{ident}: unexpected kind"
+        );
+        assert_eq!(
+            cell.solver_hints[0].collection,
+            ident,
+            "{ident}: unexpected collection value"
+        );
+    }
 }
 
 // ── Step-3 (task 2339): unknown-kind warning message lists preferred_strategy ──
@@ -324,38 +328,6 @@ fn solver_hint_invalid_kind_message_lists_preferred_strategy() {
         "expected warning message to mention 'preferred_strategy', got: {:?}",
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-}
-
-// ── Step-1 (task 2339): @solver_hint("preferred_strategy", argmin_default) compiles ──
-
-#[test]
-fn solver_hint_preferred_strategy_argmin_default_compiles() {
-    let source = r#"structure S { @solver_hint("preferred_strategy", argmin_default) param length : Length = auto }"#;
-    let module = compile_source(source);
-    assert!(
-        errors_only(&module).is_empty(),
-        "errors: {:?}",
-        errors_only(&module)
-    );
-
-    let template = &module.templates[0];
-    assert!(
-        !template.value_cells.is_empty(),
-        "expected at least one value cell"
-    );
-
-    let cell = &template.value_cells[0];
-    assert_eq!(
-        cell.solver_hints.len(),
-        1,
-        "expected 1 solver hint, got {:?}",
-        cell.solver_hints
-    );
-    assert_eq!(
-        cell.solver_hints[0].kind,
-        reify_compiler::SolverHintKind::PreferredStrategy
-    );
-    assert_eq!(cell.solver_hints[0].collection, "argmin_default");
 }
 
 // ── Step 21: builder creates param with solver hints ───────────────────────

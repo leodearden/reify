@@ -453,10 +453,10 @@ pub enum SolverHintKind {
     PreferStock,
     /// Advise the solver to use a named strategy when resolving this cell.
     ///
-    /// The strategy name is stored in `SolverHint::collection`. Initial recognised
-    /// names are `argmin_default` and `slvs_default`, but ANY ident is accepted at
-    /// compile time — the back-end is responsible for emitting a runtime warning for
-    /// unknown strategy names, preserving the spec §12.2 advisory invariant.
+    /// The strategy name is an opaque ident stored in `SolverHint::collection`.
+    /// ANY ident is accepted at compile time; the back-end emits a runtime warning
+    /// if the strategy name is unrecognised, preserving the spec §12.2 advisory
+    /// invariant (pragmas/hints are never compile errors).
     PreferredStrategy,
 }
 
