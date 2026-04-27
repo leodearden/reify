@@ -342,7 +342,7 @@ pub const FORCE: DimensionVector = {
 ///
 /// The slice contains exactly 30 entries, one per named singleton, in the same order as the
 /// original `canonical_name` match arms (LENGTH .. DYNAMIC_VISCOSITY).
-pub static NAMED_DIMENSIONS: &[(DimensionVector, &'static str)] = &[
+pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
     (DimensionVector::TIME, "Time"),
