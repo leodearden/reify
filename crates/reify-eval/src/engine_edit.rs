@@ -3955,4 +3955,60 @@ mod tests {
             "Constraint payload preserved"
         );
     }
+
+    /// Drop re-donation preserves the original payload bytes for all three
+    /// NodeId variants (Value, Constraint, Realization), and the total
+    /// `used_bytes` accounting matches the sum of the individual sizes.
+    ///
+    /// Pins variant-symmetry of the Drop re-donation path.
+    #[test]
+    fn pending_warm_seeds_guard_drop_preserves_payload_bytes_for_each_entry() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::{ConstraintNodeId, OpaqueState, RealizationNodeId};
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(4096);
+
+        let val_nid = NodeId::Value(ValueCellId::new("T", "v"));
+        let con_nid = NodeId::Constraint(ConstraintNodeId::new("T", 0));
+        let rea_nid = NodeId::Realization(RealizationNodeId::new("T", 0));
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(val_nid.clone(), OpaqueState::new(0xDEADu32, 8));
+            pending.insert(con_nid.clone(), OpaqueState::new(0xBEEFu32, 16));
+            pending.insert(rea_nid.clone(), OpaqueState::new(0xFEEDu32, 24));
+            // No drain — Drop fires with all three entries
+        }
+
+        // Total: 8 + 16 + 24 = 48 bytes
+        assert_eq!(
+            pool.used_bytes(),
+            48,
+            "used_bytes must equal sum of all three entry sizes (8+16+24)"
+        );
+
+        assert_eq!(
+            pool.checkout(&val_nid)
+                .expect("Value entry must be in pool after Drop")
+                .downcast::<u32>(),
+            Some(0xDEAD),
+            "Value payload preserved"
+        );
+        assert_eq!(
+            pool.checkout(&con_nid)
+                .expect("Constraint entry must be in pool after Drop")
+                .downcast::<u32>(),
+            Some(0xBEEF),
+            "Constraint payload preserved"
+        );
+        assert_eq!(
+            pool.checkout(&rea_nid)
+                .expect("Realization entry must be in pool after Drop")
+                .downcast::<u32>(),
+            Some(0xFEED),
+            "Realization payload preserved"
+        );
+    }
 }
