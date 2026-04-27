@@ -373,7 +373,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let _ = (output, split, compact);
+    let _ = (output, split);
     let model = minimal_doc_model_from_compiled(&compiled);
 
     // Default format is "html"; later steps wire the html branch.  For now,
@@ -381,8 +381,10 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     // the json test in step 13 passes without preempting later steps.
     let format_value = format.as_deref().unwrap_or("html");
     if format_value == "json" {
-        let body = reify_doc::fmt_json::render_json(&model, /* compact */ false);
-        print!("{body}");
+        let body = reify_doc::fmt_json::render_json(&model, compact);
+        // Match `cmd_check`'s `println!` style: emit a single trailing
+        // newline regardless of pretty/compact so shell output is tidy.
+        println!("{body}");
         return ExitCode::SUCCESS;
     }
 
