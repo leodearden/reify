@@ -552,13 +552,12 @@ pub(crate) fn compile_expr_guarded(
                     (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
                         if ld != rd =>
                     {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "dimension mismatch in range: {} vs {}",
-                                lo.result_type, hi.result_type,
-                            ))
-                            .with_label(DiagnosticLabel::new(expr.span, "incompatible dimensions")),
-                        );
+                        diagnostics.push(format_dimension_mismatch_diagnostic(
+                            "range",
+                            &lo.result_type,
+                            &hi.result_type,
+                            expr.span,
+                        ));
                     }
                     (Type::Scalar { .. }, Type::Int | Type::Real)
                     | (Type::Int | Type::Real, Type::Scalar { .. }) => {
