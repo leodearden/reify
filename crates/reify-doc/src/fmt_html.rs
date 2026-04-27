@@ -10,8 +10,47 @@
 //! per item with H2 heading and kind-specific body, and a trailing `<h2>Tests</h2>`
 //! subsection for `@test`-annotated items.
 
+use std::collections::BTreeMap;
+
 use crate::cross_refs::CrossRefs;
 use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
+
+/// A `CrossRefs` plus a precomputed *inverse* map from conformer name to the
+/// list of traits the conformer implements.
+///
+/// Mirrors `fmt_markdown::CrossRefIndex`: building the inverse once at the
+/// entry point of [`render_html`] turns the per-item "Conforms to" lookup
+/// from an O(traits × avg_conformers) scan into a single O(log N) BTreeMap
+/// lookup.
+struct CrossRefIndex<'a> {
+    cross_refs: &'a CrossRefs,
+    /// Inverse of `cross_refs.trait_to_conformers`.  Each value list is
+    /// sorted and deduplicated so the rendered `<h3>Conforms to</h3>` bullet
+    /// list is deterministic without per-item resorting.
+    conformer_to_traits: BTreeMap<&'a str, Vec<&'a str>>,
+}
+
+impl<'a> CrossRefIndex<'a> {
+    fn new(cross_refs: &'a CrossRefs) -> Self {
+        let mut conformer_to_traits: BTreeMap<&'a str, Vec<&'a str>> = BTreeMap::new();
+        for (trait_name, conformers) in &cross_refs.trait_to_conformers {
+            for conformer in conformers {
+                conformer_to_traits
+                    .entry(conformer.as_str())
+                    .or_default()
+                    .push(trait_name.as_str());
+            }
+        }
+        for v in conformer_to_traits.values_mut() {
+            v.sort();
+            v.dedup();
+        }
+        Self {
+            cross_refs,
+            conformer_to_traits,
+        }
+    }
+}
 
 /// Render a [`DocModel`] as one self-contained HTML5 document.
 ///
@@ -22,7 +61,8 @@ use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, Po
 /// The output is a single string containing a complete, browser-renderable HTML5
 /// document with no external resource references (no `<link>`, `<script>`,
 /// `<iframe>`, `<img>`, `@import`, `url(http://…)`, or `url(https://…)`).
-pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String {
+pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
+    let xref_index = cross_refs.map(CrossRefIndex::new);
     let mut out = String::new();
     // Title: the first module's path when available, otherwise a neutral default.
     let title = model
@@ -54,7 +94,7 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
         let non_tests: Vec<&ItemDoc> = module.items.iter().collect();
         render_toc(&mut out, &non_tests);
         for item in &module.items {
-            render_item(&mut out, item);
+            render_item(&mut out, item, xref_index.as_ref());
         }
     }
 
@@ -160,7 +200,7 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
 ///
 /// Emits the `<h2>` heading using the visibility/keyword/name convention
 /// inherited from `fmt_markdown::item_keyword`.
-fn render_item(out: &mut String, item: &ItemDoc) {
+fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_>>) {
     let name = item_name(item);
     let kw = item_keyword(item);
     let vis = if item_is_pub(item) { "pub " } else { "" };
@@ -235,7 +275,61 @@ fn render_item(out: &mut String, item: &ItemDoc) {
         }
     }
 
+    // Cross-ref sections (Conforms to / Used by) come AFTER the kind-specific
+    // body, so the most-relevant declaration data renders first and the
+    // outward-pointing links sit at the bottom of the section.
+    render_cross_refs(out, name, xrefs);
+
     out.push_str("</section>\n");
+}
+
+/// Render the `<h3>Conforms to</h3>` and `<h3>Used by</h3>` sections from
+/// `xrefs`, keyed on this item's name.  Each section is emitted only when its
+/// link list is non-empty.
+///
+/// "Conforms to" reads from `xrefs.conformer_to_traits` — the precomputed
+/// inverse of `trait_to_conformers` — so each lookup is O(log N).  "Used by"
+/// reads from `xrefs.cross_refs.entity_to_containers` directly.  Both lists
+/// are sorted and deduplicated before emission.  Mirrors
+/// `fmt_markdown::render_cross_refs`.
+fn render_cross_refs(out: &mut String, name: &str, xrefs: Option<&CrossRefIndex<'_>>) {
+    let Some(xrefs) = xrefs else {
+        return;
+    };
+    if let Some(traits) = xrefs.conformer_to_traits.get(name)
+        && !traits.is_empty()
+    {
+        out.push_str("<h3>Conforms to</h3>\n");
+        out.push_str("<ul>\n");
+        for t in traits {
+            let escaped = html_escape(t);
+            out.push_str("<li><a href=\"#");
+            out.push_str(&escaped);
+            out.push_str("\">");
+            out.push_str(&escaped);
+            out.push_str("</a></li>\n");
+        }
+        out.push_str("</ul>\n");
+    }
+
+    if let Some(containers) = xrefs.cross_refs.entity_to_containers.get(name)
+        && !containers.is_empty()
+    {
+        let mut sorted: Vec<&str> = containers.iter().map(|s| s.as_str()).collect();
+        sorted.sort();
+        sorted.dedup();
+        out.push_str("<h3>Used by</h3>\n");
+        out.push_str("<ul>\n");
+        for c in sorted {
+            let escaped = html_escape(c);
+            out.push_str("<li><a href=\"#");
+            out.push_str(&escaped);
+            out.push_str("\">");
+            out.push_str(&escaped);
+            out.push_str("</a></li>\n");
+        }
+        out.push_str("</ul>\n");
+    }
 }
 
 /// Find the first annotation matching `name` in `anns`. Returns `None` if no
