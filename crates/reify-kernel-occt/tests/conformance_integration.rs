@@ -81,6 +81,25 @@ fn box_is_watertight_manifold_orientable() {
     assert_bool_query(&kernel, GeometryQuery::IsOrientable(box_id), true,  "IsOrientable on box");
 }
 
+/// A stand-alone closed shell extracted from a 10×10×10 mm box (via
+/// `TopExp_Explorer(box, TopAbs_SHELL)`) must pass all three conformance
+/// predicates.
+///
+/// This exercises the SHELL guard arm in `is_watertight`: previously the only
+/// code path reaching `BRepCheck_Analyzer` for a shell came from the
+/// `malformed-solid` fixture, which is queried as a `TopAbs_SOLID` (the shell
+/// is wrapped inside the solid). This test queries the shape directly as
+/// `TopAbs_SHELL`, reaching the `type == TopAbs_SHELL` branch in the guard.
+#[test]
+fn closed_shell_passes_all_three_conformance_queries() {
+    let mut kernel = OcctKernel::new();
+    let shell_id = kernel.store_closed_shell_for_test();
+
+    assert_bool_query(&kernel, GeometryQuery::IsWatertight(shell_id), true,  "IsWatertight on closed shell");
+    assert_bool_query(&kernel, GeometryQuery::IsManifold(shell_id),   true,  "IsManifold on closed shell");
+    assert_bool_query(&kernel, GeometryQuery::IsOrientable(shell_id), true,  "IsOrientable on closed shell");
+}
+
 /// A sphere (radius 5 mm) and a cylinder (radius 3 mm, height 10 mm) are both
 /// closed, manifold, and consistently-oriented solids.  All three conformance
 /// predicates must return `true` for each, confirming positive coverage beyond
