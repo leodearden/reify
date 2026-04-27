@@ -404,14 +404,28 @@ structure def Glass : Insulating {
         "Glass template must have injected constraints from Insulating trait"
     );
 
-    // Verify the dielectric_strength > 0.0 constraint is injected via a BinOp.
-    let ds_constraint = template.constraints.iter().find(|cc| {
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
-            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "dielectric_strength"))
-    });
-    assert!(
-        ds_constraint.is_some(),
-        "expected a constraint referencing 'dielectric_strength' in Glass template, got constraints: {:?}",
-        template.constraints
-    );
+    // Helper: assert a `member > rhs_int` BinOp constraint is injected.
+    // Verifies the operator is Gt and the right-hand-side is the expected integer literal.
+    // The compiler coerces whole-number float literals (e.g. `1000000.0`) to Int, so
+    // `rhs_int` is i64. A stale constraint like `resistivity == 0` or a wrong
+    // threshold would now fail this check.
+    let assert_gt_constraint = |member: &str, rhs_int: i64| {
+        let found = template.constraints.iter().find(|cc| {
+            matches!(
+                &cc.expr.kind,
+                CompiledExprKind::BinOp { op: BinOp::Gt, left, right }
+                if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member)
+                    && matches!(&right.kind, CompiledExprKind::Literal(Value::Int(n)) if *n == rhs_int)
+            )
+        });
+        assert!(
+            found.is_some(),
+            "expected constraint `{member} > {rhs_int}` injected into Glass template, got: {:?}",
+            template.constraints
+        );
+    };
+
+    // Both inherited Insulating constraints must have correct operator and literal injected.
+    assert_gt_constraint("dielectric_strength", 0);         // dielectric_strength > 0.0
+    assert_gt_constraint("resistivity", 1_000_000);         // resistivity > 1e6
 }
