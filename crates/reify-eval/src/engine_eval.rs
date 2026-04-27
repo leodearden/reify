@@ -1195,8 +1195,20 @@ impl Engine {
         }
 
         // Resolution phase: resolve auto params using the constraint solver.
+        //
+        // `resolve_solver_for_module` consults `module.solver_pragma` against the
+        // named-solver registry (`Engine::register_solver`, Task 2300) and falls
+        // back to `self.solver` if the named back-end isn't registered. It is
+        // called once before the template loop so the "not registered" warning
+        // is emitted at most once per eval call. The inner loop re-looks-up the
+        // active solver via `lookup_solver_for_module` (no warning, single
+        // expression) so the &self borrow doesn't extend across the &mut self
+        // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
-        if self.solver.is_some() {
+        let has_active_solver = self
+            .resolve_solver_for_module(module, &mut diagnostics)
+            .is_some();
+        if has_active_solver {
             // Refresh template-native objectives so edit_param() can access them.
             self.objectives.clear();
             for template in &module.templates {
@@ -1215,10 +1227,15 @@ impl Engine {
                 };
 
                 let parent_snap_id = snapshot.id;
-                // Use a temporary borrow of the solver so the reference
-                // doesn't outlive the solve() call — this allows &mut self
-                // for evaluate_let_bindings below.
-                let solve_result = self.solver.as_ref().unwrap().solve(&problem);
+                // Use a temporary borrow of the resolved solver so the
+                // reference doesn't outlive the solve() call — this allows
+                // &mut self for evaluate_let_bindings and snapshot ID bumps
+                // below. `lookup_solver_for_module` re-runs the named-vs-default
+                // routing without re-emitting the warning.
+                let solve_result = self
+                    .lookup_solver_for_module(module)
+                    .expect("has_active_solver is true => solver lookup returns Some")
+                    .solve(&problem);
 
                 match solve_result {
                     SolveResult::Solved {

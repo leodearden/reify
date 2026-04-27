@@ -7,7 +7,8 @@ use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, GeometryKernel,
+    OptimizedImpl,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -276,6 +277,67 @@ impl Engine {
     /// `optimized_targets`.
     pub fn registered_solvers(&self) -> impl Iterator<Item = &str> {
         self.solvers.keys().map(String::as_str)
+    }
+
+    /// Look up the constraint solver to use for `module` (Task 2300).
+    ///
+    /// Resolution policy:
+    /// - `module.solver_pragma == None`: return `self.solver.as_deref()`.
+    /// - `module.solver_pragma == Some({ name, .. })` and `name` is in
+    ///   `self.solvers`: return the named solver.
+    /// - `module.solver_pragma == Some({ name, .. })` and `name` is NOT in
+    ///   `self.solvers`: return `self.solver.as_deref()` (default fallback;
+    ///   may itself be `None` if `with_solver` was never called).
+    ///
+    /// This helper is the lookup-only counterpart of
+    /// [`Engine::resolve_solver_for_module`]: it does NOT emit the
+    /// "not registered" warning. It is intended for the inner solver-invocation
+    /// expression where the `&self` borrow only needs to live for one
+    /// statement (the `.solve(&problem)` call). The warning is emitted by
+    /// `resolve_solver_for_module` once per resolution call, before the
+    /// template loop.
+    pub(crate) fn lookup_solver_for_module(
+        &self,
+        module: &CompiledModule,
+    ) -> Option<&dyn ConstraintSolver> {
+        match module.solver_pragma.as_ref() {
+            None => self.solver.as_deref(),
+            Some(p) => self
+                .solvers
+                .get(&p.name)
+                .map(|b| b.as_ref() as &dyn ConstraintSolver)
+                .or_else(|| self.solver.as_deref()),
+        }
+    }
+
+    /// Resolve the constraint solver to use for `module`, emitting the
+    /// "named back-end not registered" warning at most once (Task 2300).
+    ///
+    /// Called once per `eval()` / `eval_cached()` invocation before the
+    /// template loop so the warning is emitted at most once even when the
+    /// module contains many auto-param templates that would otherwise iterate
+    /// the solver in lock-step. The returned `Option<&dyn ConstraintSolver>`
+    /// can be used directly, but callers iterating over templates that mutate
+    /// `&mut self` between solver calls should use
+    /// [`Engine::lookup_solver_for_module`] inside the inner loop and rely on
+    /// this method only for the one-shot warning + overall availability check.
+    ///
+    /// Mirrors the design decision: "Encapsulate the eval/eval_cached solver
+    /// lookup in a single helper".
+    pub(crate) fn resolve_solver_for_module(
+        &self,
+        module: &CompiledModule,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<&dyn ConstraintSolver> {
+        if let Some(p) = module.solver_pragma.as_ref()
+            && !self.solvers.contains_key(&p.name)
+        {
+            diagnostics.push(Diagnostic::warning(format!(
+                "#solver: named back-end '{}' is not registered; falling back to default solver",
+                p.name
+            )));
+        }
+        self.lookup_solver_for_module(module)
     }
 
     /// Access the cache store (for testing/inspection).
