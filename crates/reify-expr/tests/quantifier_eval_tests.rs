@@ -391,6 +391,109 @@ fn exists_kleene_truth_table_over_list_and_set() {
     }
 }
 
+/// §9.2.6 truth-table matrix: 4 spec-rows × {List, Set} = 8 assertions.
+/// Pins Kleene semantics of `forall` for both container kinds. Cites spec lines
+/// 1722–1727.
+///
+/// Row 2 uses elements `[None, Some(-1), Some(2)]` (i.e. `[undef, -1, 2]`) with
+/// predicate `x > 0`. The adversarial ordering ensures `undef` appears **before**
+/// the determining `false` on both container kinds:
+///
+/// - **List** preserves insertion order → predicate results `[undef, false, true]`.
+///   Catches a premature-undef short-circuit bug: a broken implementation that
+///   returns `Undef` on the first undef result would never reach the determining
+///   `false` and would incorrectly yield `Undef` instead of `Bool(false)`.
+/// - **Set** is backed by `BTreeSet<Value>`; `Value::Undef` carries the lowest
+///   type-tag (0, from `crates/reify-types/src/value.rs` lines 1506–1547) and
+///   sorts before `Value::Int(_)` (tag 2), so the BTreeSet iteration order is
+///   `[Undef, Int(-1), Int(2)]` → predicate results `[undef, false, true]`.
+///   The same adversarial property holds: undef is encountered before the
+///   determining false, exercising the "must scan past undef to reach false" path.
+#[test]
+fn forall_kleene_truth_table_over_list_and_set() {
+    #[derive(Debug, Clone, Copy)]
+    enum CollKind {
+        List,
+        Set,
+    }
+
+    // Rows: (name, elements as Option<i64>, expected result)
+    // Some(i) => Value::Int(i); predicate x > 0 yields Bool(i > 0)
+    // None    => Value::Undef; predicate x > 0 on Undef yields Undef
+    let rows: Vec<(&str, Vec<Option<i64>>, Value)> = vec![
+        // Row 1: all predicate results true → Bool(true)
+        (
+            "all_true",
+            vec![Some(1), Some(2), Some(3)],
+            Value::Bool(true),
+        ),
+        // Row 2: adversarial ordering — undef before the determining false.
+        // List (insertion order preserved): undef → false → true.
+        //   Catches premature-undef short-circuit bug: must scan past undef to
+        //   reach the determining false and return Bool(false).
+        // Set (BTreeSet, Undef tag=0 < Int tag=2): sorts to undef → false → true.
+        //   Same adversarial property; undef comes before the determining false.
+        (
+            "any_false_after_undef",
+            vec![None, Some(-1), Some(2)],
+            Value::Bool(false),
+        ),
+        // Row 3: no false, undef present → Undef
+        // List: [true, undef, true]; Set: [undef, true, true] — both yield Undef
+        (
+            "no_false_some_undef",
+            vec![Some(1), None, Some(3)],
+            Value::Undef,
+        ),
+        // Row 4: empty collection → vacuous truth → Bool(true)
+        ("empty", vec![], Value::Bool(true)),
+    ];
+
+    for kind in [CollKind::List, CollKind::Set] {
+        for (name, elements, expected) in &rows {
+            let x_id = ValueCellId::new("$quant0.S", "x");
+
+            // Build element expressions: Some(i) → Int literal, None → Undef literal
+            let elem_exprs: Vec<CompiledExpr> = elements
+                .iter()
+                .map(|opt| match opt {
+                    Some(i) => CompiledExpr::literal(Value::Int(*i), Type::Int),
+                    None => CompiledExpr::literal(Value::Undef, Type::Int),
+                })
+                .collect();
+
+            // Build collection for the current container kind
+            let collection = match kind {
+                CollKind::List => {
+                    CompiledExpr::list_literal(elem_exprs, Type::List(Box::new(Type::Int)))
+                }
+                CollKind::Set => {
+                    CompiledExpr::set_literal(elem_exprs, Type::Set(Box::new(Type::Int)))
+                }
+            };
+
+            // Predicate: x > 0
+            let predicate = CompiledExpr::binop(
+                BinOp::Gt,
+                CompiledExpr::value_ref(x_id.clone(), Type::Int),
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+                Type::Bool,
+            );
+
+            let expr =
+                make_quantifier(QuantifierKind::ForAll, "x", x_id, collection, predicate);
+
+            let values = ValueMap::new();
+            let result = eval_expr(&expr, &EvalContext::simple(&values));
+            assert_eq!(
+                result,
+                *expected,
+                "forall({kind:?}, row={name}): expected {expected:?}",
+            );
+        }
+    }
+}
+
 /// step-11: Integration test for exists — parse + compile + eval with a false result
 #[test]
 fn integration_exists_constraint_parse_compile_eval() {
