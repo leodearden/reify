@@ -187,7 +187,9 @@ fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>
         emit_paragraphs(out, doc);
     }
 
-    // Container variants (Structure / Occurrence) get parameter and port tables.
+    // Kind-specific body. Container variants get parameter / port / constraint
+    // / meta sections; the simpler variants emit a tiny body that mirrors the
+    // language surface (members list, signature fence, type/default lines, …).
     match item {
         ItemDoc::Structure {
             params, ports, constraints, meta, ..
@@ -200,8 +202,113 @@ fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        _ => {}
+        ItemDoc::Trait { members, .. } => {
+            render_trait_members(out, members);
+        }
+        ItemDoc::Function { signature, .. } => {
+            render_function_signature(out, signature);
+        }
+        ItemDoc::Enum { variants, .. } => {
+            render_enum_variants(out, variants);
+        }
+        ItemDoc::Field { type_repr, default_repr, .. } => {
+            render_field_body(out, type_repr, default_repr.as_deref());
+        }
+        ItemDoc::Purpose { direction, expr_repr, .. } => {
+            render_purpose_body(out, direction, expr_repr);
+        }
+        ItemDoc::Unit { base_unit, scale, .. } => {
+            render_unit_body(out, base_unit, scale);
+        }
+        ItemDoc::TypeAlias { type_repr, .. } => {
+            render_type_alias_body(out, type_repr);
+        }
+        ItemDoc::ConstraintDef { expr_repr, .. } => {
+            render_constraint_def_body(out, expr_repr);
+        }
     }
+}
+
+/// Render the `### Members` bullet list for a `Trait`. No-op when empty.
+fn render_trait_members(out: &mut String, members: &[String]) {
+    if members.is_empty() {
+        return;
+    }
+    out.push_str("### Members\n\n");
+    for m in members {
+        out.push_str("- ");
+        out.push_str(m);
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
+/// Render a fenced `reify` code block containing a `Function`'s rendered
+/// signature.
+fn render_function_signature(out: &mut String, signature: &str) {
+    out.push_str("```reify\n");
+    out.push_str(signature);
+    out.push_str("\n```\n\n");
+}
+
+/// Render the `### Variants` bullet list for an `Enum`. No-op when empty.
+fn render_enum_variants(out: &mut String, variants: &[String]) {
+    if variants.is_empty() {
+        return;
+    }
+    out.push_str("### Variants\n\n");
+    for v in variants {
+        out.push_str("- ");
+        out.push_str(v);
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
+/// Render the `**Type:**` (and optional `**Default:**`) lines for a `Field`.
+fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&str>) {
+    out.push_str("**Type:** `");
+    out.push_str(type_repr);
+    out.push_str("`\n\n");
+    if let Some(d) = default_repr {
+        out.push_str("**Default:** `");
+        out.push_str(d);
+        out.push_str("`\n\n");
+    }
+}
+
+/// Render the `**Direction:**` and `**Expression:**` lines for a `Purpose`.
+fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
+    out.push_str("**Direction:** ");
+    out.push_str(direction);
+    out.push_str("\n\n");
+    out.push_str("**Expression:** `");
+    out.push_str(expr_repr);
+    out.push_str("`\n\n");
+}
+
+/// Render the `**Base:**` and `**Scale:**` lines for a `Unit`.
+fn render_unit_body(out: &mut String, base_unit: &str, scale: &str) {
+    out.push_str("**Base:** `");
+    out.push_str(base_unit);
+    out.push_str("`\n\n");
+    out.push_str("**Scale:** `");
+    out.push_str(scale);
+    out.push_str("`\n\n");
+}
+
+/// Render the `= \`{type_repr}\`` line for a `TypeAlias`.
+fn render_type_alias_body(out: &mut String, type_repr: &str) {
+    out.push_str("= `");
+    out.push_str(type_repr);
+    out.push_str("`\n\n");
+}
+
+/// Render the `\`{expr_repr}\`` line for a `ConstraintDef`.
+fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
+    out.push('`');
+    out.push_str(expr_repr);
+    out.push_str("`\n\n");
 }
 
 /// Escape a single Markdown table cell value.
