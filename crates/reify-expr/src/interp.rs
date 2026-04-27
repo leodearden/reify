@@ -488,12 +488,22 @@ pub fn interpolate_3d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::NearestNeighbor => unreachable!(
-            "InterpolationMethod::NearestNeighbor 3D not yet implemented"
-        ),
-        InterpolationMethod::Cubic => unreachable!(
-            "InterpolationMethod::Cubic 3D not yet implemented"
-        ),
+        InterpolationMethod::NearestNeighbor => {
+            let i = nearest_index_on_axis(grid_x, query.0);
+            let j = nearest_index_on_axis(grid_y, query.1);
+            let k = nearest_index_on_axis(grid_z, query.2);
+            InterpolationResult {
+                value: values[index_3d(i, j, k, grid_y.len(), grid_z.len())],
+                diagnostics: Vec::new(),
+            }
+        }
+        InterpolationMethod::Cubic => {
+            let value = cubic_3d(grid_x, grid_y, grid_z, values, query);
+            InterpolationResult {
+                value,
+                diagnostics: Vec::new(),
+            }
+        }
         InterpolationMethod::Rbf => unreachable!(
             "InterpolationMethod::Rbf 3D not yet implemented"
         ),
@@ -531,6 +541,38 @@ fn linear_3d(
         }
     }
     linear_2d(grid_x, grid_y, &slice2d, (qx, qy))
+}
+
+/// Tricubic kernel for a 3D grid, computed as the natural tensor product:
+/// for each x-index `i`, gather the `(y, z)` slice of values at `x=grid_x[i]`
+/// and evaluate the bicubic [`cubic_2d`] at `(qy, qz)` to produce a row of
+/// length `nx`; then evaluate the 1D [`cubic_1d`] kernel along the x-axis at
+/// `qx`. This collapses the axes in the order `z → y → x` (since `cubic_2d`
+/// itself collapses its trailing axis first), which matches the separability
+/// identity asserted in the test suite.
+fn cubic_3d(
+    grid_x: &[f64],
+    grid_y: &[f64],
+    grid_z: &[f64],
+    values: &[f64],
+    query: (f64, f64, f64),
+) -> f64 {
+    let (qx, qy, qz) = query;
+    let nx = grid_x.len();
+    let ny = grid_y.len();
+    let nz = grid_z.len();
+
+    let mut row = vec![0.0f64; nx];
+    let mut slice = vec![0.0f64; ny * nz];
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                slice[index_2d(j, k, nz)] = values[index_3d(i, j, k, ny, nz)];
+            }
+        }
+        row[i] = cubic_2d(grid_y, grid_z, &slice, (qy, qz));
+    }
+    cubic_1d(grid_x, &row, qx)
 }
 
 /// Locate a cell on a single axis with constant-extrapolation clamping.
