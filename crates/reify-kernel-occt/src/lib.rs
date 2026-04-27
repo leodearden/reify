@@ -1339,6 +1339,54 @@ mod tests {
         }
     }
 
+    /// Parse a `{"x":_,"y":_,"z":_}` JSON string into `(x, y, z)`.
+    /// Used by `CenterOfMass` query tests to decode the `Value::String` encoding returned
+    /// by `query_centroid`.
+    fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
+        let parse_field = |field: &str| -> f64 {
+            let needle = format!("\"{field}\":");
+            let start = s.find(needle.as_str()).unwrap_or_else(|| {
+                panic!("field {field} not found in centroid JSON: {s:?}")
+            }) + needle.len();
+            let rest = &s[start..];
+            let end = rest.find([',', '}']).unwrap_or(rest.len());
+            rest[..end].parse::<f64>().unwrap_or_else(|e| {
+                panic!("failed to parse {field} in centroid JSON: {s:?}: {e}")
+            })
+        };
+        (parse_field("x"), parse_field("y"), parse_field("z"))
+    }
+
+    /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
+    /// a `[[f64;3];3]` array.  Panics with a descriptive message if the structure does not
+    /// match the expected nested-list shape.
+    fn extract_3x3_tensor_entries(value: &Value) -> [[f64; 3]; 3] {
+        let rows = match value {
+            Value::List(rows) => {
+                assert_eq!(rows.len(), 3, "expected 3 rows, got {}", rows.len());
+                rows
+            }
+            other => panic!("expected Value::List(rows), got {:?}", other),
+        };
+        let mut entries = [[0.0f64; 3]; 3];
+        for (i, row) in rows.iter().enumerate() {
+            let cols = match row {
+                Value::List(cols) => {
+                    assert_eq!(cols.len(), 3, "row {} expected 3 cols, got {}", i, cols.len());
+                    cols
+                }
+                other => panic!("row {} expected Value::List, got {:?}", i, other),
+            };
+            for (j, col) in cols.iter().enumerate() {
+                entries[i][j] = match col {
+                    Value::Real(v) => *v,
+                    other => panic!("entry [{i}][{j}] expected Value::Real, got {:?}", other),
+                };
+            }
+        }
+        entries
+    }
+
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
         const {
@@ -4940,21 +4988,6 @@ mod tests {
             })
             .unwrap();
 
-        // Helper to parse a {"x":_,"y":_,"z":_} JSON string into (x, y, z).
-        fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
-            let parse_field = |field: &str| -> f64 {
-                let needle = format!("\"{field}\":");
-                let start = s.find(needle.as_str()).unwrap_or_else(|| {
-                    panic!("field {field} not found in centroid JSON: {s:?}")
-                }) + needle.len();
-                let rest = &s[start..];
-                let end = rest.find([',', '}']).unwrap_or(rest.len());
-                rest[..end].parse::<f64>().unwrap_or_else(|e| {
-                    panic!("failed to parse {field} in centroid JSON: {s:?}: {e}")
-                })
-            };
-            (parse_field("x"), parse_field("y"), parse_field("z"))
-        }
 
         // Query with density 100.0.
         let result_100 = kernel
