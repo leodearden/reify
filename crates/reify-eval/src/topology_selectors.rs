@@ -359,12 +359,16 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
     tol_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
+    let queries: Vec<GeometryQuery> = edges
+        .iter()
+        .map(|id| GeometryQuery::BoundingBox(*id))
+        .collect();
+    let values = kernel.query_many(&queries)?;
     let mut out = Vec::with_capacity(edges.len());
-    for id in edges {
-        let bbox_value = kernel.query(&GeometryQuery::BoundingBox(id))?;
+    for (id, bbox_value) in edges.iter().zip(values) {
         let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
         if (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m {
-            out.push(id);
+            out.push(*id);
         }
     }
     Ok(out)
