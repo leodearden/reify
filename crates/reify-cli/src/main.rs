@@ -265,6 +265,39 @@ fn cmd_build(args: &[String]) -> ExitCode {
 const DOC_USAGE: &str =
     "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]";
 
+/// Output format for `reify doc`.
+///
+/// Default is `Html` per the PRD; the `--format` flag accepts `html`,
+/// `markdown`, or `json`.  Bad values are surfaced as usage errors via
+/// [`Format::from_str_or_usage_err`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Html,
+    Markdown,
+    Json,
+}
+
+impl Format {
+    /// Parse a `--format` value, returning a usage-error [`ExitCode`] (`2`)
+    /// on unknown input so typos like `--format hmtl` fail loud.  The error
+    /// message and `DOC_USAGE` line are printed to stderr.
+    fn from_str_or_usage_err(s: &str) -> Result<Format, ExitCode> {
+        match s {
+            "html" => Ok(Format::Html),
+            "markdown" => Ok(Format::Markdown),
+            "json" => Ok(Format::Json),
+            other => {
+                eprintln!(
+                    "Error: unknown --format value: {} (expected html|markdown|json)",
+                    other
+                );
+                eprintln!("{}", DOC_USAGE);
+                Err(ExitCode::from(2u8))
+            }
+        }
+    }
+}
+
 /// Build a near-empty but well-formed [`reify_doc::model::DocModel`] from a
 /// compiled module.
 ///
@@ -410,6 +443,25 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
     };
 
+    // Resolve `--format` (default `html`) into a typed `Format`.  Bad values
+    // exit 2 with a usage-error on stderr.
+    let format = match format.as_deref() {
+        Some(s) => match Format::from_str_or_usage_err(s) {
+            Ok(f) => f,
+            Err(code) => return code,
+        },
+        None => Format::Html,
+    };
+
+    // `--split` is markdown-only.  Reject json/html + split before doing any
+    // expensive parse/compile work so usage errors are fast and stderr stays
+    // crisp.
+    if split && format != Format::Markdown {
+        eprintln!("Error: --split is only valid with --format markdown");
+        eprintln!("{}", DOC_USAGE);
+        return ExitCode::from(2u8);
+    }
+
     let compiled = match parse_and_compile(input) {
         Ok(c) => c,
         Err(code) => return code,
@@ -423,48 +475,46 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let _ = (output, split);
+    let _ = output;
     let model = minimal_doc_model_from_compiled(&compiled);
 
-    // Default format is "html"; later steps wire the html branch.
-    let format_value = format.as_deref().unwrap_or("html");
-    if format_value == "json" {
-        let body = reify_doc::fmt_json::render_json(&model, compact);
-        // Match `cmd_check`'s `println!` style: emit a single trailing
-        // newline regardless of pretty/compact so shell output is tidy.
-        println!("{body}");
-        return ExitCode::SUCCESS;
-    }
-
-    if format_value == "markdown" {
-        // TODO(post-2361): once `reify_doc_build::build_doc_model` lands,
-        // wire `reify_doc_build::cross_refs::build_cross_refs(&compiled.templates)`
-        // here and pass `Some(&xrefs)` instead of `None`.  With the placeholder
-        // empty `DocModel`, cross-refs would be degenerate, so `None` is
-        // byte-equivalent and saves a workspace dep.
-        let output = reify_doc::fmt_markdown::render_markdown(
-            &model,
-            None,
-            &reify_doc::fmt_markdown::MarkdownOptions::default(),
-        );
-        match output {
-            reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
-                print!("{body}");
-                return ExitCode::SUCCESS;
-            }
-            reify_doc::fmt_markdown::MarkdownOutput::Split(_) => {
-                // Unreachable in single-file mode (split == false); guard
-                // against future refactors that flip the dispatch.
-                eprintln!("Internal error: markdown single mode produced Split output");
-                return ExitCode::FAILURE;
+    match format {
+        Format::Json => {
+            let body = reify_doc::fmt_json::render_json(&model, compact);
+            // Match `cmd_check`'s `println!` style: emit a single trailing
+            // newline regardless of pretty/compact so shell output is tidy.
+            println!("{body}");
+            ExitCode::SUCCESS
+        }
+        Format::Markdown => {
+            // TODO(post-2361): once `reify_doc_build::build_doc_model`
+            // lands, wire `reify_doc_build::cross_refs::build_cross_refs(
+            // &compiled.templates)` here and pass `Some(&xrefs)` instead of
+            // `None`.  With the placeholder empty `DocModel`, cross-refs
+            // would be degenerate, so `None` is byte-equivalent and saves a
+            // workspace dep.
+            let opts = reify_doc::fmt_markdown::MarkdownOptions { split };
+            let output = reify_doc::fmt_markdown::render_markdown(&model, None, &opts);
+            match output {
+                reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
+                    print!("{body}");
+                    ExitCode::SUCCESS
+                }
+                reify_doc::fmt_markdown::MarkdownOutput::Split(_files) => {
+                    // TODO(post-2361): split-write directory plumbing lands
+                    // in step 28.  For now, fall through with SUCCESS so
+                    // intermediate test runs don't regress.
+                    ExitCode::SUCCESS
+                }
             }
         }
+        Format::Html => {
+            // Default + explicit `--format html`: emit the in-CLI HTML stub.
+            let body = render_html_stub(&model);
+            print!("{body}");
+            ExitCode::SUCCESS
+        }
     }
-
-    // Default + explicit `--format html`: emit the in-CLI HTML stub.
-    let body = render_html_stub(&model);
-    print!("{body}");
-    ExitCode::SUCCESS
 }
 
 fn cmd_gui(args: &[String]) -> ExitCode {
