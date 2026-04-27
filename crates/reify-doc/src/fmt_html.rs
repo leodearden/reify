@@ -193,13 +193,21 @@ fn render_item(out: &mut String, item: &ItemDoc) {
         ItemDoc::Enum { variants, .. } => {
             render_enum_variants(out, variants);
         }
-        // Scalar-bodied variants (Field/Purpose/Unit/TypeAlias/ConstraintDef)
-        // get their bodies wired up in step-22.
-        ItemDoc::Field { .. }
-        | ItemDoc::Purpose { .. }
-        | ItemDoc::Unit { .. }
-        | ItemDoc::TypeAlias { .. }
-        | ItemDoc::ConstraintDef { .. } => {}
+        ItemDoc::Field { type_repr, default_repr, .. } => {
+            render_field_body(out, type_repr, default_repr.as_deref());
+        }
+        ItemDoc::Purpose { direction, expr_repr, .. } => {
+            render_purpose_body(out, direction, expr_repr);
+        }
+        ItemDoc::Unit { base_unit, scale, .. } => {
+            render_unit_body(out, base_unit, scale);
+        }
+        ItemDoc::TypeAlias { type_repr, .. } => {
+            render_type_alias_body(out, type_repr);
+        }
+        ItemDoc::ConstraintDef { expr_repr, .. } => {
+            render_constraint_def_body(out, expr_repr);
+        }
     }
 
     out.push_str("</section>\n");
@@ -374,6 +382,67 @@ fn render_function_signature(out: &mut String, signature: &str) {
     out.push_str("<pre><code>");
     out.push_str(&html_escape(signature));
     out.push_str("</code></pre>\n");
+}
+
+/// Render the Type / optional Default rows for a `Field`.
+///
+/// `<dl><dt>Type</dt><dd><code>{type_repr}</code></dd>` always; the
+/// `<dt>Default</dt><dd><code>{default_repr}</code></dd>` row is appended
+/// only when `default_repr` is `Some`.  Mirrors `fmt_markdown::render_field_body`.
+fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&str>) {
+    out.push_str("<dl>\n");
+    out.push_str("<dt>Type</dt><dd><code>");
+    out.push_str(&html_escape(type_repr));
+    out.push_str("</code></dd>\n");
+    if let Some(d) = default_repr {
+        out.push_str("<dt>Default</dt><dd><code>");
+        out.push_str(&html_escape(d));
+        out.push_str("</code></dd>\n");
+    }
+    out.push_str("</dl>\n");
+}
+
+/// Render the Direction / Expression rows for a `Purpose`.
+///
+/// `<dl><dt>Direction</dt><dd>{direction}</dd><dt>Expression</dt><dd><code>{expr}</code></dd></dl>`.
+/// Direction is plain text; the expression wraps in `<code>`.
+fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
+    out.push_str("<dl>\n");
+    out.push_str("<dt>Direction</dt><dd>");
+    out.push_str(&html_escape(direction));
+    out.push_str("</dd>\n");
+    out.push_str("<dt>Expression</dt><dd><code>");
+    out.push_str(&html_escape(expr_repr));
+    out.push_str("</code></dd>\n");
+    out.push_str("</dl>\n");
+}
+
+/// Render the Base / Scale rows for a `Unit`.
+///
+/// `<dl><dt>Base</dt><dd><code>{base_unit}</code></dd><dt>Scale</dt><dd><code>{scale}</code></dd></dl>`.
+fn render_unit_body(out: &mut String, base_unit: &str, scale: &str) {
+    out.push_str("<dl>\n");
+    out.push_str("<dt>Base</dt><dd><code>");
+    out.push_str(&html_escape(base_unit));
+    out.push_str("</code></dd>\n");
+    out.push_str("<dt>Scale</dt><dd><code>");
+    out.push_str(&html_escape(scale));
+    out.push_str("</code></dd>\n");
+    out.push_str("</dl>\n");
+}
+
+/// Render the `= <code>{type}</code>` line for a `TypeAlias`.
+fn render_type_alias_body(out: &mut String, type_repr: &str) {
+    out.push_str("<p>= <code>");
+    out.push_str(&html_escape(type_repr));
+    out.push_str("</code></p>\n");
+}
+
+/// Render the `<code>{expr}</code>` line for a `ConstraintDef`.
+fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
+    out.push_str("<p><code>");
+    out.push_str(&html_escape(expr_repr));
+    out.push_str("</code></p>\n");
 }
 
 /// Render the `<h3>Meta</h3>` definition list, sorted alphabetically by key.
