@@ -146,3 +146,46 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         | PrimitiveKind::Tube => InferredTraits::all(),
     }
 }
+
+/// Boolean union propagation rule.
+///
+/// `bounded` is preserved iff **both** operands are bounded — an unbounded
+/// operand contributes its unboundedness to the union. `connected` and
+/// `convex` are always dropped: the union of two disjoint connected
+/// pieces is disconnected, and the union of two convex sets is generally
+/// not convex (and the IR cannot tell whether they overlap).
+pub const fn combine_union(a: InferredTraits, b: InferredTraits) -> InferredTraits {
+    InferredTraits {
+        bounded: a.bounded && b.bounded,
+        connected: false,
+        convex: false,
+    }
+}
+
+/// Boolean difference propagation rule.
+///
+/// `bounded` is inherited from the **left** (cuttee) operand: subtracting
+/// any cutter from a bounded body stays bounded. `connected` and `convex`
+/// are dropped: cutting can produce disjoint or non-convex remainders.
+pub const fn combine_difference(left: InferredTraits, _right: InferredTraits) -> InferredTraits {
+    InferredTraits {
+        bounded: left.bounded,
+        connected: false,
+        convex: false,
+    }
+}
+
+/// Boolean intersection propagation rule.
+///
+/// `bounded` is preserved if **either** operand is bounded (the bounded
+/// one bounds the intersection from the outside). `convex` is preserved
+/// iff **both** operands are convex (the intersection of two convex sets
+/// is convex). `connected` is dropped: intersection can produce disjoint
+/// pieces.
+pub const fn combine_intersection(a: InferredTraits, b: InferredTraits) -> InferredTraits {
+    InferredTraits {
+        bounded: a.bounded || b.bounded,
+        connected: false,
+        convex: a.convex && b.convex,
+    }
+}
