@@ -15,13 +15,15 @@ structure S {
       variable: (identifier)
       collection: (identifier)
       body: (connect_statement
-        left: (member_access
-          object: (identifier)
-          member: (identifier))
+        left: (port_ref
+          (member_access
+            object: (identifier)
+            member: (identifier)))
         operator: (connect_operator)
-        right: (member_access
-          object: (identifier)
-          member: (identifier))))))
+        right: (port_ref
+          (member_access
+            object: (identifier)
+            member: (identifier)))))))
 
 ================================================================================
 forall statement with constraint_declaration body
@@ -100,13 +102,15 @@ structure S {
         variable: (identifier)
         collection: (identifier)
         body: (connect_statement
-          left: (member_access
-            object: (identifier)
-            member: (identifier))
+          left: (port_ref
+            (member_access
+              object: (identifier)
+              member: (identifier)))
           operator: (connect_operator)
-          right: (member_access
-            object: (identifier)
-            member: (identifier)))))))
+          right: (port_ref
+            (member_access
+              object: (identifier)
+              member: (identifier))))))))
 
 ================================================================================
 forall statement with connect body including connect_body block
@@ -125,13 +129,15 @@ structure S {
       variable: (identifier)
       collection: (identifier)
       body: (connect_statement
-        left: (member_access
-          object: (identifier)
-          member: (identifier))
+        left: (port_ref
+          (member_access
+            object: (identifier)
+            member: (identifier)))
         operator: (connect_operator)
-        right: (member_access
-          object: (identifier)
-          member: (identifier))
+        right: (port_ref
+          (member_access
+            object: (identifier)
+            member: (identifier)))
         body: (connect_body
           (connect_param_assignment
             name: (identifier)
