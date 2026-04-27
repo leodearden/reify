@@ -1986,6 +1986,73 @@ fn multiple_module_level_solver_pragmas_first_wins() {
     );
 }
 
+/// Malformed first `#solver` does not consume the "first wins" slot:
+/// `#solver(42)` (bare Number, not a back-end Ident) emits exactly one
+/// form-hint warning, but leaves the slot open so the following
+/// `#solver(libslvs)` is still recognised and stored.
+///
+/// Regression test for the bug where `first_seen = true` fired before the
+/// args match, causing the second well-formed pragma to be treated as a
+/// duplicate ("subsequent #solver pragma ignored; first one wins").
+#[test]
+fn malformed_then_valid_solver_pragmas_recover() {
+    let module = compile_source(
+        "#solver(42)\n#solver(libslvs)\nstructure S { param x : Real }",
+    );
+
+    // (a) The well-formed second pragma must be stored.
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) from the well-formed second #solver(libslvs)");
+    assert_eq!(
+        solver_pragma.name, "libslvs",
+        "expected solver_pragma.name == \"libslvs\" from the well-formed second pragma, \
+         got {:?}",
+        solver_pragma.name
+    );
+
+    // (b) Exactly one warning mentioning "#solver" + "expected" + "ident" —
+    // from the malformed first pragma's bare-Number form.
+    let form_hint_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("#solver")
+                && d.message.contains("expected")
+                && d.message.contains("ident")
+        })
+        .collect();
+    assert_eq!(
+        form_hint_warns.len(),
+        1,
+        "expected exactly 1 '#solver' + 'expected' + 'ident' warning for #solver(42), \
+         got {}: {:?}",
+        form_hint_warns.len(),
+        warnings_only(&module)
+    );
+
+    // (c) Zero warnings containing "subsequent" — the valid second pragma must
+    // NOT be flagged as a duplicate.
+    let subsequent_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("subsequent"))
+        .collect();
+    assert!(
+        subsequent_warns.is_empty(),
+        "expected zero 'subsequent' warnings (second well-formed #solver must not be \
+         treated as duplicate), got {}: {:?}",
+        subsequent_warns.len(),
+        subsequent_warns
+    );
+
+    // No errors.
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+}
+
 /// Helper: filter warnings that match the block-level `#solver` "deferred to
 /// v0.2" shape — message contains "ignored in v0.1" AND ("v0.2" OR
 /// "per-block").
