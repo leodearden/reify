@@ -5084,6 +5084,81 @@ mod tests {
         }
     }
 
+    /// Query CenterOfMass on a non-solid wire (a line segment).
+    ///
+    /// OCCT's `BRepGProp::VolumeProperties` returns mass=0 for non-solid shapes
+    /// (wires have no enclosed volume), and OCCT's `GProp_GProps::CentreOfMass()`
+    /// defaults to the origin when mass=0.  The kernel therefore returns
+    /// `Ok(Value::String("..."))` with (x, y, z) ≈ (0, 0, 0).
+    ///
+    /// **This pins current observable behavior.**  A future kernel change MAY tighten
+    /// this to return a typed `Err(QueryError::…)` for non-solid input — update this
+    /// test if that change lands.
+    #[test]
+    fn center_of_mass_on_non_solid_wire_returns_origin() {
+        let mut kernel = OcctKernel::new();
+        // A line segment of length 10 — well above any minimum-length floor.
+        let wire_h = kernel
+            .execute(&GeometryOp::LineSegment {
+                x1: 0.0, y1: 0.0, z1: 0.0,
+                x2: 10.0, y2: 0.0, z2: 0.0,
+            })
+            .expect("LineSegment must succeed");
+        let result = kernel
+            .query(&GeometryQuery::CenterOfMass { handle: wire_h.id, density: 1.0 });
+        // (a) must not panic, must not return Err — the kernel is permissive for non-solids.
+        let value = result.expect(
+            "CenterOfMass on a non-solid wire must not return Err (kernel is permissive)"
+        );
+        // (b) result must be a JSON-encoded centroid string.
+        let (x, y, z) = match &value {
+            Value::String(s) => parse_centroid_json(s),
+            other => panic!("expected Value::String JSON centroid, got {:?}", other),
+        };
+        // (c) OCCT returns mass=0 for non-solids → CentreOfMass defaults to origin.
+        let tol = 1e-6;
+        assert!(x.abs() < tol, "centroid x expected ≈0 for non-solid wire, got {x}");
+        assert!(y.abs() < tol, "centroid y expected ≈0 for non-solid wire, got {y}");
+        assert!(z.abs() < tol, "centroid z expected ≈0 for non-solid wire, got {z}");
+    }
+
+    /// Query InertiaTensor on a non-solid wire (a line segment).
+    ///
+    /// `BRepGProp::VolumeProperties` returns mass=0 for non-solid shapes, so
+    /// `GProp_GProps::MatrixOfInertia()` is the zero matrix.  After multiplication
+    /// by `density` all 9 entries remain zero.
+    ///
+    /// **This pins current observable behavior.**  A future kernel change MAY tighten
+    /// this to return a typed `Err(QueryError::…)` for non-solid input — update this
+    /// test if that change lands.
+    #[test]
+    fn inertia_tensor_on_non_solid_wire_returns_zero_tensor() {
+        let mut kernel = OcctKernel::new();
+        let wire_h = kernel
+            .execute(&GeometryOp::LineSegment {
+                x1: 0.0, y1: 0.0, z1: 0.0,
+                x2: 10.0, y2: 0.0, z2: 0.0,
+            })
+            .expect("LineSegment must succeed");
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor { handle: wire_h.id, density: 1.0 });
+        let value = result.expect(
+            "InertiaTensor on a non-solid wire must not return Err (kernel is permissive)"
+        );
+        let entries = extract_3x3_tensor_entries(&value);
+        let tol = 1e-9;
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    entries[i][j].abs() < tol,
+                    "entry [{i}][{j}] expected ≈0 for non-solid wire (mass=0 → zero tensor), \
+                     got {}",
+                    entries[i][j]
+                );
+            }
+        }
+    }
+
     #[test]
     fn inertia_tensor_box_with_density_analytic() {
         let mut kernel = OcctKernel::new();
