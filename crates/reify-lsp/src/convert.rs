@@ -168,7 +168,7 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
     // non-string JSON values, leaving the code field absent (safe degradation).
     let code = diag
         .code
-        .and_then(|c| serde_json::to_value(&c).ok().and_then(|v| v.as_str().map(str::to_owned)))
+        .and_then(|c| serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)))
         .map(lsp_types::NumberOrString::String);
 
     lsp_types::Diagnostic {
