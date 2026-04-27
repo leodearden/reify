@@ -1911,6 +1911,15 @@ fn solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none() {
             "#solver(method=\"gradient\")\nstructure S { param x : Real }",
             "key-value-first",
         ),
+        // Multi-element shape whose first element is a non-ident bare value
+        // (bare Number + KeyValue). Length > 1, leading element is not an
+        // Ident, so the `[Bare(Ident(_)), ..]` arm doesn't match and the
+        // single-element `[Bare(_)]` arm doesn't match either — reaches the
+        // catch-all `_ =>` arm. Locks in the catch-all's live-handler role.
+        (
+            "#solver(42, threads=4)\nstructure S { param x : Real }",
+            "multi-bare-with-keyvalue",
+        ),
     ];
 
     for (source, label) in cases {
