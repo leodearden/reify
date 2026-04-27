@@ -18,6 +18,7 @@ use reify_types::{DimensionVector, Severity};
 // ─── (a) USD metadata: dimension = MONEY, factor ≈ 1.0, no offset ────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn stdlib_units_module_contains_USD_with_money_dimension() {
     assert_simple_unit("USD", DimensionVector::MONEY, 1.0, 1e-12);
 }
@@ -25,6 +26,7 @@ fn stdlib_units_module_contains_USD_with_money_dimension() {
 // ─── (b) USD visibility: is_pub == true ──────────────────────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn stdlib_USD_is_publicly_visible_in_prelude() {
     let module = units_module();
     let u = module
@@ -41,6 +43,7 @@ fn stdlib_USD_is_publicly_visible_in_prelude() {
 // ─── (c) USD quantity literal resolves to Money scalar ───────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn stdlib_USD_quantity_literal_resolves_to_money_scalar() {
     let (v, d) = stdlib_param_si_value("Money", "25USD");
     assert_eq_rel(v, 25.0, 1e-12, "25USD should be 25.0 in SI (Money)");
@@ -50,6 +53,7 @@ fn stdlib_USD_quantity_literal_resolves_to_money_scalar() {
 // ─── (d) USD/kg compound resolves to Money/Mass ──────────────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
     // The parser only accepts named types in param declarations, not inline
     // DimensionalOp expressions like `Money/Mass`. Define a top-level type
