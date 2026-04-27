@@ -77,8 +77,8 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 ///     `body.result_expr`.
 ///   * `Field`: `annotations[*].args` + `source` (Analytical/Composed `expr`,
 ///     Sampled config values).
-///   * `Constraint` (named def): `annotations[*].args` + `params[*].default` +
-///     `predicates[*]`.
+///   * `Constraint` (named def): `annotations[*].args` +
+///     `params[*].(default | where_clause.condition)` + `predicates[*]`.
 ///   * `Unit`: `annotations[*].args` + `conversion` + `offset`.
 ///   * `Enum`/`Import`/`TypeAlias`: `annotations[*].args` only (no other
 ///     embedded expressions today).
