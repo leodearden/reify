@@ -105,4 +105,5 @@ trait Discard : Sink {
 // `line_cost` resolves to `Scalar<MONEY>`.
 trait Costed : Buy {
     param quantity_produced : Real
+    let line_cost : Money = unit_cost * quantity_produced
 }
