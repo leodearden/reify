@@ -26,6 +26,7 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     apply_kernel_pragma(parsed, module);
     warn_block_level_precision(module);
     warn_block_level_solver(module);
+    warn_block_level_kernel(module);
 }
 
 /// The maximum target language version this compiler can compile.
@@ -65,8 +66,9 @@ fn collect_named_pragma_spans(target_name: &str, pragmas: &[Pragma], out: &mut V
 /// `compiled_purposes` (`CompiledPurpose`), and `constraint_defs`
 /// (`CompiledConstraintDef`). If a future PR adds a fifth pragma-bearing
 /// container (e.g. `compiled_functions`), append a matching loop below — and
-/// also update the sibling `warn_block_level_solver`, which walks the same
-/// four containers for `#solver`.
+/// also update the sibling `warn_block_level_solver` and
+/// `warn_block_level_kernel`, which walk the same four containers for
+/// `#solver` and `#kernel` respectively.
 fn warn_block_level_precision(module: &mut CompiledModule) {
     let mut spans: Vec<SourceSpan> = Vec::new();
 
@@ -124,6 +126,44 @@ fn warn_block_level_solver(module: &mut CompiledModule) {
         module.diagnostics.push(
             Diagnostic::warning(
                 "#solver is ignored in v0.1; per-block solver tuning deferred to v0.2",
+            )
+            .with_label(DiagnosticLabel::new(span, "ignored in v0.1")),
+        );
+    }
+}
+
+/// Walk every block-level pragma container on the assembled module and emit
+/// one "ignored in v0.1; per-block kernel selection deferred to v0.2" warning
+/// per `#kernel` pragma found.
+///
+/// PRD §4: per-block kernel selection is deferred to v0.2. The complementary
+/// `validate_pragmas` pre-pass deliberately does NOT warn on `#kernel` (it is
+/// in `KNOWN_BLOCK_PRAGMAS`), so this is the single site that flags
+/// block-level usage.
+///
+/// Mirrors `warn_block_level_precision` and `warn_block_level_solver`; see
+/// `warn_block_level_precision`'s container-set invariant doc for the
+/// contract on adding a fifth pragma-bearing container.
+fn warn_block_level_kernel(module: &mut CompiledModule) {
+    let mut spans: Vec<SourceSpan> = Vec::new();
+
+    for tmpl in &module.templates {
+        collect_named_pragma_spans("kernel", &tmpl.pragmas, &mut spans);
+    }
+    for trait_def in &module.trait_defs {
+        collect_named_pragma_spans("kernel", &trait_def.pragmas, &mut spans);
+    }
+    for purpose in &module.compiled_purposes {
+        collect_named_pragma_spans("kernel", &purpose.pragmas, &mut spans);
+    }
+    for constraint_def in &module.constraint_defs {
+        collect_named_pragma_spans("kernel", &constraint_def.pragmas, &mut spans);
+    }
+
+    for span in spans {
+        module.diagnostics.push(
+            Diagnostic::warning(
+                "#kernel is ignored in v0.1; per-block kernel selection deferred to v0.2",
             )
             .with_label(DiagnosticLabel::new(span, "ignored in v0.1")),
         );
