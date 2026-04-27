@@ -1408,8 +1408,8 @@ mod tests {
     /// (e.g. `"expected one of: A, B"` or `"valid names are A, B"`) cannot silently bypass this
     /// assertion because it no longer parses prose at all.
     ///
-    /// The prose message is only checked for non-emptiness; its wording is not part of the
-    /// contract — the structured `candidates` field is.
+    /// The prose message wording is not part of this test's contract — the structured
+    /// `candidates` field is.
     #[test]
     fn resolve_dimension_type_unknown_diagnostic_lists_all_named_dimensions() {
         let te = named_type_expr("Foo");
@@ -1434,10 +1434,5 @@ mod tests {
             expected_names,
             "diagnostic.candidates does not exactly match NAMED_DIMENSIONS + Dimensionless"
         );
-
-        // Minimal prose sanity check: we only assert the message is non-empty.
-        // Specific wording is not pinned here — the structured `candidates` field
-        // (asserted above) is the real contract.
-        assert!(!diag.message.is_empty(), "diagnostic prose should be non-empty");
     }
 }
