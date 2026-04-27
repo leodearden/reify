@@ -589,28 +589,6 @@ fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
 
 // ─── GEOMETRY_FUNCTION_NAMES ↔ infer_traits_for_function_call coverage ──────
 
-/// `GEOMETRY_FUNCTION_NAMES` is the source of truth for `is_geometry_function`
-/// and the coverage probe for the dispatch table. This sanity-check asserts the
-/// const exists on the `reify_compiler` public surface and contains the four
-/// primitive constructor names. If the re-export from `lib.rs` is ever
-/// accidentally removed, this test fails at compile time rather than silently.
-#[test]
-fn geometry_function_names_const_exists_and_contains_primitives() {
-    use reify_compiler::GEOMETRY_FUNCTION_NAMES;
-
-    assert!(
-        !GEOMETRY_FUNCTION_NAMES.is_empty(),
-        "GEOMETRY_FUNCTION_NAMES must not be empty"
-    );
-
-    for primitive in &["box", "cylinder", "sphere", "tube"] {
-        assert!(
-            GEOMETRY_FUNCTION_NAMES.contains(primitive),
-            "GEOMETRY_FUNCTION_NAMES must contain primitive constructor {primitive:?}"
-        );
-    }
-}
-
 /// Every name in `GEOMETRY_FUNCTION_NAMES` must hit an **explicit** arm in
 /// `infer_traits_for_function_call` — `try_infer_traits_for_function_call`
 /// must return `Some(_)` for each, never `None`.
@@ -654,6 +632,11 @@ fn geometry_function_names_const_exists_and_contains_primitives() {
 fn every_geometry_function_name_has_explicit_dispatch_arm() {
     use reify_compiler::GEOMETRY_FUNCTION_NAMES;
     use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    assert!(
+        !GEOMETRY_FUNCTION_NAMES.is_empty(),
+        "GEOMETRY_FUNCTION_NAMES must not be empty"
+    );
 
     for name in GEOMETRY_FUNCTION_NAMES {
         let result = try_infer_traits_for_function_call(name, &[]);

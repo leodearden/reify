@@ -61,8 +61,7 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
-pub use units::{UnitEntry, UnitRegistry};
-pub use units::GEOMETRY_FUNCTION_NAMES;
+pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
 
 use std::collections::{HashMap, HashSet};
 
