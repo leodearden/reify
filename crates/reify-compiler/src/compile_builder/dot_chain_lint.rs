@@ -474,13 +474,17 @@ mod tests {
     /// exercises the `UnOp` single-child recursion arm, this test exercises the
     /// `BinOp` two-child recursion arm.
     ///
-    /// The depth guard (`if depth > MAX_EXPR_DEPTH { debug_assert!(...); return; }`)
-    /// sits at the top of `walk_expr_depth` and protects EVERY structural-recursion
-    /// arm: BinOp, Conditional, FunctionCall.args, Match, Lambda, list/map/set
-    /// literals, IndexAccess, Quantifier, AdHocSelector, QualifiedAccess,
-    /// InstanceQualifiedAccess, and Range. Adding a new recursion arm without
-    /// forwarding `next = depth + 1` to its child walk is the bug class BOTH the
-    /// UnOp test and this BinOp test guard against.
+    /// What this test pins: the BinOp arm in `walk_expr_depth` walks its `left`
+    /// child with `next` (= `depth + 1`) rather than the unchanged `depth`. If a
+    /// refactor of the BinOp arm accidentally passes `depth` instead of `next`,
+    /// the guard at `depth > MAX_EXPR_DEPTH` would never fire for BinOp sub-trees,
+    /// silently truncating dot-chain lint coverage; this test catches that
+    /// regression.
+    ///
+    /// Scope: this test only pins BinOp.left's depth-forwarding. It does not
+    /// cover other recursion arms (Conditional, FunctionCall.args, Match, Lambda,
+    /// list/map/set literals, IndexAccess, Quantifier, etc.); a future arm that
+    /// omits `next` would not be caught by either this test or the UnOp test.
     ///
     /// Depth arithmetic (same as the UnOp test): the outermost BinOp wrapper is
     /// visited at depth 0, the innermost at depth MAX_EXPR_DEPTH (= 256, not yet
