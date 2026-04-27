@@ -1779,6 +1779,54 @@ fn block_level_solver_pragma_on_purpose_emits_deferred_warning() {
     );
 }
 
+/// `#solver(turbocharger)` (a back-end name not in the v0.1 known list)
+/// emits exactly one warning mentioning the user-supplied name + "v0.1"
+/// (or "libslvs"/"argmin"/"supports"). Storage on `solver_pragma` mirrors
+/// `#version`'s storage-reflects-declared policy: the user-declared name is
+/// kept verbatim so downstream tooling and the runtime registry can resolve
+/// it. The warning must NOT be the generic "unknown pragma" warning (that's
+/// reserved for unknown pragma NAMES, e.g. `#turbo`, not unknown args).
+#[test]
+fn solver_pragma_unknown_backend_warns_but_stores_name() {
+    let module = compile_source("#solver(turbocharger)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for #solver(turbocharger) (storage = declared)");
+    assert_eq!(solver_pragma.name, "turbocharger");
+    assert!(solver_pragma.options.is_empty());
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("turbocharger")
+                && (d.message.contains("v0.1")
+                    || d.message.contains("libslvs")
+                    || d.message.contains("argmin")
+                    || d.message.contains("supports"))
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 unknown-back-end warning for #solver(turbocharger), got {}: {:?}",
+        warns.len(),
+        warnings_only(&module)
+    );
+
+    // Pin: this is NOT the generic "unknown pragma" warning.
+    assert!(
+        pragma_warnings(&module, "unknown pragma").is_empty(),
+        "expected no 'unknown pragma' warning for #solver(turbocharger), got: {:?}",
+        pragma_warnings(&module, "unknown pragma")
+    );
+}
+
 /// Same deferred-warning behaviour for `constraint def`-level `#solver`.
 #[test]
 fn block_level_solver_pragma_on_constraint_def_emits_deferred_warning() {
