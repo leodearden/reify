@@ -470,24 +470,14 @@ impl QueryKey {
             GeometryQuery::IsManifold(id) => QueryKey::IsManifold(*id),
             GeometryQuery::IsOrientable(id) => QueryKey::IsOrientable(*id),
             GeometryQuery::CenterOfMass { handle, density } => {
-                debug_assert!(
-                    !density.is_nan(),
-                    "CenterOfMass density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
-                );
-                // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
-                let density_bits = if *density == 0.0 { 0u64 } else { density.to_bits() };
+                let density_bits = density_bits(*density);
                 QueryKey::CenterOfMass {
                     handle: *handle,
                     density_bits,
                 }
             }
             GeometryQuery::InertiaTensor { handle, density } => {
-                debug_assert!(
-                    !density.is_nan(),
-                    "InertiaTensor density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
-                );
-                // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
-                let density_bits = if *density == 0.0 { 0u64 } else { density.to_bits() };
+                let density_bits = density_bits(*density);
                 QueryKey::InertiaTensor {
                     handle: *handle,
                     density_bits,
@@ -610,12 +600,7 @@ impl MockGeometryKernel {
         density: f64,
         value: Value,
     ) -> Self {
-        debug_assert!(
-            !density.is_nan(),
-            "CenterOfMass density NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
-        );
-        // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
-        let density_bits = if density == 0.0 { 0u64 } else { density.to_bits() };
+        let density_bits = density_bits(density);
         self.typed_queries.insert(
             QueryKey::CenterOfMass {
                 handle,
@@ -640,12 +625,7 @@ impl MockGeometryKernel {
         density: f64,
         value: Value,
     ) -> Self {
-        debug_assert!(
-            !density.is_nan(),
-            "InertiaTensor density NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
-        );
-        // Canonicalize -0.0 → 0.0 so insert/lookup agree on the same bit pattern.
-        let density_bits = if density == 0.0 { 0u64 } else { density.to_bits() };
+        let density_bits = density_bits(density);
         self.typed_queries.insert(
             QueryKey::InertiaTensor {
                 handle,
