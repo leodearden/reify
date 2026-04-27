@@ -18,6 +18,19 @@ pub const BUDGET_ENV_VAR: &str = "REIFY_WARM_STATE_BUDGET_BYTES";
 /// Used when [`BUDGET_ENV_VAR`] is absent or set to an unparseable value.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
+/// Telemetry event emitted by `WarmStatePool` on the donate / evict transitions.
+///
+/// Buffered internally and consumed via [`WarmStatePool::drain_events`]; a future
+/// engine integration translates these into `EventKind::Donated` / `EventKind::Evicted`
+/// records on the diagnostic journal (see `reify_eval::journal`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WarmPoolEvent {
+    /// A warm state was donated to the pool (insertion).
+    Donated { node_id: NodeId, size_bytes: usize },
+    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    Evicted { node_id: NodeId, size_bytes: usize },
+}
+
 /// Entry in the warm-state pool, wrapping an `OpaqueState` with metadata.
 struct PoolEntry {
     state: OpaqueState,
@@ -40,6 +53,8 @@ pub struct WarmStatePool {
     pool: HashMap<NodeId, PoolEntry>,
     budget_bytes: Option<usize>,
     used_bytes: usize,
+    /// Buffered telemetry events (donations and evictions) — consumed via [`drain_events`](Self::drain_events).
+    events: Vec<WarmPoolEvent>,
 }
 
 impl WarmStatePool {
@@ -56,6 +71,7 @@ impl WarmStatePool {
             pool: HashMap::new(),
             budget_bytes,
             used_bytes: 0,
+            events: Vec::new(),
         }
     }
 
@@ -136,12 +152,18 @@ impl WarmStatePool {
         };
         let size = state.estimated_size_bytes();
 
+        // Capture a clone for telemetry emission after the move into pool.insert.
+        let node_id_for_event = node_id.clone();
+
         // If this node already has an entry, remove the old one first
         if let Some(old) = self.pool.remove(&node_id) {
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
-        // Evict LRU entries until the new item fits within budget (unlimited pools skip this)
+        // Evict LRU entries until the new item fits within budget (unlimited pools skip this).
+        // Each eviction pushes an Evicted event inside evict_lru(); evictions naturally
+        // precede the Donated event below, giving the drain consumer a "pressure then arrival"
+        // ordering useful for the diagnostic panel's narrative.
         if let Some(budget) = self.budget_bytes {
             while self.used_bytes + size > budget && !self.pool.is_empty() {
                 self.evict_lru();
@@ -156,6 +178,13 @@ impl WarmStatePool {
         };
         self.pool.insert(node_id, entry);
         self.used_bytes += size;
+
+        // Emit Donated after all evictions so the drained buffer orders evictions
+        // before the donation that forced them.
+        self.events.push(WarmPoolEvent::Donated {
+            node_id: node_id_for_event,
+            size_bytes: size,
+        });
     }
 
     /// Store warm-start state for a node.
@@ -173,6 +202,10 @@ impl WarmStatePool {
     }
 
     /// Evict the least-recently-accessed entry from the pool.
+    ///
+    /// Pushes one `WarmPoolEvent::Evicted` per call (i.e. per victim) onto the
+    /// internal buffer.  The caller (`donate_with_cost`) may call this in a loop,
+    /// producing one event per evicted entry before the single `Donated` event.
     fn evict_lru(&mut self) {
         let lru_key = self
             .pool
@@ -183,6 +216,10 @@ impl WarmStatePool {
         if let Some(key) = lru_key
             && let Some(entry) = self.pool.remove(&key)
         {
+            self.events.push(WarmPoolEvent::Evicted {
+                node_id: key,
+                size_bytes: entry.size_bytes,
+            });
             self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         }
     }
@@ -212,10 +249,20 @@ impl WarmStatePool {
         self.budget_bytes
     }
 
-    /// Remove all entries from the pool and reset used_bytes to 0.
+    /// Drain buffered telemetry events (donations and evictions) and clear the buffer.
+    ///
+    /// Intended to be called from the engine at evaluation boundaries; each drained
+    /// `WarmPoolEvent` is then translated into an `EvalEvent` with the current
+    /// `VersionId` and recorded on the diagnostic journal.
+    pub fn drain_events(&mut self) -> Vec<WarmPoolEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Remove all entries from the pool, reset used_bytes to 0, and clear the event buffer.
     pub fn clear(&mut self) {
         self.pool.clear();
         self.used_bytes = 0;
+        self.events.clear();
     }
 
     /// Number of entries in the pool.
@@ -652,8 +699,9 @@ mod tests {
 
     #[test]
     fn single_oversized_donation_emits_one_evicted_per_victim() {
-        // budget=300, fill with three 100-byte items, then donate a 250-byte item.
-        // Expect 2 Evicted events + 1 Donated (for the big item).
+        // budget=300, fill with three 100-byte items (used=300), then donate a 150-byte
+        // item. The loop: 300+150=450>300 → evict A (used=200); 200+150=350>300 → evict B
+        // (used=100); 100+150=250≤300 → stop. Expect 2 Evicted events + 1 Donated.
         let mut pool = WarmStatePool::new(300);
         let node_a = NodeId::Value(ValueCellId::new("T", "a"));
         let node_b = NodeId::Value(ValueCellId::new("T", "b"));
@@ -665,7 +713,7 @@ mod tests {
         pool.donate(node_c.clone(), OpaqueState::new(0u8, 100));
         pool.drain_events(); // clear setup events
 
-        pool.donate(node_big.clone(), OpaqueState::new(0u8, 250));
+        pool.donate(node_big.clone(), OpaqueState::new(0u8, 150));
         let events = pool.drain_events();
 
         // 2 Evicted + 1 Donated
