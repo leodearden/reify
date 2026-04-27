@@ -43,43 +43,28 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     Value::Bool(false) => (
                         Satisfaction::Violated,
                         ConstraintDiagnostics {
-                            messages: vec![Diagnostic {
-                                severity: Severity::Error,
-                                message: format!("constraint {} violated", id),
-                                labels: vec![],
-                                code: Some(DiagnosticCode::ConstraintViolated),
-                                candidates: Vec::new(),
-                            }],
+                            messages: vec![Diagnostic::error(format!("constraint {} violated", id))
+                                .with_code(DiagnosticCode::ConstraintViolated)],
                         },
                     ),
                     Value::Undef => (
                         Satisfaction::Indeterminate,
                         ConstraintDiagnostics {
-                            messages: vec![Diagnostic {
-                                severity: Severity::Warning,
-                                message: format!(
+                            messages: vec![Diagnostic::warning(format!(
                                     "constraint {} indeterminate: undefined inputs",
                                     id
-                                ),
-                                labels: vec![],
-                                code: Some(DiagnosticCode::ConstraintIndeterminate),
-                                candidates: Vec::new(),
-                            }],
+                                ))
+                                .with_code(DiagnosticCode::ConstraintIndeterminate)],
                         },
                     ),
                     _ => (
                         Satisfaction::Violated,
                         ConstraintDiagnostics {
-                            messages: vec![Diagnostic {
-                                severity: Severity::Error,
-                                message: format!(
+                            messages: vec![Diagnostic::error(format!(
                                     "constraint {} evaluated to non-boolean value",
                                     id
-                                ),
-                                labels: vec![],
-                                code: Some(DiagnosticCode::ConstraintViolated),
-                                candidates: Vec::new(),
-                            }],
+                                ))
+                                .with_code(DiagnosticCode::ConstraintViolated)],
                         },
                     ),
                 };
