@@ -127,3 +127,18 @@ fn faces_by_area_inclusive_at_min_and_max_endpoints() {
         "only the middle face should survive when min/max endpoints are just outside"
     );
 }
+
+#[test]
+fn faces_by_area_propagates_invalid_handle_from_extract_faces() {
+    let parent = GeometryHandleId(1);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extract_faces_error(parent, QueryError::InvalidHandle(parent));
+
+    let result = topology_selectors::faces_by_area(&mut kernel, parent, 0.0, 1.0);
+    assert!(
+        matches!(result, Err(QueryError::InvalidHandle(h)) if h == parent),
+        "InvalidHandle from extract_faces should propagate unchanged, got {:?}",
+        result
+    );
+}
