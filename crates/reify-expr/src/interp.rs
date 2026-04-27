@@ -155,7 +155,7 @@ fn nearest_index_on_axis(grid: &[f64], query: f64) -> usize {
         // Exact tie: pick the endpoint with the even index (banker's rounding
         // / round_ties_even). Since `i` and `i + 1` differ in parity, exactly
         // one of them is even.
-        if i % 2 == 0 { i } else { i + 1 }
+        if i.is_multiple_of(2) { i } else { i + 1 }
     }
 }
 
