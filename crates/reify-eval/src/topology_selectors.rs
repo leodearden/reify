@@ -60,3 +60,41 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     }
     Ok(out)
 }
+
+/// Return the subset of `extract_faces(handle)` whose surface area lies in
+/// `[min_m2, max_m2]` (inclusive on both ends).
+///
+/// Areas are queried via `GeometryQuery::SurfaceArea` and compared in
+/// square metres. Faces whose area falls outside the window are dropped.
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_faces` (e.g. `InvalidHandle` if
+///   `handle` is not registered with the kernel).
+/// - Propagates any error from a per-face `SurfaceArea` query.
+/// - Returns `QueryError::QueryFailed` if `SurfaceArea` ever returns a
+///   non-`Value::Real` (a kernel-side contract violation).
+pub fn faces_by_area<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    min_m2: f64,
+    max_m2: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let faces = kernel.extract_faces(handle)?;
+    let mut out = Vec::with_capacity(faces.len());
+    for id in faces {
+        let area = match kernel.query(&GeometryQuery::SurfaceArea(id))? {
+            Value::Real(a) => a,
+            other => {
+                return Err(QueryError::QueryFailed(format!(
+                    "SurfaceArea({:?}) returned non-real value: {:?}",
+                    id, other
+                )));
+            }
+        };
+        if area >= min_m2 && area <= max_m2 {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
