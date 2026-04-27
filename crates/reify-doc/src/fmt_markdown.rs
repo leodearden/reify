@@ -8,7 +8,7 @@
 //!   [`MarkdownOptions::split`] to either single-file or split-file rendering.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
+use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
 
 /// Knobs controlling how the formatter emits Markdown.
 ///
@@ -164,6 +164,46 @@ fn item_doc(item: &ItemDoc) -> Option<&str> {
     }
 }
 
+/// Lookup the annotations attached to any `ItemDoc` variant.
+fn item_annotations(item: &ItemDoc) -> &[AnnotationDoc] {
+    match item {
+        ItemDoc::Structure { annotations, .. }
+        | ItemDoc::Occurrence { annotations, .. }
+        | ItemDoc::Trait { annotations, .. }
+        | ItemDoc::Function { annotations, .. }
+        | ItemDoc::Field { annotations, .. }
+        | ItemDoc::Purpose { annotations, .. }
+        | ItemDoc::Enum { annotations, .. }
+        | ItemDoc::Unit { annotations, .. }
+        | ItemDoc::TypeAlias { annotations, .. }
+        | ItemDoc::ConstraintDef { annotations, .. } => annotations,
+    }
+}
+
+/// Find the first annotation matching `name` in `anns`. Returns `None` if no
+/// such annotation exists.
+fn find_annotation<'a>(
+    anns: &'a [AnnotationDoc],
+    name: &str,
+) -> Option<&'a AnnotationDoc> {
+    anns.iter().find(|a| a.name == name)
+}
+
+/// Strip surrounding `"`s from a rendered string-literal annotation argument.
+///
+/// Annotations source-render `@deprecated("msg")` as the arg `"\"msg\""` —
+/// the literal quote characters are *part of* the rendered representation.
+/// Markdown output should display the message text without those wrapping
+/// quotes; non-string-literal args (calls, identifiers, numbers) are returned
+/// unchanged.
+fn unquote(s: &str) -> &str {
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 /// Render a single `ItemDoc` to `out`.
 ///
 /// Emits the H2 heading with explicit anchor, then the optional doc paragraphs.
@@ -182,6 +222,26 @@ fn render_item(out: &mut String, item: &ItemDoc, _cross_refs: Option<&CrossRefs>
     out.push_str("` <a id=\"");
     out.push_str(name);
     out.push_str("\"></a>\n\n");
+
+    // Annotation-driven prefix sections, emitted BETWEEN the heading and the
+    // doc-comment paragraphs so the most operationally significant tags appear
+    // first to the reader.
+    let anns = item_annotations(item);
+    if let Some(dep) = find_annotation(anns, "deprecated") {
+        let msg = dep.args.first().map(|s| unquote(s)).unwrap_or("");
+        out.push_str("> **Deprecated:**");
+        if !msg.is_empty() {
+            out.push(' ');
+            out.push_str(msg);
+        }
+        out.push_str("\n\n");
+    }
+    if let Some(opt) = find_annotation(anns, "optimized") {
+        let target = opt.args.first().map(|s| unquote(s)).unwrap_or("");
+        out.push_str("*Optimized: `");
+        out.push_str(target);
+        out.push_str("`*\n\n");
+    }
 
     if let Some(doc) = item_doc(item) {
         emit_paragraphs(out, doc);
@@ -333,7 +393,17 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
             Some(d) => format!("`{}`", md_cell_escape(d)),
             None => "—".to_string(),
         };
-        let description = p.doc.as_deref().unwrap_or("").trim();
+        // Description = doc text + optional `*hint: <solver_hint arg>*` suffix.
+        let mut description = p.doc.as_deref().unwrap_or("").trim().to_string();
+        if let Some(hint) = find_annotation(&p.annotations, "solver_hint") {
+            let hint_arg = hint.args.first().map(|s| unquote(s)).unwrap_or("");
+            if !description.is_empty() {
+                description.push(' ');
+            }
+            description.push_str("*hint: ");
+            description.push_str(hint_arg);
+            description.push('*');
+        }
         out.push_str("| `");
         out.push_str(&md_cell_escape(&p.name));
         out.push_str("` | `");
@@ -344,7 +414,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         out.push_str(" | ");
         out.push_str(&default_cell);
         out.push_str(" | ");
-        out.push_str(&md_cell_escape(description));
+        out.push_str(&md_cell_escape(&description));
         out.push_str(" |\n");
     }
     out.push('\n');
