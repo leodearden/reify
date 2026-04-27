@@ -4,7 +4,7 @@
 //! [`DiagnosticCode::Shadowing`] when a child-scope declaration uses the same
 //! name as a name visible from an enclosing parent scope.
 
-use reify_test_support::{compile_source, warnings_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, warnings_only};
 use reify_types::{DiagnosticCode, Severity};
 
 /// Basic lambda-shadows-entity-param case: a lambda parameter `x` declared
@@ -302,6 +302,42 @@ structure S {
         0,
         "guarded-group sibling members with the same name must NOT shadow; \
          got: {:?}",
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Trait-merge of identical members must NOT shadow.
+///
+/// Per spec §8.8, when a structure conforms to two traits that both require a
+/// member of the same name (e.g. `param mass : Mass`), a single declaration on
+/// the structure satisfies BOTH trait requirements — that is "trait-merge", not
+/// shadowing. The lint walks ONLY the structure's own member list and never
+/// folds trait member sets into the frame, so this case is handled
+/// automatically by single-source iteration.
+///
+/// Compiles with stdlib so `Mass` (and the unit suffix `kg`) resolve.
+#[test]
+fn trait_merged_member_does_not_warn() {
+    let source = r#"
+trait TraitA { param mass : Mass }
+trait TraitB { param mass : Mass }
+structure def S : TraitA + TraitB { param mass : Mass = 1kg }
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        0,
+        "trait-merged identical-name member (single decl satisfying two trait \
+         requirements per §8.8) must NOT trigger a shadow warning; got: {:?}",
         shadow_warnings
             .iter()
             .map(|d| (&d.message, &d.labels))
