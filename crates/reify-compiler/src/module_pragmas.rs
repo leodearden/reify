@@ -257,7 +257,14 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         }
 
         if first_seen {
-            // step-10 will turn this into a "duplicate" error.
+            // PRD §5: duplicate `#version` is an error (not a warning, unlike
+            // #precision). The first pragma's stored `declared_version` and
+            // its validation diagnostic stay; only the redundant pragma is
+            // flagged here.
+            module.diagnostics.push(
+                Diagnostic::error("at most one #version declaration per module")
+                    .with_label(DiagnosticLabel::new(pragma.span, "duplicate #version")),
+            );
             continue;
         }
         first_seen = true;
