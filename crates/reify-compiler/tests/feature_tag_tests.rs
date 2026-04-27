@@ -201,3 +201,92 @@ fn boolean_realization_tags_classify_op_kinds_correctly() {
     );
     assert_eq!(realization.feature_tags[2].sub_index, 2);
 }
+
+// ─── step-9: parallel-array invariant regression lock ────────────────────────
+
+/// Regression-lock test: for three representative compiled realizations, the
+/// `feature_tags` parallel array must satisfy **both**:
+///   1. `feature_tags.len() == operations.len()` (same length as the op list)
+///   2. `feature_tags[i].sub_index == i as u32` for every index `i`
+///
+/// This guards the invariant established by step-2 / step-4 against future
+/// refactors of `derive_feature_tags` or `RealizationDecl` construction sites.
+/// The test is expected to pass immediately if those steps are correct — it is a
+/// regression lock, not a TDD driver.
+#[test]
+fn realization_decl_feature_tags_invariant_held_after_compile() {
+    struct Case {
+        source: &'static str,
+        structure_name: &'static str,
+        binding_name: &'static str,
+        expected_op_count: usize,
+    }
+
+    let cases = [
+        Case {
+            source: "structure A { let body = box(10mm, 20mm, 30mm) }",
+            structure_name: "A",
+            binding_name: "body",
+            expected_op_count: 1,
+        },
+        Case {
+            source: "structure B { let s = fillet(box(10mm, 20mm, 30mm), 1mm) }",
+            structure_name: "B",
+            binding_name: "s",
+            expected_op_count: 2,
+        },
+        Case {
+            source: "structure C { let s = union(box(10mm, 20mm, 30mm), sphere(5mm)) }",
+            structure_name: "C",
+            binding_name: "s",
+            expected_op_count: 3,
+        },
+    ];
+
+    for case in &cases {
+        let compiled = compile_no_errors(case.source);
+        let template = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == case.structure_name)
+            .unwrap_or_else(|| panic!("template {} not found", case.structure_name));
+        let realization = template
+            .realizations
+            .iter()
+            .find(|r| r.name.as_deref() == Some(case.binding_name))
+            .unwrap_or_else(|| panic!("realization '{}' not found in {}", case.binding_name, case.structure_name));
+
+        // 1. Parallel-array length invariant.
+        assert_eq!(
+            realization.feature_tags.len(),
+            realization.operations.len(),
+            "[{}] feature_tags.len() ({}) must equal operations.len() ({})",
+            case.structure_name,
+            realization.feature_tags.len(),
+            realization.operations.len(),
+        );
+
+        // Sanity: matches expected op count from the plan.
+        assert_eq!(
+            realization.feature_tags.len(),
+            case.expected_op_count,
+            "[{}] expected {} feature tags, got {}",
+            case.structure_name,
+            case.expected_op_count,
+            realization.feature_tags.len(),
+        );
+
+        // 2. Sequential sub_index: feature_tags[i].sub_index == i as u32.
+        for (i, tag) in realization.feature_tags.iter().enumerate() {
+            assert_eq!(
+                tag.sub_index,
+                i as u32,
+                "[{}] feature_tags[{}].sub_index must be {}, got {}",
+                case.structure_name,
+                i,
+                i,
+                tag.sub_index,
+            );
+        }
+    }
+}
