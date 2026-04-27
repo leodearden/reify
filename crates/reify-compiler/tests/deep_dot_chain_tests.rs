@@ -143,3 +143,43 @@ structure S {
         deep_dot_chain_warning.labels
     );
 }
+
+/// `a.b[0].c.d.e.f` parses as the outer chain `<IndexAccess>.c.d.e.f`
+/// (root = `IndexAccess` of `a.b` indexed at `[0]`, then 4 hops). Chain length
+/// is 5, so EXACTLY ONE DeepDotChain warning fires. The inner `a.b` chain has
+/// length 2 (under threshold), so it does not warn. The warning's message must
+/// NOT contain `a.b.c.d.e.f` because the IndexAccess naturally breaks the
+/// chain.
+#[test]
+fn index_access_resets_chain_root_emits_one_warning_post_index() {
+    let source = r#"
+structure S {
+    param a: Real = 0
+    let x = a.b[0].c.d.e.f
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .collect();
+
+    assert_eq!(
+        deep_dot_chain_warnings.len(),
+        1,
+        "expected exactly 1 DeepDotChain warning for `a.b[0].c.d.e.f`, got: {:?}",
+        deep_dot_chain_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let warning = deep_dot_chain_warnings[0];
+    assert!(
+        !warning.message.contains("a.b.c.d.e.f"),
+        "DeepDotChain warning must not flatten across the IndexAccess — \
+         expected message to NOT contain `a.b.c.d.e.f`, got: {:?}",
+        warning.message
+    );
+}
