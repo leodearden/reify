@@ -27,6 +27,11 @@ structure def Foo : Watertight {
 }
 "#;
     let module = compile_source_with_stdlib(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let warnings = warnings_only(&module);
     let asserted: Vec<_> = warnings
         .iter()
@@ -82,6 +87,11 @@ structure def MyMaterial : Elastic {
 }
 "#;
     let module = compile_source_with_stdlib(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let warnings = warnings_only(&module);
     let asserted: Vec<_> = warnings
         .iter()
@@ -110,6 +120,11 @@ occurrence def Joint : Watertight {
 }
 "#;
     let module = compile_source_with_stdlib(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let warnings = warnings_only(&module);
     let asserted: Vec<_> = warnings
         .iter()
@@ -149,6 +164,11 @@ structure def Shell : Closed + Manifold {
 }
 "#;
     let module = compile_source_with_stdlib(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let warnings = warnings_only(&module);
     let asserted: Vec<_> = warnings
         .iter()
@@ -205,6 +225,11 @@ structure def Hybrid : Watertight + Elastic {
 }
 "#;
     let module = compile_source_with_stdlib(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let warnings = warnings_only(&module);
     let asserted: Vec<_> = warnings
         .iter()
