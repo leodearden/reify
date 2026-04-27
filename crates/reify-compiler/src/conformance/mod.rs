@@ -278,6 +278,37 @@ fn walk_param_against_arg(
     }
 }
 
+/// Emit `DiagnosticCode::GeometryUnbounded` for a geometry-typed argument
+/// at a `param g : Bounded`-shaped call site whose inferred trait set lacks
+/// `bounded`.
+///
+/// Pushes exactly one `Diagnostic::error(...)` with code
+/// [`DiagnosticCode::GeometryUnbounded`] and a single label at `span`. The
+/// canonical message wording is documented on the variant declaration in
+/// `crates/reify-types/src/diagnostics.rs` — keep the two in sync.
+///
+/// Reserved for the **Bounded** case only. `Connected`/`Convex` violations
+/// at the same call-site shape reuse [`DiagnosticCode::TypeNotConformingToTrait`]
+/// per the task's design decision §2 (the PRD only allocates
+/// `E_GEOMETRY_UNBOUNDED` for missing Bounded).
+pub(crate) fn emit_geometry_unbounded(
+    arg_name: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "geometry argument '{}' is not Bounded; required by trait parameter",
+            arg_name
+        ))
+        .with_code(DiagnosticCode::GeometryUnbounded)
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!("geometry argument '{}' is not Bounded", arg_name),
+        )),
+    );
+}
+
 /// Shared leaf helper: emit a "does not conform to trait" diagnostic if `arg_type`
 /// does not satisfy `required_trait`.
 ///
