@@ -134,6 +134,26 @@ fn doc_format_json_compact_emits_single_line() {
 }
 
 #[test]
+fn doc_format_markdown_emits_markdown_to_stdout() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "markdown", &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format markdown must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.starts_with("# bracket"),
+        "markdown output must start with '# bracket' (the module H1 from \
+         render_markdown's single-mode), got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("error:"),
+        "stderr should not contain 'error:' on success, got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
