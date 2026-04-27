@@ -107,17 +107,10 @@ impl OcctKernelHandle {
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::Export {
-                handle,
-                format,
-                reply: reply_tx,
-            })
-            .map_err(|_| ExportError::IoError("kernel thread died".into()))?;
-        let bytes = reply_rx
-            .blocking_recv()
-            .map_err(|_| ExportError::IoError("kernel thread died".into()))??;
+        let bytes = self.send_request_blocking(
+            |reply| OcctRequest::Export { handle, format, reply },
+            || ExportError::IoError("kernel thread died".into()),
+        )??;
         writer
             .write_all(&bytes)
             .map_err(|e| ExportError::IoError(e.to_string()))
@@ -167,16 +160,10 @@ impl OcctKernelHandle {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::QueryMany {
-                queries: queries.to_vec(),
-                reply: reply_tx,
-            })
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        let reply: Vec<Value> = reply_rx
-            .blocking_recv()
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))??;
+        let reply: Vec<Value> = self.send_request_blocking(
+            |reply| OcctRequest::QueryMany { queries: queries.to_vec(), reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )??;
         debug_assert_query_many_invariant(queries, &reply);
         Ok(reply)
     }
@@ -378,18 +365,11 @@ impl OcctKernelHandle {
         handle: GeometryHandleId,
         format: ExportFormat,
     ) -> Result<Vec<u8>, ExportError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::Export {
-                handle,
-                format,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| ExportError::IoError("kernel thread died".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| ExportError::IoError("kernel thread died".into()))?
+        self.send_request_async(
+            |reply| OcctRequest::Export { handle, format, reply },
+            || ExportError::IoError("kernel thread died".into()),
+        )
+        .await?
     }
 
     /// Tessellate a geometry handle into a mesh (async version).
