@@ -8,7 +8,7 @@
 //! File-stem `io_traits` matches the `cargo test -p reify-compiler -- io_traits`
 //! filter used in the task testStrategy.
 
-use reify_compiler::stdlib_loader;
+use reify_compiler::{RequirementKind, stdlib_loader};
 use reify_test_support::collect_errors;
 use reify_types::{DimensionVector, Type};
 
@@ -18,6 +18,112 @@ fn io_module() -> &'static reify_compiler::CompiledModule {
         .iter()
         .find(|m| format!("{}", m.path) == "std/io")
         .expect("std.io module should be present in the stdlib")
+}
+
+// ─── step-9: refining traits ─────────────────────────────────────────────────
+
+/// Input, Buy, Output, Discard have correct refinements and param types.
+/// The critical assertion is Buy.unit_cost having DimensionVector::MONEY.
+#[test]
+fn io_refining_traits_with_correct_params_and_dimensions() {
+    let module = io_module();
+
+    // Helper: find a trait by name or panic.
+    let find_trait = |name: &str| {
+        module
+            .trait_defs
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "std.io should contain trait '{}'; found: {:?}",
+                    name,
+                    module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            })
+    };
+
+    // Helper: get the Param type for a named required member or panic.
+    let param_type = |trait_name: &str, member: &str| -> Type {
+        let t = find_trait(trait_name);
+        let req = t
+            .required_members
+            .iter()
+            .find(|r| r.name == member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "trait '{}' should have required member '{}'; found: {:?}",
+                    trait_name,
+                    member,
+                    t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+                )
+            });
+        match &req.kind {
+            RequirementKind::Param(ty) => ty.clone(),
+            other => panic!(
+                "trait '{}' member '{}' should be RequirementKind::Param, got {:?}",
+                trait_name, member, other
+            ),
+        }
+    };
+
+    // Input : Source — source: String, provenance: StructureRef("Provenance")
+    assert_eq!(
+        find_trait("Input").refinements,
+        vec!["Source"],
+        "Input should refine Source"
+    );
+    assert_eq!(param_type("Input", "source"), Type::String);
+    assert_eq!(
+        param_type("Input", "provenance"),
+        Type::StructureRef("Provenance".into())
+    );
+
+    // Buy : Source — supplier, part_number: String; unit_cost: Money; lead_time: Time
+    assert_eq!(
+        find_trait("Buy").refinements,
+        vec!["Source"],
+        "Buy should refine Source"
+    );
+    assert_eq!(param_type("Buy", "supplier"), Type::String);
+    assert_eq!(param_type("Buy", "part_number"), Type::String);
+    // Critical: Buy.unit_cost must have Money dimension.
+    assert_eq!(
+        param_type("Buy", "unit_cost"),
+        Type::Scalar { dimension: DimensionVector::MONEY },
+        "Buy.unit_cost must have DimensionVector::MONEY"
+    );
+    assert_eq!(
+        param_type("Buy", "lead_time"),
+        Type::Scalar { dimension: DimensionVector::TIME },
+        "Buy.lead_time must have DimensionVector::TIME"
+    );
+
+    // Output : Sink — format: Enum("OutputFormat")
+    assert_eq!(
+        find_trait("Output").refinements,
+        vec!["Sink"],
+        "Output should refine Sink"
+    );
+    assert_eq!(
+        param_type("Output", "format"),
+        Type::Enum("OutputFormat".into())
+    );
+
+    // Discard : Sink — reason: Enum("DiscardReason"), disposal_method: Enum("DisposalMethod")
+    assert_eq!(
+        find_trait("Discard").refinements,
+        vec!["Sink"],
+        "Discard should refine Sink"
+    );
+    assert_eq!(
+        param_type("Discard", "reason"),
+        Type::Enum("DiscardReason".into())
+    );
+    assert_eq!(
+        param_type("Discard", "disposal_method"),
+        Type::Enum("DisposalMethod".into())
+    );
 }
 
 // ─── step-7: Provenance structure ────────────────────────────────────────────
