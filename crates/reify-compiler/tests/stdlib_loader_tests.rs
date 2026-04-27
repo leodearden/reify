@@ -395,28 +395,34 @@ fn assert_no_prelude_pragma_invariant_bidirectional(
     // materials_mechanical.ri). The check is bidirectional so that both
     // adding #no_prelude to the wrong file and removing it from a bootstrap
     // file are caught.
+    let mut violations: Vec<(String, &reify_syntax::Pragma)> = Vec::new();
     for module in modules {
-        let path_str = format!("{}", module.path);
+        let path_str = module.path.to_string();
         if targets.contains(&path_str.as_str()) {
             continue;
         }
         if let Some(bad_pragma) = module.pragmas.iter().find(|p| p.name == "no_prelude") {
-            panic!(
-                "non-bootstrap stdlib module '{}' carries unauthorized `#no_prelude` pragma \
-                 (pragma: {:?}).\n\
-                 \n\
-                 Impact: `#no_prelude` silently disables prelude access during compilation, \
-                 breaking inter-stdlib refinements (e.g. if this module refines a trait from \
-                 another stdlib file, that trait will be unresolved at compile time).\n\
-                 \n\
-                 Fix: remove `#no_prelude` from the .ri source for '{}'. \
-                 If this module truly has ZERO inter-stdlib dependencies and should \
-                 be a bootstrap module, add its path to the `targets` list in \
-                 `prelude_modules_carry_no_prelude_pragma` AND keep the pragma.",
-                path_str, bad_pragma, path_str,
-            );
+            violations.push((path_str, bad_pragma));
         }
     }
+    assert!(
+        violations.is_empty(),
+        "non-bootstrap stdlib modules carry unauthorized `#no_prelude` pragma:\n{}\n\
+         \n\
+         Impact: `#no_prelude` silently disables prelude access during compilation, \
+         breaking inter-stdlib refinements (e.g. if a module refines a trait from \
+         another stdlib file, that trait will be unresolved at compile time).\n\
+         \n\
+         Fix: remove `#no_prelude` from the .ri source for each listed path. \
+         If a module truly has ZERO inter-stdlib dependencies and should \
+         be a bootstrap module, add its path to the `targets` list in \
+         `prelude_modules_carry_no_prelude_pragma` AND keep the pragma.",
+        violations
+            .iter()
+            .map(|(path, pragma)| format!("  - '{}' (pragma: {:?})", path, pragma))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }
 
 /// The four stdlib modules that have no inter-stdlib dependencies must carry
