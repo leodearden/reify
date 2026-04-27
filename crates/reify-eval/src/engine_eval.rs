@@ -1451,6 +1451,19 @@ impl Engine {
         // eval_cached is called without a prior eval().
         self.meta_map = build_meta_map(module);
 
+        // Resolve the active solver once per call so the named-vs-default
+        // routing (Task 2300) is identical to eval(): `resolve_solver_for_module`
+        // consults `module.solver_pragma` against the named-solver registry
+        // (`Engine::register_solver`) and emits the "not registered" warning at
+        // most once per eval_cached call (rather than once per template).
+        // Inside the template loop, `lookup_solver_for_module` re-runs the
+        // unwarned lookup so the &self borrow only spans the `.solve(&problem)`
+        // expression and doesn't conflict with `&mut self` mutations elsewhere
+        // in the loop body (e.g. `self.last_sub_component_unknown_structure_errors`).
+        let has_active_solver = self
+            .resolve_solver_for_module(module, &mut diagnostics)
+            .is_some();
+
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
@@ -1846,7 +1859,14 @@ impl Engine {
             // value/snapshot updates in eval_cached are a separate gap (see design decision:
             // "Solver Solved arm in eval_cached is intentionally empty"). Only the
             // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
-            if let Some(solver) = &self.solver {
+            //
+            // `has_active_solver` was computed once before the template loop via
+            // `resolve_solver_for_module` so the "not registered" warning is emitted
+            // at most once. Inside the loop we re-run `lookup_solver_for_module`
+            // (no warning, single expression) to obtain the solver reference for
+            // the `.solve(&problem)` call without holding the &self borrow across
+            // the surrounding &mut self mutations.
+            if has_active_solver {
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` centralises construction so both eval() and
                 // eval_cached() build identical inputs to the solver (pinned by the
@@ -1857,7 +1877,10 @@ impl Engine {
                 if let Some(problem) =
                     build_solver_problem(template, &values, Arc::clone(&self.functions))
                 {
-                    let solve_result = solver.solve(&problem);
+                    let solve_result = self
+                        .lookup_solver_for_module(module)
+                        .expect("has_active_solver is true => solver lookup returns Some")
+                        .solve(&problem);
 
                     match solve_result {
                         SolveResult::Solved { .. } => {
