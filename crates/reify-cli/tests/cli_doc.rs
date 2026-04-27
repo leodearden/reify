@@ -234,6 +234,48 @@ fn doc_split_with_html_exits_two() {
 }
 
 #[test]
+fn doc_compact_with_markdown_exits_two() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "markdown", "--compact", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format markdown --compact must exit 2 (usage error).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--compact"),
+        "stderr should mention '--compact', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("json only") || stderr.contains("json"),
+        "stderr should explain that --compact is json-only, got: {stderr}"
+    );
+}
+
+#[test]
+fn doc_compact_with_html_exits_two() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "html", "--compact", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format html --compact must exit 2 (usage error).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--compact"),
+        "stderr should mention '--compact', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("json only") || stderr.contains("json"),
+        "stderr should explain that --compact is json-only, got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
