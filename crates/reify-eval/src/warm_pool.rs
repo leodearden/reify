@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use reify_eval::cache::NodeId;
+use crate::cache::NodeId;
 use reify_types::OpaqueState;
 
 /// Environment variable that overrides the warm-state pool memory budget.

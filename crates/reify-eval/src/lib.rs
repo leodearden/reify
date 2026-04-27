@@ -5,6 +5,7 @@ pub mod demand;
 pub mod deps;
 pub mod dirty;
 mod engine_admin;
+pub mod warm_pool;
 mod engine_build;
 mod engine_constraints;
 mod engine_edit;
