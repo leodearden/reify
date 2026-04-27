@@ -356,3 +356,20 @@ fn infer_traits_for_op_walks_modify_of_box() {
         InferredTraits::bounded_connected()
     );
 }
+
+/// `GeomRef::Sub(_)` defaults to `InferredTraits::all()` — the safe v0.1
+/// assumption for cross-component geometry references (sub-component
+/// realizations are not visible from this op array). When future work
+/// wires cross-component inference, this test will break deliberately,
+/// flagging the design-decision change for review. Pinned per plan
+/// design decision §3.
+#[test]
+fn infer_traits_for_op_treats_geomref_sub_as_bounded() {
+    let ops = vec![CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Sub("child".to_string()),
+        right: GeomRef::Sub("other".to_string()),
+    }];
+    // Both Sub references default to all(); Union preserves only Bounded.
+    assert_eq!(infer_traits_for_op(0, &ops), InferredTraits::bounded_only());
+}
