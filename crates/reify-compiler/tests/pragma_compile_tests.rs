@@ -1424,3 +1424,56 @@ fn multiple_version_pragmas_emit_error_at_most_one() {
         version_warns
     );
 }
+
+/// Malformed `#version` arg shapes emit exactly one warning mentioning
+/// "version" + "expected" (suggesting MAJOR.MINOR), produce zero errors,
+/// and leave `module.declared_version` as None. Covers representative
+/// shapes: bare String with bad component count or non-numeric components,
+/// no args, Bool, KeyValue, and Quantity. Mirrors the catch-all coverage
+/// of `precision_pragma_with_*_warns_and_does_not_set_tolerance` tests.
+#[test]
+fn version_pragma_malformed_args_emit_warning_and_leave_declared_version_none() {
+    let cases: &[(&str, &str)] = &[
+        // (source, label-for-failure-message)
+        ("#version(\"foo\")\nstructure S { param x : Real }", "string-no-dot"),
+        ("#version(\"0.1.2\")\nstructure S { param x : Real }", "three-component-string"),
+        ("#version(\"a.b\")\nstructure S { param x : Real }", "non-numeric-components"),
+        ("#version\nstructure S { param x : Real }", "no-args"),
+        ("#version(true)\nstructure S { param x : Real }", "bool-arg"),
+        ("#version(value=0.1)\nstructure S { param x : Real }", "key-value-arg"),
+        ("#version(0.001m)\nstructure S { param x : Real }", "quantity-arg"),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        assert!(
+            errors_only(&module).is_empty(),
+            "[{label}] unexpected errors for malformed #version: {:?}",
+            errors_only(&module)
+        );
+        assert!(
+            module.declared_version.is_none(),
+            "[{label}] expected declared_version None for malformed #version, got {:?}",
+            module.declared_version
+        );
+
+        // Warnings mentioning "version" with form-guidance ("expected" or
+        // "malformed") — the message wording is bounded so callers can grep
+        // for the canonical phrase but we don't pin the entire string here.
+        let version_warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("version")
+                    && (d.message.contains("expected") || d.message.contains("malformed"))
+            })
+            .collect();
+        assert_eq!(
+            version_warns.len(),
+            1,
+            "[{label}] expected exactly 1 malformed-version warning, got {}: {:?}",
+            version_warns.len(),
+            warnings_only(&module)
+        );
+    }
+}
