@@ -45,6 +45,13 @@ pub(crate) const DEEP_DOT_CHAIN_THRESHOLD: usize = 4;
 /// by a fuzzer or a future parser bug, would burn one Rust frame per level.
 /// 256 is generous (typical hand-written code never exceeds ~20) and stops well
 /// short of overflowing default Rust stacks.
+///
+/// Exceeding this bound is treated as a "should never happen" invariant
+/// violation: in debug/test builds (i.e. when `debug_assertions` are enabled)
+/// `walk_expr_depth` fires a `debug_assert!(false, …)` so that fuzzers and the
+/// test suite catch a regression immediately via a panic. Release builds keep
+/// the existing silent-`return` fast-path — the `debug_assert!` compiles out —
+/// leaving production behaviour unchanged.
 const MAX_EXPR_DEPTH: usize = 256;
 
 /// Visit every expression-bearing position in `parsed` and emit a Warning for
@@ -251,6 +258,21 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
 
 fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize) {
     if depth > MAX_EXPR_DEPTH {
+        // Should never happen on real source: 256 is generous (typical hand-
+        // written code never exceeds ~20). Hitting this guard means a fuzzer
+        // input or upstream parser bug produced a pathologically deep AST and
+        // the dot-chain lint silently lost coverage on that subtree. Panic in
+        // debug/test builds so a regression bisects directly to this site;
+        // keep the silent `return` in release so end-users never see the
+        // unactionable diagnostic.
+        debug_assert!(
+            false,
+            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {}; \
+             dot-chain lint coverage truncated at this subtree — likely \
+             upstream parser bug or fuzzer input producing pathologically \
+             deep AST",
+            MAX_EXPR_DEPTH
+        );
         return;
     }
     let next = depth + 1;
@@ -404,4 +426,46 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
         out.push_str(member);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::SourceSpan;
+
+    /// Hitting the `MAX_EXPR_DEPTH` guard inside `walk_expr_depth` must fire
+    /// the `debug_assert!` so debug/test builds catch a regression that
+    /// produces pathologically deep ASTs (fuzzer input, upstream parser bug)
+    /// instead of silently truncating dot-chain lint coverage.
+    ///
+    /// Release builds keep the silent-return fast-path — the assert compiles
+    /// out — so this test is gated on `debug_assertions`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "MAX_EXPR_DEPTH")]
+    fn walk_expr_depth_exceeding_max_depth_panics_in_debug_builds() {
+        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of UnOp.
+        // walk_expr_depth recurses via UnOp.operand (one frame per layer),
+        // so the outermost wrapper is visited at depth 0, the innermost at
+        // depth MAX_EXPR_DEPTH (= 256, not yet tripped), and the leaf
+        // NumberLiteral is then called at depth MAX_EXPR_DEPTH + 1 (= 257)
+        // which satisfies `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
+        // This is the minimum wrapper count that trips the guard.
+        let span = SourceSpan::empty(0);
+        let mut expr = Expr {
+            kind: ExprKind::NumberLiteral(0.0),
+            span,
+        };
+        for _ in 0..(MAX_EXPR_DEPTH + 1) {
+            expr = Expr {
+                kind: ExprKind::UnOp {
+                    op: "-".to_string(),
+                    operand: Box::new(expr),
+                },
+                span,
+            };
+        }
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        walk_expr(&expr, &mut diagnostics);
+    }
 }
