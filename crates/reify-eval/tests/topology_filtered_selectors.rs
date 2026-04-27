@@ -76,6 +76,46 @@ fn edges_by_length_box_10x20x30_filters_to_x_axis_edges() {
 }
 
 #[test]
+fn edges_parallel_to_box_x_axis_one_degree_tolerance_returns_four() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // 10×20×30 mm box has 12 edges in three axis-aligned groups of 4:
+    //   - 4 edges parallel to x (length 10mm)
+    //   - 4 edges parallel to y (length 20mm)
+    //   - 4 edges parallel to z (length 30mm)
+    //
+    // Filtering for parallelism to x-axis with 1° tolerance must select
+    // all four x-aligned edges, regardless of which direction along ±x
+    // the kernel's tangent vector happens to point (tangent direction is
+    // sign-arbitrary, unlike face normal).
+    let (mut kernel, box_id) = box_handle(10.0, 20.0, 30.0);
+
+    let result = topology_selectors::edges_parallel_to(
+        &mut kernel,
+        box_id,
+        [1.0, 0.0, 0.0],
+        (1.0_f64).to_radians(),
+    )
+    .expect("edges_parallel_to on a valid box should succeed");
+
+    assert_eq!(
+        result.len(),
+        4,
+        "edges_parallel_to([1,0,0], 1°) on a 10x20x30 box should return the 4 x-axis edges, got {}",
+        result.len()
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for id in &result {
+        assert_ne!(*id, box_id, "filtered id must differ from the source box");
+        assert!(seen.insert(*id), "duplicate filtered id {:?}", id);
+    }
+}
+
+#[test]
 fn faces_by_normal_box_top_face_one_degree_tolerance_returns_one() {
     if !OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
