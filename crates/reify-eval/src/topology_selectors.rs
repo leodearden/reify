@@ -825,34 +825,34 @@ mod tests {
         );
     }
 
-    /// In-test `GeometryKernel` whose `query_many` deliberately violates
-    /// the length invariant: returns a `Vec<Value>` shorter than the
-    /// input `queries` slice. Used to prove selectors detect the
-    /// mismatch and surface `QueryError::QueryFailed` instead of
-    /// silently truncating results via `zip`.
-    struct ShortQueryManyKernel {
+    /// In-test `GeometryKernel` whose `query_many` returns a fixed,
+    /// canned reply regardless of input length. Used to prove selectors
+    /// detect length mismatches (too-few or overlong) and surface
+    /// `QueryError::QueryFailed` instead of silently truncating or
+    /// ignoring extra results via `zip`.
+    struct FixedReplyQueryManyKernel {
         edges: Vec<GeometryHandleId>,
         // The Vec returned from query_many regardless of input length.
-        short_reply: Vec<Value>,
+        canned_reply: Vec<Value>,
     }
 
-    impl GeometryKernel for ShortQueryManyKernel {
+    impl GeometryKernel for FixedReplyQueryManyKernel {
         fn execute(
             &mut self,
             _op: &GeometryOp,
         ) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("ShortQueryManyKernel does not implement execute")
+            unimplemented!("FixedReplyQueryManyKernel does not implement execute")
         }
 
         fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("ShortQueryManyKernel only supports query_many")
+            unimplemented!("FixedReplyQueryManyKernel only supports query_many")
         }
 
         fn query_many(
             &self,
             _queries: &[GeometryQuery],
         ) -> Result<Vec<Value>, QueryError> {
-            Ok(self.short_reply.clone())
+            Ok(self.canned_reply.clone())
         }
 
         fn export(
@@ -889,9 +889,9 @@ mod tests {
             GeometryHandleId(602),
             GeometryHandleId(603),
         ];
-        let mut kernel = ShortQueryManyKernel {
+        let mut kernel = FixedReplyQueryManyKernel {
             edges: edge_ids,
-            short_reply: vec![Value::Real(0.005), Value::Real(0.010)],
+            canned_reply: vec![Value::Real(0.005), Value::Real(0.010)],
         };
         let err = edges_by_length(&mut kernel, GeometryHandleId(1), 0.0, 1.0)
             .expect_err("selector must reject length-mismatched query_many output");
@@ -911,16 +911,16 @@ mod tests {
     fn edges_by_length_detects_query_many_overlong_reply() {
         // Three edges, kernel returns FOUR values (len(queries)+1): selector
         // must surface `QueryError::QueryFailed` instead of silently ignoring
-        // the extra value. `ShortQueryManyKernel` is reused here — its
-        // `short_reply` field has no length constraint.
+        // the extra value. `FixedReplyQueryManyKernel` is staged with
+        // len(queries)+1 values to exercise the overlong direction.
         let edge_ids = vec![
             GeometryHandleId(601),
             GeometryHandleId(602),
             GeometryHandleId(603),
         ];
-        let mut kernel = ShortQueryManyKernel {
+        let mut kernel = FixedReplyQueryManyKernel {
             edges: edge_ids,
-            short_reply: vec![
+            canned_reply: vec![
                 Value::Real(0.005),
                 Value::Real(0.010),
                 Value::Real(0.015),
