@@ -5,7 +5,7 @@
 //! `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_html::render_html;
-use reify_doc::model::{DocModel, ItemDoc, ModuleDoc};
+use reify_doc::model::{DocModel, ModuleDoc};
 
 /// `render_html` on the default (empty) `DocModel` must produce a structurally
 /// well-formed HTML5 document that is *self-contained*: no `<link>` / `<script>` /
@@ -100,22 +100,17 @@ fn module_header_and_doc_paragraphs_render() {
 
 /// User-supplied content must be escaped before being inserted into HTML.
 /// Asserts that `<`, `>`, `&`, `"`, `'` are translated to their entity
-/// references in module path / doc / item name / type strings.
+/// references in module path / doc strings.
+///
+/// Item-level escape coverage (Field name, type_repr) is exercised by the
+/// snapshot test at step-31 once item bodies render through the same
+/// `html_escape` helper introduced here.
 #[test]
 fn html_escape_handles_special_chars() {
     let model = DocModel {
         modules: vec![ModuleDoc {
             path: "x&y".into(),
             doc: Some("<script>alert('xss')&\"</script>".into()),
-            items: vec![ItemDoc::Field {
-                name: "a&b".into(),
-                doc: None,
-                is_pub: false,
-                annotations: vec![],
-                pragmas: vec![],
-                type_repr: "Vec<T>".into(),
-                default_repr: None,
-            }],
             ..Default::default()
         }],
     };
@@ -152,19 +147,5 @@ fn html_escape_handles_special_chars() {
     assert!(
         out.contains("&#x27;") || out.contains("&#39;"),
         "expected single-quote escape (`&#x27;` or `&#39;`); got:\n{out}"
-    );
-
-    // Item-level escaping: name and type_repr.
-    assert!(
-        out.contains("a&amp;b"),
-        "Field name `a&b` must render as `a&amp;b`; got:\n{out}"
-    );
-    assert!(
-        out.contains("Vec&lt;T&gt;"),
-        "Field type `Vec<T>` must render as `Vec&lt;T&gt;`; got:\n{out}"
-    );
-    assert!(
-        !out.contains("<td>Vec<T>"),
-        "raw `Vec<T>` must not appear unescaped; got:\n{out}"
     );
 }

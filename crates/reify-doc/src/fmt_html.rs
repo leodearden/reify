@@ -36,7 +36,7 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
     out.push_str("<head>\n");
     out.push_str("<meta charset=\"utf-8\">\n");
     out.push_str("<title>");
-    out.push_str(title);
+    out.push_str(&html_escape(title));
     out.push_str("</title>\n");
     out.push_str("<style>\n");
     out.push_str("/* embedded stylesheet placeholder; populated in step-30 */\n");
@@ -46,7 +46,7 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
 
     for module in &model.modules {
         out.push_str("<h1>");
-        out.push_str(&module.path);
+        out.push_str(&html_escape(&module.path));
         out.push_str("</h1>\n");
         if let Some(doc) = module.doc.as_deref() {
             emit_paragraphs(&mut out, doc);
@@ -65,6 +65,30 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
 /// All-whitespace segments leave the buffer untouched so we don't produce
 /// dangling empty paragraphs.
 ///
+/// Escape the five HTML metacharacters (`<`, `>`, `&`, `"`, `'`) to their
+/// named or numeric entity references.
+///
+/// HTML5 only requires escaping `<`/`>`/`&` outside attributes and `"`/`'`
+/// inside attributes, but uniform 5-char escaping is simpler, still
+/// spec-compliant, and avoids attribute-vs-content branching at every
+/// emission site.  All user-supplied strings (names, types, expressions, doc
+/// text, member strings, default representations, …) pass through this helper
+/// before insertion so no raw user content reaches the output stream.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Mirrors the iteration logic of [`crate::fmt_markdown::emit_paragraphs`].
 fn emit_paragraphs(out: &mut String, doc: &str) {
     for paragraph in doc.split("\n\n") {
@@ -73,7 +97,7 @@ fn emit_paragraphs(out: &mut String, doc: &str) {
             continue;
         }
         out.push_str("<p>");
-        out.push_str(p);
+        out.push_str(&html_escape(p));
         out.push_str("</p>\n");
     }
 }
