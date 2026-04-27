@@ -260,6 +260,112 @@ fn query_face_normal_top_face_of_box_is_plus_z() {
     );
 }
 
+/// Parse the JSON Value::String produced by `BoundingBox` queries.
+fn parse_bbox(v: &Value) -> (f64, f64, f64, f64, f64, f64) {
+    let s = match v {
+        Value::String(s) => s,
+        other => panic!("expected Value::String, got {:?}", other),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(s)
+        .unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
+    let xmin = parsed["xmin"].as_f64().expect("missing xmin");
+    let ymin = parsed["ymin"].as_f64().expect("missing ymin");
+    let zmin = parsed["zmin"].as_f64().expect("missing zmin");
+    let xmax = parsed["xmax"].as_f64().expect("missing xmax");
+    let ymax = parsed["ymax"].as_f64().expect("missing ymax");
+    let zmax = parsed["zmax"].as_f64().expect("missing zmax");
+    (xmin, ymin, zmin, xmax, ymax, zmax)
+}
+
+#[test]
+fn query_edge_tangent_returns_unit_vector_along_axis() {
+    // 10×20×30 mm box → 12 axis-aligned edges. For each axis we pick one
+    // representative edge (identified by its bounding-box extents) and
+    // assert its `EdgeTangent` is ±(unit axis vector).
+    let (mut kernel, box_id) = box_kernel(10.0, 20.0, 30.0);
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges on a valid box should succeed");
+
+    // Tolerances: bbox extent has OCCT's geometric tolerance margin baked in
+    // (BRepBndLib enlarges the box by the shape's stored tolerance, typically
+    // ~1e-7), so the extent comparison must accommodate that. The tangent
+    // direction is computed analytically and is tight to ~1e-9.
+    let extent_tol = 1e-6;
+    let dir_tol = 1e-9;
+
+    // Helper: returns Some(edge_id) for an edge whose bbox extents along
+    // (x, y, z) approximately match the given target extents.
+    let find_edge_with_extents = |kernel: &mut OcctKernel,
+                                  edges: &[GeometryHandleId],
+                                  ex: f64,
+                                  ey: f64,
+                                  ez: f64|
+     -> GeometryHandleId {
+        for id in edges {
+            let bb = kernel
+                .query(&GeometryQuery::BoundingBox(*id))
+                .expect("BoundingBox query");
+            let (xmin, ymin, zmin, xmax, ymax, zmax) = parse_bbox(&bb);
+            let dx = xmax - xmin;
+            let dy = ymax - ymin;
+            let dz = zmax - zmin;
+            if (dx - ex).abs() < extent_tol
+                && (dy - ey).abs() < extent_tol
+                && (dz - ez).abs() < extent_tol
+            {
+                return *id;
+            }
+        }
+        panic!(
+            "no edge found with bbox extents ({ex}, {ey}, {ez}) within tol={extent_tol}"
+        );
+    };
+
+    // Each axis-aligned edge of a 10×20×30 mm box has zero extent on the
+    // two off-axis components and ~length on its axis. Convert mm→m: the
+    // axis-aligned lengths are 0.010, 0.020, 0.030 m respectively.
+    let x_edge = find_edge_with_extents(&mut kernel, &edges, 0.010, 0.0, 0.0);
+    let y_edge = find_edge_with_extents(&mut kernel, &edges, 0.0, 0.020, 0.0);
+    let z_edge = find_edge_with_extents(&mut kernel, &edges, 0.0, 0.0, 0.030);
+
+    // x-aligned edge: tangent should be ±(1, 0, 0).
+    let t_x = kernel
+        .query(&GeometryQuery::EdgeTangent(x_edge))
+        .expect("EdgeTangent on x-aligned edge");
+    let (tx, ty, tz) = parse_xyz(&t_x);
+    assert!(
+        (tx.abs() - 1.0).abs() < dir_tol,
+        "x-edge tangent |x| should be ≈1, got tx={tx}"
+    );
+    assert!(ty.abs() < dir_tol, "x-edge tangent y should be ≈0, got {ty}");
+    assert!(tz.abs() < dir_tol, "x-edge tangent z should be ≈0, got {tz}");
+
+    // y-aligned edge: tangent should be ±(0, 1, 0).
+    let t_y = kernel
+        .query(&GeometryQuery::EdgeTangent(y_edge))
+        .expect("EdgeTangent on y-aligned edge");
+    let (tx, ty, tz) = parse_xyz(&t_y);
+    assert!(tx.abs() < dir_tol, "y-edge tangent x should be ≈0, got {tx}");
+    assert!(
+        (ty.abs() - 1.0).abs() < dir_tol,
+        "y-edge tangent |y| should be ≈1, got ty={ty}"
+    );
+    assert!(tz.abs() < dir_tol, "y-edge tangent z should be ≈0, got {tz}");
+
+    // z-aligned edge: tangent should be ±(0, 0, 1).
+    let t_z = kernel
+        .query(&GeometryQuery::EdgeTangent(z_edge))
+        .expect("EdgeTangent on z-aligned edge");
+    let (tx, ty, tz) = parse_xyz(&t_z);
+    assert!(tx.abs() < dir_tol, "z-edge tangent x should be ≈0, got {tx}");
+    assert!(ty.abs() < dir_tol, "z-edge tangent y should be ≈0, got {ty}");
+    assert!(
+        (tz.abs() - 1.0).abs() < dir_tol,
+        "z-edge tangent |z| should be ≈1, got tz={tz}"
+    );
+}
+
 #[test]
 fn extract_edges_invalid_handle_returns_invalid_reference() {
     // Fresh kernel — no shapes registered, so handle id 999 is unknown.
