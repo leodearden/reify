@@ -842,3 +842,68 @@ structure S {
         "original-decl label message must be pinned to the canonical form"
     );
 }
+
+/// Regression guard against the new lint upgrading Shadowing to an error or
+/// otherwise breaking the existing `lambda_compile_tests::compile_lambda_param_shadows_outer`
+/// path. We re-use that test's exact source (`structure S { param x: Real = 5
+/// ; let f = |x| x * 2 }`) and assert two invariants the lint must respect:
+///
+/// 1. Exactly ONE `Shadowing` warning is emitted (the lint runs on this
+///    canonical case and produces a single, well-formed diagnostic).
+/// 2. ZERO error-severity diagnostics are produced (the lint must NOT flip
+///    Shadowing to `Severity::Error`, and must not break any other compile
+///    path with a spurious error).
+///
+/// This pins the contract relied on by `lambda_compile_tests::compile_lambda_param_shadows_outer`,
+/// which filters by `Severity::Error` (lambda_compile_tests.rs:194-198) — if a
+/// future change accidentally upgrades the warning to an error, that test
+/// would start failing AND this regression test would catch the cause
+/// directly.
+#[test]
+fn shadowing_does_not_break_existing_lambda_compile() {
+    let source = r#"
+structure S {
+    param x: Real = 5
+    let f = |x| x * 2
+}
+"#;
+    let module = compile_source(source);
+
+    // (1) Exactly one Shadowing warning.
+    let shadow_warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning on the canonical \
+         lambda-shadows-outer case, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        shadow_warnings[0].severity,
+        Severity::Warning,
+        "Shadowing must remain Warning severity — never an Error"
+    );
+
+    // (2) Zero errors anywhere in the diagnostic stream.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Shadowing lint must NOT introduce error-severity diagnostics on \
+         this canonical case — the existing \
+         `lambda_compile_tests::compile_lambda_param_shadows_outer` test \
+         depends on this. Got errors: {:?}",
+        errors
+    );
+}
