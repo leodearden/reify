@@ -5286,8 +5286,10 @@ mod tests {
             .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: -2.0 })
             .expect("InertiaTensor with density=-2.0 must not return Err (kernel is permissive)");
         let neg_entries = extract_3x3_tensor_entries(&result_neg);
-        // Each entry must equal the negation of the baseline within a small absolute tolerance.
-        // Baseline entries are O(1e4), so tol=100 is ~1% relative — comfortable margin.
+        // Each entry must equal the negation of the baseline within an absolute tolerance.
+        // Baseline diagonals are O(1e4), so tol=100 is ~1% relative for them.  Off-diagonals
+        // are analytically zero for an axis-aligned box at the origin (I_xy = I_xz = I_yz = 0),
+        // so the same abs-tol of 100 trivially covers them too.
         let tol = 100.0_f64;
         for i in 0..3 {
             for j in 0..3 {
