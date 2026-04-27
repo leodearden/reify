@@ -2231,6 +2231,65 @@ mod tests {
         );
     }
 
+    // --- derive_output_freshness tests (task #2328, step-1) ---
+
+    /// Arch §7.2 (lines 730-749) truth table:
+    ///   still_refining=true  → Intermediate{generation} always
+    ///   still_refining=false, any input != Final → Intermediate{generation}
+    ///   still_refining=false, all inputs == Final → Final
+    #[test]
+    fn derive_output_freshness_implements_arch_7_2_truth_table() {
+        use reify_types::Freshness;
+        let g = 7u64;
+
+        // Row 1: still_refining=true, all inputs Final → Intermediate
+        let inputs_all_final = [Freshness::Final, Freshness::Final];
+        assert_eq!(
+            derive_output_freshness(true, inputs_all_final.iter(), g),
+            Freshness::Intermediate { generation: g },
+            "still_refining=true, all-Final inputs → Intermediate"
+        );
+
+        // Row 2: still_refining=true, some input non-Final → Intermediate
+        let inputs_with_non_final = [
+            Freshness::Final,
+            Freshness::Intermediate { generation: 3 },
+        ];
+        assert_eq!(
+            derive_output_freshness(true, inputs_with_non_final.iter(), g),
+            Freshness::Intermediate { generation: g },
+            "still_refining=true, non-Final inputs → Intermediate"
+        );
+
+        // Row 3: still_refining=false, all inputs Final → Final
+        assert_eq!(
+            derive_output_freshness(false, inputs_all_final.iter(), g),
+            Freshness::Final,
+            "still_refining=false, all-Final inputs → Final"
+        );
+
+        // Row 4: still_refining=false, any input non-Final → Intermediate
+        assert_eq!(
+            derive_output_freshness(false, inputs_with_non_final.iter(), g),
+            Freshness::Intermediate { generation: g },
+            "still_refining=false, non-Final inputs → Intermediate"
+        );
+
+        // Edge case: no inputs, still_refining=false → Final
+        assert_eq!(
+            derive_output_freshness(false, std::iter::empty(), g),
+            Freshness::Final,
+            "still_refining=false, empty inputs → Final"
+        );
+
+        // Edge case: no inputs, still_refining=true → Intermediate
+        assert_eq!(
+            derive_output_freshness(true, std::iter::empty::<&Freshness>(), g),
+            Freshness::Intermediate { generation: g },
+            "still_refining=true, empty inputs → Intermediate"
+        );
+    }
+
     // --- CacheStore::freshness() tests (task #2326, step-3) ---
 
     #[test]
