@@ -1391,4 +1391,31 @@ mod tests {
     fn resolve_enum_type_returns_none_for_empty_slice() {
         assert_eq!(resolve_enum_type("Direction", &[]), None);
     }
+
+    /// Regression lock: the unknown-name diagnostic message for `resolve_dimension_type`
+    /// must list every name from `reify_types::NAMED_DIMENSIONS` plus `"Dimensionless"`.
+    ///
+    /// This locks in the "diagnostic message is derived from the shared table" property.
+    /// If a future change hardcodes the message again (re-introducing drift), this test fails.
+    #[test]
+    fn resolve_dimension_type_unknown_diagnostic_lists_all_named_dimensions() {
+        let te = named_type_expr("Foo");
+        let mut diagnostics = Vec::new();
+        let _ = resolve_dimension_type(&te, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let message = &diagnostics[0].message;
+        for &(_, name) in reify_types::NAMED_DIMENSIONS {
+            assert!(
+                message.contains(name),
+                "diagnostic message should contain '{}' from NAMED_DIMENSIONS; got: {}",
+                name,
+                message,
+            );
+        }
+        assert!(
+            message.contains("Dimensionless"),
+            "diagnostic message should contain 'Dimensionless' (special-case); got: {}",
+            message,
+        );
+    }
 }
