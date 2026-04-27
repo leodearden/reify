@@ -67,8 +67,13 @@ impl NodeTraits {
     /// See `docs/reify-implementation-architecture.md §7.6`.
     pub const COMMITTABLE: NodeTraits = NodeTraits(0b0000_1000);
 
-    /// Bitmask covering all four declared flags (used by [`Not`] impl).
-    const ALL_MASK: u8 = 0b0000_1111;
+    /// Bitwise OR of every declared flag constant (used by the [`Not`] impl).
+    ///
+    /// Derived from the flag constants rather than a hand-written literal so
+    /// that any future flag added to the list above is automatically included
+    /// in `Not`'s domain, removing a quiet-failure foot-gun.
+    const ALL_MASK: u8 =
+        Self::IMMEDIATE.0 | Self::WARM_STARTABLE.0 | Self::PROGRESSIVE.0 | Self::COMMITTABLE.0;
 
     /// Returns the union of `self` and `other` (bitwise OR).
     ///
