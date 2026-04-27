@@ -33,11 +33,14 @@
 //!   needed in the donation/checkout path).
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::cache::NodeId;
+use reify_eval::cache::{CachedResult, NodeCache, NodeId};
+use reify_eval::deps::DependencyTrace;
 use reify_eval::warm_pool::WarmStatePool;
 use reify_eval::Engine;
-use reify_test_support::parse_and_compile;
-use reify_types::{OpaqueState, ValueCellId};
+use reify_test_support::{bracket_compiled_module, parse_and_compile};
+use reify_types::{
+    Freshness, GeometryHandleId, OpaqueState, RealizationNodeId, ValueCellId, VersionId,
+};
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -303,5 +306,108 @@ fn eviction_fallback_evicted_state_returns_none_and_eval_matches_cold() {
         post_evict_value, &cold_value,
         "post-eviction re-eval value must equal the cold baseline (no warm-state seed); \
          this pins the checkout-None ⇒ compute_cold transparency contract"
+    );
+}
+
+// ── Step-11: variant-symmetry — donation hook fires for Realization removal ─
+
+/// Smoke test: when `edit_source` removes a Realization node from the
+/// topology, the donation hook (step-6) fires symmetrically with the
+/// Value/Constraint variants — the Realization's `cache.warm_state` is
+/// donated to `WarmStatePool` keyed by `NodeId::Realization(rid)` BEFORE
+/// the cache entry is invalidated. Pins arch §6.4's "removed nodes'
+/// warm state donated" rule for the Realization variant.
+///
+/// Variant-coverage caveats (see top-of-file comment):
+/// - Full round-trip (donate → pool → checkout → seed cache.warm_state)
+///   is verified for Value cells only. For Realization, the
+///   post-add seed step is a no-op today: `cache.donate_warm_state`
+///   returns `false` because no cache entry exists for the
+///   re-added realization at edit_source time — `engine_build.rs`
+///   creates Realization cache entries on demand from `build()` /
+///   `check()`, not from `edit_source`. When realizations gain edit-
+///   time cache entries, the seed step picks them up automatically
+///   (no code change needed in step-8's checkout-and-seed loop).
+/// - Resolution variant has no `diff_resolutions` helper yet, so neither
+///   donation nor checkout fires for it; the pool API itself is
+///   variant-agnostic — verified at the unit-test level (step-1).
+/// - ComputeNode is not yet a `NodeId` variant per arch §3.4; coverage
+///   attaches automatically when introduced.
+///
+/// Test driver: simulate a Realization producer that has parked warm
+/// state by manually inserting a cache entry for `Bracket@0` (with a
+/// dummy `GeometryHandle` payload) and injecting an OpaqueState into
+/// its `warm_state` slot. Then `edit_source` to a module that omits
+/// the realization (drives `Bracket@0` into `removed_realizations`).
+/// Assert the pool now holds the donated state and a `checkout`
+/// returns the original 0xBEEF payload.
+#[test]
+fn donation_hook_fires_for_realization_removal() {
+    let mut engine = fresh_engine();
+
+    // (1) Eval the bracket fixture which has Bracket@0 realization.
+    let module_a = bracket_compiled_module();
+    engine.eval(&module_a);
+
+    let rid = RealizationNodeId::new("Bracket", 0);
+    let realization_node = NodeId::Realization(rid.clone());
+
+    // (2) Manually create a cache entry for the Realization. `engine_build.rs`
+    //     creates these on demand at build()/check() time — not at eval() —
+    //     so we synthesize one here for the donation hook to find. Use a
+    //     `GeometryHandle` cached result with a placeholder handle id; the
+    //     test only cares about the `warm_state` slot, not the result payload.
+    engine.cache_store_mut().put(
+        realization_node.clone(),
+        NodeCache::new(
+            CachedResult::GeometryHandle(GeometryHandleId(0)),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(0),
+        ),
+    );
+
+    // (3) Inject an 8-byte 0xBEEF warm state into the cache entry.
+    let donated = engine
+        .cache_store_mut()
+        .donate_warm_state(&realization_node, OpaqueState::new(0xBEEFu32, 8));
+    assert!(
+        donated,
+        "donate_warm_state must succeed for the manually-inserted Realization cache entry"
+    );
+
+    // (4) Sanity: pool starts empty.
+    assert_eq!(
+        engine.warm_pool().used_bytes(),
+        0,
+        "warm_pool must start empty before the realization-removing edit"
+    );
+
+    // (5) edit_source to a source-text bracket without a realization. The
+    //     fixture's other elements (extra params, extra constraints) also
+    //     end up in their respective removed sets, but only the
+    //     Realization donation matters for this test.
+    let module_b = parse_and_compile(bracket_with_volume_let());
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed when transitioning fixture → source-text bracket");
+
+    // (6) The pool must now hold the 8-byte donated state for Bracket@0.
+    assert!(
+        engine.warm_pool().used_bytes() >= 8,
+        "warm_pool must hold ≥8 bytes after edit_source removes the realization with warm state; \
+         got used_bytes = {}",
+        engine.warm_pool().used_bytes()
+    );
+
+    // (7) checkout(Bracket@0) returns the originally-donated payload.
+    let checked_out = engine.warm_pool_mut().checkout(&realization_node);
+    let state = checked_out.expect(
+        "warm_pool.checkout must return Some for the donated realization after edit_source",
+    );
+    assert_eq!(
+        state.downcast::<u32>(),
+        Some(0xBEEFu32),
+        "checked-out OpaqueState must downcast to the originally-injected u32 payload (0xBEEF)"
     );
 }
