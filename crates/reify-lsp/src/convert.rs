@@ -185,8 +185,8 @@ pub fn convert_parse_error(err: &ParseError, source: &str, _uri: &Url) -> lsp_ty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::DiagnosticLabel;
-    use tower_lsp::lsp_types::{DiagnosticSeverity, Position, Url};
+    use reify_types::{DiagnosticCode, DiagnosticLabel};
+    use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString, Position, Url};
 
     #[test]
     fn offset_zero_in_empty_string() {
@@ -303,6 +303,32 @@ mod tests {
         let related = lsp_diag.related_information.unwrap();
         assert_eq!(related.len(), 1);
         assert_eq!(related[0].message, "related");
+    }
+
+    #[test]
+    fn convert_diagnostic_populates_string_code_for_typed_code() {
+        let source = "structure S {\n    param x : Real = 1\n    let f = |x| x * 2\n}\n";
+        let diag = Diagnostic::warning("declaration of 'x' shadows enclosing declaration")
+            .with_code(DiagnosticCode::Shadowing)
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 1), "child"))
+            .with_label(DiagnosticLabel::new(SourceSpan::new(2, 3), "parent"));
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp_diag.code,
+            Some(NumberOrString::String("Shadowing".to_string())),
+            "convert_diagnostic must populate code from DiagnosticCode::Shadowing"
+        );
+    }
+
+    #[test]
+    fn convert_diagnostic_leaves_code_none_when_input_code_absent() {
+        let source = "anything";
+        let diag = Diagnostic::error("some error");
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp_diag.code, None,
+            "convert_diagnostic must leave code as None when no DiagnosticCode is attached"
+        );
     }
 
     // --- UTF-8 boundary safety tests (step-21) ---
