@@ -92,7 +92,13 @@ fn build_fixture() -> DocModel {
                         }],
                     }],
                     ports: vec![],
-                    constraints: vec![],
+                    constraints: vec![ConstraintDoc {
+                        label: None,
+                        // expr_repr is a byte-range slice of FIXTURE_SOURCE[32..50]
+                        expr_repr: FIXTURE_SOURCE[32..50].to_string(),
+                        annotations: vec![],
+                        line: Some(1),
+                    }],
                     sub_components: vec![],
                     realizations: vec![],
                     meta: vec![
