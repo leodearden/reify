@@ -525,23 +525,23 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     );
 }
 
-// ── task-2273: regression-lock for valid-override fast-path ─────────────────
+// ── task-2273: regression-lock for valid-override repeat-call ────────────────
 
 /// A VALID (dimensionally-correct) param override must:
 /// (a) be applied on the first call (cache-miss path, `Some(Ok(()))` arm writes it to the cache),
-/// (b) survive a same-version fast-path repeat call (fast-path returns the cached override value),
+/// (b) still be returned on a same-version repeat call (cached override value returned),
 /// (c) produce no `param_override`-keyed diagnostic on either call.
 ///
 /// This locks the contract that the cache-miss `Some(Ok(()))` arm correctly clones the override
-/// into the cache AND that the fast-path returns it on subsequent calls.  Without this test a
+/// into the cache AND that the cached value is returned on subsequent calls.  Without this test a
 /// future refactor of the re-borrow logic (e.g. dropping the `.clone()` in the `Some(Ok(()))` arm
-/// or short-circuiting the cache write) would silently break override application on the LSP
-/// fast-path without any test failure.
+/// or short-circuiting the cache write) would silently break override application across cache
+/// calls without any test failure.
 ///
 /// Introduced by task 2273 step-1 as a regression-lock before the step-2 no-clone refactor.
 /// Should pass both before and after step-2 (the refactor preserves external behavior).
 #[test]
-fn eval_cached_repeat_call_applies_valid_param_override_through_fast_path() {
+fn eval_cached_applies_valid_param_override_on_repeat_call() {
     let x_id = ValueCellId::new("S", "x");
 
     let template = TopologyTemplateBuilder::new("S")

@@ -1524,8 +1524,9 @@ impl Engine {
                     //                          the duration of this Param branch (param_overrides is
                     //                          not mutated here).  One .clone() only in the single
                     //                          `Some((v, Ok(())))` cache-miss arm that writes to the
-                    //                          cache — cheaper than the previous shape which did
-                    //                          three separate HashMap::get calls.
+                    //                          cache — cheaper than the previous shape, which
+                    //                          cloned the Value on every Param visit even when
+                    //                          the cache fast-path immediately discarded it.
                     let override_entry: Option<(&Value, Result<(), ParamOverrideRejection>)> =
                         self.param_overrides
                             .get(&cell.id)
