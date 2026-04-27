@@ -610,6 +610,45 @@ mod tests {
              reify_eval::engine_purposes when a resolved-query cell is absent \
              from value_cells"
         );
+
+        // S2 (amendment): pin the release-mode anti-cascade contract. In
+        // debug builds the debug_assert! panics during .collect(), so *expr
+        // is never reassigned and stays as PurposeReflectiveAggregation —
+        // there is no post-call expanded state to assert on. In release builds
+        // the expand call completes: verify that both cells (the present one
+        // and the absent-fallback one) produce ValueRef elements typed as
+        // Type::Real, and that the ListLiteral has exactly 2 elements.
+        #[cfg(not(debug_assertions))]
+        {
+            let elements = match &expr.kind {
+                CompiledExprKind::ListLiteral(elements) => elements,
+                other => panic!(
+                    "anti-cascade contract: expected ListLiteral after expansion, got {:?}",
+                    other
+                ),
+            };
+            assert_eq!(
+                elements.len(),
+                2,
+                "anti-cascade contract: both resolved-query cells \
+                 (present + absent-fallback) produce ValueRef elements"
+            );
+            for elem in elements {
+                assert_eq!(
+                    elem.result_type,
+                    Type::Real,
+                    "anti-cascade contract: missing-cell fallback must use \
+                     Type::Real for the absent cell (elem kind: {:?})",
+                    elem.kind
+                );
+                assert!(
+                    matches!(&elem.kind, CompiledExprKind::ValueRef(_)),
+                    "anti-cascade contract: each element must be a ValueRef, \
+                     got {:?}",
+                    elem.kind
+                );
+            }
+        }
     }
 
     /// Companion: when no matching `ResolvedSchemaQuery` is supplied
