@@ -30,7 +30,7 @@
 //! added in step 6.
 
 use reify_syntax::{Expr, ExprKind, ParsedModule};
-use reify_types::Diagnostic;
+use reify_types::{Diagnostic, DiagnosticCode};
 
 /// Maximum allowed chain length before the lint fires.
 ///
@@ -113,8 +113,10 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
             // `cursor` now points at the chain's leaf root (a non-MemberAccess).
             let chain_len = 1 + hops; // 1 for root + N member-hops
             if chain_len > DEEP_DOT_CHAIN_THRESHOLD {
-                // Emission added in step 6. Currently a no-op gate.
-                let _ = diagnostics; // silence "unused" until step 6
+                diagnostics.push(
+                    Diagnostic::warning("deep dot-chain")
+                        .with_code(DiagnosticCode::DeepDotChain),
+                );
             }
             // Recurse into the chain's leaf root for nested chains.
             walk_expr(cursor, diagnostics);
