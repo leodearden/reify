@@ -88,6 +88,75 @@ structure S {
     }
 }
 
+/// step-5: Parse `forall v in vents: constraint v.mass < 50`
+/// -> MemberDecl::ForallConstraint with Constraint body.
+#[test]
+fn parse_forall_constraint() {
+    let source = r#"
+structure S {
+    forall v in vents: constraint v.mass < 50
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 1, "expected exactly one member");
+
+    let decl = match &members[0] {
+        MemberDecl::ForallConstraint(d) => d,
+        other => panic!("expected ForallConstraint, got {:?}", other),
+    };
+
+    assert_eq!(decl.variable, "v");
+    assert!(
+        matches!(&decl.collection.kind, ExprKind::Ident(n) if n == "vents"),
+        "expected collection Ident(vents), got {:?}",
+        decl.collection.kind
+    );
+
+    let constraint = match &decl.body {
+        ForallConstraintBody::Constraint(c) => c,
+        other => panic!("expected ForallConstraintBody::Constraint, got {:?}", other),
+    };
+
+    assert!(constraint.label.is_none(), "label should be None");
+    assert!(constraint.where_clause.is_none(), "where_clause should be None");
+
+    // expr: v.mass < 50
+    match &constraint.expr.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "<");
+            match &left.kind {
+                ExprKind::MemberAccess { object, member } => {
+                    assert!(
+                        matches!(object.kind, ExprKind::Ident(ref n) if n == "v"),
+                        "expected left object Ident(v)"
+                    );
+                    assert_eq!(member, "mass");
+                }
+                other => panic!("expected MemberAccess for left, got {:?}", other),
+            }
+            assert!(
+                matches!(&right.kind, ExprKind::NumberLiteral(v) if *v == 50.0),
+                "expected right NumberLiteral(50), got {:?}",
+                right.kind
+            );
+        }
+        other => panic!("expected BinOp(<) for constraint expr, got {:?}", other),
+    }
+
+    // span and content_hash sanity
+    assert!(
+        decl.span.start < decl.span.end,
+        "span should be non-empty: {:?}",
+        decl.span
+    );
+    assert_ne!(
+        decl.content_hash,
+        reify_types::ContentHash(0),
+        "content_hash should be non-zero"
+    );
+}
+
 /// step-1: Parse `forall v in vents: connect v.inlet -> housing.air_channel`
 /// -> MemberDecl::ForallConnect with Connect body.
 #[test]
