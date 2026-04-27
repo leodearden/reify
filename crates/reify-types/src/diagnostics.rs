@@ -240,6 +240,14 @@ pub enum DiagnosticCode {
     /// implicitly convert to the declared codomain type. The human-readable
     /// mnemonic used in PRD prose is `E_FIELD_CODOMAIN_MISMATCH`.
     FieldCodomainMismatch,
+    /// Origin: `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
+    /// Emitted as a Warning when a left-associative `MemberAccess` chain in
+    /// the parsed AST exceeds the configured depth threshold (currently
+    /// `DEEP_DOT_CHAIN_THRESHOLD = 4`). Implements spec §5.7's
+    /// "deep dot-chain" lint: counts `.field` hops only, treats
+    /// `IndexAccess`/`FunctionCall`/`EnumAccess` and any other
+    /// non-`MemberAccess` expression as a fresh chain root.
+    DeepDotChain,
 }
 
 /// A diagnostic message with location and optional labels.
