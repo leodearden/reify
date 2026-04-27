@@ -314,8 +314,7 @@ fn edges_at_height_z_window_inclusive_at_endpoints() {
     let bbox_json = |z: f64| {
         Value::String(format!(
             "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
-              \"xmax\":1.0,\"ymax\":1.0,\"zmax\":{z}}}",
-            z = z
+              \"xmax\":1.0,\"ymax\":1.0,\"zmax\":{z}}}"
         ))
     };
 
@@ -346,4 +345,159 @@ fn edges_at_height_z_window_inclusive_at_endpoints() {
         vec![e_at_target],
         "only the on-target edge should survive when tol=0.0049 is just below the z-distance"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional error-path coverage (reviewer suggestion: fill gaps so always-on
+// CI exercises branches that are OCCT-gated in topology_filtered_selectors.rs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// faces_by_area mirrors the non-Real contract guard that edges_by_length tests
+/// for EdgeLength — SurfaceArea must also be Value::Real.
+#[test]
+fn faces_by_area_returns_query_failed_when_surface_area_is_int() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_surface_area_result(f, Value::Int(5)); // intentionally wrong type
+
+    let result = topology_selectors::faces_by_area(&mut kernel, parent, 0.0, 100.0);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-real value"),
+                "error message should mention 'non-real value', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed), got {:?}", other),
+    }
+}
+
+/// Per-sub-shape query errors propagate through selectors via `?`.
+/// Configuring extraction without the area result exercises the Err path
+/// (mock returns QueryFailed for unconfigured typed queries).
+#[test]
+fn faces_by_area_propagates_err_from_surface_area_query() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    // Extraction is configured but the SurfaceArea result is NOT — the mock
+    // will return Err(QueryFailed("no mock result for ...")) for the query.
+    let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![f]);
+
+    let result = topology_selectors::faces_by_area(&mut kernel, parent, 0.0, 1.0);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "Err from SurfaceArea query should propagate through faces_by_area, got {:?}",
+        result
+    );
+}
+
+/// Malformed JSON in the FaceNormal payload must produce QueryFailed.
+#[test]
+fn faces_by_normal_malformed_json_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(f, Value::String("not-valid-json".into()));
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("malformed JSON") || msg.contains("FaceNormal"),
+                "error should mention malformed JSON or FaceNormal, got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for malformed JSON, got {:?}", other),
+    }
+}
+
+/// A face whose normal parses as the zero vector must produce QueryFailed.
+/// This exercises the normalize3 degenerate-face guard (distinct from the
+/// zero-target guard tested by faces_by_normal_zero_target_returns_query_failed).
+#[test]
+fn faces_by_normal_degenerate_face_normal_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(
+            f,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()),
+        );
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("degenerate"),
+                "error should mention 'degenerate' for a zero face normal, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for zero face normal, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Malformed JSON in the EdgeTangent payload must produce QueryFailed.
+#[test]
+fn edges_parallel_to_malformed_tangent_json_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_tangent_result(e, Value::String("{bad json}".into()));
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("malformed JSON") || msg.contains("EdgeTangent"),
+                "error should mention malformed JSON or EdgeTangent, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for malformed tangent JSON, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Malformed JSON in the BoundingBox payload must produce QueryFailed.
+/// Also exercises the missing-zmin/zmax branch since the malformed string
+/// will fail the parser entirely.
+#[test]
+fn edges_at_height_malformed_bbox_json_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_bbox_result(e, Value::String("this is not json".into()));
+
+    let result = topology_selectors::edges_at_height(&mut kernel, parent, 0.0, 1.0);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("malformed JSON") || msg.contains("BoundingBox"),
+                "error should mention malformed JSON or BoundingBox, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for malformed bbox JSON, got {:?}",
+            other
+        ),
+    }
 }
