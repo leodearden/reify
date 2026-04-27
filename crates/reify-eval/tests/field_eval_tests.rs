@@ -219,7 +219,7 @@ structure def S {
         .values
         .get(&val_id)
         .unwrap_or_else(|| panic!("'S.val' not found in initial eval values"));
-    assert_real_approx(val, 60.0, "initial S.val (k=2.0)");
+    assert_numeric_approx(val, 60.0, "initial S.val (k=2.0)");
 
     // Edit param k from 2.0 to 5.0; val must re-evaluate to 5.0 * 30 = 150.0.
     let k_id = ValueCellId::new("S", "k");
@@ -230,7 +230,30 @@ structure def S {
         .values
         .get(&val_id)
         .unwrap_or_else(|| panic!("'S.val' not found in post-edit values"));
-    assert_real_approx(val_after, 150.0, "post-edit S.val (k=5.0)");
+    assert_numeric_approx(val_after, 150.0, "post-edit S.val (k=5.0)");
+}
+
+/// Like `assert_real_approx` but also accepts `Value::Int` whose value matches
+/// the expected magnitude. Reify's literal parser can collapse integer-valued
+/// Real literals (e.g. `30.0`) to `Value::Int` along certain compile/eval
+/// paths; tests asserting numeric equality should accept either representation.
+/// Sister helper: pattern at `eval_sample_field_point` (lines ~122-126).
+fn assert_numeric_approx(val: &Value, expected: f64, label: &str) {
+    match val {
+        Value::Real(v) => assert!(
+            (v - expected).abs() < REAL_TOLERANCE,
+            "{label}: expected {expected}, got Real({v}) (diff = {})",
+            (v - expected).abs()
+        ),
+        Value::Int(n) => assert!(
+            (*n as f64 - expected).abs() < REAL_TOLERANCE,
+            "{label}: expected {expected}, got Int({n})"
+        ),
+        other => panic!(
+            "{label}: expected numeric value ≈ {expected}, got {:?}",
+            other
+        ),
+    }
 }
 
 // ── Analysis sampling dispatch tests (eval-level) ────────────────────────────
