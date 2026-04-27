@@ -500,6 +500,41 @@ mod tests {
             MatchSecondArmBody,
         }
 
+        const ALL_ARMS: &[ArmKind] = &[
+            ArmKind::UnOp,
+            ArmKind::BinOpLeft,
+            ArmKind::BinOpRight,
+            ArmKind::FunctionCallFirstArg,
+            ArmKind::ConditionalCondition,
+            ArmKind::ConditionalThen,
+            ArmKind::ConditionalElse,
+            ArmKind::ListLiteralFirst,
+            ArmKind::SetLiteralFirst,
+            ArmKind::MapLiteralFirstKey,
+            ArmKind::MapLiteralFirstValue,
+            ArmKind::IndexAccessObject,
+            ArmKind::IndexAccessIndex,
+            ArmKind::MatchScrutinee,
+            ArmKind::MatchFirstArmBody,
+            ArmKind::LambdaBody,
+            ArmKind::QuantifierCollection,
+            ArmKind::QuantifierPredicate,
+            ArmKind::AdHocSelectorBase,
+            ArmKind::AdHocSelectorFirstArg,
+            ArmKind::QualifiedAccessQualifier,
+            ArmKind::InstanceQualifiedAccessObject,
+            ArmKind::InstanceQualifiedAccessQualified,
+            ArmKind::RangeLower,
+            ArmKind::RangeUpper,
+            ArmKind::FunctionCallSecondArg,
+            ArmKind::ListLiteralSecond,
+            ArmKind::SetLiteralSecond,
+            ArmKind::MapLiteralSecondKey,
+            ArmKind::MapLiteralSecondValue,
+            ArmKind::AdHocSelectorSecondArg,
+            ArmKind::MatchSecondArmBody,
+        ];
+
         fn shallow_leaf(span: SourceSpan) -> Expr {
             Expr {
                 kind: ExprKind::NumberLiteral(0.0),
@@ -668,41 +703,7 @@ mod tests {
         }
 
         let span = SourceSpan::empty(0);
-        let arms = [
-            ArmKind::UnOp,
-            ArmKind::BinOpLeft,
-            ArmKind::BinOpRight,
-            ArmKind::FunctionCallFirstArg,
-            ArmKind::ConditionalCondition,
-            ArmKind::ConditionalThen,
-            ArmKind::ConditionalElse,
-            ArmKind::ListLiteralFirst,
-            ArmKind::SetLiteralFirst,
-            ArmKind::MapLiteralFirstKey,
-            ArmKind::MapLiteralFirstValue,
-            ArmKind::IndexAccessObject,
-            ArmKind::IndexAccessIndex,
-            ArmKind::MatchScrutinee,
-            ArmKind::MatchFirstArmBody,
-            ArmKind::LambdaBody,
-            ArmKind::QuantifierCollection,
-            ArmKind::QuantifierPredicate,
-            ArmKind::AdHocSelectorBase,
-            ArmKind::AdHocSelectorFirstArg,
-            ArmKind::QualifiedAccessQualifier,
-            ArmKind::InstanceQualifiedAccessObject,
-            ArmKind::InstanceQualifiedAccessQualified,
-            ArmKind::RangeLower,
-            ArmKind::RangeUpper,
-            ArmKind::FunctionCallSecondArg,
-            ArmKind::ListLiteralSecond,
-            ArmKind::SetLiteralSecond,
-            ArmKind::MapLiteralSecondKey,
-            ArmKind::MapLiteralSecondValue,
-            ArmKind::AdHocSelectorSecondArg,
-            ArmKind::MatchSecondArmBody,
-        ];
-        for arm in arms {
+        for arm in ALL_ARMS.iter().copied() {
             // Sanity pass: a single-layer wrap must NOT panic. Guards against
             // `wrap_in_arm` silently constructing a broken or depth-saturated
             // AST, which would make the depth-saturation assertion below
