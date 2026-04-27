@@ -134,6 +134,12 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
 }
 
 /// Convert a Reify Diagnostic to an LSP Diagnostic.
+///
+/// When `diag.code` is `Some(c)`, the returned LSP diagnostic carries
+/// `code = Some(NumberOrString::String(format!("{:?}", c)))`.
+/// The Debug format is pinned by `shadowing_diagnostic_code_variant_round_trips`
+/// in `crates/reify-types/src/diagnostics.rs`, which is the single source of
+/// truth for the wire string.
 pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_types::Diagnostic {
     let range = if let Some(first_label) = diag.labels.first() {
         span_to_range(source, first_label.span)
@@ -161,9 +167,14 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         None
     };
 
+    let code = diag
+        .code
+        .map(|c| lsp_types::NumberOrString::String(format!("{:?}", c)));
+
     lsp_types::Diagnostic {
         range,
         severity: Some(convert_severity(diag.severity)),
+        code,
         message: diag.message.clone(),
         source: Some("reify".to_string()),
         related_information,
