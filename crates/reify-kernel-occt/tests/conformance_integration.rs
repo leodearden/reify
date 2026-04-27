@@ -108,22 +108,27 @@ fn closed_shell_passes_all_three_conformance_queries() {
 /// CompSolid (the wrapped box's edges each have exactly 2 face parents, and the
 /// box's shell is consistently oriented).
 ///
-/// The `IsWatertight` value is pinned to match current OCCT behaviour (see the
-/// inline comment in the assertion below). `BRepCheck_Analyzer::IsValid()` on a
-/// CompSolid containing a single non-shared-face solid is OCCT-version-specific:
-/// some versions accept it, others flag it as invalid because CompSolid expects
-/// adjacent solids sharing faces. The pinned value must be updated if OCCT
-/// changes its verdict — do not silently re-pin without investigation.
+/// For `IsWatertight` the test asserts that the call returns `Ok(Bool(_))` —
+/// i.e. the guard arm does NOT short-circuit the way it does for FACE/WIRE/EDGE/VERTEX.
+/// The exact `IsValid()` verdict for a single-solid CompSolid is OCCT-version-specific
+/// (OCCT 7.8.1 returns `true`; future versions may differ as CompSolid semantics evolve).
+/// Using a weaker assertion keeps the test stable across upgrades while still confirming
+/// that COMPSOLID reaches `BRepCheck_Analyzer` rather than being rejected at the guard.
 #[test]
 fn compsolid_passes_through_shape_type_guard() {
     let mut kernel = OcctKernel::new();
     let cs_id = kernel.store_compsolid_for_test();
 
-    // COMPSOLID reaches BRepCheck_Analyzer — pinned to observed OCCT behaviour:
-    // IsValid() returns true for a single-solid CompSolid on the OCCT version
-    // used by this repo. If a future OCCT upgrade changes this verdict,
-    // investigate before re-pinning (the semantics of CompSolid.IsValid changed).
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(cs_id), true, "IsWatertight on compsolid");
+    // COMPSOLID is not short-circuited at the type guard — assert it reaches
+    // BRepCheck_Analyzer and returns Ok(Bool(_)) rather than erroring.
+    // (The specific bool is OCCT-version-dependent and intentionally not pinned;
+    // OCCT 7.8.1 returns true for a single-solid CompSolid.)
+    let wt_result = kernel.query(&GeometryQuery::IsWatertight(cs_id));
+    assert!(
+        matches!(wt_result, Ok(Value::Bool(_))),
+        "IsWatertight on compsolid should reach BRepCheck_Analyzer (return Ok(Bool(_))), \
+         not error or return a non-Bool value; got {wt_result:?}"
+    );
     // every edge of the wrapped box has exactly 2 face parents → manifold
     assert_bool_query(&kernel, GeometryQuery::IsManifold(cs_id),   true, "IsManifold on compsolid");
     // the box's shell is consistently oriented → orientable
