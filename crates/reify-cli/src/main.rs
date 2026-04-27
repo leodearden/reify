@@ -265,6 +265,30 @@ fn cmd_build(args: &[String]) -> ExitCode {
 const DOC_USAGE: &str =
     "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]";
 
+/// Build a near-empty but well-formed [`reify_doc::model::DocModel`] from a
+/// compiled module.
+///
+/// This is a deliberate placeholder that preserves only the module path so
+/// the `reify doc` CLI pipeline (formatter dispatch, output plumbing,
+/// usage/error handling) can be exercised end-to-end without depending on
+/// the full lowering pass that would walk `compiled.templates`,
+/// `compiled.functions`, etc.
+///
+/// TODO(post-2361): replace with `reify_doc_build::build_doc_model` when
+/// slice 2 of the reify-doc PRD lands.  See `docs/prds/reify-doc-tool.md`
+/// and the `scope_caveat="build_doc_model_not_yet_implemented"` notes on
+/// sibling tasks 2351/2355/2357/2359.
+fn minimal_doc_model_from_compiled(
+    compiled: &reify_compiler::CompiledModule,
+) -> reify_doc::model::DocModel {
+    reify_doc::model::DocModel {
+        modules: vec![reify_doc::model::ModuleDoc {
+            path: compiled.path.to_string(),
+            ..Default::default()
+        }],
+    }
+}
+
 fn cmd_doc(args: &[String]) -> ExitCode {
     if args.is_empty() {
         eprintln!("{}", DOC_USAGE);
@@ -349,10 +373,20 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let _ = (format, output, split, compact, &compiled);
-    // TODO(post-2361): subsequent steps add format dispatch and writer
-    // plumbing.  Stub returns SUCCESS once parse + compile have completed
-    // without errors; later steps tighten the happy path.
+    let _ = (output, split, compact);
+    let model = minimal_doc_model_from_compiled(&compiled);
+
+    // Default format is "html"; later steps wire the html branch.  For now,
+    // any --format that isn't "json" falls through to the SUCCESS stub so
+    // the json test in step 13 passes without preempting later steps.
+    let format_value = format.as_deref().unwrap_or("html");
+    if format_value == "json" {
+        let body = reify_doc::fmt_json::render_json(&model, /* compact */ false);
+        print!("{body}");
+        return ExitCode::SUCCESS;
+    }
+
+    // TODO(post-2361): markdown + html branches added in later steps.
     ExitCode::SUCCESS
 }
 
