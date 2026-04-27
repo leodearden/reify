@@ -559,14 +559,13 @@ pub trait GeometryKernel: Send + Sync {
     /// batch the actor-channel hop and the underlying FFI work into a
     /// single send/recv round-trip, eliminating the N+1 overhead that
     /// per-element `query` incurs in tight selector loops.
+    ///
+    /// Overriding impls should call [`debug_assert_query_many_invariant`]
+    /// before returning the reply so a kernel-side path that violates the
+    /// length contract panics in dev/test builds rather than silently
+    /// truncating consumer results.
     fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
-        let out: Vec<Value> = queries.iter().map(|q| self.query(q)).collect::<Result<_, _>>()?;
-        // Tautological for this default impl — `Result<Vec<_>, _>::collect` guarantees
-        // `out.len() == queries.len()` on the `Ok` branch. Kept as an executable contract
-        // marker: overriding impls (e.g. channel-routed batchers) that do not go through
-        // `FromIterator` should add a matching check in their own bodies.
-        debug_assert_eq!(out.len(), queries.len(), "query_many length invariant");
-        Ok(out)
+        queries.iter().map(|q| self.query(q)).collect()
     }
 
     /// Export a handle to the given format, writing to the provided writer.

@@ -17,6 +17,7 @@
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
+    debug_assert_query_many_invariant,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -179,9 +180,11 @@ impl OcctKernelHandle {
                 reply: reply_tx,
             })
             .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
+        let reply: Vec<Value> = reply_rx
             .blocking_recv()
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))??;
+        debug_assert_query_many_invariant(queries, &reply);
+        Ok(reply)
     }
 
     /// Tessellate a geometry handle into a mesh on the kernel thread.
