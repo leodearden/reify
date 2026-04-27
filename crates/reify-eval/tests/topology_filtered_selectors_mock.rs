@@ -142,3 +142,28 @@ fn faces_by_area_propagates_invalid_handle_from_extract_faces() {
         result
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// faces_by_normal
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn faces_by_normal_exactly_aligned_face_at_zero_tolerance_is_accepted() {
+    // Smoke-test for the clamp(-1.0, 1.0) path: when target and normal are
+    // exactly aligned the dot product can computationally exceed 1.0 by a few
+    // ULPs. Without the clamp, acos would return NaN and the face would be
+    // silently dropped. The clamp turns the risk into exact-zero acceptance.
+    let parent = GeometryHandleId(1);
+    let face = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
+        );
+
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0)
+        .expect("faces_by_normal should succeed for aligned face");
+    assert_eq!(result, vec![face], "exactly-aligned face must be accepted at zero tolerance");
+}
