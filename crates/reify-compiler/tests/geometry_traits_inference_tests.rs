@@ -610,3 +610,58 @@ fn geometry_function_names_const_exists_and_contains_primitives() {
         );
     }
 }
+
+/// Every name in `GEOMETRY_FUNCTION_NAMES` must hit an **explicit** arm in
+/// `infer_traits_for_function_call` — `try_infer_traits_for_function_call`
+/// must return `Some(_)` for each, never `None`.
+///
+/// # Why this matters
+///
+/// The private `infer_traits_for_function_call` has a `_ => InferredTraits::all()`
+/// fallback that silently treats any unknown function name as fully Bounded.
+/// Today this is safe because every name in `GEOMETRY_FUNCTION_NAMES` is
+/// explicitly dispatched. But when a future Unbounded primitive lands —
+/// e.g. `half_space`, `extrude_infinite` — a developer adding it to
+/// `GEOMETRY_FUNCTION_NAMES` (so `is_geometry_function` recognises it)
+/// without also adding an explicit arm in the dispatch match would silently
+/// produce `InferredTraits::all()` (Bounded) instead of the correct
+/// `InferredTraits::none()` (Unbounded). The conformance walker would then
+/// never emit `E_GEOMETRY_UNBOUNDED` for calls like `Foo(g: half_space(...))`
+/// with `param g : Bounded`, defeating the whole check.
+///
+/// `try_infer_traits_for_function_call` returns `None` precisely for the
+/// unknown-name fallback and `Some(_)` for every explicitly-dispatched arm,
+/// so iterating `GEOMETRY_FUNCTION_NAMES` and asserting `Some(_)` turns
+/// that silent gap into a loud test failure.
+///
+/// # Why empty `&[]` args are sufficient
+///
+/// Every dispatch arm either returns a constant (`InferredTraits::all()`)
+/// or recurses on the geometry-typed subset of `args`. The helpers
+/// `first_geometry_arg`, `first_two_geometry_args`, and `fold_geometry_args`
+/// all defensively `unwrap_or(InferredTraits::all())` when no geometry arg
+/// is present — so every arm produces a value even with an empty slice.
+/// The test's only goal is to verify the name is **dispatched**, not to
+/// check the specific trait set produced.
+///
+/// # Synchronisation guarantee
+///
+/// Because this test is driven from `GEOMETRY_FUNCTION_NAMES` (the same
+/// const that backs `is_geometry_function`), it stays in sync automatically:
+/// adding a name to `GEOMETRY_FUNCTION_NAMES` without adding a dispatch arm
+/// in `geometry_traits_inference.rs` causes **this** test to fail.
+#[test]
+fn every_geometry_function_name_has_explicit_dispatch_arm() {
+    use reify_compiler::GEOMETRY_FUNCTION_NAMES;
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    for name in GEOMETRY_FUNCTION_NAMES {
+        let result = try_infer_traits_for_function_call(name, &[]);
+        assert!(
+            result.is_some(),
+            "GEOMETRY_FUNCTION_NAMES recognises {name:?} but it falls through the \
+             unknown-name fallback in infer_traits_for_function_call — add an explicit \
+             arm in crates/reify-compiler/src/geometry_traits_inference.rs"
+        );
+    }
+}
