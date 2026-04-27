@@ -569,6 +569,34 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure an InertiaTensor query result for a specific handle and density.
+    ///
+    /// Matches `GeometryQuery::InertiaTensor { handle, density }` where `density`
+    /// must be exactly the same value (bits-equal) as provided here.
+    ///
+    /// # Panics (debug)
+    /// Panics if `density` is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
+    pub fn with_inertia_tensor_result(
+        mut self,
+        handle: GeometryHandleId,
+        density: f64,
+        value: Value,
+    ) -> Self {
+        debug_assert!(
+            !density.is_nan(),
+            "InertiaTensor density NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
+        );
+        self.typed_queries.insert(
+            QueryKey::InertiaTensor {
+                handle,
+                density_bits: density.to_bits(),
+            },
+            value,
+        );
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
