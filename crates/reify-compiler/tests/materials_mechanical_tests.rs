@@ -557,6 +557,13 @@ structure def Foo : FatigueRated {
         !errors.is_empty(),
         "expected conformance errors for Foo : FatigueRated missing density and name, but got none"
     );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("density") || d.message.contains("name")),
+        "expected error about missing inherited density/name, got: {:?}",
+        errors
+    );
 }
 
 /// A structure declaring `: FatigueRated` and supplying all three required
