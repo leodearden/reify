@@ -179,6 +179,60 @@ fn eval_field_snapshot_consistency() {
     );
 }
 
+// ── Task 2343 step-7: composed-field invalidation on dep change ──────────
+//
+// Pin the integration of composed-field re-elaboration with `edit_param`.
+// The chain `composed → analytical` is sampled inside a structure body via
+// `sample(scaled, k)` where `k` is a structure param. After the param edits,
+// the let-binding's expression is re-evaluated against the new param value;
+// the composed lambda must be available (and consistent with its registered
+// deps) at the new sample point.
+//
+// Note: in v0.1, field lambda bodies cannot reference structure params
+// directly (`unresolved name` at compile time), so we drive the change
+// through the sample-point arm — the structure param `k` is the second
+// argument to `sample`. The plan's expected values are preserved by
+// scaling: `scaled(p) = base(p) * 30`, so `sample(scaled, k) = k * 30`.
+
+/// Initial eval at k=2.0 yields 60.0; after `edit_param(k=5.0)`, the let
+/// binding `val = sample(scaled, k)` re-evaluates to 150.0.  Pins the
+/// edit-cycle through a composed-field sample point and exercises the
+/// reverse-index plumbing wired in step-6.
+#[test]
+fn eval_composed_field_invalidates_on_dep_change() {
+    let source = r#"
+field def base : Real -> Real { source = analytical { |p| p } }
+field def scaled : Real -> Real { source = composed { |p| base(p) * 30.0 } }
+
+structure def S {
+    param k : Real = 2.0
+    let val = sample(scaled, k)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+
+    // Cold-start eval: k = 2.0, val = sample(scaled, 2.0) = base(2.0) * 30 = 60.0.
+    let initial = engine.eval(&compiled);
+    let val_id = ValueCellId::new("S", "val");
+    let val = initial
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in initial eval values"));
+    assert_real_approx(val, 60.0, "initial S.val (k=2.0)");
+
+    // Edit param k from 2.0 to 5.0; val must re-evaluate to 5.0 * 30 = 150.0.
+    let k_id = ValueCellId::new("S", "k");
+    let after = engine
+        .edit_param(k_id, Value::Real(5.0))
+        .expect("edit_param(S.k) should succeed");
+    let val_after = after
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in post-edit values"));
+    assert_real_approx(val_after, 150.0, "post-edit S.val (k=5.0)");
+}
+
 // ── Analysis sampling dispatch tests (eval-level) ────────────────────────────
 //
 // These tests exercise the full sampling dispatch path:
