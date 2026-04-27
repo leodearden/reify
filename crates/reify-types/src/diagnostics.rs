@@ -292,6 +292,12 @@ pub enum DiagnosticCode {
 ///     candidates: vec![],
 /// };
 /// ```
+///
+/// **Note on the doctest above:** the `compile_fail,E0639` annotation documents the
+/// expected error code but rustdoc does not validate it — the test only asserts that
+/// the snippet fails to compile, not *why* it fails. The real enforcement comes from
+/// `#[non_exhaustive]` itself: if the attribute is ever removed, this snippet would
+/// compile successfully and the test would turn red, reliably signalling the regression.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
