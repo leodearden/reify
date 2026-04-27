@@ -9,105 +9,11 @@
 
 mod common;
 
-use common::compile_with_stdlib_helper;
-use reify_compiler::{CompiledModule, stdlib_loader};
+use common::{
+    assert_eq_rel, assert_simple_unit, compile_with_stdlib_helper, stdlib_param_si_value,
+    units_module,
+};
 use reify_types::{DimensionVector, Severity};
-
-// ─── local helpers ─────────────────────────────────────────────────────────────
-
-/// Return the compiled `std/units` module from the cached stdlib.
-///
-/// Uses the `OnceLock`-backed `load_stdlib()` so repeated calls are free.
-fn units_module() -> &'static CompiledModule {
-    stdlib_loader::load_stdlib()
-        .iter()
-        .find(|m| format!("{}", m.path) == "std/units")
-        .expect("std/units module not found")
-}
-
-/// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.
-///
-/// Using the larger magnitude as the scale makes the tolerance robust when one
-/// operand is zero.
-fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
-    let scale = a.abs().max(b.abs());
-    let tol = if scale == 0.0 { rel_tol } else { scale * rel_tol };
-    assert!(
-        (a - b).abs() < tol,
-        "{}: expected {} ≈ {} (tol {})",
-        msg,
-        a,
-        b,
-        tol
-    );
-}
-
-/// Assert that a named unit in `std/units` has the expected dimension, factor
-/// (within `rel_tol` relative tolerance), and no offset.
-fn assert_simple_unit(
-    name: &str,
-    expected_dim: DimensionVector,
-    expected_factor: f64,
-    rel_tol: f64,
-) {
-    let module = units_module();
-    let u = module
-        .units
-        .iter()
-        .find(|u| u.name == name)
-        .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
-    assert_eq!(u.dimension, expected_dim, "unit '{}' dimension wrong", name);
-    assert_eq_rel(
-        u.factor,
-        expected_factor,
-        rel_tol,
-        &format!("unit '{}' factor", name),
-    );
-    assert!(u.offset.is_none(), "unit '{}' should have no offset", name);
-}
-
-/// Compile a structure with a single default-valued param and return the
-/// Scalar's (si_value, dimension) from its default expression.
-///
-/// Source compiled: `structure def S { param x : <param_type> = <literal> }`
-fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
-    let source = format!(
-        "structure def S {{ param x : {} = {} }}",
-        param_type, literal
-    );
-    let module = compile_with_stdlib_helper(&source);
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "source `{}` produced errors: {:?}",
-        source,
-        errs
-    );
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S template not found");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "x")
-        .expect("x cell not found");
-    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
-    if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-        si_value,
-        dimension,
-    }) = &expr.kind
-    {
-        (*si_value, *dimension)
-    } else {
-        panic!("unexpected expression kind: {:?}", expr.kind);
-    }
-}
 
 // ─── (a) USD metadata: dimension = MONEY, factor ≈ 1.0, no offset ────────────
 
@@ -200,7 +106,7 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
             right,
         } => {
             // Left operand: 25USD → Scalar with MONEY dimension, si_value = 25.0
-            let left_si = match &left.kind {
+            match &left.kind {
                 reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
                     si_value,
                     dimension,
@@ -215,12 +121,11 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
                         "left si_value should be 25.0 (25USD), got {}",
                         si_value
                     );
-                    *si_value
                 }
                 other => panic!("left operand should be Literal(Scalar), got {:?}", other),
-            };
+            }
             // Right operand: 1kg → Scalar with MASS dimension, si_value = 1.0
-            let right_si = match &right.kind {
+            match &right.kind {
                 reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
                     si_value,
                     dimension,
@@ -235,17 +140,9 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
                         "right si_value should be 1.0 (1kg), got {}",
                         si_value
                     );
-                    *si_value
                 }
                 other => panic!("right operand should be Literal(Scalar), got {:?}", other),
-            };
-            // Division check: left_si / right_si = 25.0 / 1.0 = 25.0
-            let ratio = left_si / right_si;
-            assert!(
-                (ratio - 25.0).abs() < 1e-12,
-                "25USD/1kg operand ratio should be 25.0, got {}",
-                ratio
-            );
+            }
         }
         other => panic!("expected BinOp{{Div, _, _}}, got {:?}", other),
     }

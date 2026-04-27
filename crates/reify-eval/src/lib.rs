@@ -88,7 +88,7 @@ impl std::fmt::Display for EngineError {
                 write!(
                     f,
                     "dimension mismatch for {cell}: expected {:?}, got {:?}",
-                    *expected, *got
+                    expected, got
                 )
             }
             EngineError::TypeKindMismatch {
