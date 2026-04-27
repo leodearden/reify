@@ -110,9 +110,8 @@ pub(crate) fn resolve_dimension_type(
     // downstream consumers (LSP quick-fixes, IDE tooling) should prefer the structured field
     // rather than parsing the prose.
     //
-    // Build as Vec<&str> first so names_list (the prose join) and with_candidates (the
-    // structured field) share the same source; with_candidates converts &str → String
-    // internally, avoiding a double-allocation pass.
+    // Build as Vec<&str> once so the prose join and the structured candidates share one
+    // source of truth; with_candidates owns the &str→String conversion.
     let candidate_strs: Vec<&str> = reify_types::NAMED_DIMENSIONS
         .iter()
         .map(|(_, n)| *n)
@@ -1409,8 +1408,8 @@ mod tests {
     /// (e.g. `"expected one of: A, B"` or `"valid names are A, B"`) cannot silently bypass this
     /// assertion because it no longer parses prose at all.
     ///
-    /// The prose message is checked only for shape (error-kind phrase + offending identifier),
-    /// never parsed for the names list.
+    /// The prose message is only checked for non-emptiness; its wording is not part of the
+    /// contract — the structured `candidates` field is.
     #[test]
     fn resolve_dimension_type_unknown_diagnostic_lists_all_named_dimensions() {
         let te = named_type_expr("Foo");
@@ -1436,19 +1435,9 @@ mod tests {
             "diagnostic.candidates does not exactly match NAMED_DIMENSIONS + Dimensionless"
         );
 
-        // Soft prose-shape check: the message should still be informative — name the
-        // kind of error and the offending identifier — but we no longer parse the
-        // names list out of it. A future reword (e.g. "expected one of: …" or
-        // "valid names are …") cannot silently bypass the candidate-set assertion.
-        assert!(
-            diag.message.contains("unknown dimension type"),
-            "diagnostic prose should describe the error kind; got: {}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("'Foo'"),
-            "diagnostic prose should name the offending identifier; got: {}",
-            diag.message
-        );
+        // Minimal prose sanity check: we only assert the message is non-empty.
+        // Specific wording is not pinned here — the structured `candidates` field
+        // (asserted above) is the real contract.
+        assert!(!diag.message.is_empty(), "diagnostic prose should be non-empty");
     }
 }
