@@ -1549,15 +1549,18 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     const double m12 = (m.Value(1, 2) + m.Value(2, 1)) * 0.5;
     const double m13 = (m.Value(1, 3) + m.Value(3, 1)) * 0.5;
     const double m23 = (m.Value(2, 3) + m.Value(3, 2)) * 0.5;
+    const double m12d = m12 * density;
+    const double m13d = m13 * density;
+    const double m23d = m23 * density;
     return InertiaTensor3x3{
         m.Value(1, 1) * density,
-        m12 * density,
-        m13 * density,
-        m12 * density,
+        m12d,
+        m13d,
+        m12d,
         m.Value(2, 2) * density,
-        m23 * density,
-        m13 * density,
-        m23 * density,
+        m23d,
+        m13d,
+        m23d,
         m.Value(3, 3) * density,
     };
 }
