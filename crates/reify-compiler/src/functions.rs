@@ -638,4 +638,42 @@ mod tests {
             deps
         );
     }
+
+    /// Lambda-rooted variant of the basic dep-discovery test. Production
+    /// callers always pass a `composed { |p| ... }` lambda — the bare
+    /// FunctionCall used by the other unit tests doesn't exercise the
+    /// `expr.walk` Lambda-body recursion path. Without this test, a future
+    /// refactor that stopped descending into Lambda bodies in `walk` would
+    /// silently regress field-dep collection but leave the unit tests green
+    /// (only the integration test in `field_compile_tests.rs` would fail).
+    #[test]
+    fn collect_composed_field_dependencies_walks_lambda_body() {
+        let inner = make_field("inner", Type::Real, Type::Real);
+        let outer = make_field("outer", Type::Real, Type::Real);
+        let body = make_composition_expr("outer", "inner");
+        let lambda_expr = CompiledExpr {
+            kind: CompiledExprKind::Lambda {
+                params: vec![("p".to_string(), Some(Type::Real))],
+                param_ids: vec![ValueCellId::new("$lambda0", "p")],
+                body: Box::new(body),
+                captures: vec![],
+            },
+            result_type: Type::Real,
+            content_hash: ContentHash(0),
+        };
+        let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
+        registry.insert("inner", &inner);
+        registry.insert("outer", &outer);
+
+        let deps = collect_composed_field_dependencies(&lambda_expr, &registry);
+
+        assert_eq!(
+            deps.len(),
+            2,
+            "Lambda-rooted expr: expected 2 field deps via body recursion, got: {:?}",
+            deps
+        );
+        assert!(deps.contains(&ValueCellId::new(FIELD_ENTITY_PREFIX, "inner")));
+        assert!(deps.contains(&ValueCellId::new(FIELD_ENTITY_PREFIX, "outer")));
+    }
 }
