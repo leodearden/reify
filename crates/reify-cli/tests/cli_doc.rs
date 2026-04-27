@@ -276,6 +276,39 @@ fn doc_compact_with_html_exits_two() {
 }
 
 #[test]
+fn doc_o_flag_writes_to_file_for_json() {
+    let path = common::fixture_path("bracket.ri");
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let out_path = dir.path().join("doc.json");
+    let out_str = out_path.to_str().expect("tmp path is utf-8");
+
+    let (status, stdout, stderr) = run_doc(&["--format", "json", "-o", out_str, &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format json -o <file> must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "stdout must be empty when -o <file> is supplied, got: {stdout}"
+    );
+    assert!(
+        out_path.exists(),
+        "expected file at {} to exist after `-o`",
+        out_path.display()
+    );
+    let bytes = std::fs::read(&out_path).expect("read tmp doc.json");
+    let _model: reify_doc::model::DocModel = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        panic!(
+            "tmp doc.json must parse as DocModel JSON: {e}\n\
+             body: {}",
+            String::from_utf8_lossy(&bytes)
+        )
+    });
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
