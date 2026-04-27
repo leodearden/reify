@@ -484,9 +484,10 @@ mod tests {
         assert_eq!(pool.len(), 5);
         assert_eq!(pool.used_bytes(), 5 * gib);
 
+        // Non-destructive: `retrieve` would consume entries (see `retrieve_removes_entry`).
         for node in &nodes {
             assert!(
-                pool.retrieve(node).is_some(),
+                pool.contains(node),
                 "node {:?} should not have been evicted",
                 node
             );
