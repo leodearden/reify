@@ -1393,7 +1393,12 @@ mod tests {
     }
 
     /// Regression lock: the unknown-name diagnostic message for `resolve_dimension_type`
-    /// must list every name from `reify_types::NAMED_DIMENSIONS` plus `"Dimensionless"`.
+    /// must list every name from `reify_types::NAMED_DIMENSIONS` plus `"Dimensionless"`,
+    /// with no extras or omissions.
+    ///
+    /// Uses exact set-membership rather than substring `contains` to avoid false positives
+    /// where one name is a substring of another (e.g. "Angle" ⊂ "SolidAngle",
+    /// "MagneticFlux" ⊂ "MagneticFluxDensity").
     ///
     /// This locks in the "diagnostic message is derived from the shared table" property.
     /// If a future change hardcodes the message again (re-introducing drift), this test fails.
@@ -1404,18 +1409,26 @@ mod tests {
         let _ = resolve_dimension_type(&te, &mut diagnostics);
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         let message = &diagnostics[0].message;
-        for &(_, name) in reify_types::NAMED_DIMENSIONS {
-            assert!(
-                message.contains(name),
-                "diagnostic message should contain '{}' from NAMED_DIMENSIONS; got: {}",
-                name,
-                message,
-            );
-        }
-        assert!(
-            message.contains("Dimensionless"),
-            "diagnostic message should contain 'Dimensionless' (special-case); got: {}",
-            message,
+
+        // The message format is: "unknown dimension type 'Foo': expected one of A, B, C, ..."
+        // Extract everything after "expected one of " and split on ", " for exact membership check.
+        let listed_names: std::collections::HashSet<&str> = message
+            .split("expected one of ")
+            .nth(1)
+            .expect("diagnostic message should contain 'expected one of'")
+            .split(", ")
+            .collect();
+
+        let expected_names: std::collections::HashSet<&str> = reify_types::NAMED_DIMENSIONS
+            .iter()
+            .map(|(_, n)| *n)
+            .chain(std::iter::once("Dimensionless"))
+            .collect();
+
+        assert_eq!(
+            listed_names,
+            expected_names,
+            "diagnostic message listed names do not exactly match NAMED_DIMENSIONS + Dimensionless"
         );
     }
 }
