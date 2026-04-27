@@ -99,7 +99,7 @@ const fn gcd(mut a: u16, mut b: u16) -> u16 {
     a
 }
 
-/// Dimension vector: 9 rational exponents for the SI base dimensions.
+/// Dimension vector: 10 rational exponents for the SI base dimensions plus Money.
 ///
 /// Index mapping:
 /// 0: Length (m)
@@ -111,11 +111,12 @@ const fn gcd(mut a: u16, mut b: u16) -> u16 {
 /// 6: Luminous intensity (cd)
 /// 7: Angle (rad, treated as dimension for engineering use)
 /// 8: Solid angle (sr)
+/// 9: Money (USD)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DimensionVector(pub [Rational; 9]);
+pub struct DimensionVector(pub [Rational; 10]);
 
 impl DimensionVector {
-    pub const DIMENSIONLESS: DimensionVector = DimensionVector([Rational::ZERO; 9]);
+    pub const DIMENSIONLESS: DimensionVector = DimensionVector([Rational::ZERO; 10]);
     pub const LENGTH: DimensionVector = DimensionVector::basis(0);
     pub const MASS: DimensionVector = DimensionVector::basis(1);
     pub const TIME: DimensionVector = DimensionVector::basis(2);
@@ -125,6 +126,7 @@ impl DimensionVector {
     pub const LUMINOUS_INTENSITY: DimensionVector = DimensionVector::basis(6);
     pub const ANGLE: DimensionVector = DimensionVector::basis(7);
     pub const SOLID_ANGLE: DimensionVector = DimensionVector::basis(8);
+    pub const MONEY: DimensionVector = DimensionVector::basis(9);
 
     /// Common derived dimensions.
     pub const AREA: DimensionVector = DimensionVector::basis_n(0, 2);
@@ -134,7 +136,7 @@ impl DimensionVector {
     //
     // Index layout reminder (see struct doc):
     //   0:Length  1:Mass  2:Time  3:Current  4:Temperature
-    //   5:AmountOfSubstance  6:LuminousIntensity  7:Angle  8:SolidAngle
+    //   5:AmountOfSubstance  6:LuminousIntensity  7:Angle  8:SolidAngle  9:Money
 
     /// Frequency: s⁻¹
     pub const FREQUENCY: DimensionVector = DimensionVector::from_exps(&[(2, -1)]);
@@ -190,13 +192,13 @@ impl DimensionVector {
         DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -1)]);
 
     const fn basis(index: usize) -> DimensionVector {
-        let mut v = [Rational::ZERO; 9];
+        let mut v = [Rational::ZERO; 10];
         v[index] = Rational::ONE;
         DimensionVector(v)
     }
 
     const fn basis_n(index: usize, n: i16) -> DimensionVector {
-        let mut v = [Rational::ZERO; 9];
+        let mut v = [Rational::ZERO; 10];
         v[index] = Rational::new(n, 1);
         DimensionVector(v)
     }
@@ -205,7 +207,7 @@ impl DimensionVector {
     /// const-eval time. Intended for concise declaration of derived-dimension
     /// constants (e.g. `ENERGY`, `VOLTAGE`).
     const fn from_exps(entries: &[(usize, i16)]) -> DimensionVector {
-        let mut v = [Rational::ZERO; 9];
+        let mut v = [Rational::ZERO; 10];
         let mut i = 0;
         while i < entries.len() {
             let (idx, e) = entries[i];
@@ -221,7 +223,7 @@ impl DimensionVector {
 
     /// Multiply dimensions (add exponents).
     pub fn mul(&self, other: &DimensionVector) -> DimensionVector {
-        let mut result = [Rational::ZERO; 9];
+        let mut result = [Rational::ZERO; 10];
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = self.0[i] + other.0[i];
         }
@@ -230,7 +232,7 @@ impl DimensionVector {
 
     /// Divide dimensions (subtract exponents).
     pub fn div(&self, other: &DimensionVector) -> DimensionVector {
-        let mut result = [Rational::ZERO; 9];
+        let mut result = [Rational::ZERO; 10];
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = self.0[i] - other.0[i];
         }
@@ -244,7 +246,7 @@ impl DimensionVector {
     pub fn root(&self, n: i8) -> DimensionVector {
         assert!(n != 0, "root degree must not be zero");
         let n = n as i16;
-        let mut result = [Rational::ZERO; 9];
+        let mut result = [Rational::ZERO; 10];
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = Rational::new(self.0[i].num(), self.0[i].den() * n);
         }
@@ -253,7 +255,7 @@ impl DimensionVector {
 
     /// Raise to an integer power (multiply all exponents).
     pub fn pow(&self, n: i8) -> DimensionVector {
-        let mut result = [Rational::ZERO; 9];
+        let mut result = [Rational::ZERO; 10];
         let n = n as i16;
         let nr = Rational::new(n, 1);
         for (i, slot) in result.iter_mut().enumerate() {
@@ -283,7 +285,7 @@ impl DimensionVector {
     }
 
     pub fn content_hash(&self) -> ContentHash {
-        let mut buf = [0u8; 36]; // 9 * 4 bytes (2 bytes per i16 field)
+        let mut buf = [0u8; 40]; // 10 * 4 bytes (2 bytes per i16 field)
         for (i, r) in self.0.iter().enumerate() {
             let num_bytes = r.num().to_le_bytes();
             let den_bytes = r.den().to_le_bytes();
@@ -298,7 +300,7 @@ impl DimensionVector {
 
 /// FORCE dimension: kg·m·s⁻²
 pub const FORCE: DimensionVector = {
-    let mut v = [Rational::ZERO; 9];
+    let mut v = [Rational::ZERO; 10];
     v[0] = Rational::ONE; // length
     v[1] = Rational::ONE; // mass
     v[2] = Rational::new(-2, 1); // time^-2
@@ -307,7 +309,7 @@ pub const FORCE: DimensionVector = {
 
 impl fmt::Display for DimensionVector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names = ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr"];
+        let names = ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr", "USD"];
         let mut parts = Vec::new();
         for (i, r) in self.0.iter().enumerate() {
             if !r.is_zero() {
@@ -377,7 +379,7 @@ mod tests {
     #[test]
     fn dimension_div() {
         let velocity = DimensionVector::LENGTH.div(&DimensionVector({
-            let mut v = [Rational::ZERO; 9];
+            let mut v = [Rational::ZERO; 10];
             v[2] = Rational::ONE; // time
             v
         }));
@@ -410,7 +412,7 @@ mod tests {
     fn all_new_derived_dimensions_have_correct_exponents() {
         // Helper: build a DimensionVector from (index, exponent) pairs.
         let make = |entries: &[(usize, i16)]| {
-            let mut v = [Rational::ZERO; 9];
+            let mut v = [Rational::ZERO; 10];
             for (i, e) in entries {
                 v[*i] = Rational::new(*e, 1);
             }
@@ -518,7 +520,7 @@ mod tests {
         let result = DimensionVector::LENGTH.root(2);
         assert_eq!(result.0[0], Rational::new(1, 2));
         // all other exponents should be zero
-        for i in 1..9 {
+        for i in 1..10 {
             assert_eq!(result.0[i], Rational::ZERO);
         }
     }
@@ -542,7 +544,7 @@ mod tests {
     fn root_overflow_does_not_silently_wrap() {
         // Rational exponent {1, 64} with root(3) → {1, 192}.
         // With i8, den 64*3=192 overflows i8::MAX.
-        let mut v = [Rational::ZERO; 9];
+        let mut v = [Rational::ZERO; 10];
         v[0] = Rational::new(1, 64);
         let dv = DimensionVector(v);
         let result = dv.root(3);
