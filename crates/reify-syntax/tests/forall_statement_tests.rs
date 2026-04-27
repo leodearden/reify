@@ -157,6 +157,54 @@ structure S {
     );
 }
 
+/// step-7: Parse `forall v in vents: constraint MinDistance(point: v.center)`
+/// -> MemberDecl::ForallConstraint with Instantiation body.
+#[test]
+fn parse_forall_constraint_instantiation() {
+    let source = r#"
+structure S {
+    forall v in vents: constraint MinDistance(point: v.center)
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 1, "expected exactly one member");
+
+    let decl = match &members[0] {
+        MemberDecl::ForallConstraint(d) => d,
+        other => panic!("expected ForallConstraint, got {:?}", other),
+    };
+
+    assert_eq!(decl.variable, "v");
+    assert!(
+        matches!(&decl.collection.kind, ExprKind::Ident(n) if n == "vents"),
+        "expected collection Ident(vents), got {:?}",
+        decl.collection.kind
+    );
+
+    let ci = match &decl.body {
+        ForallConstraintBody::Instantiation(ci) => ci,
+        other => panic!("expected ForallConstraintBody::Instantiation, got {:?}", other),
+    };
+
+    assert_eq!(ci.name, "MinDistance");
+    assert_eq!(ci.args.len(), 1, "expected 1 argument");
+    assert_eq!(ci.args[0].0, "point");
+
+    // v.center
+    match &ci.args[0].1.kind {
+        ExprKind::MemberAccess { object, member } => {
+            assert!(
+                matches!(object.kind, ExprKind::Ident(ref n) if n == "v"),
+                "expected arg object Ident(v), got {:?}",
+                object.kind
+            );
+            assert_eq!(member, "center");
+        }
+        other => panic!("expected MemberAccess for arg, got {:?}", other),
+    }
+}
+
 /// step-1: Parse `forall v in vents: connect v.inlet -> housing.air_channel`
 /// -> MemberDecl::ForallConnect with Connect body.
 #[test]
