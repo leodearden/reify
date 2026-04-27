@@ -101,6 +101,39 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
+/// Index of the grid sample nearest to `query`, with reproducible tie-breaking
+/// via `round_ties_even` semantics: when `query` is exactly halfway between
+/// two adjacent samples, the endpoint with the even index wins.
+///
+/// Out-of-range queries clamp to the first / last sample. The grid must have
+/// at least one element; for grids of length 1 the only sample wins.
+fn nearest_index_on_axis(grid: &[f64], query: f64) -> usize {
+    debug_assert!(!grid.is_empty(), "nearest_index_on_axis: empty grid");
+    if grid.len() == 1 {
+        return 0;
+    }
+    if query <= grid[0] {
+        return 0;
+    }
+    let last = grid.len() - 1;
+    if query >= grid[last] {
+        return last;
+    }
+    let i = locate_cell(grid, query).expect("in-range query bracketed");
+    let d_lo = query - grid[i];
+    let d_hi = grid[i + 1] - query;
+    if d_lo < d_hi {
+        i
+    } else if d_hi < d_lo {
+        i + 1
+    } else {
+        // Exact tie: pick the endpoint with the even index (banker's rounding
+        // / round_ties_even). Since `i` and `i + 1` differ in parity, exactly
+        // one of them is even.
+        if i % 2 == 0 { i } else { i + 1 }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public 1D entry point
 // ---------------------------------------------------------------------------
@@ -141,9 +174,13 @@ pub fn interpolate_1d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::NearestNeighbor => unreachable!(
-            "InterpolationMethod::NearestNeighbor 1D not yet implemented"
-        ),
+        InterpolationMethod::NearestNeighbor => {
+            let i = nearest_index_on_axis(grid, query);
+            InterpolationResult {
+                value: values[i],
+                diagnostics: Vec::new(),
+            }
+        }
         InterpolationMethod::Cubic => unreachable!(
             "InterpolationMethod::Cubic 1D not yet implemented"
         ),
