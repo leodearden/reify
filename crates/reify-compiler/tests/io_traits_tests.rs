@@ -10,6 +10,7 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::collect_errors;
+use reify_types::{DimensionVector, Type};
 
 // Helper: find the std/io module (panics with a clear message if absent).
 fn io_module() -> &'static reify_compiler::CompiledModule {
@@ -17,6 +18,49 @@ fn io_module() -> &'static reify_compiler::CompiledModule {
         .iter()
         .find(|m| format!("{}", m.path) == "std/io")
         .expect("std.io module should be present in the stdlib")
+}
+
+// ─── step-7: Provenance structure ────────────────────────────────────────────
+
+/// The Provenance structure is present in std/io with the four expected
+/// value cells: source_tool: String, source_version: String,
+/// timestamp: String, tolerance_guarantee: Length.
+#[test]
+fn provenance_structure_present_with_correct_fields() {
+    let module = io_module();
+
+    let provenance = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Provenance")
+        .expect("std.io should contain a Provenance structure");
+
+    // Helper closure: find a value cell by member name.
+    let find_cell = |member: &str| {
+        provenance
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Provenance should have a '{}' cell; found members: {:?}",
+                    member,
+                    provenance
+                        .value_cells
+                        .iter()
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            })
+    };
+
+    assert_eq!(find_cell("source_tool").cell_type, Type::String);
+    assert_eq!(find_cell("source_version").cell_type, Type::String);
+    assert_eq!(find_cell("timestamp").cell_type, Type::String);
+    assert_eq!(
+        find_cell("tolerance_guarantee").cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH }
+    );
 }
 
 // ─── step-5: enums ───────────────────────────────────────────────────────────
