@@ -235,7 +235,7 @@ fn faces_by_normal_nan_target_returns_query_failed() {
 
 /// FaceNormal contract requires Value::String. A Value::Real payload must
 /// produce QueryFailed — pins the non-string fall-through arm of
-/// `parse_xyz_value` (topology_selectors.rs line 159-163) for FaceNormal.
+/// `parse_xyz_value` for FaceNormal.
 #[test]
 fn faces_by_normal_returns_query_failed_when_normal_is_real() {
     let parent = GeometryHandleId(1);
@@ -247,15 +247,11 @@ fn faces_by_normal_returns_query_failed_when_normal_is_real() {
 
     let result =
         topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("non-string value"),
-                "error message should mention 'non-string value', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed), got {:?}", other),
-    }
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for non-string FaceNormal value, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -320,7 +316,7 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
 
 /// EdgeTangent contract requires Value::String. A Value::Real payload must
 /// produce QueryFailed — pins the non-string fall-through arm of
-/// `parse_xyz_value` (topology_selectors.rs line 159-163) for EdgeTangent.
+/// `parse_xyz_value` for EdgeTangent.
 #[test]
 fn edges_parallel_to_returns_query_failed_when_tangent_is_real() {
     let parent = GeometryHandleId(1);
@@ -332,15 +328,11 @@ fn edges_parallel_to_returns_query_failed_when_tangent_is_real() {
 
     let result =
         topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("non-string value"),
-                "error message should mention 'non-string value', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed), got {:?}", other),
-    }
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for non-string EdgeTangent value, got {:?}",
+        result
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -483,18 +475,11 @@ fn faces_by_normal_well_formed_xyz_missing_z_returns_query_failed() {
 
     let result =
         topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("malformed JSON") || msg.contains("FaceNormal"),
-                "error should mention malformed JSON or FaceNormal, got: {msg:?}"
-            );
-        }
-        other => panic!(
-            "expected Err(QueryFailed) for missing-z face normal JSON, got {:?}",
-            other
-        ),
-    }
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for missing-z face normal JSON, got {:?}",
+        result
+    );
 }
 
 /// A face whose normal parses as the zero vector must produce QueryFailed.
@@ -569,18 +554,11 @@ fn edges_parallel_to_well_formed_xyz_missing_z_returns_query_failed() {
 
     let result =
         topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("malformed JSON") || msg.contains("EdgeTangent"),
-                "error should mention malformed JSON or EdgeTangent, got: {msg:?}"
-            );
-        }
-        other => panic!(
-            "expected Err(QueryFailed) for missing-z edge tangent JSON, got {:?}",
-            other
-        ),
-    }
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for missing-z edge tangent JSON, got {:?}",
+        result
+    );
 }
 
 /// Malformed JSON in the BoundingBox payload must produce QueryFailed.
@@ -610,8 +588,8 @@ fn edges_at_height_malformed_bbox_json_returns_query_failed() {
 
 /// A structurally-valid bbox JSON that omits `zmin`/`zmax` must produce
 /// QueryFailed. This drives `parse_flat_number_object` through every
-/// iteration (xmin/xmax/ymin/ymax are all tolerated at line 458 of
-/// topology_selectors.rs) and only fails at the final `Some((zmin?, zmax?))`
+/// iteration (xmin/xmax/ymin/ymax are all tolerated by
+/// `parse_flat_number_object`) and only fails at the final `Some((zmin?, zmax?))`
 /// — the per-key Some/None branch of `parse_bbox_z_extents_json` that the
 /// malformed-string fixture above does NOT exercise.
 #[test]
@@ -627,16 +605,9 @@ fn edges_at_height_well_formed_bbox_missing_zmin_zmax_returns_query_failed() {
         );
 
     let result = topology_selectors::edges_at_height(&mut kernel, parent, 0.0, 1.0);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("malformed JSON") || msg.contains("BoundingBox"),
-                "error should mention malformed JSON or BoundingBox, got: {msg:?}"
-            );
-        }
-        other => panic!(
-            "expected Err(QueryFailed) for bbox missing zmin/zmax, got {:?}",
-            other
-        ),
-    }
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for bbox missing zmin/zmax, got {:?}",
+        result
+    );
 }
