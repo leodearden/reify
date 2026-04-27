@@ -81,3 +81,123 @@ fn box_realization_carries_single_primitive_feature_tag() {
         "tag source_span must equal the realization's span"
     );
 }
+
+// ─── step-3: multi-op realizations tag each op in order ──────────────────────
+
+/// `fillet(box(10mm,20mm,30mm), 1mm)` compiles to two ops:
+///   ops[0]: Primitive (box)
+///   ops[1]: Modify (fillet)
+/// Each must have a tag with the correct StepKind and a sequential sub_index.
+#[test]
+fn multi_op_realization_tags_one_per_op_with_sequential_sub_indices() {
+    let compiled = compile_no_errors(
+        "structure B { let s = fillet(box(10mm, 20mm, 30mm), 1mm) }",
+    );
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "B")
+        .expect("template B not found");
+
+    let realization = template
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("s"))
+        .expect("realization 's' not found");
+
+    // Parallel-array invariant.
+    assert_eq!(
+        realization.feature_tags.len(),
+        realization.operations.len(),
+        "feature_tags.len() must equal operations.len()"
+    );
+
+    assert_eq!(
+        realization.feature_tags.len(),
+        2,
+        "fillet(box(...)) realization must have exactly 2 feature tags, got {}",
+        realization.feature_tags.len()
+    );
+
+    // ops[0]: box → Primitive
+    assert_eq!(
+        realization.feature_tags[0].step_kind,
+        StepKind::Primitive,
+        "ops[0] (box) must be StepKind::Primitive"
+    );
+    assert_eq!(
+        realization.feature_tags[0].sub_index,
+        0,
+        "ops[0] must have sub_index == 0"
+    );
+
+    // ops[1]: fillet → Modify
+    assert_eq!(
+        realization.feature_tags[1].step_kind,
+        StepKind::Modify,
+        "ops[1] (fillet) must be StepKind::Modify"
+    );
+    assert_eq!(
+        realization.feature_tags[1].sub_index,
+        1,
+        "ops[1] must have sub_index == 1"
+    );
+}
+
+/// `union(box(10mm,20mm,30mm), sphere(5mm))` compiles to three ops:
+///   ops[0]: Primitive (box)
+///   ops[1]: Primitive (sphere)
+///   ops[2]: Boolean (union)
+/// Each must carry the correct StepKind.
+#[test]
+fn boolean_realization_tags_classify_op_kinds_correctly() {
+    let compiled = compile_no_errors(
+        "structure C { let s = union(box(10mm, 20mm, 30mm), sphere(5mm)) }",
+    );
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "C")
+        .expect("template C not found");
+
+    let realization = template
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("s"))
+        .expect("realization 's' not found");
+
+    // Parallel-array invariant.
+    assert_eq!(
+        realization.feature_tags.len(),
+        realization.operations.len(),
+        "feature_tags.len() must equal operations.len()"
+    );
+
+    assert_eq!(
+        realization.feature_tags.len(),
+        3,
+        "union(box,sphere) realization must have exactly 3 feature tags, got {}",
+        realization.feature_tags.len()
+    );
+
+    assert_eq!(
+        realization.feature_tags[0].step_kind,
+        StepKind::Primitive,
+        "ops[0] (box) must be StepKind::Primitive"
+    );
+    assert_eq!(realization.feature_tags[0].sub_index, 0);
+
+    assert_eq!(
+        realization.feature_tags[1].step_kind,
+        StepKind::Primitive,
+        "ops[1] (sphere) must be StepKind::Primitive"
+    );
+    assert_eq!(realization.feature_tags[1].sub_index, 1);
+
+    assert_eq!(
+        realization.feature_tags[2].step_kind,
+        StepKind::Boolean,
+        "ops[2] (union) must be StepKind::Boolean"
+    );
+    assert_eq!(realization.feature_tags[2].sub_index, 2);
+}
