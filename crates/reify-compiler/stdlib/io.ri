@@ -12,8 +12,8 @@
 //      no `= undef` appears in any existing stdlib .ri file.  Params without
 //      defaults are required at conformance time, matching the convention in
 //      materials_mechanical.ri and tolerancing.ri.
-//   3. Provenance is declared before trait Input so that `Input.provenance :
-//      Provenance` resolves through the structure-name set in the pre-pass.
+//   3. Provenance is declared before all trait blocks so that `Input.provenance :
+//      Provenance` resolves through the structure-name set built in the pre-pass.
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
