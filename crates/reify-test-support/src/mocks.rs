@@ -2703,6 +2703,21 @@ mod tests {
     }
 
     #[test]
+    fn mock_with_center_of_mass_result_returns_for_center_of_mass_query() {
+        let id = GeometryHandleId(1);
+        let expected = Value::String("{\"x\":5,\"y\":0,\"z\":0}".to_string());
+        let kernel =
+            MockGeometryKernel::new().with_center_of_mass_result(id, 1000.0, expected.clone());
+        let result = kernel
+            .query(&GeometryQuery::CenterOfMass {
+                handle: id,
+                density: 1000.0,
+            })
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn mock_with_inertia_tensor_result_returns_for_inertia_tensor_query() {
         let id = GeometryHandleId(1);
         // Build a diagonal 3×3 tensor as a Value::List of lists.
