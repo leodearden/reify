@@ -129,6 +129,79 @@ impl Not for NodeTraits {
     }
 }
 
+/// Architectural node-kind taxonomy used to carry [`NodeTraits`] defaults.
+///
+/// Declares the seven node kinds from `docs/reify-implementation-architecture.md
+/// §7.6 lines 803–816` and their documented default [`NodeTraits`] sets.
+///
+/// **Note on naming:** A 4-variant runtime/instance taxonomy also named `NodeKind`
+/// exists in `reify_runtime::commitment` (introduced by task 2353 to key per-type
+/// commitment policy overrides under §7.3). This enum is intentionally distinct:
+/// it operates at the *type/architectural* level, includes three kinds
+/// (`SchemaNode`, `SourceNode`, `ComputeNode`) whose Rust struct counterparts do not
+/// yet exist in the codebase, and lives in `reify-types` (a lower layer that
+/// `reify-runtime` depends on — the dependency arrow is `reify-runtime` → `reify-types`,
+/// so this crate cannot reference `commitment::NodeKind`). Once future tasks introduce
+/// the missing struct counterparts, a follow-up pass can decide whether to converge
+/// the two enums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeArchKind {
+    /// A scalar value cell. Default traits: [`NodeTraits::IMMEDIATE`].
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    ValueCellScalar,
+    /// A schema node (structural type declaration). Default traits: [`NodeTraits::IMMEDIATE`].
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// (No corresponding Rust struct in the codebase yet.)
+    SchemaNode,
+    /// A source/input node. Default traits: [`NodeTraits::IMMEDIATE`].
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// (No corresponding Rust struct in the codebase yet.)
+    SourceNode,
+    /// A resolution node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    ResolutionNode,
+    /// A realization node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    RealizationNode,
+    /// A compute node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// (No corresponding Rust struct in the codebase yet.)
+    ComputeNode,
+    /// A constraint node. Default traits: empty (no flags set).
+    ///
+    /// See `docs/reify-implementation-architecture.md §7.6`.
+    ConstraintNode,
+}
+
+impl NodeArchKind {
+    /// Returns the architecture-specified default [`NodeTraits`] for this node kind.
+    ///
+    /// Source: `docs/reify-implementation-architecture.md §7.6 lines 803–816`.
+    pub const fn default_traits(self) -> NodeTraits {
+        match self {
+            NodeArchKind::ValueCellScalar => NodeTraits::IMMEDIATE,
+            NodeArchKind::SchemaNode => NodeTraits::IMMEDIATE,
+            NodeArchKind::SourceNode => NodeTraits::IMMEDIATE,
+            NodeArchKind::ResolutionNode => {
+                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+            }
+            NodeArchKind::RealizationNode => {
+                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+            }
+            NodeArchKind::ComputeNode => {
+                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+            }
+            NodeArchKind::ConstraintNode => NodeTraits::empty(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
