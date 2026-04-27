@@ -233,6 +233,129 @@ structure def S {
     assert_numeric_approx(val_after, 150.0, "post-edit S.val (k=5.0)");
 }
 
+// ── Task 2343 step-9: composed-field re-elaboration precision ────────────
+//
+// Pin the negative half of the precision contract for `Engine::edit_param`'s
+// composed-field re-elaboration loop (added in step-8): an edit to a param
+// that is NOT a transitive dep of any field must NOT re-elaborate any field's
+// `Value::Field { lambda, .. }`. Verified via `Arc::ptr_eq` on the lambda
+// pointers in `snapshot.values` before and after the edit.
+//
+// The positive half (a field IS re-elaborated when one of its tracked deps
+// changes) cannot be driven through `edit_param` alone in v0.1: field lambda
+// bodies cannot reference structure params directly (`unresolved name` at
+// compile time), so no path from a param edit to a field-cell dirty-cone hit
+// exists. The end-to-end edit cycle through a composed-field sample point —
+// which exercises the runtime field-call dispatch fallback (step-7b) and
+// confirms that re-evaluating downstream `Let` cells against fresh values
+// produces correct results — is covered by step-7's
+// `eval_composed_field_invalidates_on_dep_change`.
+
+/// After cold-start eval, capture every field's lambda Arc from
+/// `snapshot.values`. Edit a structure param that is NOT a dep of any field
+/// (`S.k` only flows through `sample(...,k)` arguments — `k` is not in any
+/// field's captured set). Assert: every field's lambda Arc is the SAME
+/// pointer post-edit. This confirms the re-elaboration loop is gated on
+/// `dirty_cone.contains(field_node)` and does NOT re-elaborate fields whose
+/// NodeId is absent from the dirty cone.
+#[test]
+fn eval_composed_field_invalidates_only_when_dep_changes() {
+    let source = r#"
+field def f1 : Real -> Real { source = analytical { |p| p * 2.0 } }
+field def f2 : Real -> Real { source = analytical { |p| p + 1.0 } }
+field def composed_a : Real -> Real { source = composed { |p| f1(p) * 10.0 } }
+field def composed_b : Real -> Real { source = composed { |p| f2(p) * 10.0 } }
+
+structure def S {
+    param k : Real = 2.0
+    let val_a = sample(composed_a, k)
+    let val_b = sample(composed_b, k)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    let _initial = engine.eval(&compiled);
+
+    let composed_a_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "composed_a");
+    let composed_b_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "composed_b");
+    let f1_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "f1");
+    let f2_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "f2");
+
+    /// Pluck the `Arc<Value>` lambda pointer from a `Value::Field` entry in
+    /// `snapshot.values`. Panics with a descriptive message if the entry is
+    /// missing or not a `Value::Field` — both indicate a structural bug
+    /// upstream (the field elaboration loop must produce `Value::Field`
+    /// entries for every declared field).
+    fn extract_lambda_arc(
+        snapshot: &reify_eval::snapshot::Snapshot,
+        id: &ValueCellId,
+    ) -> Arc<Value> {
+        match snapshot.values.get(id).map(|(v, _)| v) {
+            Some(Value::Field { lambda, .. }) => Arc::clone(lambda),
+            Some(other) => panic!("expected Value::Field for {id}, got {:?}", other),
+            None => panic!("expected snapshot entry for {id}, got None"),
+        }
+    }
+
+    let (pre_a, pre_b, pre_f1, pre_f2) = {
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot should exist after eval");
+        (
+            extract_lambda_arc(snapshot, &composed_a_id),
+            extract_lambda_arc(snapshot, &composed_b_id),
+            extract_lambda_arc(snapshot, &f1_id),
+            extract_lambda_arc(snapshot, &f2_id),
+        )
+    };
+
+    // Edit S.k. k is NOT a dep of any field's lambda — no field should be
+    // re-elaborated. Sanity-check: val_a and val_b ARE dirty (they take k as
+    // a sample-point argument), so the eval loop will refresh them; that
+    // refresh path uses runtime field-call dispatch (step-7b), not field
+    // re-elaboration.
+    let k_id = ValueCellId::new("S", "k");
+    let _after = engine
+        .edit_param(k_id, Value::Real(5.0))
+        .expect("edit_param(S.k) should succeed");
+
+    let (post_a, post_b, post_f1, post_f2) = {
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot should exist after edit");
+        (
+            extract_lambda_arc(snapshot, &composed_a_id),
+            extract_lambda_arc(snapshot, &composed_b_id),
+            extract_lambda_arc(snapshot, &f1_id),
+            extract_lambda_arc(snapshot, &f2_id),
+        )
+    };
+
+    // Precision: every field's lambda Arc must be the SAME pointer post-edit.
+    // No field is in the dirty cone of S.k, so the step-8 re-elaboration loop
+    // must skip every field.
+    assert!(
+        Arc::ptr_eq(&pre_a, &post_a),
+        "composed_a lambda Arc changed across edit_param(S.k); step-8 \
+         re-elaboration must NOT fire when the field is absent from the dirty cone"
+    );
+    assert!(
+        Arc::ptr_eq(&pre_b, &post_b),
+        "composed_b lambda Arc changed across edit_param(S.k); step-8 \
+         re-elaboration must NOT fire when the field is absent from the dirty cone"
+    );
+    assert!(
+        Arc::ptr_eq(&pre_f1, &post_f1),
+        "f1 (analytical) lambda Arc changed across edit_param(S.k); analytical \
+         fields are excluded from the step-8 re-elaboration loop"
+    );
+    assert!(
+        Arc::ptr_eq(&pre_f2, &post_f2),
+        "f2 (analytical) lambda Arc changed across edit_param(S.k); analytical \
+         fields are excluded from the step-8 re-elaboration loop"
+    );
+}
+
 /// Like `assert_real_approx` but also accepts `Value::Int` whose value matches
 /// the expected magnitude. Reify's literal parser can collapse integer-valued
 /// Real literals (e.g. `30.0`) to `Value::Int` along certain compile/eval
