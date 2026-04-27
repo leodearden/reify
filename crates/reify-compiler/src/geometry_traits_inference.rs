@@ -37,6 +37,8 @@
 //! `crates/reify-compiler/src/conformance/mod.rs`'s
 //! `E_GEOMETRY_UNBOUNDED` emission for real source.
 
+use crate::types::PrimitiveKind;
+
 /// The three compile-time-inferred geometry traits.
 ///
 /// Names mirror the PRD; only these three are tracked because the remaining
@@ -121,5 +123,26 @@ impl InferredTraits {
             GeometryTrait::Connected => self.connected,
             GeometryTrait::Convex => self.convex,
         }
+    }
+}
+
+/// Look up the inferred traits for a primitive geometry kind.
+///
+/// All four current variants (`Box`, `Cylinder`, `Sphere`, `Tube`) are
+/// fully Bounded+Connected+Convex.
+///
+/// # Future variants
+///
+/// When PRD `geometry-traits.md` adds `half_space` and `extrude_infinite`,
+/// extend this match to return `InferredTraits::none()` (or a tuned subset
+/// such as `convex`-only) for those kinds. The exhaustive `match` will
+/// fail to compile against the un-updated arm, so the maintenance is
+/// localised.
+pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
+    match kind {
+        PrimitiveKind::Box
+        | PrimitiveKind::Cylinder
+        | PrimitiveKind::Sphere
+        | PrimitiveKind::Tube => InferredTraits::all(),
     }
 }
