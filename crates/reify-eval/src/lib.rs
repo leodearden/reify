@@ -368,6 +368,17 @@ pub struct Engine {
     /// looks up `module.solver_pragma.name` here; on miss it falls back to
     /// `self.solver` and emits a "named solver not registered" warning.
     solvers: HashMap<String, Box<dyn ConstraintSolver>>,
+    /// Memory-budgeted pool that holds warm-start state donated by removed
+    /// nodes between topology edits. Populated by `edit_source` when value
+    /// cells / constraints / realizations are removed (donation), drained
+    /// when topology re-adds the same `NodeId` (checkout). Per arch §4.3
+    /// lines 539-540 and §6.4 lines 654-660.
+    ///
+    /// Initialised via `WarmStatePool::from_env_or_default()` in both
+    /// `Engine::new` and `Engine::with_prelude`. Test-instrumentation accessors
+    /// `warm_pool()` / `warm_pool_mut()` (cfg-gated to test/test-instrumentation
+    /// builds) live in `engine_admin.rs`.
+    warm_pool: crate::warm_pool::WarmStatePool,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
