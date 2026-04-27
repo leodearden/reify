@@ -12,6 +12,7 @@ mod geometry_boolean;
 mod geometry_curve;
 mod geometry_modify;
 mod geometry_transform;
+pub mod geometry_traits_inference;
 mod guards;
 mod ice;
 pub mod module_dag;
