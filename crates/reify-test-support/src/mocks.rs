@@ -2866,4 +2866,119 @@ mod tests {
             f64::INFINITY.to_bits()
         );
     }
+
+    // step-1 (Task 2511): failing tests for MockGeometryKernel topology-extraction
+    // overrides and typed query builders.  These do not compile until step-2 adds
+    // the builder methods and extract_edges / extract_faces overrides.
+
+    #[test]
+    fn mock_with_extracted_edges_returns_configured_handles() {
+        let parent = GeometryHandleId(1);
+        let e1 = GeometryHandleId(2);
+        let e2 = GeometryHandleId(3);
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(parent, vec![e1, e2]);
+        let result = kernel.extract_edges(parent).expect("should return Ok");
+        assert_eq!(result, vec![e1, e2]);
+    }
+
+    #[test]
+    fn mock_with_extracted_faces_returns_configured_handles() {
+        let parent = GeometryHandleId(1);
+        let f1 = GeometryHandleId(2);
+        let f2 = GeometryHandleId(3);
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![f1, f2]);
+        let result = kernel.extract_faces(parent).expect("should return Ok");
+        assert_eq!(result, vec![f1, f2]);
+    }
+
+    #[test]
+    fn mock_with_extract_edges_error_returns_invalid_handle() {
+        let parent = GeometryHandleId(1);
+        let mut kernel = MockGeometryKernel::new()
+            .with_extract_edges_error(parent, QueryError::InvalidHandle(parent));
+        let result = kernel.extract_edges(parent);
+        assert!(
+            matches!(result, Err(QueryError::InvalidHandle(h)) if h == parent),
+            "expected Err(InvalidHandle({:?})), got {:?}",
+            parent,
+            result
+        );
+    }
+
+    #[test]
+    fn mock_with_extract_faces_error_returns_invalid_handle() {
+        let parent = GeometryHandleId(1);
+        let mut kernel = MockGeometryKernel::new()
+            .with_extract_faces_error(parent, QueryError::InvalidHandle(parent));
+        let result = kernel.extract_faces(parent);
+        assert!(
+            matches!(result, Err(QueryError::InvalidHandle(h)) if h == parent),
+            "expected Err(InvalidHandle({:?})), got {:?}",
+            parent,
+            result
+        );
+    }
+
+    #[test]
+    fn mock_extract_edges_unconfigured_returns_default_query_failed() {
+        let parent = GeometryHandleId(99);
+        let mut kernel = MockGeometryKernel::new();
+        let result = kernel.extract_edges(parent);
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("topology extraction not supported"),
+                    "unexpected message: {msg:?}"
+                );
+            }
+            other => panic!("expected Err(QueryFailed), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_extract_faces_unconfigured_returns_default_query_failed() {
+        let parent = GeometryHandleId(99);
+        let mut kernel = MockGeometryKernel::new();
+        let result = kernel.extract_faces(parent);
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("topology extraction not supported"),
+                    "unexpected message: {msg:?}"
+                );
+            }
+            other => panic!("expected Err(QueryFailed), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_with_edge_length_result_returns_for_edge_length_query() {
+        let handle = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new()
+            .with_edge_length_result(handle, Value::Real(1.5));
+        let result = kernel.query(&GeometryQuery::EdgeLength(handle)).unwrap();
+        assert_eq!(result, Value::Real(1.5));
+    }
+
+    #[test]
+    fn mock_with_edge_tangent_result_returns_for_edge_tangent_query() {
+        let handle = GeometryHandleId(1);
+        let tangent = Value::String("{\"x\":1,\"y\":0,\"z\":0}".into());
+        let kernel = MockGeometryKernel::new()
+            .with_edge_tangent_result(handle, tangent.clone());
+        let result = kernel.query(&GeometryQuery::EdgeTangent(handle)).unwrap();
+        assert_eq!(result, tangent);
+    }
+
+    #[test]
+    fn mock_with_face_normal_result_returns_for_face_normal_query() {
+        let handle = GeometryHandleId(1);
+        let normal = Value::String("{\"x\":0,\"y\":0,\"z\":1}".into());
+        let kernel = MockGeometryKernel::new()
+            .with_face_normal_result(handle, normal.clone());
+        let result = kernel.query(&GeometryQuery::FaceNormal(handle)).unwrap();
+        assert_eq!(result, normal);
+    }
 }
