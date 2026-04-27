@@ -223,3 +223,58 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     }
     Ok(out)
 }
+
+/// Return the subset of `extract_edges(handle)` whose midpoint tangent is
+/// (anti-)parallel to `axis` within `angular_tol_rad`.
+///
+/// The tangent is queried via `GeometryQuery::EdgeTangent`, parsed from
+/// the kernel's `{"x":..,"y":..,"z":..}` JSON encoding, and normalized.
+/// Unlike `faces_by_normal`, **sign of the tangent does not matter** —
+/// the kernel may return either direction along an edge, so an edge is
+/// retained if its tangent satisfies *either* `angle(t, axis) <= tol`
+/// *or* `angle(-t, axis) <= tol`.
+///
+/// Equivalently: an edge is retained if the absolute cosine
+/// `|t · axis| >= cos(angular_tol_rad)`. This formulation avoids two
+/// `acos` calls per edge and is well-conditioned at small tolerances.
+///
+/// # Panics
+///
+/// Panics if `axis` is the zero vector (an undefined direction).
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_edges`.
+/// - Propagates any error from a per-edge `EdgeTangent` query.
+/// - Returns `QueryError::QueryFailed` on a malformed tangent payload
+///   or a degenerate (near-zero magnitude) tangent.
+pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    axis: [f64; 3],
+    angular_tol_rad: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let axis = normalize3(axis).expect("edges_parallel_to: axis direction must be non-zero");
+    // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
+    let cos_tol = angular_tol_rad.cos();
+    let edges = kernel.extract_edges(handle)?;
+    let mut out = Vec::with_capacity(edges.len());
+    for id in edges {
+        let tan_value = kernel.query(&GeometryQuery::EdgeTangent(id))?;
+        let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
+        let tan = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
+                id
+            ))
+        })?;
+        let abs_dot = dot3(tan, axis).abs();
+        // Note: cos is monotone-decreasing on [0, π], so the condition
+        // angle <= tol is equivalent to cos(angle) >= cos(tol). For the
+        // sign-tolerant variant we use |cos|.
+        if abs_dot >= cos_tol {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
