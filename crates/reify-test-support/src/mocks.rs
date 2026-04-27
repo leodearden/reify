@@ -412,6 +412,25 @@ fn normalize_distance_pair(
     if a <= b { (a, b) } else { (b, a) }
 }
 
+/// Convert a density value to a stable `u64` bit pattern suitable for use as a
+/// `HashMap` key.
+///
+/// **Canonicalization**: `-0.0` and `+0.0` are equal under IEEE 754 (`-0.0 == 0.0`)
+/// but have different bit patterns. This function maps both to `0u64` so that
+/// `with_*_result(handle, -0.0, …)` and a subsequent `query(…, density: 0.0)`
+/// resolve to the same key.
+///
+/// **NaN contract**: `debug_assert!` fires in debug builds if `density` is NaN.
+/// `NaN.to_bits()` would produce a bit pattern that never compares equal to itself,
+/// causing HashMap lookups to silently miss. The assert is elided in release builds.
+fn density_bits(density: f64) -> u64 {
+    debug_assert!(
+        !density.is_nan(),
+        "density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
+    );
+    if density == 0.0 { 0u64 } else { density.to_bits() }
+}
+
 impl QueryKey {
     fn from_query(query: &GeometryQuery) -> Self {
         match query {
