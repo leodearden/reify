@@ -1709,7 +1709,7 @@ mod tests {
     /// Verifies that the helper registers an annotated Param default into the scope
     /// (Pass 1) and returns empty caches (no unannotated Let defaults to process).
     /// This test fails to compile until the helper exists (TDD compile-tripwire) and
-    /// pins the helper's return type signature.
+    /// pins the helper's `PreRegisterOutput` return type.
     #[test]
     fn check_phase_pre_register_default_types_registers_annotated_param_into_scope() {
         let param_decl = reify_syntax::ParamDecl {
@@ -1737,13 +1737,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (
-            inferred_let_exprs,
-            pass1_skipped,
-            pass1_param_skipped,
-            pass2_skipped,
-            pass2_compile_errors,
-        ) = check_phase_pre_register_default_types(
+        let out = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1759,31 +1753,31 @@ mod tests {
             diagnostics
         );
         assert!(
-            inferred_let_exprs.is_empty(),
+            out.inferred_let_exprs.is_empty(),
             "Expected no inferred_let_exprs for a param-only context"
         );
         // Negative control: a param-only fixture must never populate pass1_skipped
         // (no annotated-Let losers can exist without an annotated Let in ctx.defaults).
         assert!(
-            pass1_skipped.is_empty(),
+            out.pass1_skipped.is_empty(),
             "Expected pass1_skipped to be empty for a param-only context; \
              got: {:?}",
-            pass1_skipped
+            out.pass1_skipped
         );
         // Negative control: a param-only fixture (single Param, no competing annotated Let)
         // must never populate pass1_param_skipped (no Param can lose without a prior annotated Let).
         assert!(
-            pass1_param_skipped.is_empty(),
+            out.pass1_param_skipped.is_empty(),
             "Expected pass1_param_skipped to be empty for a param-only context; \
              got: {:?}",
-            pass1_param_skipped
+            out.pass1_param_skipped
         );
         assert!(
-            pass2_skipped.is_empty(),
+            out.pass2_skipped.is_empty(),
             "Expected no pass2_skipped for a param-only context"
         );
         assert!(
-            pass2_compile_errors.is_empty(),
+            out.pass2_compile_errors.is_empty(),
             "Expected no pass2_compile_errors for a param-only context"
         );
         // Verify "x" was registered in scope: a second register_if_absent call for "x"
