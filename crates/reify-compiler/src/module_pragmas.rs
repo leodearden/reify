@@ -263,18 +263,19 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         first_seen = true;
 
         // First-seen pragma: interpret its args.
-        match pragma.args.as_slice() {
+        let parsed_version: Option<(u16, u16)> = match pragma.args.as_slice() {
             [PragmaArg::Bare(PragmaValue::Number(n))] => {
                 // Render via Display (shortest round-tripping repr) and split
                 // on '.' to extract MAJOR / MINOR. See task design decision:
                 // `0.10` lexes to the same f64 as `0.1` (printed as "0.1");
                 // users who need MINOR=10 must use the string form.
                 let rendered = format!("{n}");
-                if let Some((maj_s, min_s)) = rendered.split_once('.')
-                    && let (Ok(maj), Ok(min)) = (maj_s.parse::<u16>(), min_s.parse::<u16>())
-                {
-                    module.declared_version = Some((maj, min));
-                }
+                rendered.split_once('.').and_then(|(maj_s, min_s)| {
+                    match (maj_s.parse::<u16>(), min_s.parse::<u16>()) {
+                        (Ok(maj), Ok(min)) => Some((maj, min)),
+                        _ => None,
+                    }
+                })
                 // Malformed Number-form parses fall through silently for now;
                 // step-12 will add the warning.
             }
@@ -283,17 +284,37 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 // as u16. This is the form to use when the Number form would
                 // round-trip ambiguously (e.g. `0.10` vs `0.1`).
                 let parts: Vec<&str> = s.split('.').collect();
-                if parts.len() == 2
-                    && let (Ok(maj), Ok(min)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>())
-                {
-                    module.declared_version = Some((maj, min));
+                if parts.len() == 2 {
+                    match (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
+                        (Ok(maj), Ok(min)) => Some((maj, min)),
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
                 // Malformed String-form parses fall through silently for now;
                 // step-12 will add the warning.
             }
             _ => {
                 // Other shapes are handled in step-12 (malformed catch-all).
+                None
             }
+        };
+
+        if let Some((maj, min)) = parsed_version {
+            // Storage reflects the user-declared tuple regardless of
+            // validation outcome (see task design decision).
+            module.declared_version = Some((maj, min));
+
+            if (maj, min) > COMPILER_SUPPORTED_VERSION {
+                module.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "module declares version {maj}.{min}; this compiler supports up to 0.1"
+                    ))
+                    .with_label(DiagnosticLabel::new(pragma.span, "unsupported version")),
+                );
+            }
+            // step-8 will add the symmetric too-old warning here.
         }
     }
 }
