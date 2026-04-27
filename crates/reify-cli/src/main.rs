@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         eprintln!("  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)");
         eprintln!("  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)");
         eprintln!("  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)");
+        eprintln!("  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation");
         return ExitCode::FAILURE;
     }
 
@@ -29,6 +30,7 @@ fn main() -> ExitCode {
         "check" => cmd_check(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
+        "doc" => cmd_doc(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
         "gui-debug" => {
@@ -257,6 +259,20 @@ fn cmd_build(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Usage line printed to stderr for any `reify doc` usage error.
+const DOC_USAGE: &str =
+    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]";
+
+fn cmd_doc(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("{}", DOC_USAGE);
+        return ExitCode::from(2u8);
+    }
+
+    // TODO(post-2361): full arg parsing and dispatch lands in the next steps.
+    ExitCode::SUCCESS
 }
 
 fn cmd_gui(args: &[String]) -> ExitCode {
