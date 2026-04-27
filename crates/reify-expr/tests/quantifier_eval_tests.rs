@@ -302,9 +302,19 @@ structure S {
 }
 
 /// §9.2.6 truth-table matrix: 4 spec-rows × {List, Set} = 8 assertions.
-/// Pins Kleene semantics of `exists` for both container kinds, including an
-/// adversarial element ordering that catches premature-false and premature-undef
-/// short-circuit bugs (§9.2.6 warning: must scan past undef if no true seen yet).
+/// Pins Kleene semantics of `exists` for both container kinds.
+///
+/// Row 1 uses elements `[-1, undef, 2]` with predicate `x > 0`. The adversarial
+/// ordering guarantees depend on the container kind:
+/// - **List** preserves insertion order → predicate results `[false, undef, true]`.
+///   Catches both premature-false (returning early on a false result before scanning
+///   the rest) and premature-undef (returning early on undef before seeing a true).
+/// - **Set** is backed by `BTreeSet<Value>`; `Value::Undef` carries the lowest
+///   type-tag (0) and sorts before `Value::Int(_)` (tag 2), so the BTreeSet
+///   iteration order is `[Undef, Int(-1), Int(2)]` → predicate results
+///   `[undef, false, true]`. The adversarial property exercised for Set is:
+///   "must scan past undef and then false before reaching the determining true";
+///   the explicit false→undef→true ordering is only pinned for the List variant.
 #[test]
 fn exists_kleene_truth_table_over_list_and_set() {
     #[derive(Debug, Clone, Copy)]
@@ -317,8 +327,11 @@ fn exists_kleene_truth_table_over_list_and_set() {
     // Some(i) => Value::Int(i); predicate x > 0 yields Bool(i > 0)
     // None    => Value::Undef; predicate x > 0 on Undef yields Undef
     let rows: Vec<(&str, Vec<Option<i64>>, Value)> = vec![
-        // Row 1: adversarial ordering — false then undef then true; must NOT
-        // short-circuit early on false or undef before seeing the true element.
+        // Row 1: adversarial ordering.
+        // List (insertion order preserved): false → undef → true.
+        //   Catches premature-false and premature-undef short-circuit bugs.
+        // Set (BTreeSet, Undef tag=0 < Int tag=2): sorts to undef → false → true.
+        //   Catches premature-undef bug; the false→undef ordering is List-only.
         (
             "any_true_after_false_and_undef",
             vec![Some(-1), None, Some(2)],
