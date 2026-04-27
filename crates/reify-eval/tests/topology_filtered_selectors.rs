@@ -74,3 +74,36 @@ fn edges_by_length_box_10x20x30_filters_to_x_axis_edges() {
         assert!(seen.insert(*id), "duplicate filtered id {:?}", id);
     }
 }
+
+#[test]
+fn faces_by_area_box_10x20x30_filters_to_pair_with_target_area() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // 10×20×30 mm box has 6 faces in three axis-aligned pairs:
+    //   - 2 faces of area 10mm × 20mm = 200e-6 m²
+    //   - 2 faces of area 10mm × 30mm = 300e-6 m²
+    //   - 2 faces of area 20mm × 30mm = 600e-6 m²
+    //
+    // Filtering by [199e-6, 201e-6] m² should select exactly the two
+    // 10×20 faces.
+    let (mut kernel, box_id) = box_handle(10.0, 20.0, 30.0);
+
+    let result = topology_selectors::faces_by_area(&mut kernel, box_id, 199e-6, 201e-6)
+        .expect("faces_by_area on a valid box should succeed");
+
+    assert_eq!(
+        result.len(),
+        2,
+        "faces_by_area([199e-6, 201e-6]) on a 10x20x30 box should return the two 10x20 faces, got {}",
+        result.len()
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for id in &result {
+        assert_ne!(*id, box_id, "filtered id must differ from the source box");
+        assert!(seen.insert(*id), "duplicate filtered id {:?}", id);
+    }
+}
