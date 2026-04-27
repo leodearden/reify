@@ -561,6 +561,10 @@ pub trait GeometryKernel: Send + Sync {
     /// per-element `query` incurs in tight selector loops.
     fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
         let out: Vec<Value> = queries.iter().map(|q| self.query(q)).collect::<Result<_, _>>()?;
+        // Tautological for this default impl — `Result<Vec<_>, _>::collect` guarantees
+        // `out.len() == queries.len()` on the `Ok` branch. Kept as an executable contract
+        // marker: overriding impls (e.g. channel-routed batchers) that do not go through
+        // `FromIterator` should add a matching check in their own bodies.
         debug_assert_eq!(out.len(), queries.len(), "query_many length invariant");
         Ok(out)
     }
