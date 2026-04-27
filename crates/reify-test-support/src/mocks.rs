@@ -2797,6 +2797,66 @@ mod tests {
     }
 
     #[test]
+    fn mock_with_center_of_mass_result_canonicalizes_signed_zero_density() {
+        let id = GeometryHandleId(1);
+        let expected = Value::String("{\"x\":5,\"y\":0,\"z\":0}".to_string());
+
+        // Insert with -0.0, query with +0.0 — must resolve to the same key.
+        let kernel =
+            MockGeometryKernel::new().with_center_of_mass_result(id, -0.0_f64, expected.clone());
+        let result = kernel
+            .query(&GeometryQuery::CenterOfMass {
+                handle: id,
+                density: 0.0_f64,
+            })
+            .unwrap();
+        assert_eq!(result, expected, "insert -0.0 / query +0.0 should hit the same key");
+
+        // Insert with +0.0, query with -0.0 — symmetric case.
+        let kernel =
+            MockGeometryKernel::new().with_center_of_mass_result(id, 0.0_f64, expected.clone());
+        let result = kernel
+            .query(&GeometryQuery::CenterOfMass {
+                handle: id,
+                density: -0.0_f64,
+            })
+            .unwrap();
+        assert_eq!(result, expected, "insert +0.0 / query -0.0 should hit the same key");
+    }
+
+    #[test]
+    fn mock_with_inertia_tensor_result_canonicalizes_signed_zero_density() {
+        let id = GeometryHandleId(1);
+        let expected = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+
+        // Insert with -0.0, query with +0.0 — must resolve to the same key.
+        let kernel = MockGeometryKernel::new()
+            .with_inertia_tensor_result(id, -0.0_f64, expected.clone());
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 0.0_f64,
+            })
+            .unwrap();
+        assert_eq!(result, expected, "insert -0.0 / query +0.0 should hit the same key");
+
+        // Insert with +0.0, query with -0.0 — symmetric case.
+        let kernel = MockGeometryKernel::new()
+            .with_inertia_tensor_result(id, 0.0_f64, expected.clone());
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: -0.0_f64,
+            })
+            .unwrap();
+        assert_eq!(result, expected, "insert +0.0 / query -0.0 should hit the same key");
+    }
+
+    #[test]
     fn density_bits_canonicalizes_signed_zero_and_passes_through_finite_values() {
         // +0.0 → 0u64
         assert_eq!(super::density_bits(0.0_f64), 0u64);
