@@ -5,7 +5,7 @@
 //! `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_html::render_html;
-use reify_doc::model::{DocModel, ModuleDoc};
+use reify_doc::model::{DocModel, ItemDoc, ModuleDoc};
 
 /// `render_html` on the default (empty) `DocModel` must produce a structurally
 /// well-formed HTML5 document that is *self-contained*: no `<link>` / `<script>` /
@@ -96,4 +96,75 @@ fn module_header_and_doc_paragraphs_render() {
     assert!(h1_pos < p1_pos, "<h1> must precede first <p>");
     assert!(p1_pos < p2_pos, "Para one must precede Para two");
     assert!(p2_pos < p3_pos, "Para two must precede Para three");
+}
+
+/// User-supplied content must be escaped before being inserted into HTML.
+/// Asserts that `<`, `>`, `&`, `"`, `'` are translated to their entity
+/// references in module path / doc / item name / type strings.
+#[test]
+fn html_escape_handles_special_chars() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "x&y".into(),
+            doc: Some("<script>alert('xss')&\"</script>".into()),
+            items: vec![ItemDoc::Field {
+                name: "a&b".into(),
+                doc: None,
+                is_pub: false,
+                annotations: vec![],
+                pragmas: vec![],
+                type_repr: "Vec<T>".into(),
+                default_repr: None,
+            }],
+            ..Default::default()
+        }],
+    };
+    let out = render_html(&model, None);
+
+    // Module-level content escaping (path appears in <title> AND <h1>).
+    assert!(
+        out.contains("<title>x&amp;y</title>"),
+        "module path must be HTML-escaped in <title>; got:\n{out}"
+    );
+    assert!(
+        out.contains("<h1>x&amp;y</h1>"),
+        "module path must be HTML-escaped in <h1>; got:\n{out}"
+    );
+
+    // The dangerous `<script>` substring from the doc must NOT appear literally.
+    assert!(
+        !out.contains("<script>alert"),
+        "raw <script> escaped from doc must not appear; got:\n{out}"
+    );
+    // It must appear escaped instead.
+    assert!(
+        out.contains("&lt;script&gt;"),
+        "doc must contain escaped `&lt;script&gt;`; got:\n{out}"
+    );
+    assert!(
+        out.contains("&lt;/script&gt;"),
+        "doc must contain escaped `&lt;/script&gt;`; got:\n{out}"
+    );
+    // Ampersand and double-quote escapes.
+    assert!(out.contains("&amp;"), "expected &amp; for `&`; got:\n{out}");
+    assert!(out.contains("&quot;"), "expected &quot; for `\"`; got:\n{out}");
+    // Single-quote escape: accept either the named or numeric form.
+    assert!(
+        out.contains("&#x27;") || out.contains("&#39;"),
+        "expected single-quote escape (`&#x27;` or `&#39;`); got:\n{out}"
+    );
+
+    // Item-level escaping: name and type_repr.
+    assert!(
+        out.contains("a&amp;b"),
+        "Field name `a&b` must render as `a&amp;b`; got:\n{out}"
+    );
+    assert!(
+        out.contains("Vec&lt;T&gt;"),
+        "Field type `Vec<T>` must render as `Vec&lt;T&gt;`; got:\n{out}"
+    );
+    assert!(
+        !out.contains("<td>Vec<T>"),
+        "raw `Vec<T>` must not appear unescaped; got:\n{out}"
+    );
 }
