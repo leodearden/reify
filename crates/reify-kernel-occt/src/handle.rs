@@ -644,6 +644,61 @@ mod tests {
     }
 
     #[test]
+    fn query_many_returns_ordered_values_for_heterogeneous_batch() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let result = handle
+            .query_many(&[
+                GeometryQuery::Volume(gh.id),
+                GeometryQuery::SurfaceArea(gh.id),
+            ])
+            .expect("query_many should succeed for valid handles");
+        assert_eq!(result.len(), 2, "expected one Value per query");
+        match (&result[0], &result[1]) {
+            (Value::Real(vol), Value::Real(area)) => {
+                // 10 * 20 * 30 = 6000
+                assert!(
+                    (vol - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {vol}"
+                );
+                // 2 * (10*20 + 10*30 + 20*30) = 2200
+                assert!(
+                    (area - 2200.0).abs() < 1.0,
+                    "expected surface area ~2200, got {area}"
+                );
+            }
+            other => panic!("expected two Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn query_many_short_circuits_on_first_invalid_handle() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let result = handle.query_many(&[
+            GeometryQuery::Volume(GeometryHandleId(999)),
+            GeometryQuery::SurfaceArea(gh.id),
+        ]);
+        assert!(result.is_err(), "query_many must propagate the bad handle");
+        match result.unwrap_err() {
+            reify_types::QueryError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn export_step_contains_iso_header() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
