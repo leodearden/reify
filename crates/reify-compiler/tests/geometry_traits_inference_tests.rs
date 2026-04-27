@@ -18,7 +18,8 @@
 //! kept in the sibling file `geometry_traits_tests.rs`; this file is reserved
 //! for the inference pipeline.
 
-use reify_compiler::geometry_traits_inference::{GeometryTrait, InferredTraits};
+use reify_compiler::PrimitiveKind;
+use reify_compiler::geometry_traits_inference::{GeometryTrait, InferredTraits, infer_primitive};
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
 
@@ -85,4 +86,33 @@ fn inferred_traits_has_returns_corresponding_flag() {
     assert!(b_only.has(GeometryTrait::Bounded));
     assert!(!b_only.has(GeometryTrait::Connected));
     assert!(!b_only.has(GeometryTrait::Convex));
+}
+
+// ─── infer_primitive — per-PrimitiveKind lookup ─────────────────────────────
+
+/// Every current `PrimitiveKind` (Box/Cylinder/Sphere/Tube) is fully
+/// Bounded+Connected+Convex. When an Unbounded primitive lands (e.g.
+/// `half_space`, `extrude_infinite`), this test must be updated to
+/// expect `InferredTraits::none()` (or the appropriate subset) for those
+/// variants — see `TODO(geometry-traits-task-4-or-later)` in the inference
+/// module.
+#[test]
+fn infer_primitive_kind_yields_all_three_traits() {
+    // Iterate every variant via a fixed array so the test is exhaustive.
+    // If a new `PrimitiveKind` variant is added, the array length annotation
+    // forces a compile error here, which forces the test to be re-considered.
+    let cases: [PrimitiveKind; 4] = [
+        PrimitiveKind::Box,
+        PrimitiveKind::Cylinder,
+        PrimitiveKind::Sphere,
+        PrimitiveKind::Tube,
+    ];
+    for kind in cases {
+        assert_eq!(
+            infer_primitive(kind),
+            InferredTraits::all(),
+            "PrimitiveKind::{:?} should currently infer all three traits",
+            kind
+        );
+    }
 }
