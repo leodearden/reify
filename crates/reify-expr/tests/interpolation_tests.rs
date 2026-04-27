@@ -1277,3 +1277,28 @@ fn nan_query_1d_returns_nan_with_no_diagnostics() {
         );
     }
 }
+
+/// Deferred methods (Rbf, Kriging) with a NaN query return NaN with *empty*
+/// diagnostics — the NaN short-circuit fires before deferred-method resolution,
+/// so no deferred-method warning is emitted. This locks down the chosen
+/// behaviour described in the `interpolate_1d` doc comment.
+#[test]
+fn nan_query_1d_deferred_method_returns_nan_no_warning() {
+    let grid = [0.0f64, 1.0, 3.0, 6.0];
+    let values = [0.0f64, 10.0, 30.0, 90.0];
+    for m in [InterpolationMethod::Rbf, InterpolationMethod::Kriging] {
+        let r = interpolate_1d(m, &grid, &values, f64::NAN);
+        assert!(
+            r.value.is_nan(),
+            "1D deferred {:?}: expected NaN, got {}",
+            m,
+            r.value
+        );
+        assert!(
+            r.diagnostics.is_empty(),
+            "1D deferred {:?}: expected empty diagnostics (no deferred warning), got {:?}",
+            m,
+            r.diagnostics
+        );
+    }
+}

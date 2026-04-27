@@ -116,6 +116,9 @@ fn locate_cell(grid: &[f64], query: f64) -> Option<usize> {
     if grid.len() < 2 {
         return None;
     }
+    // Belt-and-braces: NaN is canonically filtered at the public interpolate_Nd
+    // entry points; this guard prevents a latent partition_point(0)-1 underflow
+    // for any future caller that reaches this helper directly.
     if query.is_nan() {
         return None;
     }
@@ -190,7 +193,13 @@ fn nearest_index_on_axis(grid: &[f64], query: f64) -> usize {
 /// single deferred-method warning and fall back to `Linear`.
 ///
 /// NaN queries propagate to a NaN value with no diagnostics (IEEE 754
-/// NaN-poisoning convention).
+/// NaN-poisoning convention). The NaN check fires *before* deferred-method
+/// resolution, so `Rbf`/`Kriging` with a NaN query also return NaN with an
+/// empty `diagnostics` vec (no deferred-method warning is emitted). This is
+/// intentional: the caller can detect the NaN output with `.is_nan()` and
+/// has no need for a method-deferral warning when the value itself signals
+/// that the query was uncomputable. See the module-level "Boundary policy"
+/// section for rationale.
 ///
 /// Panics if `grid.len() != values.len()` or if `grid.len() < 2`.
 pub fn interpolate_1d(
@@ -738,6 +747,10 @@ fn cubic_3d(
 /// points.
 fn locate_cell_with_clamp(grid: &[f64], query: f64) -> (usize, f64) {
     debug_assert!(grid.len() >= 2);
+    // Belt-and-braces: NaN is canonically filtered at the public interpolate_Nd
+    // entry points; this guard ensures any downstream lerp propagates NaN rather
+    // than silently clamping to a boundary value if this helper is ever called
+    // directly with a NaN query in a future code path.
     if query.is_nan() {
         return (0, f64::NAN);
     }
