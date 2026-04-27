@@ -277,11 +277,13 @@ pub(crate) fn compile_field(
             // return the variant with an empty config Vec.  (Imported is fully
             // payload-less; Sampled keeps its config field but the compiler always
             // emits an empty Vec here.)  The config block is intentionally not
-            // walked; engine_eval.rs:652-653 maps Sampled { .. } unconditionally
-            // to Value::Undef, so the compiled config has no runtime consumer.
-            // Secondary lint diagnostics for malformed sub-expressions are still
-            // surfaced by dot_chain_lint.rs:101-105 (AST-level walk, independent of
-            // compile_field).
+            // walked; the field-iteration loop in `Engine::eval` maps
+            // Sampled { .. } unconditionally to Value::Undef, so the compiled
+            // config has no runtime consumer.  `dot_chain_lint::walk_declaration`
+            // still walks the AST config expressions for shape-level lints
+            // (DeepDotChain); deeper compile_expr diagnostics — unresolved idents,
+            // type errors — are intentionally suppressed since the feature is
+            // wholesale deferred to v0.2.
             diagnostics.push(
                 Diagnostic::error(
                     "sampled field sources are deferred to v0.2; v0.1 supports analytical and composed only",
@@ -324,8 +326,8 @@ pub(crate) fn compile_field(
         let codomain_hash = ContentHash::of_str(&format!("{}", codomain_type));
         let source_hash = match &source {
             CompiledFieldSource::Analytical { expr } => expr.content_hash,
-            // Iteration preserved for non-compiler construction paths: test-support
-            // builders (reify-test-support/src/builders/field.rs:57) may construct
+            // Iteration preserved for non-compiler construction paths:
+            // `CompiledFieldBuilder::sampled` in reify-test-support may construct
             // Sampled directly with a non-empty config.  compile_field always emits
             // an empty Vec, so this reduces to ContentHash::combine_all(empty) == ContentHash(0).
             CompiledFieldSource::Sampled { config } => {
