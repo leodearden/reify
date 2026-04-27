@@ -1204,3 +1204,87 @@ fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
         "solver NoProgress warning",
     );
 }
+
+// ── task-2291: cache-miss let-cell path regression lock ──────────────────────
+
+/// Regression lock for the cache-miss arm of `eval_cached`'s let-cell loop
+/// (engine_eval.rs line that performs `let_traces.get(&node_id).cloned()`).
+///
+/// Scenario: a single non-cyclic let cell `y = a + 10` whose `default_expr`
+/// reads param `a` (Int, default 5).  On the *first* call to `eval_cached` the
+/// cache is empty, so every let cell goes through the cache-miss arm — the
+/// exact arm whose trace-extraction line is tightened in task-2291.
+///
+/// Assertions (four pins):
+/// 1. Value correctness: `y` evaluates to 15 (5 + 10), not Undef.
+/// 2. Cache presence: `eval_cached` records a cache entry for `y`.
+/// 3. Trace correctness: the entry's `dependency_trace.reads` contains param `a`.
+///    This is the meaningful behavioral lock — it would catch any regression that
+///    drops or misidentifies the trace at the modified line.
+/// 4. No error-severity diagnostics (the fixture is valid; no cycles, no type
+///    mismatches).
+///
+/// Inverts the polarity of `eval_cached_does_not_cache_cyclic_let_cells`:
+/// non-cyclic let cells MUST appear in the cache; cyclic ones must not.
+#[test]
+fn eval_cached_caches_non_cyclic_let_cell_with_param_dependency_trace() {
+    let a_id = ValueCellId::new("S", "a");
+    let y_id = ValueCellId::new("S", "y");
+
+    // y = a + 10  (single non-cyclic let cell; depends on param 'a')
+    let y_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "y", Type::Int, y_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    let y_node = NodeId::Value(y_id.clone());
+
+    // 1. Value correctness: y = a + 10 = 5 + 10 = 15.
+    assert_eq!(
+        result.eval_result.values.get(&y_id),
+        Some(&Value::Int(15)),
+        "eval_cached must compute y = a + 10 = 5 + 10 = 15 through the cache-miss path; got: {:?}",
+        result.eval_result.values.get(&y_id),
+    );
+
+    // 2. Cache presence: a non-cyclic let cell must be cached.
+    assert!(
+        engine.cache_store().get(&y_node).is_some(),
+        "eval_cached must record a cache entry for non-cyclic let cell 'y'; none found",
+    );
+
+    // 3. Trace correctness: the cache entry's dependency_trace.reads must contain
+    //    the param 'a'.  This pins the trace-extraction path at the modified line.
+    let cache_entry = engine
+        .cache_store()
+        .get(&y_node)
+        .expect("cache entry must exist (asserted above)");
+    assert!(
+        cache_entry.dependency_trace.reads.contains(&a_id),
+        "cache entry for 'y' must list param 'a' in dependency_trace.reads; got: {:?}",
+        cache_entry.dependency_trace.reads,
+    );
+
+    // 4. No error-severity diagnostics.
+    let error_count: usize = result
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count,
+        0,
+        "non-cyclic let cell fixture must emit zero error diagnostics; got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
