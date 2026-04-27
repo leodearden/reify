@@ -137,3 +137,69 @@ structure S {
         l0.span
     );
 }
+
+/// Nearest-visible-parent rule: with `param x` at the entity scope and a
+/// nested lambda `|y| (|x| x + y)`, the inner `|x|` MUST shadow the entity's
+/// `param x` (NOT the outer lambda's `y`, because `y` is unique). Exactly
+/// one Shadowing warning is expected — for the inner lambda's `x` against
+/// the entity-scope `x`. The outer lambda's `y` does not shadow anything.
+#[test]
+fn nested_lambda_shadow_points_at_nearest_visible_parent() {
+    let source = r#"
+structure S {
+    param x : Real = 1
+    let f = |y| (|x| x + y)
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (inner |x| vs entity param x), got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'x'"),
+        "expected the warning to be about `x`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    // Locate the entity's `param x` start (the `param` keyword sits at the
+    // beginning of `param x : Real = 1`). Locate the inner lambda's `|x|`
+    // start. The original-decl label must point at the entity's `param x`,
+    // i.e. earlier than the inner lambda's `x`.
+    let param_x = source.find("param x").expect("source must contain `param x`");
+    let inner_lambda = source.rfind("|x|").expect("source must contain inner `|x|`");
+
+    let l0 = &warning.labels[0]; // child site
+    let l1 = &warning.labels[1]; // original-decl site
+    assert!(
+        (l1.span.start as usize) >= param_x
+            && (l1.span.start as usize) < inner_lambda,
+        "original-decl span must point at the entity-scope `param x` \
+         (between byte {} and {}), got {:?}",
+        param_x,
+        inner_lambda,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= inner_lambda,
+        "child-site span must point at the inner lambda's `x` \
+         (>= byte {}), got {:?}",
+        inner_lambda,
+        l0.span
+    );
+}
