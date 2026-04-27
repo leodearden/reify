@@ -93,4 +93,67 @@ mod tests {
             "one arg should return Undef"
         );
     }
+
+    // ── revolute constructor helpers ─────────────────────────────────────────
+
+    fn axis_z_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    fn angle_range_0_to_pi() -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
+    // ── revolute constructor: happy path ─────────────────────────────────────
+
+    #[test]
+    fn revolute_returns_map_with_correct_fields() {
+        let axis = axis_z_unit();
+        let range = angle_range_0_to_pi();
+        let result = eval_builtin("revolute", &[axis.clone(), range.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("revolute".to_string())),
+            "kind field should be 'revolute'"
+        );
+        assert_eq!(
+            map.get(&Value::String("axis".to_string())),
+            Some(&axis),
+            "axis field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("range".to_string())),
+            Some(&range),
+            "range field should match input"
+        );
+    }
+
+    // ── revolute constructor: wrong arg counts ───────────────────────────────
+
+    #[test]
+    fn revolute_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("revolute", &[]).is_undef(),
+            "zero args should return Undef"
+        );
+    }
+
+    #[test]
+    fn revolute_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("revolute", &[axis_z_unit()]).is_undef(),
+            "one arg should return Undef"
+        );
+    }
 }
