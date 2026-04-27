@@ -542,8 +542,8 @@ pub fn derive_output_freshness<'a>(
     if still_refining {
         return Freshness::Intermediate { generation };
     }
-    // Pending and Failed both count as non-Final per §7.2 — the `!matches!(_, Final)`
-    // discriminator covers all three non-Final variants in a single predicate.
+    // Pending and Failed both count as non-Final per §7.2 — see step-3 truth-table coverage.
+    // The `!matches!(_, Final)` discriminator covers all three non-Final variants in a single predicate.
     if input_freshnesses
         .into_iter()
         .any(|f| !matches!(f, Freshness::Final))
