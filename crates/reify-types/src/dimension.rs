@@ -644,6 +644,46 @@ mod tests {
     }
 
     #[test]
+    fn money_content_hash_is_deterministic() {
+        assert_eq!(
+            DimensionVector::MONEY.content_hash(),
+            DimensionVector::MONEY.content_hash()
+        );
+    }
+
+    #[test]
+    fn money_content_hash_differs_from_other_base_dimensions() {
+        let money_hash = DimensionVector::MONEY.content_hash();
+        assert_ne!(money_hash, DimensionVector::LENGTH.content_hash());
+        assert_ne!(money_hash, DimensionVector::MASS.content_hash());
+        assert_ne!(money_hash, DimensionVector::TIME.content_hash());
+        assert_ne!(money_hash, DimensionVector::CURRENT.content_hash());
+        assert_ne!(money_hash, DimensionVector::TEMPERATURE.content_hash());
+        assert_ne!(money_hash, DimensionVector::AMOUNT_OF_SUBSTANCE.content_hash());
+        assert_ne!(money_hash, DimensionVector::LUMINOUS_INTENSITY.content_hash());
+        assert_ne!(money_hash, DimensionVector::ANGLE.content_hash());
+        assert_ne!(money_hash, DimensionVector::SOLID_ANGLE.content_hash());
+        assert_ne!(money_hash, DimensionVector::DIMENSIONLESS.content_hash());
+        assert_ne!(money_hash, DimensionVector::MONEY.pow(2).content_hash());
+        assert_ne!(
+            money_hash,
+            DimensionVector::MONEY.div(&DimensionVector::MASS).content_hash()
+        );
+    }
+
+    #[test]
+    fn content_hash_buffer_covers_slot_9() {
+        // Verify that slot-9 bytes actually feed into the digest.
+        let b7 = DimensionVector::basis_n(9, 7);
+        let b8 = DimensionVector::basis_n(9, 8);
+        let b0_7 = DimensionVector::basis_n(0, 7);
+        // Different exponent in same slot → different hash
+        assert_ne!(b7.content_hash(), b8.content_hash());
+        // Same exponent in different slot → different hash
+        assert_ne!(b7.content_hash(), b0_7.content_hash());
+    }
+
+    #[test]
     fn money_constant_populates_slot_9() {
         // Slot 9 must be ONE; all other slots must be ZERO.
         assert_eq!(DimensionVector::MONEY.0[9], Rational::ONE);
