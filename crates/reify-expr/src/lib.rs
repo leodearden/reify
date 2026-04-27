@@ -3669,10 +3669,18 @@ mod tests {
     /// the short-circuit sentinel mechanism is broken and the AND/OR short-circuit
     /// tests no longer provide reliable coverage.
     #[test]
-    #[should_panic(expected = "MetaAccess evaluation requires meta context")]
     fn panic_on_eval_sentinel_panics_when_evaluated() {
         let sentinel = panic_on_eval_sentinel();
-        let _ = eval_expr(&sentinel, &EvalContext::simple(&ValueMap::new()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = eval_expr(&sentinel, &EvalContext::simple(&ValueMap::new()));
+        }));
+        let payload = result
+            .expect_err("sentinel must panic when evaluated against a context without meta");
+        let msg = payload
+            .downcast_ref::<&'static str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(msg, Some(META_ACCESS_NO_CONTEXT_MSG));
     }
 
     /// Pins that `eval_and` short-circuits on a non-bool left operand:
