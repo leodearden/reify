@@ -332,9 +332,12 @@ pub enum GeometryQuery {
     /// Check whether a shape is watertight (closed, no free edges).
     ///
     /// Backed by `BRepCheck_Analyzer.IsValid()`. Returns `Value::Bool(true)` for
-    /// valid SOLID/COMPSOLID/COMPOUND/SHELL shapes. Returns `Value::Bool(false)`
-    /// for FACE/WIRE/EDGE/VERTEX shapes (shape-type guard — they are geometrically
-    /// valid but not "watertight" in the sense of enclosing a volume).
+    /// valid SOLID/COMPSOLID/SHELL shapes. Returns `Value::Bool(false)` for
+    /// COMPOUND, FACE, WIRE, EDGE, VERTEX (shape-type guard). COMPOUND is
+    /// intentionally excluded because `BRepCheck_Analyzer.IsValid()` on a
+    /// compound checks topological consistency, not closure — a compound of
+    /// open faces would spuriously pass. Callers needing per-sub-shape
+    /// watertightness should iterate the compound's children.
     IsWatertight(GeometryHandleId),
     /// Check whether every edge of a shape has at most 2 parent faces.
     ///

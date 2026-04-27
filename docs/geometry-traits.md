@@ -21,10 +21,13 @@ free edges — i.e. it encloses a well-defined volume.
 
 **Shape-type guard:** before invoking the analyzer, the C++ wrapper checks
 `shape.ShapeType()`.  Shapes that are not `TopAbs_SOLID`, `TopAbs_COMPSOLID`,
-`TopAbs_COMPOUND`, or `TopAbs_SHELL` **always return `false`** regardless of their
-topological validity.  This guard prevents `FACE` and `WIRE` shapes (which pass
-`BRepCheck_Analyzer.IsValid()` as valid topology, but enclose no volume) from
-being incorrectly reported as watertight.
+or `TopAbs_SHELL` **always return `false`** regardless of their topological
+validity.  COMPOUND is intentionally excluded — `BRepCheck_Analyzer.IsValid()`
+on a compound reports topological consistency, not closure, so a compound of
+open faces would spuriously pass.  Callers needing per-sub-shape watertightness
+should iterate the compound's children.  This guard also prevents `FACE` and
+`WIRE` shapes (which pass `BRepCheck_Analyzer.IsValid()` as valid topology,
+but enclose no volume) from being incorrectly reported as watertight.
 
 This aligns the predicate with the `Watertight : Closed + Manifold` trait
 semantics in `geometry_traits.ri`, where "watertight" means the boundary is a
