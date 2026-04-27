@@ -434,13 +434,8 @@ impl ConstraintChecker for LabelEmittingChecker {
                     SourceSpan::empty(0),
                     format!("near {}", id_str),
                 );
-                let diagnostic = Diagnostic {
-                    severity: Severity::Error,
-                    message: format!("constraint {} violated", id_str),
-                    labels: vec![label],
-                    code: None,
-                    candidates: Vec::new(),
-                };
+                let diagnostic = Diagnostic::error(format!("constraint {} violated", id_str))
+                    .with_label(label);
                 ConstraintResult {
                     id: id.clone(),
                     satisfaction: Satisfaction::Violated,
