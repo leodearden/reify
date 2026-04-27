@@ -4939,26 +4939,53 @@ mod tests {
                 dz: 0.0,
             })
             .unwrap();
-        // Use a deliberately non-trivial density (100.0) to confirm the kernel
-        // does not crash on large densities. For uniform-density bodies the result
-        // must equal what Centroid would return — density is irrelevant.
-        let result = kernel
+
+        // Helper to parse a {"x":_,"y":_,"z":_} JSON string into (x, y, z).
+        fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
+            let parse_field = |field: &str| -> f64 {
+                let needle = format!("\"{field}\":");
+                let start = s.find(needle.as_str()).unwrap_or_else(|| {
+                    panic!("field {field} not found in centroid JSON: {s:?}")
+                }) + needle.len();
+                let rest = &s[start..];
+                let end = rest.find([',', '}']).unwrap_or(rest.len());
+                rest[..end].parse::<f64>().unwrap_or_else(|e| {
+                    panic!("failed to parse {field} in centroid JSON: {s:?}: {e}")
+                })
+            };
+            (parse_field("x"), parse_field("y"), parse_field("z"))
+        }
+
+        // Query with density 100.0.
+        let result_100 = kernel
             .query(&GeometryQuery::CenterOfMass {
                 handle: translated.id,
                 density: 100.0,
             })
             .unwrap();
-        match result {
-            Value::String(s) => {
-                // The query_centroid JSON encoding is {"x":_,"y":_,"z":_}.
-                // After dx=5 translation on a centred box the centroid x ≈ 5.
-                assert!(
-                    s.contains("\"x\":5"),
-                    "expected centroid x=5 in JSON, got: {s:?}"
-                );
-            }
+        let (x, y, z) = match &result_100 {
+            Value::String(s) => parse_centroid_json(s),
             other => panic!("expected Value::String JSON centroid, got {:?}", other),
-        }
+        };
+        // After dx=5 translation on an origin-centred box, centroid must be at (5, 0, 0).
+        let tol = 1e-3;
+        assert!((x - 5.0).abs() < tol, "centroid x expected ≈5, got {x}");
+        assert!(y.abs() < tol, "centroid y expected ≈0, got {y}");
+        assert!(z.abs() < tol, "centroid z expected ≈0, got {z}");
+
+        // Density must be irrelevant for uniform-density bodies.  Run the same
+        // query with a completely different density and confirm results are identical
+        // (bit-equal strings), locking in the documented invariant.
+        let result_1 = kernel
+            .query(&GeometryQuery::CenterOfMass {
+                handle: translated.id,
+                density: 1.0,
+            })
+            .unwrap();
+        assert_eq!(
+            result_100, result_1,
+            "CenterOfMass result must be density-independent (got {result_100:?} vs {result_1:?})"
+        );
     }
 
     #[test]
@@ -5032,6 +5059,66 @@ mod tests {
                 "off-diagonal [{i}][{j}] expected ~0, got {}", entries[i][j]
             );
         }
+
+        // ── Second case: translate the box far from the origin (dx=100) ──────────
+        // OCCT's BRepGProp::VolumeProperties computes centroidal inertia, so the
+        // diagonal moments must be identical to the origin-centred case above.  This
+        // distinguishes an implementation that accidentally computes inertia about
+        // the *world origin* (which would differ) from one that correctly computes
+        // inertia about the *centroid*.
+        let translated_h = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 100.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        let result_t = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: translated_h.id,
+                density: 2.0,
+            })
+            .unwrap();
+        let rows_t = match result_t {
+            Value::List(rows) => {
+                assert_eq!(rows.len(), 3);
+                rows
+            }
+            other => panic!("translated box: expected Value::List(rows), got {:?}", other),
+        };
+        let mut entries_t = [[0.0f64; 3]; 3];
+        for (i, row) in rows_t.iter().enumerate() {
+            let cols = match row {
+                Value::List(cols) => {
+                    assert_eq!(cols.len(), 3);
+                    cols
+                }
+                other => panic!("translated row {i}: expected Value::List, got {:?}", other),
+            };
+            for (j, col) in cols.iter().enumerate() {
+                entries_t[i][j] = match col {
+                    Value::Real(v) => *v,
+                    other => panic!("translated [{i}][{j}] expected Value::Real, got {:?}", other),
+                };
+            }
+        }
+        // Centroidal inertia is translation-invariant: diagonal entries must match.
+        assert!(
+            (entries_t[0][0] - entries[0][0]).abs() < tol,
+            "translated I_xx should equal origin I_xx ({:.2}), got {:.2}",
+            entries[0][0], entries_t[0][0]
+        );
+        assert!(
+            (entries_t[1][1] - entries[1][1]).abs() < tol,
+            "translated I_yy should equal origin I_yy ({:.2}), got {:.2}",
+            entries[1][1], entries_t[1][1]
+        );
+        assert!(
+            (entries_t[2][2] - entries[2][2]).abs() < tol,
+            "translated I_zz should equal origin I_zz ({:.2}), got {:.2}",
+            entries[2][2], entries_t[2][2]
+        );
     }
 
 }
