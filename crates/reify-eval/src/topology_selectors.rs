@@ -88,7 +88,7 @@ fn check_query_many_len(
 /// Takes `kernel` by shared reference (`&K`) — the helper does not mutate the
 /// kernel and is callable from `&self`/`&K` contexts. Callers that hold
 /// `&mut K` (needed for the preceding `extract_edges`/`extract_faces` call)
-/// compile unchanged via `&mut K → &K` auto-reborrow.
+/// compile unchanged because `&mut K` coerces to `&K` automatically.
 fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
     kernel: &K,
     ids: &[GeometryHandleId],
@@ -1015,12 +1015,7 @@ mod tests {
 
     #[test]
     fn query_per_subshape_accepts_shared_kernel_reference() {
-        // Proves that query_per_subshape accepts &K (shared reference).
-        // `let kernel` (NOT `let mut kernel`) means we can only form &kernel,
-        // not &mut kernel. Before the signature change (kernel: &mut K) this
-        // test fails to compile (E0308). After the change (kernel: &K) it
-        // compiles and verifies the helper still returns correct values through
-        // a shared reference (query_many is &self; counters use AtomicUsize).
+        // Compile witness: query_per_subshape must accept &K, not &mut K.
         let edge_ids = vec![GeometryHandleId(1101), GeometryHandleId(1102)];
         let kernel = CountingKernel::new()
             .with_response(GeometryHandleId(1101), Value::Real(0.001))
