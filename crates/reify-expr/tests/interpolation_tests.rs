@@ -1182,6 +1182,42 @@ fn non_deferred_methods_produce_no_diagnostics() {
 // NaN-propagation tests
 // ---------------------------------------------------------------------------
 
+/// A NaN query in 3D must produce a NaN value with no diagnostics, for all
+/// three v0.1 methods. Any component being NaN poisons the result (IEEE 754
+/// NaN-poisoning convention).
+#[test]
+fn nan_query_3d_returns_nan_with_no_diagnostics() {
+    let gx = [0.0f64, 1.0, 2.0];
+    let gy = [0.0f64, 1.0, 2.0];
+    let gz = [0.0f64, 1.0, 2.0];
+    let values = build_3d(&gx, &gy, &gz, |x, y, z| x + y + z);
+    let queries: &[(f64, f64, f64)] = &[
+        (f64::NAN, 0.5, 0.5),
+        (0.5, f64::NAN, 0.5),
+        (0.5, 0.5, f64::NAN),
+        (f64::NAN, f64::NAN, f64::NAN),
+    ];
+    for m in [
+        InterpolationMethod::Linear,
+        InterpolationMethod::NearestNeighbor,
+        InterpolationMethod::Cubic,
+    ] {
+        for &q in queries {
+            let r = interpolate_3d(m, &gx, &gy, &gz, &values, q);
+            assert!(
+                r.value.is_nan(),
+                "3D {:?} query {:?}: expected NaN, got {}",
+                m, q, r.value
+            );
+            assert!(
+                r.diagnostics.is_empty(),
+                "3D {:?} query {:?}: expected empty diagnostics, got {:?}",
+                m, q, r.diagnostics
+            );
+        }
+    }
+}
+
 /// A NaN query in 2D must produce a NaN value with no diagnostics, for all
 /// three v0.1 methods. Any component being NaN poisons the result (IEEE 754
 /// NaN-poisoning convention).
