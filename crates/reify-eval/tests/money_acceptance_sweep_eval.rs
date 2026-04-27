@@ -70,46 +70,39 @@ fn eval_usd_literal_runtime_dimension_has_only_slot_nine_set() {
     }
 }
 
-// ─── Torque and Energy remain distinct at runtime ─────────────────────────────
+// ─── Torque and Energy remain distinct at runtime, with and without a Money factor ───
 
 /// At runtime, expressions that evaluate to Torque (Force·Length/Angle) and
 /// Energy (Force·Length) must produce Scalars with distinct dimensions:
-///   - torque dimension slot 7 (Angle) = −1
-///   - energy dimension slot 7 (Angle) = 0
+///   - torque slot 7 (Angle) = −1, energy slot 7 (Angle) = 0
 ///
-/// Uses only built-in unit literals (m, kg, s, rad) to keep the test hermetic
-/// (no stdlib dependency). The inline `pub unit USD : Money` is included per
-/// convention but the USD value is not evaluated in this test.
+/// Introducing a USD Money factor to both must keep their dimensions distinct:
+///   - Money·Torque slot 9 (Money) = +1, slot 7 (Angle) = −1
+///   - Money·Energy slot 9 (Money) = +1, slot 7 (Angle) = 0
+///
+/// All four params are evaluated in a single `eval_source` call over one S
+/// structure to eliminate the duplicated source-string and eval-call boilerplate.
 #[test]
-fn eval_torque_value_differs_from_energy_value_at_runtime() {
+fn eval_torque_and_energy_remain_distinct_at_runtime_with_and_without_money_factor() {
     let source = r#"
         pub unit USD : Money
         type Torque = Force * Length / Angle
         type Energy = Force * Length
+        type MoneyTorque = Money * Torque
+        type MoneyEnergy = Money * Energy
         structure S {
-            param torque : Torque = (((1kg * 1m) / (1s * 1s)) * 1m) / 1rad
-            param energy : Energy = ((1kg * 1m) / (1s * 1s)) * 1m
+            param torque       : Torque       = (((1kg * 1m) / (1s * 1s)) * 1m) / 1rad
+            param energy       : Energy       = ((1kg * 1m) / (1s * 1s)) * 1m
+            param cost_torque  : MoneyTorque  = 1USD * ((((1kg * 1m) / (1s * 1s)) * 1m) / 1rad)
+            param cost_energy  : MoneyEnergy  = 1USD * (((1kg * 1m) / (1s * 1s)) * 1m)
         }
     "#;
     let result = eval_source(source);
 
-    let torque_val = result
-        .values
-        .get(&ValueCellId::new("S", "torque"))
-        .unwrap_or_else(|| panic!("'torque' not found in eval result"));
-    let energy_val = result
-        .values
-        .get(&ValueCellId::new("S", "energy"))
-        .unwrap_or_else(|| panic!("'energy' not found in eval result"));
-
-    let t_dim = match torque_val {
-        Value::Scalar { dimension, .. } => *dimension,
-        other => panic!("expected torque to be Value::Scalar, got {:?}", other),
-    };
-    let e_dim = match energy_val {
-        Value::Scalar { dimension, .. } => *dimension,
-        other => panic!("expected energy to be Value::Scalar, got {:?}", other),
-    };
+    let t_dim = extract_scalar_dimension(&result, "S", "torque");
+    let e_dim = extract_scalar_dimension(&result, "S", "energy");
+    let ct_dim = extract_scalar_dimension(&result, "S", "cost_torque");
+    let ce_dim = extract_scalar_dimension(&result, "S", "cost_energy");
 
     assert_ne!(t_dim, e_dim, "Torque and Energy must have distinct runtime dimensions");
     assert_eq!(
@@ -124,48 +117,6 @@ fn eval_torque_value_differs_from_energy_value_at_runtime() {
         "Energy Angle slot 7 should be ZERO at runtime; dimension = {:?}",
         e_dim
     );
-}
-
-/// Introducing a USD Money factor to both Torque and Energy at runtime must
-/// keep their dimensions distinct. Specifically:
-///   - Money·Torque carries slot 9 (Money) = +1 and slot 7 (Angle) = −1
-///   - Money·Energy carries slot 9 (Money) = +1 and slot 7 (Angle) = 0
-///
-/// Confirms that the runtime dimension-propagation path does not collapse the
-/// Angle-slot distinction under a Money multiplication.
-#[test]
-fn eval_torque_with_money_factor_remains_distinct_from_energy_with_money_factor() {
-    let source = r#"
-        pub unit USD : Money
-        type Torque = Force * Length / Angle
-        type Energy = Force * Length
-        type MoneyTorque = Money * Torque
-        type MoneyEnergy = Money * Energy
-        structure S {
-            param cost_torque : MoneyTorque = 1USD * ((((1kg * 1m) / (1s * 1s)) * 1m) / 1rad)
-            param cost_energy : MoneyEnergy = 1USD * (((1kg * 1m) / (1s * 1s)) * 1m)
-        }
-    "#;
-    let result = eval_source(source);
-
-    let ct_val = result
-        .values
-        .get(&ValueCellId::new("S", "cost_torque"))
-        .unwrap_or_else(|| panic!("'cost_torque' not found in eval result"));
-    let ce_val = result
-        .values
-        .get(&ValueCellId::new("S", "cost_energy"))
-        .unwrap_or_else(|| panic!("'cost_energy' not found in eval result"));
-
-    let ct_dim = match ct_val {
-        Value::Scalar { dimension, .. } => *dimension,
-        other => panic!("expected cost_torque to be Value::Scalar, got {:?}", other),
-    };
-    let ce_dim = match ce_val {
-        Value::Scalar { dimension, .. } => *dimension,
-        other => panic!("expected cost_energy to be Value::Scalar, got {:?}", other),
-    };
-
     assert_ne!(
         ct_dim,
         ce_dim,
