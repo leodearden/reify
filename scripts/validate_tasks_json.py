@@ -4,7 +4,7 @@
 Enforces three structural invariants on top-level tasks to prevent ID/dependency
 drift after Task 1866's string-ID normalization migration:
 
-  1. Every task `id` is a string matching ``^\d+$`` (not an int, not a slug).
+  1. Every task `id` is a string matching ``^\\d+$`` (not an int, not a slug).
   2. Every entry in a task's `dependencies[]` is a string **and** references an
      existing task id (no orphan deps, no int deps).  A dotted form
      ``<parent>.<subtask>`` is also accepted iff the parent is a known top-level
