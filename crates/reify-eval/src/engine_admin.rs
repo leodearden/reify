@@ -383,7 +383,6 @@ impl Engine {
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     /// Integration tests reach this method via the self-dev-dep with the
     /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
-    /// LSP tests reach it via `crates/reify-lsp/Cargo.toml` dev-dep (task 2276).
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_param_override_type_kind_rejections(&self) -> usize {
         self.last_param_override_type_kind_rejections
@@ -396,7 +395,6 @@ impl Engine {
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     /// Integration tests reach this method via the self-dev-dep with the
     /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
-    /// LSP tests reach it via `crates/reify-lsp/Cargo.toml` dev-dep (task 2276).
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_param_override_dimension_rejections(&self) -> usize {
         self.last_param_override_dimension_rejections
@@ -409,7 +407,6 @@ impl Engine {
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     /// Integration tests reach this method via the self-dev-dep with the
     /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
-    /// LSP tests reach it via `crates/reify-lsp/Cargo.toml` dev-dep (task 2276).
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_sub_component_unknown_structure_errors(&self) -> usize {
         self.last_sub_component_unknown_structure_errors
