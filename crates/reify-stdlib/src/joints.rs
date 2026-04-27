@@ -608,4 +608,130 @@ mod tests {
         assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.5, 0.0, 0.0], 1e-12,
             "prismatic X, bare Real(0.5)");
     }
+
+    // ── transform_at on Revolute: helpers ────────────────────────────────────
+
+    fn revolute_z_joint() -> Value {
+        eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()])
+    }
+
+    fn revolute_x_joint() -> Value {
+        let axis = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        eval_builtin("revolute", &[axis, range])
+    }
+
+    fn revolute_y_joint() -> Value {
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        eval_builtin("revolute", &[axis, range])
+    }
+
+    // ── transform_at on Revolute: analytic tests ─────────────────────────────
+
+    #[test]
+    fn revolute_transform_at_z_axis_half_pi() {
+        // Z axis, π/2 → rotation = (cos(π/4), 0, 0, sin(π/4))
+        let pi = std::f64::consts::PI;
+        let joint = revolute_z_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(&result, (cos, 0.0, 0.0, sin), [0.0, 0.0, 0.0], 1e-12,
+            "revolute Z, π/2");
+    }
+
+    #[test]
+    fn revolute_transform_at_x_axis_pi() {
+        // X axis, π → rotation = (0, 1, 0, 0)
+        let pi = std::f64::consts::PI;
+        let joint = revolute_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(pi)]);
+        assert_transform_approx(&result, (0.0, 1.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
+            "revolute X, π");
+    }
+
+    #[test]
+    fn revolute_transform_at_y_axis_half_pi() {
+        // Y axis, π/2 → rotation = (cos(π/4), 0, sin(π/4), 0)
+        let pi = std::f64::consts::PI;
+        let joint = revolute_y_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(&result, (cos, 0.0, sin, 0.0), [0.0, 0.0, 0.0], 1e-12,
+            "revolute Y, π/2");
+    }
+
+    #[test]
+    fn revolute_transform_at_zero_angle() {
+        // angle = 0 → identity rotation
+        let joint = revolute_z_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(0.0)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
+            "revolute Z, 0");
+    }
+
+    #[test]
+    fn revolute_transform_at_bare_real_value() {
+        // bare Real(π/2) accepted as radians
+        let pi = std::f64::consts::PI;
+        let joint = revolute_z_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::Real(pi / 2.0)]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(&result, (cos, 0.0, 0.0, sin), [0.0, 0.0, 0.0], 1e-12,
+            "revolute Z, bare Real(π/2)");
+    }
+
+    #[test]
+    fn revolute_transform_at_unnormalized_axis() {
+        // axis [0, 0, 2] (magnitude 2) with π/2 → same rotation as [0,0,1] with π/2
+        let pi = std::f64::consts::PI;
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: Some(Box::new(Value::angle(pi))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis, range]);
+        let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(&result, (cos, 0.0, 0.0, sin), [0.0, 0.0, 0.0], 1e-12,
+            "revolute unnormalized [0,0,2], π/2");
+    }
+
+    #[test]
+    fn revolute_transform_at_translation_always_zero() {
+        // translation should always be [0m, 0m, 0m] regardless of angle
+        let pi = std::f64::consts::PI;
+        let joint = revolute_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 3.0)]);
+        // Check only translation components
+        let trans = match &result {
+            Value::Transform { translation, .. } => translation.as_ref(),
+            other => panic!("expected Transform, got {:?}", other),
+        };
+        let comps = match trans {
+            Value::Vector(v) if v.len() == 3 => v,
+            other => panic!("expected Vector(3), got {:?}", other),
+        };
+        for (i, comp) in comps.iter().enumerate() {
+            let val = comp.as_f64().expect("translation component should be numeric");
+            assert!((val - 0.0).abs() < 1e-12,
+                "revolute translation[{}] should be 0, got {}", i, val);
+        }
+    }
 }
