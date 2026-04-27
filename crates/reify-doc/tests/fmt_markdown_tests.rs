@@ -472,3 +472,226 @@ fn meta_section_omitted_when_empty() {
     let out = render_one_item(item);
     assert!(!out.contains("### Meta"), "should omit, got:\n{out}");
 }
+
+/// Trait variant emits a `### Members` H3 + bullet list of rendered member
+/// signatures.
+#[test]
+fn trait_body_renders_members() {
+    let item = ItemDoc::Trait {
+        name: "HasPower".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        members: vec![
+            "voltage: Voltage".into(),
+            "current: Current".into(),
+        ],
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("### Members"), "Members H3 missing:\n{out}");
+    assert!(
+        out.contains("- voltage: Voltage"),
+        "first member bullet missing:\n{out}"
+    );
+    assert!(
+        out.contains("- current: Current"),
+        "second member bullet missing:\n{out}"
+    );
+}
+
+/// A trait with no members omits the `### Members` section entirely.
+#[test]
+fn trait_body_omits_members_when_empty() {
+    let item = ItemDoc::Trait {
+        name: "Marker".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        members: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("### Members"), "should omit, got:\n{out}");
+}
+
+/// Function variant emits a fenced ```reify``` code block containing the
+/// rendered signature.
+#[test]
+fn function_body_renders_signature_fence() {
+    let item = ItemDoc::Function {
+        name: "compute".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        signature: "fn compute(x: f64) -> f64".into(),
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("```reify\n"), "opening fence missing:\n{out}");
+    assert!(
+        out.contains("fn compute(x: f64) -> f64"),
+        "signature missing:\n{out}"
+    );
+    // There must be exactly one opening and one closing fence around the
+    // signature for this single function.
+    let opens = out.matches("```reify").count();
+    let closes = out.matches("```\n").count();
+    assert!(opens >= 1, "expected at least one opening fence, got {opens}");
+    assert!(closes >= 1, "expected at least one closing fence, got {closes}");
+}
+
+/// Enum variant emits a `### Variants` H3 + bullet list.
+#[test]
+fn enum_body_renders_variants() {
+    let item = ItemDoc::Enum {
+        name: "Color".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        variants: vec!["Red".into(), "Green".into(), "Blue".into()],
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("### Variants"), "Variants H3 missing:\n{out}");
+    assert!(out.contains("- Red"), "Red bullet missing:\n{out}");
+    assert!(out.contains("- Green"), "Green bullet missing:\n{out}");
+    assert!(out.contains("- Blue"), "Blue bullet missing:\n{out}");
+}
+
+/// An enum with no variants omits the `### Variants` section entirely.
+#[test]
+fn enum_body_omits_variants_when_empty() {
+    let item = ItemDoc::Enum {
+        name: "Empty".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        variants: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("### Variants"), "should omit, got:\n{out}");
+}
+
+/// Field variant emits an inline `**Type:** \`...\`` line and (when
+/// `default_repr.is_some()`) a `**Default:** \`...\`` line.
+#[test]
+fn field_body_renders_type_and_default() {
+    let item = ItemDoc::Field {
+        name: "supply_voltage".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: "Voltage".into(),
+        default_repr: Some("3.3 V".into()),
+    };
+    let out = render_one_item(item);
+    assert!(
+        out.contains("**Type:** `Voltage`"),
+        "Type line missing:\n{out}"
+    );
+    assert!(
+        out.contains("**Default:** `3.3 V`"),
+        "Default line missing:\n{out}"
+    );
+}
+
+/// Field with `default_repr: None` omits the `**Default:**` line.
+#[test]
+fn field_body_omits_default_when_none() {
+    let item = ItemDoc::Field {
+        name: "x".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: "i32".into(),
+        default_repr: None,
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("**Type:** `i32`"), "Type line missing:\n{out}");
+    assert!(
+        !out.contains("**Default:**"),
+        "Default line should be omitted, got:\n{out}"
+    );
+}
+
+/// Purpose variant emits `**Direction:** {direction}` and
+/// `**Expression:** \`{expr_repr}\`` lines.
+#[test]
+fn purpose_body_renders_direction_and_expression() {
+    let item = ItemDoc::Purpose {
+        name: "minimize_area".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        expr_repr: "total_area".into(),
+        direction: "minimize".into(),
+    };
+    let out = render_one_item(item);
+    assert!(
+        out.contains("**Direction:** minimize"),
+        "Direction line missing:\n{out}"
+    );
+    assert!(
+        out.contains("**Expression:** `total_area`"),
+        "Expression line missing:\n{out}"
+    );
+}
+
+/// Unit variant emits `**Base:** \`{base_unit}\`` and
+/// `**Scale:** \`{scale}\`` lines.
+#[test]
+fn unit_body_renders_base_and_scale() {
+    let item = ItemDoc::Unit {
+        name: "Milliamp".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        base_unit: "Ampere".into(),
+        scale: "0.001".into(),
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("**Base:** `Ampere`"), "Base line missing:\n{out}");
+    assert!(out.contains("**Scale:** `0.001`"), "Scale line missing:\n{out}");
+}
+
+/// TypeAlias variant emits a single `= \`{type_repr}\`` line.
+#[test]
+fn type_alias_body_renders_rhs() {
+    let item = ItemDoc::TypeAlias {
+        name: "Meters".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: "f64".into(),
+    };
+    let out = render_one_item(item);
+    assert!(
+        out.contains("= `f64`"),
+        "type alias rhs line missing:\n{out}"
+    );
+}
+
+/// ConstraintDef variant emits a single `\`{expr_repr}\`` line.
+#[test]
+fn constraint_def_body_renders_expr() {
+    let item = ItemDoc::ConstraintDef {
+        name: "voltage_safe".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        expr_repr: "v <= 5.5 V".into(),
+    };
+    let out = render_one_item(item);
+    assert!(
+        out.contains("`v <= 5.5 V`"),
+        "constraint expression missing:\n{out}"
+    );
+}
