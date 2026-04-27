@@ -713,7 +713,7 @@ void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
 
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
                                            double x2, double y2, double z2) {
-    try {
+    return wrap_occt_call("make_line_wire", [&]() {
         gp_Pnt p1(x1, y1, z1);
         gp_Pnt p2(x2, y2, z2);
         double dist_sq = (x2-x1)*(x2-x1) + (y2-y1)*(y2-y1) + (z2-z1)*(z2-z1);
@@ -732,13 +732,7 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_line_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_line_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_line_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_arc_wire ---
@@ -748,7 +742,7 @@ std::unique_ptr<OcctShape> make_arc_wire(
     double radius,
     double start_angle, double end_angle,
     double ax, double ay, double az) {
-    try {
+    return wrap_occt_call("make_arc_wire", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_arc_wire: radius must be finite and positive");
         }
@@ -766,20 +760,14 @@ std::unique_ptr<OcctShape> make_arc_wire(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_arc_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_arc_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_arc_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_helix_wire ---
 
 std::unique_ptr<OcctShape> make_helix_wire(
     double radius, double pitch, double height) {
-    try {
+    return wrap_occt_call("make_helix_wire", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_helix_wire: radius must be finite and positive");
         }
@@ -812,20 +800,14 @@ std::unique_ptr<OcctShape> make_helix_wire(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_helix_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_helix_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_helix_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_polyline_wire ---
 
 std::unique_ptr<OcctShape> make_polyline_wire(
     rust::Slice<const double> coords, size_t n_points) {
-    try {
+    return wrap_occt_call("make_polyline_wire", [&]() {
         if (n_points < 2) {
             throw std::runtime_error("make_polyline_wire: requires at least 2 points");
         }
@@ -852,20 +834,14 @@ std::unique_ptr<OcctShape> make_polyline_wire(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_polyline_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_polyline_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_polyline_wire: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_interp_curve ---
 
 std::unique_ptr<OcctShape> make_interp_curve(
     rust::Slice<const double> coords, size_t n_points) {
-    try {
+    return wrap_occt_call("make_interp_curve", [&]() {
         if (n_points < 2) {
             throw std::runtime_error("make_interp_curve: requires at least 2 points");
         }
@@ -889,20 +865,14 @@ std::unique_ptr<OcctShape> make_interp_curve(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_interp_curve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_interp_curve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_interp_curve: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_bezier_curve ---
 
 std::unique_ptr<OcctShape> make_bezier_curve(
     rust::Slice<const double> coords, size_t n_points) {
-    try {
+    return wrap_occt_call("make_bezier_curve", [&]() {
         if (n_points < 2) {
             throw std::runtime_error("make_bezier_curve: requires at least 2 control points");
         }
@@ -923,13 +893,7 @@ std::unique_ptr<OcctShape> make_bezier_curve(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_bezier_curve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_bezier_curve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_bezier_curve: unknown C++ exception");
-    }
+    });
 }
 
 // --- make_nurbs_curve ---
@@ -939,7 +903,7 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
     rust::Slice<const double> weights,
     rust::Slice<const double> flat_knots,
     int degree) {
-    try {
+    return wrap_occt_call("make_nurbs_curve", [&]() {
         if (n_poles < 2) {
             throw std::runtime_error("make_nurbs_curve: requires at least 2 control points");
         }
@@ -983,13 +947,7 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_nurbs_curve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_nurbs_curve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_nurbs_curve: unknown C++ exception");
-    }
+    });
 }
 
 // --- Loft (generic N profiles) ---
@@ -1192,7 +1150,7 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
 
 std::unique_ptr<OcctShape> make_rect_face(double width, double height,
     double cx, double cy, double cz) {
-    try {
+    return wrap_occt_call("make_rect_face", [&]() {
         if (!(std::isfinite(width) && width > 0.0)) {
             throw std::runtime_error("make_rect_face: width must be finite and positive");
         }
@@ -1231,13 +1189,7 @@ std::unique_ptr<OcctShape> make_rect_face(double width, double height,
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_rect_face: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_rect_face: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_rect_face: unknown C++ exception");
-    }
+    });
 }
 
 // --- Wire queries ---
