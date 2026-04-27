@@ -58,11 +58,38 @@ pub fn render_markdown(
 /// Build the single-file concatenated Markdown body.
 fn render_single(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String {
     let mut out = String::new();
-    for _module in &model.modules {
-        // Module rendering is added in subsequent impl steps; the empty-model
-        // case yields an empty body.
+    for module in &model.modules {
+        // Module H1 header.
+        out.push_str("# ");
+        out.push_str(&module.path);
+        out.push_str("\n\n");
+        // Optional module doc.
+        if let Some(doc) = module.doc.as_deref() {
+            emit_paragraphs(&mut out, doc);
+        }
     }
     out
+}
+
+/// Emit a doc-comment string as one or more Markdown paragraphs.
+///
+/// Splits the input on blank lines (one or more `\n\n` sequences) and writes
+/// each non-empty paragraph followed by a blank line, so the next thing emitted
+/// after the call starts on a fresh paragraph.
+fn emit_paragraphs(out: &mut String, doc: &str) {
+    let mut wrote_any = false;
+    for paragraph in doc.split("\n\n") {
+        let p = paragraph.trim();
+        if p.is_empty() {
+            continue;
+        }
+        out.push_str(p);
+        out.push_str("\n\n");
+        wrote_any = true;
+    }
+    // If the doc was all whitespace, leave the buffer untouched so we don't
+    // produce dangling blank lines.
+    let _ = wrote_any;
 }
 
 /// Build the split-file (filename, body) list.
