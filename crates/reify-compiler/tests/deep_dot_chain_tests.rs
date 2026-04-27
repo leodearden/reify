@@ -74,3 +74,28 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+/// The DeepDotChain warning's message contains the rendered chain text
+/// (`a.b.c.d.e`) so that humans reading the diagnostic see the offending
+/// chain inline without needing the source span.
+#[test]
+fn chain_warning_message_contains_full_chain_text() {
+    let source = r#"
+structure S {
+    param a: Real = 0
+    let x = a.b.c.d.e
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warning = warnings
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .expect("expected one DeepDotChain warning");
+
+    assert!(
+        deep_dot_chain_warning.message.contains("a.b.c.d.e"),
+        "expected DeepDotChain warning message to contain `a.b.c.d.e`, got: {:?}",
+        deep_dot_chain_warning.message
+    );
+}
