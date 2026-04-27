@@ -5204,6 +5204,75 @@ mod tests {
         }
     }
 
+    /// Document the density edge-case behavior of `InertiaTensor`.
+    ///
+    /// The C++ `query_inertia_tensor` implementation multiplies every entry of OCCT's
+    /// volume-weighted matrix by `density` (a pure scalar multiply in occt_wrapper.cpp).
+    /// This yields two documented edge behaviors:
+    ///
+    /// * **ρ = 0.0** → all 9 tensor entries are exactly 0.0 (zero density → zero mass →
+    ///   zero inertia tensor).
+    /// * **ρ < 0** → each entry equals `−1 × (entry at the absolute value of ρ)` (scalar
+    ///   negation, no guard at the kernel boundary).
+    ///
+    /// **This pins current observable behavior.**  A future kernel change MAY reject ρ ≤ 0
+    /// with a typed error — update this test if so.
+    #[test]
+    fn inertia_tensor_density_edge_cases_documented() {
+        let mut kernel = OcctKernel::new();
+        // A 20×10×5 box (same fixture as `inertia_tensor_box_with_density_analytic`).
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(5.0),
+            })
+            .expect("Box creation must succeed");
+
+        // Baseline: ρ = 2.0.
+        let result_baseline = kernel
+            .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: 2.0 })
+            .expect("InertiaTensor with density=2.0 must not return Err");
+        let baseline = extract_3x3_tensor_entries(&result_baseline);
+
+        // Edge case 1: ρ = 0.0 → zero tensor.
+        let result_zero = kernel
+            .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: 0.0 })
+            .expect("InertiaTensor with density=0.0 must not return Err (kernel is permissive)");
+        let zero_entries = extract_3x3_tensor_entries(&result_zero);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    zero_entries[i][j].abs() < 1e-9,
+                    "entry [{i}][{j}] must be ≈0 for density=0 (zero density → zero tensor), \
+                     got {}",
+                    zero_entries[i][j]
+                );
+            }
+        }
+
+        // Edge case 2: ρ = -2.0 → negated baseline tensor.
+        let result_neg = kernel
+            .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: -2.0 })
+            .expect("InertiaTensor with density=-2.0 must not return Err (kernel is permissive)");
+        let neg_entries = extract_3x3_tensor_entries(&result_neg);
+        // Each entry must equal the negation of the baseline within a small absolute tolerance.
+        // Baseline entries are O(1e4), so tol=100 is ~1% relative — comfortable margin.
+        let tol = 100.0_f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = -baseline[i][j];
+                assert!(
+                    (neg_entries[i][j] - expected).abs() < tol,
+                    "entry [{i}][{j}] with density=-2.0 expected ≈{expected:.4} \
+                     (negation of baseline {:.4}), got {}, diff {}",
+                    baseline[i][j], neg_entries[i][j],
+                    (neg_entries[i][j] - expected).abs()
+                );
+            }
+        }
+    }
+
     #[test]
     fn inertia_tensor_box_with_density_analytic() {
         let mut kernel = OcctKernel::new();
