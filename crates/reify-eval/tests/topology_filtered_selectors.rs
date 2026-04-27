@@ -86,10 +86,19 @@ fn edges_at_height_box_top_z_5mm_returns_four() {
     // The four edges that lie entirely at z = +5e-3 form the top
     // rectangle; similarly there are four at z = -5e-3 (bottom) and
     // four vertical edges spanning [-5e-3, +5e-3]. Filtering by
-    // (z = +5e-3, tol = 1e-9) must select exactly the top four.
+    // z = +5e-3 must select exactly those top four.
+    //
+    // Tolerance is 1e-6 m (1 µm): the kernel's `BoundingBox` query is
+    // built on OCCT's `BRepBndLib::Add`, which enlarges the box by the
+    // shape's geometric tolerance (typically ~1e-7 for freshly-built
+    // primitives — see also `query_edge_tangent_returns_unit_vector_along_axis`
+    // in `topology_extract_integration.rs` which uses extent_tol=1e-6
+    // for the same reason). 1e-6 is comfortably above that pad and
+    // still tight enough to discriminate top-face edges (z≈+5e-3) from
+    // bottom-face edges (z≈-5e-3) and full-extent vertical edges.
     let (mut kernel, box_id) = box_handle(10.0, 10.0, 10.0);
 
-    let result = topology_selectors::edges_at_height(&mut kernel, box_id, 5e-3, 1e-9)
+    let result = topology_selectors::edges_at_height(&mut kernel, box_id, 5e-3, 1e-6)
         .expect("edges_at_height on a valid box should succeed");
 
     assert_eq!(

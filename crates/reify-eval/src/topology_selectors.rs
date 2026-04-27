@@ -278,3 +278,87 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     }
     Ok(out)
 }
+
+/// Return the subset of `extract_edges(handle)` that lie entirely within
+/// `tol_m` (metres) of the horizontal plane `z = z_m`.
+///
+/// For each edge the bounding box is queried via
+/// `GeometryQuery::BoundingBox`, parsed for `zmin` / `zmax`, and the
+/// edge is retained only if **both** extents are within tolerance:
+/// `(zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m`. This
+/// accepts horizontal edges lying flat on the plane and rejects vertical
+/// edges that merely pass through it.
+///
+/// All length parameters are in metres.
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_edges` (e.g. `InvalidHandle` if
+///   `handle` is not registered with the kernel).
+/// - Propagates any error from a per-edge `BoundingBox` query.
+/// - Returns `QueryError::QueryFailed` on a malformed BoundingBox
+///   payload (non-string, non-JSON, missing `zmin` / `zmax`).
+pub fn edges_at_height<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    z_m: f64,
+    tol_m: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let edges = kernel.extract_edges(handle)?;
+    let mut out = Vec::with_capacity(edges.len());
+    for id in edges {
+        let bbox_value = kernel.query(&GeometryQuery::BoundingBox(id))?;
+        let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
+        if (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a `Value::String` that the kernel formatted as JSON
+/// `{"xmin":..,"ymin":..,"zmin":..,"xmax":..,"ymax":..,"zmax":..}` (the
+/// BoundingBox encoding) and return `(zmin, zmax)`. The other extents
+/// are ignored — `edges_at_height` only filters along z.
+///
+/// Returns `QueryError::QueryFailed` on any deviation from the expected
+/// shape (non-string Value, malformed JSON, missing zmin/zmax fields).
+fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "BoundingBox returned non-string value: {other:?}"
+            )));
+        }
+    };
+    parse_bbox_z_extents_json(s).ok_or_else(|| {
+        QueryError::QueryFailed(format!(
+            "BoundingBox returned malformed JSON payload: {s:?}"
+        ))
+    })
+}
+
+/// Parse `{"xmin":NUMBER,...,"zmax":NUMBER}` (with arbitrary whitespace)
+/// for the `zmin` and `zmax` keys, ignoring the other axis extents.
+/// Returns `None` on any structural deviation.
+fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
+    let inner = s.trim().strip_prefix('{')?.strip_suffix('}')?;
+    let mut zmin: Option<f64> = None;
+    let mut zmax: Option<f64> = None;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv.next()?.trim().trim_matches('"');
+        let val = kv.next()?.trim();
+        let num: f64 = val.parse().ok()?;
+        match key {
+            "zmin" => zmin = Some(num),
+            "zmax" => zmax = Some(num),
+            // xmin/xmax/ymin/ymax are part of the well-formed payload but
+            // not needed for this selector; tolerate them silently.
+            "xmin" | "xmax" | "ymin" | "ymax" => {}
+            _ => return None,
+        }
+    }
+    Some((zmin?, zmax?))
+}
