@@ -47,6 +47,14 @@ enum OcctRequest {
         state: OpaqueState,
         reply: oneshot::Sender<()>,
     },
+    ExtractEdges {
+        handle: GeometryHandleId,
+        reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
+    },
+    ExtractFaces {
+        handle: GeometryHandleId,
+        reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
+    },
 }
 
 /// Thread-safe handle to an OCCT kernel running on a dedicated thread.
@@ -149,6 +157,52 @@ impl OcctKernelHandle {
             .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
     }
 
+    /// Extract the unique edges of a shape, storing each as a new handle on
+    /// the kernel thread, and return the resulting list of handle ids.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`extract_edges_async`](Self::extract_edges_async) instead.
+    pub fn extract_edges(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::ExtractEdges {
+                handle,
+                reply: reply_tx,
+            })
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
+    /// Extract the unique faces of a shape, storing each as a new handle on
+    /// the kernel thread, and return the resulting list of handle ids.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`extract_faces_async`](Self::extract_faces_async) instead.
+    pub fn extract_faces(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::ExtractFaces {
+                handle,
+                reply: reply_tx,
+            })
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
     /// Execute a geometry operation on the kernel thread.
     ///
     /// # Panics
@@ -209,6 +263,14 @@ impl OcctKernelHandle {
                     OcctRequest::WithWarmState { state, reply } => {
                         kernel.with_warm_state(state);
                         let _ = reply.send(());
+                    }
+                    OcctRequest::ExtractEdges { handle, reply } => {
+                        let result = kernel.extract_edges(handle);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::ExtractFaces { handle, reply } => {
+                        let result = kernel.extract_faces(handle);
+                        let _ = reply.send(result);
                     }
                 }
             }
@@ -306,6 +368,46 @@ impl OcctKernelHandle {
         reply_rx
             .await
             .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
+    }
+
+    /// Extract the unique edges of a shape (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn extract_edges_async(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::ExtractEdges {
+                handle,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
+    /// Extract the unique faces of a shape (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn extract_faces_async(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::ExtractFaces {
+                handle,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
     }
 
     /// Extract warm-start state from the kernel thread (async version).
@@ -456,6 +558,24 @@ impl GeometryKernel for OcctKernelHandle {
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
+    }
+
+    /// Override the trait default with a real channel-routed implementation.
+    /// Delegates to the inherent `extract_edges` (which only needs `&self`).
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        OcctKernelHandle::extract_edges(self, handle)
+    }
+
+    /// Override the trait default with a real channel-routed implementation.
+    /// Delegates to the inherent `extract_faces` (which only needs `&self`).
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        OcctKernelHandle::extract_faces(self, handle)
     }
 }
 
@@ -1188,5 +1308,111 @@ mod tests {
         // Drop outside async context — should join the thread
         drop(handle);
         // No panic means success
+    }
+
+    // --- Topology extraction through the handle channel (step-21) ---
+
+    /// Helper: build a box on a fresh handle and return both.
+    fn handle_with_box(w: f64, h: f64, d: f64) -> (super::OcctKernelHandle, GeometryHandleId) {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(w),
+                height: Value::Real(h),
+                depth: Value::Real(d),
+            })
+            .expect("Box execute should succeed");
+        (handle, gh.id)
+    }
+
+    /// Assert all ids in `ids` are pairwise distinct, none are
+    /// `GeometryHandleId::INVALID`, and none equal `excluded`.
+    fn assert_distinct_valid(ids: &[GeometryHandleId], excluded: GeometryHandleId) {
+        for id in ids {
+            assert_ne!(*id, GeometryHandleId::INVALID, "id should not be INVALID");
+            assert_ne!(*id, excluded, "extracted id should not equal source handle");
+        }
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(seen.insert(*id), "duplicate id in extracted vec: {id:?}");
+        }
+    }
+
+    #[test]
+    fn extract_edges_through_handle_channel_returns_twelve_handles() {
+        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
+        let edges = handle
+            .extract_edges(box_id)
+            .expect("extract_edges through channel should succeed");
+        assert_eq!(
+            edges.len(),
+            12,
+            "a box should have 12 edges, got {}",
+            edges.len()
+        );
+        assert_distinct_valid(&edges, box_id);
+    }
+
+    #[tokio::test]
+    async fn extract_edges_async_through_handle_channel_returns_twelve_handles() {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute_async(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .await
+            .unwrap();
+        let edges = handle
+            .extract_edges_async(gh.id)
+            .await
+            .expect("extract_edges_async through channel should succeed");
+        assert_eq!(
+            edges.len(),
+            12,
+            "a box should have 12 edges, got {}",
+            edges.len()
+        );
+        assert_distinct_valid(&edges, gh.id);
+    }
+
+    #[test]
+    fn extract_faces_through_handle_channel_returns_six_handles() {
+        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
+        let faces = handle
+            .extract_faces(box_id)
+            .expect("extract_faces through channel should succeed");
+        assert_eq!(
+            faces.len(),
+            6,
+            "a box should have 6 faces, got {}",
+            faces.len()
+        );
+        assert_distinct_valid(&faces, box_id);
+    }
+
+    #[tokio::test]
+    async fn extract_faces_async_through_handle_channel_returns_six_handles() {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute_async(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .await
+            .unwrap();
+        let faces = handle
+            .extract_faces_async(gh.id)
+            .await
+            .expect("extract_faces_async through channel should succeed");
+        assert_eq!(
+            faces.len(),
+            6,
+            "a box should have 6 faces, got {}",
+            faces.len()
+        );
+        assert_distinct_valid(&faces, gh.id);
     }
 }

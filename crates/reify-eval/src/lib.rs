@@ -19,6 +19,7 @@ pub mod graph;
 pub mod journal;
 pub mod snapshot;
 pub mod test_runner;
+pub mod topology_selectors;
 mod unfold;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 

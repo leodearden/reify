@@ -87,7 +87,9 @@
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_CompCurve.hxx>
+#include <ShapeAnalysis_Surface.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
 
@@ -709,6 +711,24 @@ void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
     vec.shapes.push_back(shape.shape);
 }
 
+size_t shape_vec_len(const OcctShapeVec& vec) {
+    return vec.shapes.size();
+}
+
+std::unique_ptr<OcctShape> shape_vec_at(const OcctShapeVec& vec, size_t idx) {
+    return wrap_occt_call("shape_vec_at", [&]() {
+        if (idx >= vec.shapes.size()) {
+            throw std::runtime_error(
+                std::string("shape_vec_at: idx ") + std::to_string(idx)
+                + " out of range; vector has "
+                + std::to_string(vec.shapes.size()) + " shapes");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = vec.shapes[idx];
+        return out;
+    });
+}
+
 // --- make_line_wire ---
 
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
@@ -1239,10 +1259,118 @@ double query_area(const OcctShape& shape) {
     });
 }
 
+double query_edge_length(const OcctShape& shape) {
+    return wrap_occt_call("query_edge_length", [&]() {
+        GProp_GProps props;
+        BRepGProp::LinearProperties(shape.shape, props);
+        return props.Mass();
+    });
+}
+
+Point3 query_edge_tangent(const OcctShape& shape) {
+    return wrap_occt_call("query_edge_tangent", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error(
+                "query_edge_tangent: shape is not an edge"
+            );
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("query_edge_tangent: edge is null");
+        }
+        BRepAdaptor_Curve curve(edge);
+        // Sample the tangent at the midpoint of the curve's parameter range.
+        // For straight edges this is the same as any other point; for curved
+        // edges it's a deterministic representative direction.
+        double u_mid = 0.5 * (curve.FirstParameter() + curve.LastParameter());
+        gp_Pnt p;
+        gp_Vec v;
+        curve.D1(u_mid, p, v);
+        double mag = v.Magnitude();
+        if (mag < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error(
+                "query_edge_tangent: degenerate curve (zero tangent)"
+            );
+        }
+        return Point3{ v.X() / mag, v.Y() / mag, v.Z() / mag };
+    });
+}
+
+Point3 query_face_normal(const OcctShape& shape) {
+    return wrap_occt_call("query_face_normal", [&]() {
+        // 1. Coerce shape to TopoDS_Face. TopoDS::Face throws Standard_Failure
+        //    via the wrap_occt_call guard if the shape is not a face.
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "query_face_normal: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("query_face_normal: face is null");
+        }
+
+        // 2. Compute the face centroid via SurfaceProperties + CentreOfMass.
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(face, props);
+        gp_Pnt centroid = props.CentreOfMass();
+
+        // 3. Project the 3D centroid back to (u, v) parametric coordinates.
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "query_face_normal: face has no underlying surface"
+            );
+        }
+        ShapeAnalysis_Surface analyzer(surf);
+        gp_Pnt2d uv = analyzer.ValueOfUV(centroid, 1e-9);
+
+        // 4. First derivatives at (u, v) via BRepAdaptor_Surface.
+        BRepAdaptor_Surface adaptor(face);
+        gp_Pnt p;
+        gp_Vec du, dv;
+        adaptor.D1(uv.X(), uv.Y(), p, du, dv);
+
+        // 5. Cross product gives the surface normal (Du × Dv).
+        gp_Vec n = du.Crossed(dv);
+        double mag = n.Magnitude();
+        if (mag < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error(
+                "query_face_normal: degenerate surface (zero normal)"
+            );
+        }
+
+        // 6. Account for face orientation: a REVERSED face flips the
+        //    parametric-derivative cross-product so the returned normal
+        //    points along the topological orientation of the face.
+        if (face.Orientation() == TopAbs_REVERSED) {
+            n.Reverse();
+        }
+
+        return Point3{ n.X() / mag, n.Y() / mag, n.Z() / mag };
+    });
+}
+
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
+        gp_Pnt c = props.CentreOfMass();
+        return Point3{c.X(), c.Y(), c.Z()};
+    });
+}
+
+/// Surface-properties centroid for a 2D sub-shape (FACE).
+///
+/// Used by the `GeometryQuery::Centroid` dispatch when the stored
+/// `ReprKind` is `Face` (extracted via `extract_faces`). Volume-based
+/// `query_centroid` returns mass=0 → origin for an isolated face, which
+/// is meaningless for downstream filters like `edges_at_height` that
+/// need the geometric centroid of the surface.
+Point3 query_face_centroid(const OcctShape& shape) {
+    return wrap_occt_call("query_face_centroid", [&]() {
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
         return Point3{c.X(), c.Y(), c.Z()};
     });
@@ -1702,6 +1830,40 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
     } catch (...) {
         throw std::runtime_error("OCCT shared_edges: unknown C++ exception");
     }
+}
+
+// --- Topology extractors (task 318) ---
+//
+// `get_edges` and `get_faces` materialize the unique sub-shapes of the given
+// shape into a fresh OcctShapeVec, in the canonical TopExp::MapShapes order.
+// Both reuse the cached `edge_map()` / `face_map()` so the build counters
+// validated by topology_cache_observability.rs continue to satisfy
+// "build exactly once per slot per shape".
+
+std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape) {
+    return wrap_occt_call("get_edges", [&]() {
+        const TopTools_IndexedMapOfShape& edge_map = shape.edge_map();
+        auto out = std::make_unique<OcctShapeVec>();
+        const Standard_Integer n = edge_map.Extent();
+        out->shapes.reserve(static_cast<size_t>(n));
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            out->shapes.push_back(edge_map.FindKey(i));
+        }
+        return out;
+    });
+}
+
+std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape) {
+    return wrap_occt_call("get_faces", [&]() {
+        const TopTools_IndexedMapOfShape& face_map = shape.face_map();
+        auto out = std::make_unique<OcctShapeVec>();
+        const Standard_Integer n = face_map.Extent();
+        out->shapes.reserve(static_cast<size_t>(n));
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            out->shapes.push_back(face_map.FindKey(i));
+        }
+        return out;
+    });
 }
 
 // --- Export ---

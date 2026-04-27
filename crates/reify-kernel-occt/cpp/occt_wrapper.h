@@ -65,6 +65,15 @@ std::unique_ptr<OcctShapeVec> new_shape_vec();
 /// Push a shape into the vector (mutable borrow via Pin).
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
 
+/// Return the number of shapes in the vector.
+size_t shape_vec_len(const OcctShapeVec& vec);
+
+/// Return the i-th shape in the vector wrapped in a fresh `OcctShape`.
+///
+/// Deep-copies the underlying `TopoDS_Shape` (which is itself a thin handle,
+/// so the copy is cheap). Throws std::runtime_error if `idx` is out of range.
+std::unique_ptr<OcctShape> shape_vec_at(const OcctShapeVec& vec, size_t idx);
+
 // Shared types — defined by cxx bridge. Forward-declared here for function signatures.
 struct Point3;
 struct BBox;
@@ -238,6 +247,13 @@ Point3 wire_start_tangent(const OcctShape& wire);
 double query_volume(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
+
+/// Centroid of a 2D sub-shape (TopoDS_Face), via `BRepGProp::SurfaceProperties`
+/// + `GProp_GProps::CentreOfMass`. Used by the `GeometryQuery::Centroid`
+/// dispatch when the stored `ReprKind` is `Face` (an extracted face has no
+/// enclosed volume, so volume-properties would default to the origin).
+Point3 query_face_centroid(const OcctShape& shape);
+
 BBox query_bbox(const OcctShape& shape);
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
@@ -275,6 +291,47 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
 /// returned in ascending order. Throws std::runtime_error if either index is
 /// out of range.
 rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
+
+/// Return the unique edges of `shape` as an OcctShapeVec, in canonical
+/// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order (deduplicated by
+/// `TopoDS_Shape::IsSame`). Reuses the cached `edge_map()`.
+std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape);
+
+/// Return the unique faces of `shape` as an OcctShapeVec, in canonical
+/// `TopExp::MapShapes(.., TopAbs_FACE, ..)` order (deduplicated by
+/// `TopoDS_Shape::IsSame`). Reuses the cached `face_map()`.
+std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
+
+/// Compute the total arc length of an edge (or any 1-dimensional sub-shape)
+/// in the same length units as the shape's coordinates. Backed by
+/// `BRepGProp::LinearProperties` followed by `props.Mass()` — for edges,
+/// "mass" under the linear density is the arc length.
+double query_edge_length(const OcctShape& shape);
+
+/// Compute the unit tangent of an edge sampled at the midpoint of its
+/// curve's parameter range. Backed by `BRepAdaptor_Curve::D1` at
+/// `(FirstParameter + LastParameter) / 2`. Direction is sign-arbitrary
+/// (the topological orientation of the edge is not honoured); callers
+/// that care about specific orientation should compare both `±t`.
+///
+/// Throws std::runtime_error if the shape is not an edge or yields a
+/// degenerate (zero-magnitude) tangent.
+Point3 query_edge_tangent(const OcctShape& shape);
+
+/// Compute the unit outward normal at the face's centroid.
+///
+/// The shape MUST be a TopoDS_Face. The implementation:
+///   (a) computes the face centroid via `BRepGProp::SurfaceProperties`
+///       + `GProp_GProps::CentreOfMass`,
+///   (b) projects the centroid to parametric (u, v) via
+///       `ShapeAnalysis_Surface::ValueOfUV`,
+///   (c) gets first derivatives via `BRepAdaptor_Surface::D1`,
+///   (d) returns `Du × Dv` normalized, flipping for reversed-orientation
+///       faces so the result tracks the topological face orientation.
+///
+/// Throws std::runtime_error if the shape is not a face, has no surface,
+/// or yields a degenerate (zero-magnitude) normal.
+Point3 query_face_normal(const OcctShape& shape);
 
 // --- Conformance queries ---
 

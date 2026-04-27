@@ -68,6 +68,26 @@ impl OcctKernel {
     ) -> Result<TopologyCacheBuildCounts, GeometryError> {
         Err(GeometryError::InvalidReference(handle))
     }
+
+    /// Stub topology-extraction selector — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernel::extract_edges` signature
+    /// so call sites compile under both `has_occt` and `!has_occt`.
+    pub fn extract_edges(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub topology-extraction selector — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernel::extract_faces` signature
+    /// so call sites compile under both `has_occt` and `!has_occt`.
+    pub fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
 }
 
 impl Default for OcctKernel {
@@ -160,6 +180,24 @@ impl GeometryKernel for OcctKernelHandle {
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
+    }
+
+    /// Override the trait default to surface the OCCT-unavailable message
+    /// (matches the inherent stub `OcctKernel::extract_edges`).
+    fn extract_edges(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Override the trait default to surface the OCCT-unavailable message
+    /// (matches the inherent stub `OcctKernel::extract_faces`).
+    fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 }
 
@@ -266,5 +304,57 @@ mod tests {
                 other
             ),
         }
+    }
+
+    /// Helper: assert a string mentions "OCCT" or "not available", matching
+    /// the stub crate's `NOT_AVAILABLE` constant verbatim.
+    fn assert_stub_message(msg: &str) {
+        assert!(
+            msg.contains("OCCT") || msg.contains("not available"),
+            "stub error message should mention OCCT or 'not available', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn stub_kernel_extract_edges_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.extract_edges(GeometryHandleId(1));
+        let err = result.expect_err("stub extract_edges should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_extract_faces_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.extract_faces(GeometryHandleId(1));
+        let err = result.expect_err("stub extract_faces should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_query_edge_length_returns_error() {
+        let kernel = OcctKernel::new();
+        let result =
+            kernel.query(&reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1)));
+        let err = result.expect_err("stub query EdgeLength should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_query_face_normal_returns_error() {
+        let kernel = OcctKernel::new();
+        let result =
+            kernel.query(&reify_types::GeometryQuery::FaceNormal(GeometryHandleId(1)));
+        let err = result.expect_err("stub query FaceNormal should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_query_edge_tangent_returns_error() {
+        let kernel = OcctKernel::new();
+        let result =
+            kernel.query(&reify_types::GeometryQuery::EdgeTangent(GeometryHandleId(1)));
+        let err = result.expect_err("stub query EdgeTangent should error");
+        assert_stub_message(&format!("{err:?}"));
     }
 }

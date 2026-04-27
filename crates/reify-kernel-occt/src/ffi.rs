@@ -67,9 +67,11 @@ pub mod ffi {
         /// Opaque vector of shapes for passing N shapes across FFI.
         type OcctShapeVec;
 
-        // --- OcctShapeVec builder ---
+        // --- OcctShapeVec builder + reader ---
         fn new_shape_vec() -> UniquePtr<OcctShapeVec>;
         fn shape_vec_push(vec: Pin<&mut OcctShapeVec>, shape: &OcctShape);
+        fn shape_vec_len(vec: &OcctShapeVec) -> usize;
+        fn shape_vec_at(vec: &OcctShapeVec, idx: usize) -> Result<UniquePtr<OcctShape>>;
 
         // --- Primitive construction ---
         fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
@@ -280,7 +282,22 @@ pub mod ffi {
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
+        fn query_edge_length(shape: &OcctShape) -> Result<f64>;
+        /// Unit tangent of `shape` (must be a TopoDS_Edge) sampled at the
+        /// midpoint of the edge's parameter range. Direction is sign-arbitrary
+        /// (the edge's topological orientation is not honoured): callers
+        /// that care about specific orientation should compare both `±t`.
+        fn query_edge_tangent(shape: &OcctShape) -> Result<Point3>;
+        /// Unit outward normal of `shape` (must be a TopoDS_Face) sampled at
+        /// the face's centroid. Honours topological orientation: a REVERSED
+        /// face yields the topologically-outward normal.
+        fn query_face_normal(shape: &OcctShape) -> Result<Point3>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
+        /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
+        /// Used by the `Centroid` query path when the stored repr is
+        /// `ReprKind::Face`, since `query_centroid` (volume-based) returns
+        /// the origin for isolated faces with zero enclosed volume.
+        fn query_face_centroid(shape: &OcctShape) -> Result<Point3>;
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
 
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
@@ -316,6 +333,14 @@ pub mod ffi {
             face_a_index: u32,
             face_b_index: u32,
         ) -> Result<Vec<u32>>;
+
+        /// Materialize the unique edges of `shape` into an OcctShapeVec
+        /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
+        fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
+
+        /// Materialize the unique faces of `shape` into an OcctShapeVec
+        /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
+        fn get_faces(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         // --- Conformance queries ---
 

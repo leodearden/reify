@@ -46,6 +46,14 @@ pub enum ReprKind {
     Wire,
     /// Compound of multiple shapes.
     Compound,
+    /// Single edge — produced by `extract_edges`.
+    ///
+    /// Distinct from `Wire` (which is a sequence of edges joined end-to-end).
+    Edge,
+    /// Single face — produced by `extract_faces`.
+    ///
+    /// Distinct from `Shell` (which is a collection of faces, possibly closed).
+    Face,
 }
 
 /// Operations that can be sent to a geometry kernel.
@@ -386,6 +394,30 @@ pub enum GeometryQuery {
         handle: GeometryHandleId,
         density: f64,
     },
+    /// Compute the length of an edge in meters.
+    ///
+    /// Backed by `BRepGProp::LinearProperties` + `GProp_GProps::Mass()`.
+    /// Returns `Value::Real(length_m)`. Intended for handles that name a
+    /// single edge (e.g. those produced by `extract_edges`); on other
+    /// shape types the result is the sum of all edge lengths in the shape.
+    EdgeLength(GeometryHandleId),
+    /// Compute the unit tangent of an edge at its parametric midpoint.
+    ///
+    /// Backed by `BRepAdaptor_Curve::D1` evaluated at
+    /// `(FirstParameter + LastParameter) / 2`. Returns
+    /// `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}` of the
+    /// normalised tangent vector (sign is the curve's parametric direction
+    /// — callers needing direction-agnostic comparisons should accept
+    /// either sign).
+    EdgeTangent(GeometryHandleId),
+    /// Compute the unit normal of a face at its centroid.
+    ///
+    /// Backed by `BRepGProp::SurfaceProperties` + `BRepAdaptor_Surface::D1`.
+    /// Returns `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}` of
+    /// the normalised face normal (orientation follows the underlying
+    /// surface's parametric +N — callers needing direction-agnostic
+    /// comparisons should accept either sign).
+    FaceNormal(GeometryHandleId),
 }
 
 /// Export formats for geometry.
@@ -511,6 +543,44 @@ pub trait GeometryKernel: Send + Sync {
 
     /// Tessellate a handle into a mesh.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
+
+    /// Extract the unique edges of a shape, storing each as a new handle.
+    ///
+    /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
+    /// edge sub-shape (with `ReprKind::Edge`). The ordering follows the
+    /// kernel's canonical `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration,
+    /// deduplicated by `TopoDS_Shape::IsSame`.
+    ///
+    /// Default implementation returns
+    /// `Err(QueryError::QueryFailed("topology extraction not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs) compiling without per-impl edits.
+    fn extract_edges(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(
+            "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
+    /// Extract the unique faces of a shape, storing each as a new handle.
+    ///
+    /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
+    /// face sub-shape (with `ReprKind::Face`). The ordering follows the
+    /// kernel's canonical `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration,
+    /// deduplicated by `TopoDS_Shape::IsSame`.
+    ///
+    /// Default implementation returns
+    /// `Err(QueryError::QueryFailed("topology extraction not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs) compiling without per-impl edits.
+    fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(
+            "topology extraction not supported by this kernel".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -831,6 +901,58 @@ mod tests {
                 assert_eq!(*face_b, 1);
             }
             _ => panic!("expected SharedEdges variant"),
+        }
+    }
+
+    #[test]
+    fn repr_kind_face_and_edge_variants_exist() {
+        // Construct and pattern-match the new ReprKind::Edge variant.
+        let edge_repr = ReprKind::Edge;
+        match edge_repr {
+            ReprKind::Edge => {}
+            other => panic!("expected ReprKind::Edge, got {:?}", other),
+        }
+
+        // Construct and pattern-match the new ReprKind::Face variant.
+        let face_repr = ReprKind::Face;
+        match face_repr {
+            ReprKind::Face => {}
+            other => panic!("expected ReprKind::Face, got {:?}", other),
+        }
+
+        // Edge and Face must be distinguishable from each other and from
+        // existing variants (Wire/Shell/Solid/Compound).
+        assert_ne!(ReprKind::Edge, ReprKind::Face);
+        assert_ne!(ReprKind::Edge, ReprKind::Wire);
+        assert_ne!(ReprKind::Face, ReprKind::Shell);
+        assert_ne!(ReprKind::Edge, ReprKind::Solid);
+        assert_ne!(ReprKind::Face, ReprKind::Compound);
+
+        // Construct and pattern-match the new GeometryQuery::EdgeLength variant.
+        let edge_len = GeometryQuery::EdgeLength(GeometryHandleId(7));
+        match &edge_len {
+            GeometryQuery::EdgeLength(id) => {
+                assert_eq!(*id, GeometryHandleId(7));
+            }
+            _ => panic!("expected EdgeLength variant"),
+        }
+
+        // Construct and pattern-match GeometryQuery::EdgeTangent.
+        let edge_tan = GeometryQuery::EdgeTangent(GeometryHandleId(11));
+        match &edge_tan {
+            GeometryQuery::EdgeTangent(id) => {
+                assert_eq!(*id, GeometryHandleId(11));
+            }
+            _ => panic!("expected EdgeTangent variant"),
+        }
+
+        // Construct and pattern-match GeometryQuery::FaceNormal.
+        let face_norm = GeometryQuery::FaceNormal(GeometryHandleId(13));
+        match &face_norm {
+            GeometryQuery::FaceNormal(id) => {
+                assert_eq!(*id, GeometryHandleId(13));
+            }
+            _ => panic!("expected FaceNormal variant"),
         }
     }
 }

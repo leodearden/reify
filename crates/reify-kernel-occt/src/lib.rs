@@ -153,6 +153,11 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 /// [`OcctKernelHandle`] which runs the kernel on a dedicated OS thread.
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
+    /// Per-handle ReprKind, populated alongside `shapes` in `store_with_repr`.
+    /// Looked up via the public `repr_of(id)` accessor. Warm-start does not
+    /// repopulate this map (best-effort: post-restore queries return `None`
+    /// until the handle is re-stored locally).
+    reprs: HashMap<u64, ReprKind>,
     next_id: u64,
     /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
     last_warm_start_failures: usize,
@@ -167,9 +172,17 @@ impl OcctKernel {
     pub fn new() -> Self {
         Self {
             shapes: HashMap::new(),
+            reprs: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
         }
+    }
+
+    /// Return the [`ReprKind`] that was assigned to `id` at `store_with_repr`
+    /// time, or `None` if `id` is unknown to this kernel (also `None` after
+    /// warm-start since the repr map is not serialized).
+    pub fn repr_of(&self, id: GeometryHandleId) -> Option<ReprKind> {
+        self.reprs.get(&id.0).copied()
     }
 
     /// Store a shape and return the next handle (defaults to `ReprKind::Solid`).
@@ -186,6 +199,7 @@ impl OcctKernel {
         let id = self.next_id;
         self.next_id += 1;
         self.shapes.insert(id, shape);
+        self.reprs.insert(id, repr);
         GeometryHandle {
             id: GeometryHandleId(id),
             repr,
@@ -213,6 +227,75 @@ impl OcctKernel {
     ) -> Result<ffi::ffi::TopologyCacheBuildCounts, GeometryError> {
         let shape = self.get_shape(handle)?;
         Ok(ffi::ffi::topology_cache_build_counts(shape))
+    }
+
+    /// Extract every unique edge of `handle` as a fresh handle with
+    /// `ReprKind::Edge`. Order follows the canonical
+    /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
+    ///
+    /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
+    pub fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
+        // immutable borrow of `self` (via get_shape) drops before we mutate
+        // self via store_with_repr.
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(handle)
+                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let vec = ffi::ffi::get_edges(shape)
+                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, ReprKind::Edge);
+            ids.push(h.id);
+        }
+        Ok(ids)
+    }
+
+    /// Extract every unique face of `handle` as a fresh handle with
+    /// `ReprKind::Face`. Order follows the canonical
+    /// `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration.
+    ///
+    /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
+    pub fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(handle)
+                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let vec = ffi::ffi::get_faces(shape)
+                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, ReprKind::Face);
+            ids.push(h.id);
+        }
+        Ok(ids)
     }
 }
 
@@ -911,11 +994,24 @@ impl OcctKernel {
                 Ok(Value::Real(area))
             }
             GeometryQuery::Centroid(id) => {
+                // Dispatch by stored ReprKind so an extracted Face handle
+                // (no enclosed volume — `query_centroid`'s VolumeProperties
+                // path would default to the origin) routes through the
+                // surface-area centroid. Every other repr (Solid, Compound,
+                // Wire, Edge, Shell, …) keeps the legacy volume-based path,
+                // preserving existing semantics validated by tests like
+                // `center_of_mass_on_non_solid_wire_returns_origin` and
+                // `sweep_guided_orientation_differs_from_plain_sweep`.
                 let shape = self
                     .get_shape(*id)
                     .map_err(|_| QueryError::InvalidHandle(*id))?;
-                let pt = ffi::ffi::query_centroid(shape)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                let pt = if self.repr_of(*id) == Some(ReprKind::Face) {
+                    ffi::ffi::query_face_centroid(shape)
+                        .map_err(|e| QueryError::QueryFailed(e.to_string()))?
+                } else {
+                    ffi::ffi::query_centroid(shape)
+                        .map_err(|e| QueryError::QueryFailed(e.to_string()))?
+                };
                 // Return centroid as a JSON string since Value has no tuple variant
                 Ok(Value::String(format!(
                     "{{\"x\":{},\"y\":{},\"z\":{}}}",
@@ -1057,6 +1153,41 @@ impl OcctKernel {
                 let v = ffi::ffi::is_orientable(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
+            }
+            GeometryQuery::EdgeLength(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let len = ffi::ffi::query_edge_length(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Real(len))
+            }
+            GeometryQuery::EdgeTangent(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let t = ffi::ffi::query_edge_tangent(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                // Encode as the same JSON-string format as Centroid /
+                // FaceNormal so downstream filters share a single parse
+                // routine.
+                Ok(Value::String(format!(
+                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
+                    t.x, t.y, t.z
+                )))
+            }
+            GeometryQuery::FaceNormal(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let n = ffi::ffi::query_face_normal(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                // Encode as the same JSON-string format as Centroid so
+                // downstream filters share a single parse routine.
+                Ok(Value::String(format!(
+                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
+                    n.x, n.y, n.z
+                )))
             }
         }
     }
