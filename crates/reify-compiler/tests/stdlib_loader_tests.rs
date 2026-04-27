@@ -260,6 +260,33 @@ fn non_bootstrap_module_with_no_prelude_pragma_panics() {
     assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
 }
 
+/// Synthetic fixture: a bootstrap module (`std/units`) that is missing
+/// `#no_prelude` must cause the bidirectional invariant helper to panic,
+/// naming the offending path in the panic message.
+///
+/// This exercises the *forward* direction of the invariant: every module
+/// in the bootstrap `targets` list must carry `#no_prelude`.  The
+/// `#[should_panic(expected = "std/units")]` attribute pins that the panic
+/// message names the offending path (substring match — wording tolerant),
+/// locking the forward-direction `assert!` branch so a future refactor
+/// that accidentally drops or inverts it is caught even when the real
+/// stdlib is invariant-compliant.
+#[test]
+#[should_panic(expected = "std/units")]
+fn bootstrap_module_missing_no_prelude_pragma_panics() {
+    // Build std/units with NO pragmas — the forward-direction violation.
+    let units_module =
+        CompiledModuleBuilder::new(ModulePath::from_dotted("std.units").unwrap()).build();
+
+    let modules = vec![units_module];
+
+    // std/units is declared a bootstrap target but carries no #no_prelude;
+    // the forward direction must fire and name "std/units".
+    let targets = ["std/units"];
+
+    assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
+}
+
 // ─── step-2322 / step-2492: bidirectional #no_prelude invariant ─────
 
 /// Assert the `#no_prelude` pragma invariant in both directions:
@@ -284,7 +311,7 @@ fn assert_no_prelude_pragma_invariant_bidirectional(
     for target_path in targets {
         let module = modules
             .iter()
-            .find(|m| format!("{}", m.path) == *target_path)
+            .find(|m| m.path.to_string() == *target_path)
             .unwrap_or_else(|| {
                 panic!("stdlib module '{}' not found in load_stdlib()", target_path)
             });
