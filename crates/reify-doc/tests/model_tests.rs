@@ -200,6 +200,82 @@ fn doc_strings_flow_into_item_doc() {
     }
 }
 
+/// Assert canonical item ordering: Trait < Structure < Occurrence < Enum < Function < constant-like.
+///
+/// Within each kind, items must be sorted alphabetically by name.
+/// Fixture must include at least one Occurrence to exercise the S→O transition.
+///
+/// TODO(build_doc_model): When build_doc_model lands, item ordering is produced by
+/// the lowering pass. This test still verifies the shape contract — the ordering
+/// rule is part of the PRD spec and must hold regardless of construction path.
+#[test]
+fn items_sorted_traits_then_structures_then_occurrences_then_enums_then_functions_then_constants_alphabetical() {
+    let model = build_fixture();
+    let items = &model.modules[0].items;
+
+    /// Returns the canonical sort rank for an item kind (matches PRD order).
+    /// Trait=0, Structure=1, Occurrence=2, Enum=3, Function=4, constant-like=5.
+    fn kind_rank(item: &ItemDoc) -> u8 {
+        match item {
+            ItemDoc::Trait { .. } => 0,
+            ItemDoc::Structure { .. } => 1,
+            ItemDoc::Occurrence { .. } => 2,
+            ItemDoc::Enum { .. } => 3,
+            ItemDoc::Function { .. } => 4,
+            // Field, Purpose, Unit, TypeAlias, ConstraintDef
+            _ => 5,
+        }
+    }
+
+    fn item_name(item: &ItemDoc) -> &str {
+        match item {
+            ItemDoc::Trait { name, .. }
+            | ItemDoc::Structure { name, .. }
+            | ItemDoc::Occurrence { name, .. }
+            | ItemDoc::Enum { name, .. }
+            | ItemDoc::Function { name, .. }
+            | ItemDoc::Field { name, .. }
+            | ItemDoc::Purpose { name, .. }
+            | ItemDoc::Unit { name, .. }
+            | ItemDoc::TypeAlias { name, .. }
+            | ItemDoc::ConstraintDef { name, .. } => name.as_str(),
+        }
+    }
+
+    // Verify at least one Occurrence is present (exercises the S→O transition)
+    let has_occurrence = items.iter().any(|i| matches!(i, ItemDoc::Occurrence { .. }));
+    assert!(has_occurrence, "fixture must contain at least one Occurrence to exercise the S→O sort transition");
+
+    // Ranks must be non-decreasing
+    let ranks: Vec<u8> = items.iter().map(kind_rank).collect();
+    for window in ranks.windows(2) {
+        assert!(
+            window[0] <= window[1],
+            "items out of kind order: rank {} came before rank {} in {:?}",
+            window[0],
+            window[1],
+            items.iter().map(|i| (kind_rank(i), item_name(i))).collect::<Vec<_>>()
+        );
+    }
+
+    // Within equal-rank runs, names must be alphabetically ordered
+    let mut prev_rank = u8::MAX;
+    let mut prev_name = "";
+    for item in items {
+        let rank = kind_rank(item);
+        let name = item_name(item);
+        if rank == prev_rank {
+            assert!(
+                name >= prev_name,
+                "items within rank {} not alphabetically ordered: '{prev_name}' > '{name}'",
+                rank
+            );
+        }
+        prev_rank = rank;
+        prev_name = name;
+    }
+}
+
 /// Assert that `@solver_hint("discrete_set", standard_bolt_lengths)` on the `length`
 /// param surfaces as `AnnotationDoc { name: "solver_hint", args: ["\"discrete_set\"",
 /// "standard_bolt_lengths"] }` on the param.
