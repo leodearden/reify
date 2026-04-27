@@ -13,7 +13,7 @@
 mod common;
 
 use reify_compiler::{DefaultKind, RequirementKind, stdlib_loader};
-use reify_types::{DimensionVector, Type};
+use reify_types::{DimensionVector, Severity, Type};
 
 // ─── Helper: locate the std/io module ────────────────────────────────────────
 
@@ -135,4 +135,75 @@ fn cost_aggregation_costed_exposes_line_cost_let_default_with_money_dim() {
             other
         ),
     }
+}
+
+// ─── step-5: user structure conforming to Costed compiles clean ──────────────
+
+/// A user `structure def CapScrew : Costed { ... }` with concrete defaults
+/// for all four `Buy` params + `quantity_produced` must compile clean under
+/// the stdlib prelude, and the resulting template must carry an inherited
+/// `line_cost` value cell whose type is `Scalar<MONEY>`.
+///
+/// This is the conformance acceptance gate: it pins that the trait-let
+/// default injection path correctly produces a money-typed cell on
+/// conforming structures (the same machinery that lets
+/// `examples/large_assembly.ri:252+` access `self.b01.mass` on a
+/// `Physical : MaterialSpec`-conforming structure).
+///
+/// RED before step-4: any reference to `Costed` would resolve to "unknown
+/// trait" and conformance would fail. After step-4: the structure conforms
+/// and the trait-let cell is injected — test goes GREEN with no further
+/// code change.
+#[test]
+fn cost_aggregation_user_structure_conforming_to_costed_compiles_clean_under_stdlib() {
+    let source = r#"
+structure def CapScrew : Costed {
+    param supplier         : String = "McMaster-Carr"
+    param part_number      : String = "91251A190"
+    param unit_cost        : Money  = 0.12USD
+    param lead_time        : Time   = 24h
+    param quantity_produced : Real  = 24.0
+}
+"#;
+    let module = common::compile_with_stdlib_helper(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics compiling CapScrew : Costed, got:\n{:#?}",
+        errors
+    );
+
+    let cap_screw = module
+        .templates
+        .iter()
+        .find(|t| t.name == "CapScrew")
+        .expect("CapScrew template should be present in compiled module");
+
+    let line_cost_cell = cap_screw
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "line_cost")
+        .unwrap_or_else(|| {
+            panic!(
+                "CapScrew should inherit a 'line_cost' value cell from Costed; \
+                 found cells: {:?}",
+                cap_screw
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        line_cost_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::MONEY },
+        "CapScrew.line_cost should have type Scalar<MONEY>, got {:?}",
+        line_cost_cell.cell_type
+    );
 }
