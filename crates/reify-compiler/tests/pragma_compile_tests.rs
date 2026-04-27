@@ -1292,3 +1292,58 @@ fn version_pragma_with_string_form_zero_one_sets_declared_version() {
         version_warns
     );
 }
+
+/// `#version(0.2)` declares a too-new version: emits exactly one error
+/// mentioning both "module declares version 0.2" and "this compiler supports
+/// up to 0.1", and stores `Some((0, 2))` (storage = declared, per design).
+#[test]
+fn version_pragma_too_new_number_form_emits_error_with_supported_wording() {
+    let module = compile_source("#version(0.2)\nstructure S { param x : Real }");
+    let errors: Vec<_> = errors_only(&module);
+    let version_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.contains("module declares version 0.2")
+                && d.message.contains("this compiler supports up to 0.1")
+        })
+        .collect();
+    assert_eq!(
+        version_errors.len(),
+        1,
+        "expected exactly 1 too-new version error for #version(0.2), got {}: {:?}",
+        version_errors.len(),
+        errors
+    );
+    assert_eq!(
+        module.declared_version,
+        Some((0, 2)),
+        "expected declared_version Some((0, 2)) for #version(0.2) (storage reflects declared)"
+    );
+}
+
+/// `#version("1.0")` (String form, too new): same error wording, declared_version
+/// reflects the user-declared (1, 0).
+#[test]
+fn version_pragma_too_new_string_form_emits_error_with_supported_wording() {
+    let module = compile_source("#version(\"1.0\")\nstructure S { param x : Real }");
+    let errors: Vec<_> = errors_only(&module);
+    let version_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.contains("module declares version 1.0")
+                && d.message.contains("this compiler supports up to 0.1")
+        })
+        .collect();
+    assert_eq!(
+        version_errors.len(),
+        1,
+        "expected exactly 1 too-new version error for #version(\"1.0\"), got {}: {:?}",
+        version_errors.len(),
+        errors
+    );
+    assert_eq!(
+        module.declared_version,
+        Some((1, 0)),
+        "expected declared_version Some((1, 0)) for #version(\"1.0\") (storage reflects declared)"
+    );
+}
