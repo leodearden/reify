@@ -299,6 +299,16 @@ fn compile_field_analytical_int_body_widens_to_real_codomain() {
          (Int→Real widening must hold), got: {:?}",
         module.diagnostics
     );
+
+    // Discriminate against upstream parser/compiler regressions: a totally broken
+    // compilation (e.g. parse failure) would also produce no FieldCodomainMismatch
+    // diagnostic but would emit other error diagnostics and yield zero compiled fields.
+    assert!(
+        errors_only(&module).is_empty(),
+        "expected no error diagnostics for valid Int→Real widening, got: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(module.fields.len(), 1, "expected exactly 1 compiled field");
 }
 
 // ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
