@@ -248,29 +248,101 @@ fn non_bootstrap_module_with_no_prelude_pragma_panics() {
 
     let modules = vec![units_module, thermal_module];
 
-    let targets = [
-        "std/units",
-        "std/materials/mechanical",
-        "std/analysis",
-        "std/tolerancing",
-    ];
+    // Only "std/units" is the bootstrap target in this synthetic set; the
+    // other three production targets are omitted because they are not present
+    // in the synthetic module slice.  The forward direction checks std/units
+    // (passes — pragma is present), then the inverse direction fires on
+    // std/materials/thermal (fails — pragma present but path not in targets).
+    let targets = ["std/units"];
 
     // Must panic naming "std/materials/thermal" because thermal is not a
     // bootstrap target yet carries #no_prelude.
     assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
 }
 
-// ─── step-2322: prelude bootstrap modules carry #no_prelude pragma ──
+// ─── step-2322 / step-2492: bidirectional #no_prelude invariant ─────
+
+/// Assert the `#no_prelude` pragma invariant in both directions:
+///
+/// **Forward** — every module in `targets` must carry `#no_prelude`.
+/// **Inverse** — every module whose path is NOT in `targets` must NOT carry
+/// `#no_prelude`.
+///
+/// Call this helper from both the real-stdlib test and the synthetic-fixture
+/// test so that the failure path of the inverse direction can be exercised
+/// with a planted violation (a `#[should_panic]` test plants `#no_prelude`
+/// on `std/materials/thermal` and expects this helper to name it in the
+/// panic message).
+///
+/// `targets` is the bootstrap-module list: paths of stdlib modules that have
+/// ZERO inter-stdlib dependencies and therefore legitimately carry `#no_prelude`.
+fn assert_no_prelude_pragma_invariant_bidirectional(
+    modules: &[reify_compiler::CompiledModule],
+    targets: &[&str],
+) {
+    // Forward direction: every bootstrap target must carry #no_prelude.
+    for target_path in targets {
+        let module = modules
+            .iter()
+            .find(|m| format!("{}", m.path) == *target_path)
+            .unwrap_or_else(|| {
+                panic!("stdlib module '{}' not found in load_stdlib()", target_path)
+            });
+
+        assert!(
+            module.pragmas.iter().any(|p| p.name == "no_prelude"),
+            "stdlib module '{}' should carry `#no_prelude` pragma, but none found. \
+             pragmas: {:?}",
+            target_path,
+            module.pragmas
+        );
+    }
+
+    // Inverse direction: no non-bootstrap module may carry #no_prelude.
+    //
+    // A spurious #no_prelude on a module like std/materials/thermal silently
+    // disables prelude access during compilation, breaking inter-stdlib
+    // refinements (e.g. materials_thermal.ri refines MaterialSpec from
+    // materials_mechanical.ri). The check is bidirectional so that both
+    // adding #no_prelude to the wrong file and removing it from a bootstrap
+    // file are caught.
+    for module in modules {
+        let path_str = format!("{}", module.path);
+        if targets.contains(&path_str.as_str()) {
+            continue;
+        }
+        if let Some(bad_pragma) = module.pragmas.iter().find(|p| p.name == "no_prelude") {
+            panic!(
+                "non-bootstrap stdlib module '{}' carries unauthorized `#no_prelude` pragma \
+                 (pragma: {:?}).\n\
+                 \n\
+                 Impact: `#no_prelude` silently disables prelude access during compilation, \
+                 breaking inter-stdlib refinements (e.g. if this module refines a trait from \
+                 another stdlib file, that trait will be unresolved at compile time).\n\
+                 \n\
+                 Fix: remove `#no_prelude` from the .ri source for '{}'. \
+                 If this module truly has ZERO inter-stdlib dependencies and should \
+                 be a bootstrap module, add its path to the `targets` list in \
+                 `prelude_modules_carry_no_prelude_pragma` AND keep the pragma.",
+                path_str, bad_pragma, path_str,
+            );
+        }
+    }
+}
 
 /// The four stdlib modules that have no inter-stdlib dependencies must carry
-/// `#no_prelude` as a self-documenting bootstrap directive. This test fails
-/// until `#no_prelude` is added to each .ri file (Step 2 of task 2322).
+/// `#no_prelude` as a self-documenting bootstrap directive, and no other
+/// stdlib module may carry it (bidirectional invariant).
 ///
 /// Target modules (only built-in dims + hardcoded-fallback units, no prelude dep):
 ///   - std/units, std/materials/mechanical, std/analysis, std/tolerancing
 ///
 /// Asserts via `module.pragmas` so the full parse→load pipeline is exercised
 /// (a typo like `#no-prelude` would make the parser skip the pragma).
+///
+/// The invariant is enforced in both directions by
+/// `assert_no_prelude_pragma_invariant_bidirectional`: any module in `targets`
+/// must carry `#no_prelude`, and any module NOT in `targets` must not.
 #[test]
 fn prelude_modules_carry_no_prelude_pragma() {
     let modules = stdlib_loader::load_stdlib();
@@ -295,20 +367,7 @@ fn prelude_modules_carry_no_prelude_pragma() {
         "std/tolerancing",
     ];
 
-    for target_path in &targets {
-        let module = modules
-            .iter()
-            .find(|m| format!("{}", m.path) == *target_path)
-            .unwrap_or_else(|| panic!("stdlib module '{}' not found in load_stdlib()", target_path));
-
-        assert!(
-            module.pragmas.iter().any(|p| p.name == "no_prelude"),
-            "stdlib module '{}' should carry `#no_prelude` pragma, but none found. \
-             pragmas: {:?}",
-            target_path,
-            module.pragmas
-        );
-    }
+    assert_no_prelude_pragma_invariant_bidirectional(modules, &targets);
 }
 
 // ─── step-3: compile_with_prelude makes prelude traits visible ──────
