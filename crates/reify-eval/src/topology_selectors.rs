@@ -397,3 +397,198 @@ fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
     })?;
     Some((zmin?, zmax?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::{
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, ReprKind,
+        TessError,
+    };
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// In-test `GeometryKernel` that records `query` and `query_many`
+    /// invocation counts so we can prove the migrated selectors batch
+    /// their kernel reads via `query_many` (one call) instead of looping
+    /// over per-element `query` (N calls).
+    ///
+    /// Configure with:
+    ///   * `edges` / `faces`: handle ids returned by `extract_edges` /
+    ///     `extract_faces`.
+    ///   * `responses`: map from sub-shape handle id to the `Value` the
+    ///     kernel should reply with for any query against that id
+    ///     (regardless of query variant — every selector uses exactly
+    ///     one `GeometryQuery` kind, so a single `Value` per id is
+    ///     unambiguous).
+    ///
+    /// `query_many`'s override looks up `Value`s directly from
+    /// `responses` rather than calling `self.query()` per element —
+    /// this lets each test assert `query_calls == 0` after a successful
+    /// batched selector run, which would be impossible if the override
+    /// fell back to per-element `query`.
+    struct CountingKernel {
+        query_calls: AtomicUsize,
+        query_many_calls: AtomicUsize,
+        edges: Vec<GeometryHandleId>,
+        faces: Vec<GeometryHandleId>,
+        responses: HashMap<GeometryHandleId, Value>,
+    }
+
+    impl CountingKernel {
+        fn new() -> Self {
+            CountingKernel {
+                query_calls: AtomicUsize::new(0),
+                query_many_calls: AtomicUsize::new(0),
+                edges: Vec::new(),
+                faces: Vec::new(),
+                responses: HashMap::new(),
+            }
+        }
+
+        fn with_edges(mut self, edges: Vec<GeometryHandleId>) -> Self {
+            self.edges = edges;
+            self
+        }
+
+        fn with_faces(mut self, faces: Vec<GeometryHandleId>) -> Self {
+            self.faces = faces;
+            self
+        }
+
+        fn with_response(mut self, id: GeometryHandleId, value: Value) -> Self {
+            self.responses.insert(id, value);
+            self
+        }
+
+        fn query_calls(&self) -> usize {
+            self.query_calls.load(Ordering::SeqCst)
+        }
+
+        fn query_many_calls(&self) -> usize {
+            self.query_many_calls.load(Ordering::SeqCst)
+        }
+
+        /// Look up the staged response for `query`, returning a clone or an
+        /// `InvalidHandle` error if no response was staged for the queried
+        /// handle id. Centralizes the dispatch shared by `query` and
+        /// `query_many`.
+        fn lookup(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+            let id = match query {
+                GeometryQuery::EdgeLength(id)
+                | GeometryQuery::EdgeTangent(id)
+                | GeometryQuery::FaceNormal(id)
+                | GeometryQuery::SurfaceArea(id)
+                | GeometryQuery::BoundingBox(id) => *id,
+                other => {
+                    return Err(QueryError::QueryFailed(format!(
+                        "CountingKernel: unsupported query variant {:?}",
+                        other
+                    )));
+                }
+            };
+            self.responses
+                .get(&id)
+                .cloned()
+                .ok_or(QueryError::InvalidHandle(id))
+        }
+    }
+
+    impl GeometryKernel for CountingKernel {
+        fn execute(
+            &mut self,
+            _op: &GeometryOp,
+        ) -> Result<GeometryHandle, GeometryError> {
+            unimplemented!("CountingKernel does not implement execute")
+        }
+
+        fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+            self.query_calls.fetch_add(1, Ordering::SeqCst);
+            self.lookup(query)
+        }
+
+        fn query_many(
+            &self,
+            queries: &[GeometryQuery],
+        ) -> Result<Vec<Value>, QueryError> {
+            self.query_many_calls.fetch_add(1, Ordering::SeqCst);
+            // Look up directly from the staged responses so per-element
+            // `query` is *not* called — the assertion `query_calls == 0`
+            // proves the migrated selector relies on the batched path.
+            queries.iter().map(|q| self.lookup(q)).collect()
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            unimplemented!("CountingKernel does not implement export")
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            unimplemented!("CountingKernel does not implement tessellate")
+        }
+
+        fn extract_edges(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(self.edges.clone())
+        }
+
+        fn extract_faces(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(self.faces.clone())
+        }
+    }
+
+    /// Sanity check: the CountingKernel must compile against the trait.
+    /// (Doubles as a tiny smoke test that `Send + Sync` is satisfied.)
+    const _: fn() = || {
+        fn must_be_send_sync<T: Send + Sync>() {}
+        must_be_send_sync::<CountingKernel>();
+        // ReprKind is unused in tests but pulled into scope so the import
+        // doesn't drift if a future test uses it.
+        let _ = ReprKind::Edge;
+    };
+
+    #[test]
+    fn edges_by_length_uses_query_many_once() {
+        // Three edges with lengths 5mm, 10mm, 15mm. The window
+        // [8mm, 12mm] selects only the middle edge.
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.005))
+            .with_response(edge_ids[1], Value::Real(0.010))
+            .with_response(edge_ids[2], Value::Real(0.015));
+
+        let source = GeometryHandleId(1);
+        let result =
+            edges_by_length(&mut kernel, source, 0.008, 0.012).expect("selector should succeed");
+
+        assert_eq!(result, vec![edge_ids[1]], "expected only the 10mm edge");
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "edges_by_length must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "edges_by_length must not loop over per-element query"
+        );
+    }
+}
