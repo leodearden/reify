@@ -153,6 +153,11 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 /// [`OcctKernelHandle`] which runs the kernel on a dedicated OS thread.
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
+    /// Per-handle ReprKind, populated alongside `shapes` in `store_with_repr`.
+    /// Looked up via the public `repr_of(id)` accessor. Warm-start does not
+    /// repopulate this map (best-effort: post-restore queries return `None`
+    /// until the handle is re-stored locally).
+    reprs: HashMap<u64, ReprKind>,
     next_id: u64,
     /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
     last_warm_start_failures: usize,
@@ -167,9 +172,17 @@ impl OcctKernel {
     pub fn new() -> Self {
         Self {
             shapes: HashMap::new(),
+            reprs: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
         }
+    }
+
+    /// Return the [`ReprKind`] that was assigned to `id` at `store_with_repr`
+    /// time, or `None` if `id` is unknown to this kernel (also `None` after
+    /// warm-start since the repr map is not serialized).
+    pub fn repr_of(&self, id: GeometryHandleId) -> Option<ReprKind> {
+        self.reprs.get(&id.0).copied()
     }
 
     /// Store a shape and return the next handle (defaults to `ReprKind::Solid`).
@@ -186,6 +199,7 @@ impl OcctKernel {
         let id = self.next_id;
         self.next_id += 1;
         self.shapes.insert(id, shape);
+        self.reprs.insert(id, repr);
         GeometryHandle {
             id: GeometryHandleId(id),
             repr,
