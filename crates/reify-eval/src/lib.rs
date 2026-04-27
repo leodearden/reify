@@ -1363,4 +1363,26 @@ structure S {
             "dimension mismatch for Assembly.height: expected m, got kg"
         );
     }
+
+    // ── Task 2345 step-3: Engine holds a WarmStatePool ───────────────────────
+    //
+    // Wires `Engine::warm_pool` per arch §4.3 / §6.4. The pool is initialised
+    // via `WarmStatePool::from_env_or_default()`, so absent the
+    // `REIFY_WARM_STATE_BUDGET_BYTES` env var the budget equals
+    // `DEFAULT_BUDGET_BYTES` (2 GiB). Compile-fails until step-4 adds the
+    // field and `warm_pool()` test-instrumentation accessor.
+
+    #[test]
+    fn engine_holds_warm_pool_initialized_with_default_budget() {
+        use crate::warm_pool::DEFAULT_BUDGET_BYTES;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        assert_eq!(
+            engine.warm_pool().budget_bytes(),
+            Some(DEFAULT_BUDGET_BYTES),
+            "Engine::new must initialise warm_pool with the default budget when \
+             REIFY_WARM_STATE_BUDGET_BYTES is unset"
+        );
+    }
 }
