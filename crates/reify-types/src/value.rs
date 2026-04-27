@@ -7113,4 +7113,14 @@ mod tests {
         );
     }
 
+    // --- Freshness::default() tests (task #2326) ---
+
+    #[test]
+    fn freshness_default_is_final() {
+        // The canonical fallback for cache reads on absent entries must be Final.
+        // This pins the type-level default so CacheStore::freshness() (task #2326)
+        // can delegate to Freshness::default() rather than hard-coding Freshness::Final.
+        assert_eq!(Freshness::default(), Freshness::Final);
+    }
+
 }
