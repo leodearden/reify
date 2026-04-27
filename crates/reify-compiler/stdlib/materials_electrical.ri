@@ -19,7 +19,7 @@
 // traits use `: MaterialSpec` so parent edges resolve correctly; the convention
 // is established by the four §6.2 traits in materials_mechanical.ri.
 //
-// ── Decision #3: Dropped determined(dielectric_strength) on Insulating ───────
+// ── Decision #3: determined(dielectric_strength) recaptured numerically ───────
 // The spec's `constraint determined(dielectric_strength)` on Insulating is
 // dropped. The Reify grammar has no `undef` keyword (see io.ri lines 11-12),
 // so `dielectric_strength : Real` is always required at every conforming
@@ -27,6 +27,13 @@
 // provides no signal. The spec's intent — "an Insulating material has a known
 // dielectric strength" — is preserved structurally by the required param.
 // The `resistivity > 1e6` numeric constraint is retained as specified.
+//
+// Update (task 2484): A `dielectric_strength > 0.0` numeric constraint is
+// added to recapture the spec's intent more precisely. A conforming structure
+// with `dielectric_strength = 0.0` is physically contradictory (zero breakdown
+// field implies no insulation), so strict positivity is the correct bound.
+// The `determined(...)` form remains unavailable in the grammar; this numeric
+// constraint is the most direct way to express the spec's requirement.
 
 // ── ElectricallyCharacterized ────────────────────────────────────────────────
 
@@ -55,9 +62,11 @@ trait Conductive : ElectricallyCharacterized {
 // ── Insulating ───────────────────────────────────────────────────────────────
 
 // An insulating material is an ElectricallyCharacterized material whose
-// resistivity exceeds 1e6 Ω·m (well above semiconductor range).
-// The spec's `determined(dielectric_strength)` predicate is omitted — see
-// Decision #3 in the header comment above for rationale.
+// resistivity exceeds 1e6 Ω·m (well above semiconductor range), and whose
+// dielectric_strength is strictly positive (> 0.0 V/m). The positivity
+// constraint is the numerical recapture of the spec's
+// `determined(dielectric_strength)` intent — see Decision #3 in the header.
 trait Insulating : ElectricallyCharacterized {
     constraint resistivity > 1000000.0
+    constraint dielectric_strength > 0.0
 }
