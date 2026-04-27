@@ -161,14 +161,15 @@ fn render_single(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> String 
         // Table of contents — sits between the H1/doc and the first item H2.
         // Single-file mode: all items live in the same document so fragment
         // links (`#Name`) are correct and stable.
-        render_toc(&mut out, &non_tests, &|name: &str| format!("#{name}"));
+        let fragment_resolver = |name: &str| format!("#{name}");
+        render_toc(&mut out, &non_tests, &fragment_resolver);
         for item in &non_tests {
-            render_item(&mut out, item, xrefs);
+            render_item(&mut out, item, xrefs, &fragment_resolver);
         }
         if !tests.is_empty() {
             out.push_str("## Tests\n\n");
             for item in &tests {
-                render_item(&mut out, item, xrefs);
+                render_item(&mut out, item, xrefs, &fragment_resolver);
             }
         }
     }
@@ -392,7 +393,16 @@ fn unquote(s: &str) -> &str {
 /// Emits the H2 heading with explicit anchor, optional annotation callouts,
 /// the doc paragraphs, the kind-specific body, then optional cross-reference
 /// sections derived from `xrefs` (the precomputed [`CrossRefIndex`]).
-fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_>>) {
+///
+/// `resolve_link` maps a referenced item name to the link target string for
+/// cross-reference bullets — use a fragment resolver for single-file mode or
+/// a filename resolver for split-mode per-item files.
+fn render_item(
+    out: &mut String,
+    item: &ItemDoc,
+    xrefs: Option<&CrossRefIndex<'_>>,
+    resolve_link: &dyn Fn(&str) -> String,
+) {
     let name = item_name(item);
     let kw = item_keyword(item);
     let vis = if item_is_pub(item) { "pub " } else { "" };
@@ -473,17 +483,26 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
 
     // Cross-reference sections, if any. Looks up `name` in both inverted
     // indices and emits "Conforms to" / "Used by" bullets when populated.
-    render_cross_refs(out, name, xrefs);
+    render_cross_refs(out, name, xrefs, resolve_link);
 }
 
 /// Render the `### Conforms to` and `### Used by` sections from `xrefs`,
 /// keyed on this item's name.  Each section is emitted only when its bullet
-/// list is non-empty.  Bullet entries are sorted, deduplicated anchor links.
+/// list is non-empty.  Bullet entries are sorted, deduplicated links.
+///
+/// `resolve_link` maps a referenced item name to the link target string
+/// (between `](` and `)`) — callers supply a fragment resolver for single-file
+/// mode or a filename resolver for split-mode per-item files.
 ///
 /// "Conforms to" reads from `xrefs.conformer_to_traits` — the precomputed
 /// inverse of `trait_to_conformers` — so each lookup is O(log N) instead of
 /// the O(traits × avg_conformers) scan a naive renderer would perform.
-fn render_cross_refs(out: &mut String, name: &str, xrefs: Option<&CrossRefIndex<'_>>) {
+fn render_cross_refs(
+    out: &mut String,
+    name: &str,
+    xrefs: Option<&CrossRefIndex<'_>>,
+    resolve_link: &dyn Fn(&str) -> String,
+) {
     let Some(xrefs) = xrefs else {
         return;
     };
@@ -496,8 +515,8 @@ fn render_cross_refs(out: &mut String, name: &str, xrefs: Option<&CrossRefIndex<
         for t in traits {
             out.push_str("- [`");
             out.push_str(t);
-            out.push_str("`](#");
-            out.push_str(t);
+            out.push_str("`](");
+            out.push_str(&resolve_link(t));
             out.push_str(")\n");
         }
         out.push('\n');
@@ -514,8 +533,8 @@ fn render_cross_refs(out: &mut String, name: &str, xrefs: Option<&CrossRefIndex<
         for c in sorted {
             out.push_str("- [`");
             out.push_str(c);
-            out.push_str("`](#");
-            out.push_str(c);
+            out.push_str("`](");
+            out.push_str(&resolve_link(c));
             out.push_str(")\n");
         }
         out.push('\n');
@@ -892,7 +911,21 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             body.push_str("[← Index](");
             body.push_str(back);
             body.push_str(")\n\n");
-            render_item(&mut body, item, xrefs);
+            // Item-rooted link resolver for cross-reference bullets.
+            // Single-module: items live in the same flat directory, so
+            // `{kind}-{name}.md` siblings are correct.
+            // Multi-module: per-module relative paths need current_module
+            // context — deferred to step 8; use fragment fallback for now.
+            if multi_module {
+                render_item(&mut body, item, xrefs, &|name: &str| format!("#{name}"));
+            } else {
+                render_item(&mut body, item, xrefs, &|name: &str| {
+                    match name_index.unique_resolve(name) {
+                        Some((kind, _)) => format!("{kind}-{name}.md"),
+                        None => format!("#{name}"),
+                    }
+                });
+            }
             files.push((item_filename(item, module_prefix), body));
         }
     }
