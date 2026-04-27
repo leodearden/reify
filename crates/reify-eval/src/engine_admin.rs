@@ -7,8 +7,8 @@ use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, GeometryKernel,
-    OptimizedImpl,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
+    GeometryKernel, OptimizedImpl,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -158,7 +158,18 @@ impl Engine {
             // Read REIFY_WARM_STATE_BUDGET_BYTES once at construction; falls
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
             warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
+            feature_tag_table: FeatureTagTable::default(),
         }
+    }
+
+    /// Return a reference to the feature-tag table populated by the most recent
+    /// `build()` or `build_snapshot()` call.
+    ///
+    /// Maps each `GeometryHandleId` produced during geometry execution to the
+    /// `FeatureTag` derived from its position in the parallel `feature_tags`
+    /// array on `RealizationDecl`. See task 2323 for full design rationale.
+    pub fn feature_tag_table(&self) -> &FeatureTagTable {
+        &self.feature_tag_table
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.

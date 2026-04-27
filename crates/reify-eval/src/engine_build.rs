@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    CompiledFunction, Diagnostic, DiagnosticLabel, ExportFormat, GeometryHandleId, GeometryKernel,
-    Mesh, SourceSpan, ValueMap,
+    CompiledFunction, Diagnostic, DiagnosticLabel, ExportFormat, FeatureTag, FeatureTagTable,
+    GeometryHandleId, GeometryKernel, Mesh, SourceSpan, ValueMap,
 };
 
 use crate::geometry_ops::compile_geometry_op;
@@ -45,6 +45,7 @@ impl Engine {
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
+            self.feature_tag_table = FeatureTagTable::default();
             for template in &module.templates {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -55,12 +56,14 @@ impl Engine {
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
+                        &realization.feature_tags,
                         &values,
                         &self.functions,
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
                         &mut named_steps,
+                        &mut self.feature_tag_table,
                         realization.name.as_deref(),
                         realization.span,
                     );
@@ -114,6 +117,7 @@ impl Engine {
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
+            self.feature_tag_table = FeatureTagTable::default();
             for template in &module.templates {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -124,12 +128,14 @@ impl Engine {
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
+                        &realization.feature_tags,
                         &check_result.values,
                         &self.functions,
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
                         &mut named_steps,
+                        &mut self.feature_tag_table,
                         realization.name.as_deref(),
                         realization.span,
                     );
@@ -184,6 +190,7 @@ impl Engine {
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        self.feature_tag_table = FeatureTagTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
@@ -191,6 +198,7 @@ impl Engine {
             &self.functions,
             &mut diagnostics,
             &self.meta_map,
+            &mut self.feature_tag_table,
         );
 
         TessellateResult {
@@ -227,6 +235,7 @@ impl Engine {
         functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
         meta_map: &HashMap<String, HashMap<String, String>>,
+        feature_tag_table: &mut FeatureTagTable,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -248,12 +257,14 @@ impl Engine {
                 Engine::execute_realization_ops(
                     kernel.as_mut(),
                     &realization.operations,
+                    &realization.feature_tags,
                     values,
                     functions,
                     meta_map,
                     &mut step_handles,
                     diagnostics,
                     &mut named_steps,
+                    feature_tag_table,
                     realization.name.as_deref(),
                     realization.span,
                 );
@@ -308,18 +319,20 @@ impl Engine {
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
         operations: &[reify_compiler::CompiledGeometryOp],
+        feature_tags: &[FeatureTag],
         values: &ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
         step_handles: &mut Vec<GeometryHandleId>,
         diagnostics: &mut Vec<Diagnostic>,
         named_steps: &mut HashMap<String, GeometryHandleId>,
+        feature_tag_table: &mut FeatureTagTable,
         realization_name: Option<&str>,
         realization_span: SourceSpan,
     ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
-        for op in operations {
+        for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
                 values,
@@ -332,6 +345,10 @@ impl Engine {
             match geom_op {
                 Ok(geom_op) => match kernel.execute(&geom_op) {
                     Ok(handle) => {
+                        // Record the parallel-array feature tag for this handle.
+                        if let Some(&tag) = feature_tags.get(op_idx) {
+                            feature_tag_table.record(handle.id, tag);
+                        }
                         step_handles.push(handle.id);
                     }
                     Err(e) => {
@@ -400,6 +417,7 @@ impl Engine {
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
         // Execute geometry and tessellate
+        self.feature_tag_table = FeatureTagTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
@@ -407,6 +425,7 @@ impl Engine {
             &self.functions,
             &mut diagnostics,
             &self.meta_map,
+            &mut self.feature_tag_table,
         );
 
         Some(TessellateResult {
@@ -452,15 +471,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
         );
@@ -496,15 +518,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
         );
@@ -558,15 +583,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
         );
@@ -631,15 +659,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
         );
@@ -696,15 +727,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
         );
@@ -762,15 +796,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
         );
@@ -816,15 +853,18 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             Some("bad"),
             SourceSpan::new(0, 0),
         );
@@ -884,15 +924,18 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         // First binding: let body = box(…)
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &box_ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
         );
@@ -901,15 +944,18 @@ mod tests {
         let h1 = named_steps["body"];
 
         // Second binding: let body = cylinder(…) — same name, different primitive
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &cyl_ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
         );
@@ -990,15 +1036,18 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         // First binding: let body = box(…) — succeeds, populates named_steps.
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &box_ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
         );
@@ -1009,15 +1058,18 @@ mod tests {
         );
 
         // Second binding: let body = <invalid> — fails (rollback path).
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &fail_ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
         );
@@ -1073,15 +1125,18 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
         let realization_span = SourceSpan::new(100, 150);
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             realization_span,
         );
@@ -1148,15 +1203,18 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
         let realization_span = SourceSpan::new(200, 250);
 
+        let mut feature_tag_table = FeatureTagTable::default();
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
+            &[],
             &values,
             &functions,
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
             &mut named_steps,
+            &mut feature_tag_table,
             None,
             realization_span,
         );

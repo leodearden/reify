@@ -30,8 +30,8 @@ use std::sync::Arc;
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
-    Diagnostic, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl, Satisfaction,
-    ValueCellId, ValueMap,
+    Diagnostic, FeatureTagTable, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl,
+    Satisfaction, ValueCellId, ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -388,6 +388,15 @@ pub struct Engine {
     /// `warm_pool()` / `warm_pool_mut()` (cfg-gated to test/test-instrumentation
     /// builds) live in `engine_admin.rs`.
     warm_pool: crate::warm_pool::WarmStatePool,
+    /// Maps each successfully-produced `GeometryHandleId` to the `FeatureTag`
+    /// derived from its position in the realization's parallel `feature_tags`
+    /// array. Populated by `Engine::execute_realization_ops` immediately after
+    /// `kernel.execute(...)` returns `Ok(handle)`. Cleared and repopulated on
+    /// each `build()` / `build_snapshot()` call.
+    ///
+    /// Exposed via `Engine::feature_tag_table()` so topology selectors and
+    /// GUI consumers can correlate geometry handles back to source locations.
+    feature_tag_table: FeatureTagTable,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
