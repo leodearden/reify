@@ -519,6 +519,85 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     );
 }
 
+// ── task-2273: regression-lock for valid-override repeat-call ────────────────
+
+/// A VALID (dimensionally-correct) param override must:
+/// (a) be applied on the first call (cache-miss path, `Some(Ok(()))` arm writes it to the cache),
+/// (b) still be returned on a same-version repeat call (cached override value returned),
+/// (c) produce no `param_override`-keyed diagnostic on either call.
+///
+/// This locks the contract that the cache-miss `Some(Ok(()))` arm correctly clones the override
+/// into the cache AND that the cached value is returned on subsequent calls.  Without this test a
+/// future refactor of the re-borrow logic (e.g. dropping the `.clone()` in the `Some(Ok(()))` arm
+/// or short-circuiting the cache write) would silently break override application across cache
+/// calls without any test failure.
+///
+/// Introduced by task 2273 step-1 as a regression-lock before the step-2 no-clone refactor.
+/// Should pass both before and after step-2 (the refactor preserves external behavior).
+#[test]
+fn eval_cached_applies_valid_param_override_on_repeat_call() {
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(1.0), Type::length())),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Push a valid Length override: mm(12.0) = 0.012 m (SI), matching the Length cell type.
+    engine.set_param_and_invalidate(&x_id, mm(12.0));
+
+    // First call — cold start (cache-miss path).  The `Some(Ok(()))` arm must clone the override
+    // into the cache and return it as the resolved value.
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1.stats.cache_misses >= 1,
+        "first eval_cached call must have at least one cache miss; stats: {:?}",
+        result1.stats,
+    );
+    assert_eq!(
+        result1.eval_result.values.get(&x_id),
+        Some(&mm(12.0)),
+        "first call: valid override mm(12.0) must be applied via cache-miss Ok(()) arm; got: {:?}",
+        result1.eval_result.values.get(&x_id),
+    );
+    assert!(
+        result1.eval_result.diagnostics.is_empty(),
+        "first call: valid override must produce no diagnostics; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — same version (fast-path hit).  The cached override value must be returned.
+    // This is the contract being locked: if the refactor drops the .clone() in the Some(Ok(()))
+    // arm or short-circuits the cache write, the fast-path returns the stale default mm(1.0)
+    // instead of the override mm(12.0), and this assertion fails.
+    let result2 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result2.stats.cache_hits >= 1,
+        "second eval_cached call (same version) must have at least one cache hit; stats: {:?}",
+        result2.stats,
+    );
+    assert_eq!(
+        result2.eval_result.values.get(&x_id),
+        Some(&mm(12.0)),
+        "second call (fast-path hit): cached override mm(12.0) must still be returned; got: {:?}",
+        result2.eval_result.values.get(&x_id),
+    );
+    assert!(
+        result2.eval_result.diagnostics.is_empty(),
+        "second call: valid override must produce no diagnostics; got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+}
+
 // ── step-10: repeat-call regression lock for solver diagnostics ──────────────
 
 /// Calling eval_cached twice on the same (unchanged) module must continue to

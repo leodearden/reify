@@ -1509,14 +1509,29 @@ impl Engine {
                 } else if cell.kind == ValueCellKind::Param {
                     let node_id = NodeId::Value(cell.id.clone());
 
-                    // Compute the override check once: clone the override value (if any) and
-                    // validate it against the cell type.  Binding the result here lets the
-                    // diagnostic pre-check (below) and the cache-miss fallback selector (further
-                    // below) share the same result — no second call to validate_param_override.
-                    let override_check: Option<(Value, Result<(), ParamOverrideRejection>)> =
+                    // Validate the override once, storing both the &Value borrow and the
+                    // Result — no unconditional clone.
+                    //
+                    // The amend bdf65905d (task 2267) previously hoisted both the clone and the
+                    // validation into a single `override_check: Option<(Value, Result<...>)>`
+                    // binding so that the diagnostic pre-check and the cache-miss match could share
+                    // the validated result.  That sharing was correct in intent, but it
+                    // unconditionally cloned the Value on EVERY Param cell visit — including the
+                    // LSP-keystroke fast-path where the cloned value is immediately dropped.
+                    //
+                    // Task 2273 separates the two concerns:
+                    //   • validation result  → stored in `override_entry.1` (no clone needed)
+                    //   • value access       → `override_entry.0` holds a &Value borrow, valid for
+                    //                          the duration of this Param branch (param_overrides is
+                    //                          not mutated here).  One .clone() only in the single
+                    //                          `Some((v, Ok(())))` cache-miss arm that writes to the
+                    //                          cache — cheaper than the previous shape, which
+                    //                          cloned the Value on every Param visit even when
+                    //                          the cache fast-path immediately discarded it.
+                    let override_entry: Option<(&Value, Result<(), ParamOverrideRejection>)> =
                         self.param_overrides
                             .get(&cell.id)
-                            .map(|v| (v.clone(), validate_param_override(v, &cell.cell_type)));
+                            .map(|v| (v, validate_param_override(v, &cell.cell_type)));
 
                     // Unconditional override-validation diagnostic pre-check.
                     // Mirrors the step-10/step-11 pattern from task 2259: the solver pass and
@@ -1527,7 +1542,7 @@ impl Engine {
                     // returns the cached fallback, and the validation warning is silently dropped.
                     // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
                     // (task-2267 step-1 / step-3).
-                    if let Some((ref override_val, Err(ref rej))) = override_check {
+                    if let Some((override_val, Err(rej))) = &override_entry {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
                             &cell.id,
@@ -1589,13 +1604,18 @@ impl Engine {
                     });
 
                     // Use override if available (with validation), otherwise evaluate default.
-                    // Reuses `override_check` computed above — no second call to validate_param_override.
+                    // Reuses `override_entry` computed above — no second call to validate_param_override.
                     // Mirrors eval() lines 603-622: on mismatch fall back to default.
                     // Returns (Value, DeterminacyState): rejected-override-with-no-default
                     // yields (Undef, Undetermined) matching eval()'s DeterminacyState path.
-                    let (val, det) = match override_check {
+                    //
+                    // `Some((override_val, Ok(())))` is the only site that clones: the &Value
+                    // borrow is moved out of override_entry and cloned here to produce the owned
+                    // Value written to the cache.  Validate-once invariant is preserved — the
+                    // Result in override_entry.1 is the same one computed at the top.
+                    let (val, det) = match override_entry {
                         Some((override_val, Ok(()))) => {
-                            (override_val, DeterminacyState::Determined)
+                            (override_val.clone(), DeterminacyState::Determined)
                         }
                         Some((_, Err(_))) => {
                             // Diagnostic already pushed by the unconditional pre-check above.
