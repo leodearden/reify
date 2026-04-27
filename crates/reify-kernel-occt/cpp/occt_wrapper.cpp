@@ -121,6 +121,34 @@
 
 namespace occt {
 
+namespace {
+
+/// Call `fn()` inside the standard 3-arm OCCT exception guard.
+///
+/// Catch arms:
+///   - Standard_Failure  → "OCCT <name>: <GetMessageString()>"
+///   - std::exception    → "OCCT <name>: unexpected: <what()>"
+///   - catch-all         → "OCCT <name>: unknown C++ exception"
+///
+/// Return type is deduced from `fn()` via `decltype`, so this helper works
+/// uniformly across all wrapper return types (double, Point3, BBox,
+/// InertiaTensor3x3, bool, std::unique_ptr<OcctShape>, rust::String,
+/// rust::Vec<uint32_t>, TessResult) without any explicit casts.
+template <typename F>
+auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
+    try {
+        return fn();
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT ") + name + ": " + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT ") + name + ": unexpected: " + e.what());
+    } catch (...) {
+        throw std::runtime_error(std::string("OCCT ") + name + ": unknown C++ exception");
+    }
+}
+
+} // anonymous namespace
+
 // --- Validation thresholds ---
 //
 // DEFENSE-IN-DEPTH: The Rust layer validates first with stricter thresholds
