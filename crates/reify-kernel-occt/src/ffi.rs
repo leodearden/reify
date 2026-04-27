@@ -30,8 +30,10 @@ pub mod ffi {
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
     ///
     /// Fields are named m{row}{col} in row-major order (m11 = row 1, col 1).
-    /// The tensor is symmetric for principal-axes-aligned shapes; off-diagonal
-    /// entries are products of inertia and are zero for axis-aligned primitives.
+    /// The tensor is always symmetric (Iij = Iji); off-diagonal entries are
+    /// products of inertia and vanish only when the coordinate axes coincide
+    /// with the body's principal axes (true for axis-aligned primitives at
+    /// their centroid).
     struct InertiaTensor3x3 {
         m11: f64,
         m12: f64,

@@ -1512,6 +1512,16 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Mat m = props.MatrixOfInertia();
+        // Defensively verify the matrix OCCT returned is symmetric — it always
+        // should be by construction, but surface any unexpected asymmetry early
+        // rather than silently propagating it through the tensor.
+        const double sym_eps = 1e-6;
+        if (std::abs(m.Value(1, 2) - m.Value(2, 1)) > sym_eps ||
+            std::abs(m.Value(1, 3) - m.Value(3, 1)) > sym_eps ||
+            std::abs(m.Value(2, 3) - m.Value(3, 2)) > sym_eps) {
+            throw std::runtime_error(
+                "OCCT query_inertia_tensor: MatrixOfInertia() returned a non-symmetric matrix");
+        }
         return InertiaTensor3x3{
             m.Value(1, 1) * density,
             m.Value(1, 2) * density,
