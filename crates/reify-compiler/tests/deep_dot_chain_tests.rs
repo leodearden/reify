@@ -216,18 +216,17 @@ structure S {
     );
 
     // Positive control on the rendered chain text. The IndexAccess root is
-    // not a bare Ident or EnumAccess, so render_chain_text intentionally
-    // substitutes the literal `<expr>` placeholder for the root segment in
-    // v0.1 (see the doc on `render_chain_text`). The diagnostic span still
-    // anchors the squiggle correctly in editor output, but bare CLI
-    // renderings will see the placeholder. This assertion pins that
-    // contract so future authors who change the placeholder know to update
-    // the test (or to extend the root-rendering arm with prettier output).
+    // not a bare Ident or EnumAccess, so render_chain_text emits a
+    // shape-hinting placeholder: `_[…]` (with U+2026 horizontal ellipsis)
+    // to preserve the index-access shape for bare-text consumers. Editor
+    // renderings (LSP/MCP) still anchor the squiggle via the diagnostic
+    // span so users see the literal source there; CLI/log consumers that
+    // only print Diagnostic.message see `_[…].c.d.e.f`.
     assert!(
-        warning.message.contains("<expr>.c.d.e.f"),
+        warning.message.contains("_[\u{2026}].c.d.e.f"),
         "DeepDotChain warning for an IndexAccess-rooted chain must render \
-         the chain text with `<expr>` standing in for the IndexAccess root \
-         (v0.1 contract — see `render_chain_text` doc), got: {:?}",
+         the chain text with `_[\u{2026}]` (shape-hinting placeholder) standing \
+         in for the IndexAccess root, got: {:?}",
         warning.message
     );
 }
