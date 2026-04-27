@@ -165,7 +165,8 @@ impl Drop for OcctKernelHandle {
 mod tests {
     use super::*;
     use reify_types::{
-        ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, Value, WarmStartable,
+        ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Value,
+        WarmStartable,
     };
 
     #[test]
@@ -238,5 +239,24 @@ mod tests {
         let handle = OcctKernelHandle::spawn();
         // Verify it can be used as Box<dyn GeometryKernel>
         let _boxed: Box<dyn GeometryKernel> = Box::new(handle);
+    }
+
+    #[test]
+    fn stub_kernel_topology_cache_build_counts_returns_invalid_reference() {
+        let kernel = OcctKernel::new();
+        let bad_id = GeometryHandleId(42);
+        match kernel.topology_cache_build_counts(bad_id) {
+            Err(GeometryError::InvalidReference(id)) => {
+                assert_eq!(id, bad_id, "InvalidReference should carry the bad handle id");
+            }
+            Ok(c) => panic!(
+                "expected Err(InvalidReference) for unknown handle, got Ok({:?})",
+                c
+            ),
+            Err(other) => panic!(
+                "expected Err(InvalidReference) for unknown handle, got Err({:?})",
+                other
+            ),
+        }
     }
 }
