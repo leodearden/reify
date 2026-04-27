@@ -257,6 +257,25 @@ fn insulating_refines_electrically_characterized_with_constraint() {
     assert_trait_constraint_binop(insulating, "Insulating", "resistivity", ">", 1.0e6, 1.0);
 }
 
+// ─── (d2) Insulating has dielectric_strength > 0 constraint ─────────────────
+
+/// Insulating must carry a constraint `dielectric_strength > 0.0` — the
+/// numerical recapture of the spec's `determined(dielectric_strength)` intent.
+/// An insulating material with zero breakdown field is physically contradictory.
+#[test]
+fn insulating_has_dielectric_strength_positive_constraint() {
+    let module = load_stdlib_module();
+
+    let insulating = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Insulating")
+        .expect("expected 'Insulating' trait in std/materials/electrical");
+
+    // BinOp-level check: op=">", LHS=dielectric_strength, RHS=0.0 (exact)
+    assert_trait_constraint_binop(insulating, "Insulating", "dielectric_strength", ">", 0.0, 0.0);
+}
+
 // ─── (e) Copper : Conductive conformance test with inherited constraint ────────
 
 /// A structure conforming to Conductive must compile cleanly via the full
