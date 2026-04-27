@@ -163,6 +163,27 @@ fn circle_wire_is_not_watertight_but_is_manifold_and_orientable() {
     assert_bool_query(&kernel, GeometryQuery::IsOrientable(wire_id), true,  "IsOrientable on wire");
 }
 
+/// A single edge (`TopAbs_EDGE`) hits the shape-type guard in `is_watertight`
+/// and returns `false`.
+///
+/// It IS manifold (no edges with 3+ face parents; an isolated edge has no face
+/// parents at all) and IS orientable (`ShapeAnalysis_Shell::NbLoaded() == 0`
+/// because an edge has no shells → trivially `true`).
+///
+/// This exercises the `TopAbs_EDGE` short-circuit path in `is_watertight`.
+#[test]
+fn edge_is_not_watertight_but_is_manifold_and_orientable() {
+    let mut kernel = OcctKernel::new();
+    let edge_id = kernel.store_edge_for_test();
+
+    // shape-type guard fires → false
+    assert_bool_query(&kernel, GeometryQuery::IsWatertight(edge_id), false, "IsWatertight on edge");
+    // isolated edge: no edge→face incidence → trivially manifold
+    assert_bool_query(&kernel, GeometryQuery::IsManifold(edge_id),   true,  "IsManifold on edge");
+    // no shells loaded → NbLoaded() == 0 → trivially orientable
+    assert_bool_query(&kernel, GeometryQuery::IsOrientable(edge_id), true,  "IsOrientable on edge");
+}
+
 /// A single circle face (`TopAbs_FACE`) is NOT watertight — the shape-type guard
 /// in `is_watertight` must return `false` for face shapes.
 ///
