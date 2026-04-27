@@ -376,9 +376,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     let _ = (output, split);
     let model = minimal_doc_model_from_compiled(&compiled);
 
-    // Default format is "html"; later steps wire the html branch.  For now,
-    // any --format that isn't "json" falls through to the SUCCESS stub so
-    // the json test in step 13 passes without preempting later steps.
+    // Default format is "html"; later steps wire the html branch.
     let format_value = format.as_deref().unwrap_or("html");
     if format_value == "json" {
         let body = reify_doc::fmt_json::render_json(&model, compact);
@@ -388,7 +386,32 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // TODO(post-2361): markdown + html branches added in later steps.
+    if format_value == "markdown" {
+        // TODO(post-2361): once `reify_doc_build::build_doc_model` lands,
+        // wire `reify_doc_build::cross_refs::build_cross_refs(&compiled.templates)`
+        // here and pass `Some(&xrefs)` instead of `None`.  With the placeholder
+        // empty `DocModel`, cross-refs would be degenerate, so `None` is
+        // byte-equivalent and saves a workspace dep.
+        let output = reify_doc::fmt_markdown::render_markdown(
+            &model,
+            None,
+            &reify_doc::fmt_markdown::MarkdownOptions::default(),
+        );
+        match output {
+            reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
+                print!("{body}");
+                return ExitCode::SUCCESS;
+            }
+            reify_doc::fmt_markdown::MarkdownOutput::Split(_) => {
+                // Unreachable in single-file mode (split == false); guard
+                // against future refactors that flip the dispatch.
+                eprintln!("Internal error: markdown single mode produced Split output");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // TODO(post-2361): html branch added in later steps.
     ExitCode::SUCCESS
 }
 
