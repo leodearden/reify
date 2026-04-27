@@ -30,7 +30,7 @@
 //! added in step 6.
 
 use reify_syntax::{Expr, ExprKind, ParsedModule};
-use reify_types::{Diagnostic, DiagnosticCode};
+use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 
 /// Maximum allowed chain length before the lint fires.
 ///
@@ -119,7 +119,8 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
                         "deep dot-chain (depth {chain_len}): {chain_text} \
                          — consider intermediate let-bindings"
                     ))
-                    .with_code(DiagnosticCode::DeepDotChain),
+                    .with_code(DiagnosticCode::DeepDotChain)
+                    .with_label(DiagnosticLabel::new(expr.span, "deep dot-chain")),
                 );
             }
             // Recurse into the chain's leaf root for nested chains.
