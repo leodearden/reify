@@ -244,6 +244,51 @@ mod tests {
     }
 
     #[test]
+    fn test_forall_statement_with_connect_body() {
+        let mut parser = make_parser();
+        let source =
+            b"structure S { forall v in vents: connect v.inlet -> housing.air_channel { rate = 1 } }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall-connect-with-body source: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"forall_statement".to_string()),
+            "expected forall_statement node, got: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"connect_body".to_string()),
+            "expected connect_body node, got: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"connect_param_assignment".to_string()),
+            "expected connect_param_assignment node, got: {kinds:?}"
+        );
+
+        // Verify connect_body is reachable through forall_statement -> body(connect_statement)
+        let forall_node = find_node_by_kind(tree.root_node(), "forall_statement")
+            .expect("forall_statement not found");
+        let body = forall_node
+            .child_by_field_name("body")
+            .expect("forall_statement missing 'body' field");
+        assert_eq!(body.kind(), "connect_statement");
+        let connect_body = body
+            .child_by_field_name("body")
+            .expect("connect_statement missing 'body' field (connect_body)");
+        assert_eq!(connect_body.kind(), "connect_body");
+
+        // Verify 'rate' param assignment is inside connect_body
+        let kinds_in_body = collect_kinds(connect_body);
+        assert!(
+            kinds_in_body.contains(&"connect_param_assignment".to_string()),
+            "expected connect_param_assignment inside connect_body, got: {kinds_in_body:?}"
+        );
+    }
+
+    #[test]
     fn test_hash_not_parsed_as_comment() {
         let mut parser = make_parser();
         // # is not a valid comment in Reify; it should produce an ERROR node
