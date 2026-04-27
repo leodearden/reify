@@ -948,12 +948,29 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             body.push_str(back);
             body.push_str(")\n\n");
             // Item-rooted link resolver for cross-reference bullets.
-            // Single-module: items live in the same flat directory, so
-            // `{kind}-{name}.md` siblings are correct.
-            // Multi-module: per-module relative paths need current_module
-            // context — deferred to step 8; use fragment fallback for now.
+            // The resolver is relative to the *containing file's* location:
+            //
+            // Single-module: all items live in the same flat directory, so
+            // `{kind}-{name}.md` siblings are always correct.
+            //
+            // Multi-module: the containing file is at `{current_module}/{...}`.
+            // - Same-module referenced item → `{kind}-{name}.md` (sibling).
+            // - Cross-module referenced item → `../{other_module}/{kind}-{name}.md`
+            //   (up one directory, then into the other module's directory).
+            // - Ambiguous or missing → `#{name}` fallback (as before).
             if multi_module {
-                render_item(&mut body, item, xrefs, &|name: &str| format!("#{name}"));
+                let current_module = module.path.as_str();
+                render_item(&mut body, item, xrefs, &|name: &str| {
+                    match name_index.unique_resolve(name) {
+                        Some((kind, mod_path)) if mod_path == current_module => {
+                            format!("{kind}-{name}.md")
+                        }
+                        Some((kind, mod_path)) => {
+                            format!("../{mod_path}/{kind}-{name}.md")
+                        }
+                        None => format!("#{name}"),
+                    }
+                });
             } else {
                 render_item(&mut body, item, xrefs, &|name: &str| {
                     match name_index.unique_resolve(name) {
