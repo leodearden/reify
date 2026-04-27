@@ -28,14 +28,30 @@
 //! (`infer_primitive`, `combine_*`, `infer_traits_for_op`,
 //! `infer_traits_for_expr`).
 //!
-//! # TODO(geometry-traits-task-4-or-later)
+//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later)
 //!
-//! When `half_space` / `extrude_infinite` (or any other Unbounded primitive)
-//! land, extend `infer_primitive` to return an `InferredTraits` lacking
-//! `bounded` for those `PrimitiveKind` variants and add the corresponding
-//! end-to-end negative test exercising
-//! `crates/reify-compiler/src/conformance/mod.rs`'s
-//! `E_GEOMETRY_UNBOUNDED` emission for real source.
+//! The inference table only covers the primitives, combinators, and curve
+//! constructors that exist on this branch. The PRD anticipates additional
+//! Unbounded sources that have not yet been introduced; when they land, the
+//! changes required here are localised.
+//!
+//! ## Unimplemented Unbounded primitives
+//!
+//! | Future construct        | Where it slots in                                   | Expected `InferredTraits`             |
+//! |-------------------------|-----------------------------------------------------|---------------------------------------|
+//! | `half_space(...)`       | `PrimitiveKind::HalfSpace` arm in [`infer_primitive`] / `"half_space"` arm in [`infer_traits_for_function_call`] | `InferredTraits { bounded: false, connected: true, convex: true }` |
+//! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` (or `"extrude_infinite"` name) routed to [`combine_sweep`] with an Unbounded profile, or a dedicated arm | `InferredTraits::none()`              |
+//! | (parametric ray curve)  | New `CurveKind` variant in [`infer_curve`]          | `InferredTraits::none()` (or tuned)   |
+//!
+//! After the inference table is updated, add an end-to-end negative test
+//! in `geometry_traits_inference_tests.rs` exercising the
+//! `E_GEOMETRY_UNBOUNDED` emission path in
+//! `crates/reify-compiler/src/conformance/mod.rs` against real source —
+//! e.g. `Foo(g: half_space(...))` with `param g : Bounded`. The
+//! conformance walker hook (`emit_leaf_conformance_for_arg_type` for
+//! `Type::Geometry` + required-trait `"Bounded"`) is already in place and
+//! will fire automatically once the inference reports the missing
+//! `bounded` flag.
 
 use crate::types::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
