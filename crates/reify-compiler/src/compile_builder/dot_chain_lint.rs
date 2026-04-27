@@ -322,7 +322,11 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 walk_expr_depth(a, diagnostics, next);
             }
         }
-        ExprKind::Conditional { condition, then_branch, else_branch } => {
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             walk_expr_depth(condition, diagnostics, next);
             walk_expr_depth(then_branch, diagnostics, next);
             walk_expr_depth(else_branch, diagnostics, next);
@@ -354,7 +358,11 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
             }
         }
         ExprKind::Lambda { body, .. } => walk_expr_depth(body, diagnostics, next),
-        ExprKind::Quantifier { collection, predicate, .. } => {
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
             walk_expr_depth(collection, diagnostics, next);
             walk_expr_depth(predicate, diagnostics, next);
         }
@@ -433,93 +441,6 @@ mod tests {
     use super::*;
     use reify_types::SourceSpan;
 
-    /// Hitting the `MAX_EXPR_DEPTH` guard inside `walk_expr_depth` must fire
-    /// the `debug_assert!` so debug/test builds catch a regression that
-    /// produces pathologically deep ASTs (fuzzer input, upstream parser bug)
-    /// instead of silently truncating dot-chain lint coverage.
-    ///
-    /// Release builds keep the silent-return fast-path — the assert compiles
-    /// out — so this test is gated on `debug_assertions`.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "MAX_EXPR_DEPTH")]
-    fn walk_expr_depth_exceeding_max_depth_panics_in_debug_builds() {
-        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of UnOp.
-        // walk_expr_depth recurses via UnOp.operand (one frame per layer),
-        // so the outermost wrapper is visited at depth 0, the innermost at
-        // depth MAX_EXPR_DEPTH (= 256, not yet tripped), and the leaf
-        // NumberLiteral is then called at depth MAX_EXPR_DEPTH + 1 (= 257)
-        // which satisfies `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
-        // This is the minimum wrapper count that trips the guard.
-        let span = SourceSpan::empty(0);
-        let mut expr = Expr {
-            kind: ExprKind::NumberLiteral(0.0),
-            span,
-        };
-        for _ in 0..(MAX_EXPR_DEPTH + 1) {
-            expr = Expr {
-                kind: ExprKind::UnOp {
-                    op: "-".to_string(),
-                    operand: Box::new(expr),
-                },
-                span,
-            };
-        }
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        walk_expr(&expr, &mut diagnostics);
-    }
-
-    /// Representative *second-variant* depth-guard test: where
-    /// `walk_expr_depth_exceeding_max_depth_panics_in_debug_builds` (above)
-    /// exercises the `UnOp` single-child recursion arm, this test exercises the
-    /// `BinOp` two-child recursion arm.
-    ///
-    /// What this test pins: the BinOp arm in `walk_expr_depth` walks its `left`
-    /// child with `next` (= `depth + 1`) rather than the unchanged `depth`. If a
-    /// refactor of the BinOp arm accidentally passes `depth` instead of `next`,
-    /// the guard at `depth > MAX_EXPR_DEPTH` would never fire for BinOp sub-trees,
-    /// silently truncating dot-chain lint coverage; this test catches that
-    /// regression.
-    ///
-    /// Scope: this test only pins BinOp.left's depth-forwarding. It does not
-    /// cover other recursion arms (Conditional, FunctionCall.args, Match, Lambda,
-    /// list/map/set literals, IndexAccess, Quantifier, etc.); a future arm that
-    /// omits `next` would not be caught by either this test or the UnOp test.
-    ///
-    /// Depth arithmetic (same as the UnOp test): the outermost BinOp wrapper is
-    /// visited at depth 0, the innermost at depth MAX_EXPR_DEPTH (= 256, not yet
-    /// tripped), and the leaf NumberLiteral at the bottom of the `left` chain is
-    /// called at depth MAX_EXPR_DEPTH + 1 (= 257), which satisfies
-    /// `depth > MAX_EXPR_DEPTH` and fires the debug_assert!.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "MAX_EXPR_DEPTH")]
-    fn walk_expr_depth_exceeding_max_depth_panics_via_binop_recursion() {
-        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 1 layers of BinOp.
-        // The deep recursion path runs through the `left` operand; `right` is a
-        // fresh shallow leaf at each layer and never trips the guard.
-        let span = SourceSpan::empty(0);
-        let mut expr = Expr {
-            kind: ExprKind::NumberLiteral(0.0),
-            span,
-        };
-        for _ in 0..(MAX_EXPR_DEPTH + 1) {
-            expr = Expr {
-                kind: ExprKind::BinOp {
-                    op: "+".to_string(),
-                    left: Box::new(expr),
-                    right: Box::new(Expr {
-                        kind: ExprKind::NumberLiteral(1.0),
-                        span,
-                    }),
-                },
-                span,
-            };
-        }
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        walk_expr(&expr, &mut diagnostics);
-    }
-
     /// Table-driven depth-guard test: asserts that every structural-recursion arm
     /// in `walk_expr_depth` correctly forwards `next = depth + 1` to child nodes.
     ///
@@ -540,8 +461,6 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn walk_expr_depth_panics_for_every_recursion_arm() {
-        use reify_syntax::{MatchArm, QuantifierKind};
-
         #[derive(Debug, Clone, Copy)]
         enum ArmKind {
             UnOp,
@@ -572,7 +491,10 @@ mod tests {
         }
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
-            Expr { kind: ExprKind::NumberLiteral(0.0), span }
+            Expr {
+                kind: ExprKind::NumberLiteral(0.0),
+                span,
+            }
         }
 
         fn wrap_in_arm(arm: ArmKind, leaf: Expr, span: SourceSpan) -> Expr {
@@ -637,11 +559,16 @@ mod tests {
                 },
                 ArmKind::MatchFirstArmBody => ExprKind::Match {
                     discriminant: Box::new(shallow_leaf(span)),
-                    arms: vec![MatchArm { patterns: vec![], body: leaf, span }],
+                    arms: vec![MatchArm {
+                        patterns: vec![],
+                        body: leaf,
+                        span,
+                    }],
                 },
-                ArmKind::LambdaBody => {
-                    ExprKind::Lambda { params: vec![], body: Box::new(leaf) }
-                }
+                ArmKind::LambdaBody => ExprKind::Lambda {
+                    params: vec![],
+                    body: Box::new(leaf),
+                },
                 ArmKind::QuantifierCollection => ExprKind::Quantifier {
                     kind: QuantifierKind::ForAll,
                     variable: "x".into(),
@@ -721,7 +648,10 @@ mod tests {
             ArmKind::RangeUpper,
         ];
         for arm in arms {
-            let mut expr = Expr { kind: ExprKind::NumberLiteral(0.0), span };
+            let mut expr = Expr {
+                kind: ExprKind::NumberLiteral(0.0),
+                span,
+            };
             for _ in 0..(MAX_EXPR_DEPTH + 1) {
                 expr = wrap_in_arm(arm, expr, span);
             }
