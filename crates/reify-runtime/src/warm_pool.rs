@@ -293,6 +293,15 @@ impl WarmStatePool {
     pub fn is_empty(&self) -> bool {
         self.pool.is_empty()
     }
+
+    /// Whether the pool currently holds an entry for `node_id`.
+    ///
+    /// Non-destructive: unlike [`retrieve`](Self::retrieve), this leaves the
+    /// pool untouched. Use it to probe membership without consuming the entry
+    /// or perturbing the LRU ordering (`last_accessed` is not updated).
+    pub fn contains(&self, node_id: &NodeId) -> bool {
+        self.pool.contains_key(node_id)
+    }
 }
 
 #[cfg(test)]
@@ -485,6 +494,36 @@ mod tests {
     }
 
     #[test]
+    fn contains_reports_pool_membership_non_destructively() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+
+        // Before any donate: not present.
+        assert!(!pool.contains(&node));
+
+        // After donate: present.
+        pool.donate(node.clone(), OpaqueState::new(0u8, 100));
+        assert!(pool.contains(&node));
+
+        // Second call is idempotent — does not consume the entry.
+        assert!(pool.contains(&node));
+        assert_eq!(pool.len(), 1, "contains must not remove entries");
+        assert_eq!(pool.used_bytes(), 100, "contains must not modify used_bytes");
+
+        // After retrieve (destructive): no longer present.
+        pool.retrieve(&node);
+        assert!(!pool.contains(&node));
+
+        // After clear: no longer present.
+        pool.donate(node.clone(), OpaqueState::new(0u8, 100));
+        assert!(pool.contains(&node));
+        // Drain telemetry before clearing (required by the clear() contract).
+        let _ = pool.drain_events();
+        pool.clear();
+        assert!(!pool.contains(&node));
+    }
+
+    #[test]
     fn with_budget_none_reports_unlimited() {
         let pool_a = WarmStatePool::with_budget(None);
         assert_eq!(pool_a.budget_bytes(), None);
@@ -513,9 +552,10 @@ mod tests {
         assert_eq!(pool.len(), 5);
         assert_eq!(pool.used_bytes(), 5 * gib);
 
+        // Non-destructive: `retrieve` would consume entries (see `retrieve_removes_entry`).
         for node in &nodes {
             assert!(
-                pool.retrieve(node).is_some(),
+                pool.contains(node),
                 "node {:?} should not have been evicted",
                 node
             );
