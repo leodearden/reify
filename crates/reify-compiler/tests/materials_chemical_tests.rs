@@ -241,7 +241,17 @@ fn biocompatible_refines_material_spec_with_enum_param() {
 /// value cells for both enum-typed params with correct Enum cell_type.
 #[test]
 fn titanium_implant_conforms_to_biocompatible_and_corrosion_resistant() {
+    // Note: the enums are declared inline here because the parser populates
+    // `known_enums` only from the current source file (not from the stdlib
+    // prelude), so `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI`
+    // are only recognised as EnumAccess nodes if the enum names are present in
+    // the same source string.  Redeclaring them here (identical to the stdlib
+    // definitions) is safe: no duplicate-enum diagnostic is emitted, and the
+    // compiler's resolution_enums has the prelude entry first so stdlib types win.
     let source = r#"
+enum CorrosionClass { C1, C2, C3, C4, C5 }
+enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
+
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     param density : Real = 4500.0
     param name : String = "titanium"
