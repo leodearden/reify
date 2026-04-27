@@ -290,6 +290,7 @@ mod tests {
             constraint_defs: cds,
             pragmas: vec![],
             default_tolerance: None,
+            declared_version: None,
             diagnostics: vec![],
             content_hash: ContentHash::of_str(""),
         }

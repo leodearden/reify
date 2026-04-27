@@ -180,6 +180,15 @@ pub struct CompiledModule {
     /// downstream by `Engine::effective_tessellation_tolerance` to override the
     /// default OCCT tessellation tolerance.
     pub default_tolerance: Option<f64>,
+    /// Module-level `#version` value as a (MAJOR, MINOR) pair, or None when
+    /// absent / when the pragma was malformed / when there were duplicates.
+    ///
+    /// Populated by `module_pragmas::apply_module_pragmas` from the first
+    /// well-formed `#version(...)` module-level pragma. Storage reflects what
+    /// the user declared regardless of the validation outcome (too-new error,
+    /// too-old warning, or in-range silent), so downstream tooling (e.g. doc
+    /// generators) can render the user's intent verbatim.
+    pub declared_version: Option<(u16, u16)>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }

@@ -136,6 +136,7 @@ impl CompiledModuleBuilder {
             constraint_defs: Vec::new(),
             pragmas: Vec::new(),
             default_tolerance: None,
+            declared_version: None,
             diagnostics: self.diagnostics,
             content_hash,
         }

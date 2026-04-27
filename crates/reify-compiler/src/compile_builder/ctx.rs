@@ -161,6 +161,8 @@ impl CompilationCtx {
             pragmas: parsed.pragmas.clone(),
             // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
             default_tolerance: None,
+            // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
+            declared_version: None,
             diagnostics: self.diagnostics,
             content_hash,
         }
