@@ -553,20 +553,7 @@ fn check_leaf_trait_conformance(
                 if matches!(trait_kind, GeometryTrait::Bounded) {
                     emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
                 } else {
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "geometry argument '{}' does not conform to trait '{}' required by param '{}'",
-                            ctx.arg_name, required_trait, ctx.arg_name
-                        ))
-                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                        .with_label(DiagnosticLabel::new(
-                            ctx.span,
-                            format!(
-                                "geometry argument '{}' is not {}",
-                                ctx.arg_name, required_trait
-                            ),
-                        )),
-                    );
+                    emit_geometry_trait_violation(ctx.arg_name, required_trait, ctx.span, ctx.diagnostics);
                 }
             }
             return;
