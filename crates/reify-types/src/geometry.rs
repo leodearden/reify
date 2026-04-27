@@ -1163,4 +1163,29 @@ mod tests {
             _ => panic!("expected FaceNormal variant"),
         }
     }
+
+    #[test]
+    fn debug_assert_query_many_invariant_passes_when_lengths_match() {
+        let queries = vec![
+            GeometryQuery::Volume(GeometryHandleId(1)),
+            GeometryQuery::Volume(GeometryHandleId(2)),
+            GeometryQuery::Volume(GeometryHandleId(3)),
+        ];
+        let reply = vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)];
+        // If the helper does not panic, the test passes.
+        debug_assert_query_many_invariant(&queries, &reply);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "query_many length invariant")]
+    fn debug_assert_query_many_invariant_panics_on_length_mismatch() {
+        let queries = vec![
+            GeometryQuery::Volume(GeometryHandleId(1)),
+            GeometryQuery::Volume(GeometryHandleId(2)),
+            GeometryQuery::Volume(GeometryHandleId(3)),
+        ];
+        let reply = vec![Value::Real(0.0), Value::Real(0.0)];
+        debug_assert_query_many_invariant(&queries, &reply);
+    }
 }
