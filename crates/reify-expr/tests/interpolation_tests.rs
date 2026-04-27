@@ -1168,19 +1168,3 @@ fn non_deferred_methods_produce_no_diagnostics() {
         assert!(r.diagnostics.is_empty(), "3D {:?} emitted diagnostics", m);
     }
 }
-
-/// Silences `unused_variables` warnings — `InterpolationResult` is read in many
-/// of the assertions above; we deliberately also reference it here so the
-/// import is not flagged as dead in the unlikely case all other tests are
-/// `#[ignore]`d at once.
-#[test]
-fn interpolation_result_struct_is_constructible() {
-    let r: InterpolationResult = interpolate_1d(
-        InterpolationMethod::Linear,
-        &[0.0, 1.0],
-        &[0.0, 1.0],
-        0.5,
-    );
-    assert_eq!(r.value, 0.5);
-    assert!(r.diagnostics.is_empty());
-}
