@@ -450,14 +450,23 @@ mod tests {
     /// failing arm surfaces as a named `ArmKind` in the test output rather than a
     /// generic "walked silently" failure.
     ///
-    /// `MemberAccess` is excluded: its iterative `while let` chain walk does NOT
-    /// increment `depth` per layer (one frame regardless of N segments). Its only
-    /// depth-incrementing call is the trailing `walk_expr_depth(cursor, ..., next)`
-    /// on the leaf root — a different shape than the structural-recursion arms here.
+    /// `MemberAccess` chain walk: the iterative `while let` loop in the
+    /// `MemberAccess` arm does NOT increment `depth` per chain segment (one Rust
+    /// frame regardless of chain length). However, the trailing
+    /// `walk_expr_depth(cursor, …, next)` call on the leaf root IS a
+    /// depth-forwarding site and IS covered here by `ArmKind::MemberAccessLeafRoot`.
+    /// Each wrap layer interleaves a non-MA `UnOp` wrapper so the chain walk
+    /// terminates at every layer, forcing the trailing recursion to run once per
+    /// layer. See `depth_per_layer` for the per-arm depth-increment accounting.
     ///
-    /// Depth arithmetic: outermost wrapper at depth 0, innermost at depth
-    /// `MAX_EXPR_DEPTH`, leaf `NumberLiteral` called at `MAX_EXPR_DEPTH + 1` (= 257)
-    /// — satisfies `depth > MAX_EXPR_DEPTH` and fires the `debug_assert!`.
+    /// Depth arithmetic: most arms contribute 1 to depth per layer, so
+    /// `MAX_EXPR_DEPTH + 1` (= 257) wraps suffice to trip the guard.
+    /// `MemberAccessLeafRoot` contributes 2 per layer (one from the MA trailing
+    /// recursion, one from the interleaved UnOp), so `MAX_EXPR_DEPTH / 2 + 1`
+    /// (= 129) wraps suffice. The `depth_per_layer` helper is the source of
+    /// truth; the wrap-count formula `MAX_EXPR_DEPTH / depth_per_layer(arm) + 1`
+    /// derives from it directly so adding a new arm with a different regime stays
+    /// consistent.
     #[test]
     #[cfg(debug_assertions)]
     fn walk_expr_depth_panics_for_every_recursion_arm() {
