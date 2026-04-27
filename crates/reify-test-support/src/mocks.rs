@@ -836,9 +836,10 @@ impl GeometryKernel for MockGeometryKernel {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         match self.extracted_edges.get(&handle) {
             Some(result) => result.clone(),
-            None => Err(QueryError::QueryFailed(
-                "topology extraction not supported by this kernel".into(),
-            )),
+            None => Err(QueryError::QueryFailed(format!(
+                "no topology extraction fixture for {:?}",
+                handle
+            ))),
         }
     }
 
@@ -848,9 +849,10 @@ impl GeometryKernel for MockGeometryKernel {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         match self.extracted_faces.get(&handle) {
             Some(result) => result.clone(),
-            None => Err(QueryError::QueryFailed(
-                "topology extraction not supported by this kernel".into(),
-            )),
+            None => Err(QueryError::QueryFailed(format!(
+                "no topology extraction fixture for {:?}",
+                handle
+            ))),
         }
     }
 
@@ -2973,10 +2975,6 @@ mod tests {
         );
     }
 
-    // step-1 (Task 2511): failing tests for MockGeometryKernel topology-extraction
-    // overrides and typed query builders.  These do not compile until step-2 adds
-    // the builder methods and extract_edges / extract_faces overrides.
-
     #[test]
     fn mock_with_extracted_edges_returns_configured_handles() {
         let parent = GeometryHandleId(1);
@@ -3034,9 +3032,16 @@ mod tests {
         let result = kernel.extract_edges(parent);
         match result {
             Err(QueryError::QueryFailed(msg)) => {
+                // Message should identify the handle so a misspelled handle id
+                // in a test fixture is distinguishable from a genuinely-unsupported
+                // kernel (which uses "topology extraction not supported by this kernel").
                 assert!(
-                    msg.contains("topology extraction not supported"),
+                    msg.contains("topology extraction fixture"),
                     "unexpected message: {msg:?}"
+                );
+                assert!(
+                    msg.contains("99"),
+                    "message should include the handle id (99), got: {msg:?}"
                 );
             }
             other => panic!("expected Err(QueryFailed), got {:?}", other),
@@ -3051,8 +3056,12 @@ mod tests {
         match result {
             Err(QueryError::QueryFailed(msg)) => {
                 assert!(
-                    msg.contains("topology extraction not supported"),
+                    msg.contains("topology extraction fixture"),
                     "unexpected message: {msg:?}"
+                );
+                assert!(
+                    msg.contains("99"),
+                    "message should include the handle id (99), got: {msg:?}"
                 );
             }
             other => panic!("expected Err(QueryFailed), got {:?}", other),
