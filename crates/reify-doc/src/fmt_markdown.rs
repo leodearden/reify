@@ -67,8 +67,21 @@ fn render_single(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
         if let Some(doc) = module.doc.as_deref() {
             emit_paragraphs(&mut out, doc);
         }
-        for item in &module.items {
+        // Partition items: `@test`-annotated items are deferred to a `## Tests`
+        // subsection at the bottom of the module so the main flow stays focused
+        // on the public API surface.
+        let (non_tests, tests): (Vec<&ItemDoc>, Vec<&ItemDoc>) = module
+            .items
+            .iter()
+            .partition(|i| find_annotation(item_annotations(i), "test").is_none());
+        for item in &non_tests {
             render_item(&mut out, item, cross_refs);
+        }
+        if !tests.is_empty() {
+            out.push_str("## Tests\n\n");
+            for item in &tests {
+                render_item(&mut out, item, cross_refs);
+            }
         }
     }
     out
