@@ -366,6 +366,27 @@ fn detect_role_flip(old_groups: &[GuardedGroupInfo], new_groups: &[GuardedGroupI
     build_role_map(old_groups) != build_role_map(new_groups)
 }
 
+/// Invoke [`detect_role_flip`] and bump the probe counter in one place.
+///
+/// Both call sites in `Engine::edit_source` Phase 1 — the outer short-circuit
+/// block and the per-group lazy-memo `None` arm — share the same two-line
+/// pattern: call `detect_role_flip`, increment the counter.  This free function
+/// ensures the counter increment cannot be omitted if a third call site ever
+/// appears.
+///
+/// Accepts explicit disjoint borrows rather than `&mut Engine` so it can be
+/// called while [`PendingWarmSeedsGuard`] holds `&mut warm_pool` (which would
+/// prevent a whole-self `&mut self` method call).
+fn probe_role_flip(
+    old_groups: &[GuardedGroupInfo],
+    new_groups: &[GuardedGroupInfo],
+    counter: &mut usize,
+) -> bool {
+    let result = detect_role_flip(old_groups, new_groups);
+    *counter += 1;
+    result
+}
+
 /// Returns `true` when the guard cell's value in the pre-edit snapshot equals
 /// `new_val`, meaning the guard has not changed and member re-elaboration can
 /// be skipped.
@@ -505,11 +526,118 @@ pub(crate) fn diff_realizations(
     })
 }
 
+/// Drop-guard for the `pending_warm_seeds` staging map used in `Engine::edit_source`
+/// between steps (4c) and (14b).
+///
+/// # Safety contract
+///
+/// `WarmStatePool::checkout` has take semantics — once an entry is removed from the
+/// pool it cannot be recovered except by re-donation.  Today no `?` or
+/// `return Err(...)` exists between steps (4c) and (14b); the guard primarily
+/// protects against panics (e.g. a failed `unwrap()` on `eval_state` or a snapshot
+/// operation), and against any `?` / early-return added by a future refactor.
+///
+/// This guard fixes the hazard: it holds both the staging map **and** a
+/// `&mut WarmStatePool` reborrow.  On `Drop` it drains `self.map` and re-donates
+/// every surviving entry to `self.pool`, ensuring recoverability regardless of how
+/// the enclosing scope exits.
+///
+/// On the success path, call [`drain_into_cache_or_repool`](Self::drain_into_cache_or_repool)
+/// before the guard goes out of scope.  That method empties `self.map` so the natural
+/// `Drop` is a no-op (no double-donation).
+///
+/// # Borrow-checker note
+///
+/// The guard holds `&'a mut WarmStatePool` but no other `Engine` field.  Rust's
+/// disjoint-field borrow rules therefore allow the caller to hold simultaneous
+/// `&mut self.cache`, `&mut self.solver`, etc. while the guard is live.  Step (9)'s
+/// `donate_removed_warm_state` calls use [`pool_mut`](Self::pool_mut) to obtain a
+/// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
+/// directly.
+struct PendingWarmSeedsGuard<'a> {
+    map: HashMap<NodeId, reify_types::OpaqueState>,
+    pool: &'a mut WarmStatePool,
+}
+
+impl<'a> PendingWarmSeedsGuard<'a> {
+    /// Create a new guard wrapping `pool`.  The staging map starts empty.
+    fn new(pool: &'a mut WarmStatePool) -> Self {
+        Self {
+            map: HashMap::new(),
+            pool,
+        }
+    }
+
+    /// Insert a checked-out entry into the staging map.
+    fn insert(&mut self, nid: NodeId, state: reify_types::OpaqueState) {
+        self.map.insert(nid, state);
+    }
+
+    /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
+    /// the guard is live (e.g. step (9)'s `donate_removed_warm_state`).
+    fn pool_mut(&mut self) -> &mut WarmStatePool {
+        self.pool
+    }
+
+    /// Drain the staging map: route each entry to `cache.donate_warm_state`
+    /// when the cache holds a matching entry, else re-donate to `self.pool`.
+    ///
+    /// Mirrors the existing (14b) drain loop body 1:1:
+    /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
+    ///   cache's warm-state slot for the upcoming evaluation round).
+    /// - **cache miss** → `pool.donate(nid, state)` (re-donates the entry so
+    ///   it remains recoverable on a subsequent topology event; re-donation
+    ///   refreshes the entry's LRU access time, matching the pre-refactor
+    ///   semantics of the (14b) loop).
+    ///
+    /// After this method returns, `self.map` is empty, so the natural `Drop`
+    /// is a no-op (no double-donation).  On any early-return / panic between
+    /// step (4c) and this call, `Drop` fires with a non-empty map and
+    /// re-donates all surviving entries to the pool — early-return preservation
+    /// is enforced by the guard's [`Drop`] impl.
+    ///
+    /// Cross-reference: see the block comment at step (14b) in `edit_source`
+    /// for the full rationale for re-donation on the cache-miss path.
+    fn drain_into_cache_or_repool(&mut self, cache: &mut CacheStore) {
+        for (nid, state) in self.map.drain() {
+            if cache.get(&nid).is_some() {
+                cache.donate_warm_state(&nid, state);
+            } else {
+                self.pool.donate(nid, state);
+            }
+        }
+    }
+}
+
+impl Drop for PendingWarmSeedsGuard<'_> {
+    /// Re-donate all remaining staged entries back to the pool.
+    ///
+    /// This is the panic safety net: if `drain_into_cache_or_repool` was already
+    /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
+    /// every surviving entry is re-donated so the pool can recover it on the next
+    /// `edit_source` call.
+    ///
+    /// # Double-panic note
+    ///
+    /// `pool.donate` routes through an internal `push_event` → `debug_assert!`
+    /// (events-buffer capacity check).  In debug builds, if this `Drop` fires
+    /// during stack-unwinding from another panic **and** the events buffer happens
+    /// to be at its cap (65 536 entries), the `debug_assert!` itself panics,
+    /// triggering an unconditional `std::process::abort`.  In practice this is
+    /// essentially impossible — the buffer would need to be saturated before the
+    /// first panic — but is documented here for completeness.
+    fn drop(&mut self) {
+        for (nid, state) in self.map.drain() {
+            self.pool.donate(nid, state);
+        }
+    }
+}
+
 /// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap` and
-/// attempt to checkout warm state from `pool`. On `Some(state)`, insert into
-/// `sink`; on `None` (absent or LRU-evicted), the node falls through with
-/// no seed — observable equivalence to a cold-only run, per arch §4.3
-/// lines 539-540.
+/// attempt to checkout warm state from `pending.pool_mut()`. On `Some(state)`,
+/// insert into `pending`; on `None` (absent or LRU-evicted), the node falls
+/// through with no seed — observable equivalence to a cold-only run, per arch
+/// §4.3 lines 539-540.
 ///
 /// Used by `edit_source` step (4c) to drive the checkout half of the
 /// WarmStatePool round-trip uniformly across the `added` /
@@ -517,11 +645,14 @@ pub(crate) fn diff_realizations(
 /// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
 /// once a `diff_resolutions` exists, or `ComputeNode` once it becomes a
 /// variant) drops in as a single additional call.
+///
+/// The `pending` guard owns the pool borrow, so callers do not need to pass
+/// both a `&mut WarmStatePool` and a separate sink map — both are accessed
+/// through the guard, which also ensures re-donation on early-return / panic.
 fn checkout_added_warm_seeds<'a, I, T, F>(
-    pool: &mut WarmStatePool,
+    pending: &mut PendingWarmSeedsGuard<'_>,
     ids: I,
     wrap: F,
-    sink: &mut HashMap<NodeId, reify_types::OpaqueState>,
 ) where
     I: IntoIterator<Item = &'a T>,
     T: Clone + 'a,
@@ -529,8 +660,8 @@ fn checkout_added_warm_seeds<'a, I, T, F>(
 {
     for id in ids {
         let nid = wrap(id.clone());
-        if let Some(state) = pool.checkout(&nid) {
-            sink.insert(nid, state);
+        if let Some(state) = pending.pool_mut().checkout(&nid) {
+            pending.insert(nid, state);
         }
     }
 }
@@ -1355,33 +1486,6 @@ impl Engine {
         })
     }
 
-    /// Invoke [`detect_role_flip`] and bump `last_role_flip_probes` in one place.
-    ///
-    /// Both call sites in `edit_source` Phase 1 — the outer short-circuit block
-    /// and the per-group lazy-memo `None` arm — share the same three-line
-    /// pattern: build `old_groups` from `eval_state`, call `detect_role_flip`,
-    /// write the memo, increment the counter. Extracting that here ensures the
-    /// counter increment cannot be omitted if a third call site ever appears.
-    ///
-    /// `new_groups` is sliced from the freshly-built snapshot and does NOT
-    /// borrow `self`. NLL releases the `self.eval_state` borrow (used only as
-    /// an argument to `detect_role_flip`) before `self.last_role_flip_probes`
-    /// is mutated, so `&mut self` is unambiguous.
-    fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
-        let result = detect_role_flip(
-            &self
-                .eval_state
-                .as_ref()
-                .unwrap()
-                .snapshot
-                .graph
-                .guarded_groups,
-            new_groups,
-        );
-        self.last_role_flip_probes += 1;
-        result
-    }
-
     /// Incrementally re-evaluate after a structural source edit.
     ///
     /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
@@ -1524,24 +1628,17 @@ impl Engine {
         //      above); ComputeNode is not yet a NodeId variant. The pool API
         //      itself is variant-agnostic, so any future variant slots in
         //      as a single additional call to the helper.
-        let mut pending_warm_seeds: HashMap<NodeId, reify_types::OpaqueState> = HashMap::new();
+        let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
+        checkout_added_warm_seeds(&mut pending_warm_seeds, &added, NodeId::Value);
         checkout_added_warm_seeds(
-            &mut self.warm_pool,
-            &added,
-            NodeId::Value,
             &mut pending_warm_seeds,
-        );
-        checkout_added_warm_seeds(
-            &mut self.warm_pool,
             &added_constraints,
             NodeId::Constraint,
-            &mut pending_warm_seeds,
         );
         checkout_added_warm_seeds(
-            &mut self.warm_pool,
+            &mut pending_warm_seeds,
             &added_realizations,
             NodeId::Realization,
-            &mut pending_warm_seeds,
         );
 
         // (5) Compute the dirty cone over changed ∪ added using the NEW
@@ -1714,7 +1811,7 @@ impl Engine {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
         donate_removed_warm_state(
-            &mut self.warm_pool,
+            pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed,
             NodeId::Value,
@@ -1723,7 +1820,7 @@ impl Engine {
             self.cache.invalidate(&NodeId::Constraint(cid.clone()));
         }
         donate_removed_warm_state(
-            &mut self.warm_pool,
+            pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed_constraints,
             NodeId::Constraint,
@@ -1732,7 +1829,7 @@ impl Engine {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
         donate_removed_warm_state(
-            &mut self.warm_pool,
+            pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed_realizations,
             NodeId::Realization,
@@ -1966,11 +2063,24 @@ impl Engine {
             // value; memoize so detect_role_flip is called at most once per edit.
             // Correctness pinned by task-2084 locks. Counter tracked via
             // `self.last_role_flip_probes` for the perf-lock test (task 2094).
-            // `probe_role_flip` centralises the detect_role_flip call and counter
-            // increment (task 2094 amendment — eliminates duplicate call sites).
+            //
+            // `pending_warm_seeds` holds `&mut self.warm_pool` for the duration
+            // of edit_source. The free function `probe_role_flip` accepts
+            // disjoint borrows (`self.eval_state` and `self.last_role_flip_probes`
+            // are distinct from `self.warm_pool`), so no whole-self conflict.
             let mut role_flip_memo: Option<bool> = None;
             let has_dirty_guards = sc_dirty || has_added_guard_member || {
-                let result = self.probe_role_flip(&graph.guarded_groups);
+                let result = probe_role_flip(
+                    &self
+                        .eval_state
+                        .as_ref()
+                        .unwrap()
+                        .snapshot
+                        .graph
+                        .guarded_groups,
+                    &graph.guarded_groups,
+                    &mut self.last_role_flip_probes,
+                );
                 role_flip_memo = Some(result);
                 result
             };
@@ -2024,12 +2134,20 @@ impl Engine {
                     {
                         // Lazy role-flip check (task 2094): populate role_flip_memo
                         // on first query, reuse on subsequent groups.
-                        // probe_role_flip centralises the counter increment and
-                        // the detect_role_flip call (task 2094 amendment).
                         let flipped = match role_flip_memo {
                             Some(v) => v,
                             None => {
-                                let result = self.probe_role_flip(&graph.guarded_groups);
+                                let result = probe_role_flip(
+                                    &self
+                                        .eval_state
+                                        .as_ref()
+                                        .unwrap()
+                                        .snapshot
+                                        .graph
+                                        .guarded_groups,
+                                    &graph.guarded_groups,
+                                    &mut self.last_role_flip_probes,
+                                );
                                 role_flip_memo = Some(result);
                                 result
                             }
@@ -2590,13 +2708,16 @@ impl Engine {
         //       future variant routinely round-trips without a cache
         //       consumer, switch this branch to a `donate_preserving_lru`
         //       variant or push a "lru-stamp restore" through the pool API.
-        for (nid, state) in pending_warm_seeds.drain() {
-            if self.cache.get(&nid).is_some() {
-                self.cache.donate_warm_state(&nid, state);
-            } else {
-                self.warm_pool.donate(nid, state);
-            }
-        }
+        //
+        //       Early-return preservation: `pending_warm_seeds` is a
+        //       `PendingWarmSeedsGuard` whose `Drop` impl re-donates any
+        //       un-drained entries back to the pool. On the success path
+        //       `drain_into_cache_or_repool` empties the map so the
+        //       natural `Drop` at function-end is a no-op. On any `?`,
+        //       `return Err(...)`, or panic between (4c) and here, `Drop`
+        //       fires with a non-empty map and re-donates all surviving
+        //       entries, making them recoverable on the next `edit_source`.
+        pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
@@ -3761,6 +3882,218 @@ mod tests {
             result_was_none.load(Ordering::Acquire),
             "absent-guard arm (release build): helper must return None \
              when the guard cell is absent"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PendingWarmSeedsGuard unit tests
+    // (steps 1, 3, 5 — guard Drop contract, drain no-op, payload integrity)
+    // -----------------------------------------------------------------------
+
+    /// Drop with non-empty map re-donates remaining entries to the pool.
+    ///
+    /// Pins the primary guard contract: any entry that was checked out into the
+    /// guard's staging map and NOT consumed by `drain_into_cache_or_repool` on
+    /// the success path is re-donated to `pool` by `Drop`, preserving recoverability
+    /// across early-return / panic / `?` between steps (4c) and (14b).
+    #[test]
+    fn pending_warm_seeds_guard_redonates_remaining_entries_on_drop() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(1024);
+        assert_eq!(pool.used_bytes(), 0);
+
+        let node_id = NodeId::Value(ValueCellId::new("T", "x"));
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(node_id.clone(), OpaqueState::new(0xDEADBEEFu32, 16));
+            // Guard goes out of scope here, triggering Drop — no drain called
+        }
+
+        // After Drop, the entry must have been re-donated to pool
+        assert!(
+            pool.used_bytes() >= 16,
+            "Drop must re-donate entries to pool; used_bytes was {}",
+            pool.used_bytes()
+        );
+        let recovered = pool
+            .checkout(&node_id)
+            .expect("entry must be recoverable from pool after guard Drop");
+        assert_eq!(
+            recovered.downcast::<u32>(),
+            Some(0xDEADBEEF),
+            "payload must be preserved through the drop re-donation"
+        );
+    }
+
+    /// `drain_into_cache_or_repool` empties `self.map` so the subsequent
+    /// natural `Drop` is a no-op (regression against double-donation).
+    ///
+    /// When neither entry has a matching cache entry, the drain re-donates
+    /// both to the pool.  After the guard goes out of scope `Drop` fires with
+    /// an empty map and does nothing, so `pool.used_bytes()` equals the sum
+    /// of the two original sizes (not double).
+    #[test]
+    fn pending_warm_seeds_guard_drain_into_cache_or_repool_makes_drop_inert() {
+        use crate::cache::{CacheStore, NodeId};
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::{ConstraintNodeId, OpaqueState};
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(4096);
+        let mut cache = CacheStore::new();
+
+        let val_nid = NodeId::Value(ValueCellId::new("T", "v"));
+        let con_nid = NodeId::Constraint(ConstraintNodeId::new("T", 0));
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(val_nid.clone(), OpaqueState::new(0xAAu8, 100));
+            pending.insert(con_nid.clone(), OpaqueState::new(0xBBu8, 50));
+            // Neither node has a cache entry → drain MUST re-donate both to pool.
+            pending.drain_into_cache_or_repool(&mut cache);
+            // Guard drops here with an empty map → Drop is a no-op.
+        }
+
+        assert_eq!(
+            pool.used_bytes(),
+            150,
+            "drain must donate each entry exactly once (no double-donation)"
+        );
+        assert_eq!(pool.len(), 2, "pool must have exactly 2 entries");
+        assert_eq!(
+            pool.checkout(&val_nid)
+                .expect("val entry must be in pool")
+                .downcast::<u8>(),
+            Some(0xAA),
+            "Value payload preserved"
+        );
+        assert_eq!(
+            pool.checkout(&con_nid)
+                .expect("constraint entry must be in pool")
+                .downcast::<u8>(),
+            Some(0xBB),
+            "Constraint payload preserved"
+        );
+    }
+
+    /// Drop re-donation preserves the original payload bytes for all three
+    /// NodeId variants (Value, Constraint, Realization), and the total
+    /// `used_bytes` accounting matches the sum of the individual sizes.
+    ///
+    /// Pins variant-symmetry of the Drop re-donation path.
+    #[test]
+    fn pending_warm_seeds_guard_drop_preserves_payload_bytes_for_each_entry() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::{ConstraintNodeId, OpaqueState, RealizationNodeId};
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(4096);
+
+        let val_nid = NodeId::Value(ValueCellId::new("T", "v"));
+        let con_nid = NodeId::Constraint(ConstraintNodeId::new("T", 0));
+        let rea_nid = NodeId::Realization(RealizationNodeId::new("T", 0));
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(val_nid.clone(), OpaqueState::new(0xDEADu32, 8));
+            pending.insert(con_nid.clone(), OpaqueState::new(0xBEEFu32, 16));
+            pending.insert(rea_nid.clone(), OpaqueState::new(0xFEEDu32, 24));
+            // No drain — Drop fires with all three entries
+        }
+
+        // Total: 8 + 16 + 24 = 48 bytes
+        assert_eq!(
+            pool.used_bytes(),
+            48,
+            "used_bytes must equal sum of all three entry sizes (8+16+24)"
+        );
+
+        assert_eq!(
+            pool.checkout(&val_nid)
+                .expect("Value entry must be in pool after Drop")
+                .downcast::<u32>(),
+            Some(0xDEAD),
+            "Value payload preserved"
+        );
+        assert_eq!(
+            pool.checkout(&con_nid)
+                .expect("Constraint entry must be in pool after Drop")
+                .downcast::<u32>(),
+            Some(0xBEEF),
+            "Constraint payload preserved"
+        );
+        assert_eq!(
+            pool.checkout(&rea_nid)
+                .expect("Realization entry must be in pool after Drop")
+                .downcast::<u32>(),
+            Some(0xFEED),
+            "Realization payload preserved"
+        );
+    }
+
+    /// Guard re-donates its staged entries when dropped during a panic unwind.
+    ///
+    /// This is the end-to-end test for the guard's primary safety contract:
+    /// simulate `edit_source` step (4c) (checkout into the guard) followed by a
+    /// panic between (4c) and (14b), then assert that the pool can recover the
+    /// entry on the next call — i.e. the guard's `Drop` fired during unwind and
+    /// re-donated the checked-out state.
+    ///
+    /// # Why this test uses unsafe
+    ///
+    /// `std::panic::catch_unwind` requires its closure to be `UnwindSafe`.
+    /// `&mut WarmStatePool` is `!UnwindSafe`, so we wrap the closure in
+    /// `AssertUnwindSafe` and pass the pool via a raw pointer that is valid for
+    /// the entire test frame.  The raw deref is sound: `pool` outlives the
+    /// closure, and no other reference to `pool` exists while the closure runs.
+    #[test]
+    fn pending_warm_seeds_guard_redonates_on_panic() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+        use std::panic::{self, AssertUnwindSafe};
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(1024);
+        let node_id = NodeId::Value(ValueCellId::new("T", "panic_node"));
+
+        // Prime the pool with a known payload so we can verify recovery.
+        pool.donate(node_id.clone(), OpaqueState::new(0xCAFEu32, 4));
+
+        // Simulate step (4c): checkout → guard live → panic → Drop re-donates.
+        {
+            // SAFETY: `pool` is alive for the entire test; the raw pointer does
+            // not escape the `AssertUnwindSafe` closure.
+            let pool_ptr: *mut WarmStatePool = &mut pool;
+            let nid = node_id.clone();
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                let pool_ref = unsafe { &mut *pool_ptr };
+                let mut guard = PendingWarmSeedsGuard::new(pool_ref);
+                let state = guard
+                    .pool_mut()
+                    .checkout(&nid)
+                    .expect("state should be in pool before panic");
+                guard.insert(nid.clone(), state);
+                // Simulate a panic inside edit_source between steps (4c) and (14b).
+                panic!("simulated mid-edit panic");
+            }));
+            assert!(result.is_err(), "catch_unwind must catch the panic");
+        }
+
+        // After the unwind, the guard's Drop must have re-donated the entry.
+        let recovered = pool
+            .checkout(&node_id)
+            .expect("pool must contain the entry re-donated by guard Drop");
+        assert_eq!(
+            recovered.downcast::<u32>(),
+            Some(0xCAFE),
+            "payload must survive the panic → Drop → pool round-trip"
         );
     }
 }
