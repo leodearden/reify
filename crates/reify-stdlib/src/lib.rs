@@ -13,6 +13,7 @@ mod test_macros;
 mod analysis;
 mod complex;
 mod geometry;
+mod joints;
 mod linalg;
 mod matrix;
 mod numeric;
