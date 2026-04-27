@@ -104,7 +104,7 @@ fn edges_at_height_box_top_z_5mm_returns_four() {
     assert_eq!(
         result.len(),
         4,
-        "edges_at_height(z=+5e-3, tol=1e-9) on a 10x10x10 box should return the 4 top edges, got {}",
+        "edges_at_height(z=+5e-3, tol=1e-6) on a 10x10x10 box should return the 4 top edges, got {}",
         result.len()
     );
 
