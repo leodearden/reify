@@ -418,6 +418,35 @@ fn faces_by_normal_malformed_json_returns_query_failed() {
     }
 }
 
+/// A well-formed FaceNormal JSON that omits the `z` key must produce
+/// QueryFailed. This pins the per-key Some/None branch of `parse_xyz_json`:
+/// `x` and `y` are set but `z?` short-circuits to `None`, so
+/// `parse_xyz_value` surfaces "FaceNormal returned malformed JSON Point3".
+#[test]
+fn faces_by_normal_well_formed_xyz_missing_z_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(f, Value::String("{\"x\":1.0,\"y\":0.0}".into()));
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("malformed JSON") || msg.contains("FaceNormal"),
+                "error should mention malformed JSON or FaceNormal, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for missing-z face normal JSON, got {:?}",
+            other
+        ),
+    }
+}
+
 /// A face whose normal parses as the zero vector must produce QueryFailed.
 /// This exercises the normalize3 degenerate-face guard (distinct from the
 /// zero-target guard tested by faces_by_normal_zero_target_returns_query_failed).
