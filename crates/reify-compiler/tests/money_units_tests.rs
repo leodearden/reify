@@ -145,7 +145,12 @@ fn stdlib_USD_quantity_literal_resolves_to_money_scalar() {
 
 #[test]
 fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
-    let source = "structure def S { param p : Money/Mass = 25USD/1kg }";
+    // The parser only accepts named types in param declarations, not inline
+    // DimensionalOp expressions like `Money/Mass`. Define a top-level type
+    // alias and use it as the param type — the established pattern from
+    // type_alias_compile_tests.rs::dimensional_alias_force_div_area.
+    let source =
+        "type CostPerMass = Money / Mass\nstructure def S { param p : CostPerMass = 25USD/1kg }";
     let module = compile_with_stdlib_helper(source);
 
     let errs: Vec<_> = module
