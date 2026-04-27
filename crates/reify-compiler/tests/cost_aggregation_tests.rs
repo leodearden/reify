@@ -12,8 +12,8 @@
 #[allow(dead_code)]
 mod common;
 
-use reify_compiler::{RequirementKind, stdlib_loader};
-use reify_types::Type;
+use reify_compiler::{DefaultKind, RequirementKind, stdlib_loader};
+use reify_types::{DimensionVector, Type};
 
 // ─── Helper: locate the std/io module ────────────────────────────────────────
 
@@ -83,6 +83,55 @@ fn cost_aggregation_costed_trait_present_in_std_io_with_required_quantity_produc
         ),
         other => panic!(
             "Costed.quantity_produced should be RequirementKind::Param(Type::Real), got {:?}",
+            other
+        ),
+    }
+}
+
+// ─── step-3: Costed exposes line_cost let-default with Money dimension ───────
+
+/// `Costed` must provide `let line_cost : Money = unit_cost * quantity_produced`
+/// as a `DefaultKind::Let` with `cell_type == Some(Scalar<MONEY>)`.
+///
+/// This locks the trait's promise that conforming structures inherit a
+/// money-typed `line_cost` cell. Without the explicit `Money` annotation, the
+/// trait-let cell_type would be `None` and the contract would only be
+/// exercised through type inference at conformance sites.
+///
+/// RED before step-4: step-2 added only the param, not the let-default; the
+/// `defaults` vec is empty so `find` returns None.
+#[test]
+fn cost_aggregation_costed_exposes_line_cost_let_default_with_money_dim() {
+    let module = io_module();
+
+    let costed = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Costed")
+        .expect("std.io should contain trait 'Costed'");
+
+    let line_cost_default = costed
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("line_cost"))
+        .unwrap_or_else(|| {
+            panic!(
+                "Costed should provide a let-default named 'line_cost'; found defaults: {:?}",
+                costed.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &line_cost_default.kind {
+        DefaultKind::Let { cell_type, .. } => {
+            assert_eq!(
+                *cell_type,
+                Some(Type::Scalar { dimension: DimensionVector::MONEY }),
+                "Costed.line_cost should be DefaultKind::Let with cell_type Some(Scalar<MONEY>), got cell_type = {:?}",
+                cell_type
+            );
+        }
+        other => panic!(
+            "Costed.line_cost should be DefaultKind::Let, got {:?}",
             other
         ),
     }
