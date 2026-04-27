@@ -102,6 +102,12 @@ pub struct ConstraintDoc {
     pub expr_repr: String,
     /// Annotations attached to this constraint.
     pub annotations: Vec<AnnotationDoc>,
+    /// 1-indexed source line number of the constraint, if known.
+    ///
+    /// The struct-level `#[serde(default)]` keeps legacy JSON (serialized
+    /// before this field was introduced) deserializing cleanly with
+    /// `line == None`.
+    pub line: Option<u32>,
 }
 
 /// Documentation for a sub-component instantiation inside a topology template.
@@ -461,6 +467,7 @@ mod tests {
                 label: None,
                 expr_repr: "width > 0 mm".to_string(),
                 annotations: vec![],
+                line: None,
             }],
             sub_components: vec![SubComponentDoc {
                 name: "cpu".to_string(),
