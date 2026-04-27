@@ -177,12 +177,13 @@ fn render_item(out: &mut String, item: &ItemDoc) {
 
     // Kind-specific body. Container variants get parameter / port / constraint
     // / meta sections; the simpler variants will be wired up in later steps.
-    if let ItemDoc::Structure { params, ports, constraints, .. }
-        | ItemDoc::Occurrence { params, ports, constraints, .. } = item
+    if let ItemDoc::Structure { params, ports, constraints, meta, .. }
+        | ItemDoc::Occurrence { params, ports, constraints, meta, .. } = item
     {
         render_params_table(out, params);
         render_ports_table(out, ports);
         render_constraints(out, constraints);
+        render_meta(out, meta);
     }
 
     out.push_str("</section>\n");
@@ -310,6 +311,31 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     }
     out.push_str("</tbody>\n");
     out.push_str("</table>\n");
+}
+
+/// Render the `<h3>Meta</h3>` definition list, sorted alphabetically by key.
+/// No-op when `meta` is empty.
+///
+/// Emits `<h3>Meta</h3><dl>` then `<dt>{escaped-key}</dt><dd>{escaped-value}</dd>`
+/// pairs sorted by key, then `</dl>`.  Mirrors `fmt_markdown::render_meta`'s
+/// alphabetical-by-key contract so the two formatters present meta entries in
+/// the same order regardless of insertion order in the model.
+fn render_meta(out: &mut String, meta: &[(String, String)]) {
+    if meta.is_empty() {
+        return;
+    }
+    let mut sorted: Vec<&(String, String)> = meta.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    out.push_str("<h3>Meta</h3>\n");
+    out.push_str("<dl>\n");
+    for (k, v) in sorted {
+        out.push_str("<dt>");
+        out.push_str(&html_escape(k));
+        out.push_str("</dt><dd>");
+        out.push_str(&html_escape(v));
+        out.push_str("</dd>\n");
+    }
+    out.push_str("</dl>\n");
 }
 
 /// Render the `<h3>Constraints</h3>` bullet list.  No-op when `cs` is empty.
