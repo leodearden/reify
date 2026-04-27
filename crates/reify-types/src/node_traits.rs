@@ -64,6 +64,69 @@ impl NodeTraits {
     ///
     /// See `docs/reify-implementation-architecture.md §7.6`.
     pub const COMMITTABLE: NodeTraits = NodeTraits(0b0000_1000);
+
+    /// Bitmask covering all four declared flags (used by [`Not`] impl).
+    const ALL_MASK: u8 = 0b0000_1111;
+
+    /// Returns the union of `self` and `other` (bitwise OR).
+    ///
+    /// Prefer this over the `|` operator in `const` contexts, where
+    /// `std::ops::BitOr` cannot be called on stable Rust.
+    #[inline]
+    pub const fn union(self, other: NodeTraits) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Returns the intersection of `self` and `other` (bitwise AND).
+    ///
+    /// Prefer this over the `&` operator in `const` contexts.
+    #[inline]
+    pub const fn intersection(self, other: NodeTraits) -> Self {
+        Self(self.0 & other.0)
+    }
+}
+
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
+
+impl BitOr for NodeTraits {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitAnd for NodeTraits {
+    type Output = Self;
+    #[inline]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl BitOrAssign for NodeTraits {
+    #[inline]
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl BitAndAssign for NodeTraits {
+    #[inline]
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+    }
+}
+
+impl Not for NodeTraits {
+    type Output = Self;
+    /// Bitwise NOT within the declared four-flag domain.
+    ///
+    /// `!flag` excludes `flag` and includes all other declared flags.
+    #[inline]
+    fn not(self) -> Self {
+        Self(!self.0 & Self::ALL_MASK)
+    }
 }
 
 #[cfg(test)]
