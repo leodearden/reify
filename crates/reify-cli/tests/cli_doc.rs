@@ -46,6 +46,31 @@ fn doc_no_args_prints_usage_and_exits_two() {
 }
 
 #[test]
+fn doc_compile_error_exits_one_with_stderr() {
+    let path = common::fixture_path("bracket_compile_error.ri");
+    let (status, stdout, stderr) = run_doc(&[&path]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "compile errors must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("error:"),
+        "stderr should contain 'error:' from a compile diagnostic, got: {stderr}"
+    );
+    // No doc body should reach stdout when compilation fails.
+    assert!(
+        !stdout.contains("<!DOCTYPE html>"),
+        "stdout should not contain HTML doc body on compile error, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"modules\""),
+        "stdout should not contain JSON doc body on compile error, got: {stdout}"
+    );
+}
+
+#[test]
 fn doc_unknown_flag_exits_two() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
