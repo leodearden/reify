@@ -1471,6 +1471,18 @@ impl OcctKernel {
         let h = self.store(shape);
         h.id
     }
+
+    /// Build a CompSolid containing one 10×10×10 mm box solid and store it.
+    ///
+    /// The returned shape has `TopAbs_ShapeType() == TopAbs_COMPSOLID`, which
+    /// passes the shape-type guard in `is_watertight` and reaches
+    /// `BRepCheck_Analyzer::IsValid()`. Used by `conformance_integration` tests.
+    pub fn store_compsolid_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_compsolid_for_test()
+            .expect("make_compsolid_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
 }
 
 #[cfg(all(test, has_occt))]

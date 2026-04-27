@@ -1650,6 +1650,33 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
     });
 }
 
+std::unique_ptr<OcctShape> make_compsolid_for_test() {
+    // A CompSolid containing a single 10×10×10 mm box solid.
+    // BRep_Builder::MakeCompSolid gives ShapeType() == TopAbs_COMPSOLID,
+    // which passes the is_watertight shape-type guard and reaches
+    // BRepCheck_Analyzer::IsValid(). The exact IsValid() result is
+    // OCCT-version-dependent (a single-solid CompSolid with no shared faces
+    // may or may not be considered valid depending on OCCT's interpretation
+    // of the CompSolid semantics). See the integration test comment for policy.
+    return wrap_occt_call("make_compsolid", [&]() {
+        BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
+        box_maker.Build();
+        if (!box_maker.IsDone()) {
+            throw std::runtime_error("make_compsolid: box construction failed");
+        }
+        TopoDS_Shape box = box_maker.Shape();
+
+        TopoDS_CompSolid cs;
+        BRep_Builder b;
+        b.MakeCompSolid(cs);
+        b.Add(cs, TopoDS::Solid(box));
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = cs;
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_vertex_for_test() {
     // A single point vertex at the origin.
     // ShapeType() == TopAbs_VERTEX; no edge→face incidence → manifold trivially

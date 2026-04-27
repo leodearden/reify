@@ -382,6 +382,9 @@ pub mod ffi {
         /// Single vertex at origin → TopAbs_VERTEX; type-guard fires for watertight.
         fn make_vertex_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// CompSolid wrapping one 10×10×10 mm box → TopAbs_COMPSOLID; type-guard passes.
+        fn make_compsolid_for_test() -> Result<UniquePtr<OcctShape>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

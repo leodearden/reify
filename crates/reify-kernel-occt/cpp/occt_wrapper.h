@@ -392,6 +392,10 @@ std::unique_ptr<OcctShape> make_edge_for_test();
 /// The returned shape has TopAbs_ShapeType() == TopAbs_VERTEX.
 std::unique_ptr<OcctShape> make_vertex_for_test();
 
+/// Build a CompSolid containing one 10×10×10 mm box solid.
+/// The returned shape has TopAbs_ShapeType() == TopAbs_COMPSOLID.
+std::unique_ptr<OcctShape> make_compsolid_for_test();
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

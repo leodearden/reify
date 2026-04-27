@@ -119,8 +119,10 @@ fn compsolid_passes_through_shape_type_guard() {
     let mut kernel = OcctKernel::new();
     let cs_id = kernel.store_compsolid_for_test();
 
-    // COMPSOLID reaches BRepCheck_Analyzer — the exact bool is pinned to observed
-    // OCCT behaviour (resolved in step-8). Placeholder; will be updated.
+    // COMPSOLID reaches BRepCheck_Analyzer — pinned to observed OCCT behaviour:
+    // IsValid() returns true for a single-solid CompSolid on the OCCT version
+    // used by this repo. If a future OCCT upgrade changes this verdict,
+    // investigate before re-pinning (the semantics of CompSolid.IsValid changed).
     assert_bool_query(&kernel, GeometryQuery::IsWatertight(cs_id), true, "IsWatertight on compsolid");
     // every edge of the wrapped box has exactly 2 face parents → manifold
     assert_bool_query(&kernel, GeometryQuery::IsManifold(cs_id),   true, "IsManifold on compsolid");
