@@ -99,3 +99,47 @@ structure S {
         deep_dot_chain_warning.message
     );
 }
+
+/// The DeepDotChain warning has at least one DiagnosticLabel whose span
+/// equals the outermost MemberAccess.span — i.e. starts at byte offset of
+/// root identifier `a` and ends after final member `e`.
+#[test]
+fn chain_warning_has_label_covering_full_chain_span() {
+    let source = r#"
+structure S {
+    param a: Real = 0
+    let x = a.b.c.d.e
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warning = warnings
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .expect("expected one DeepDotChain warning");
+
+    assert!(
+        !deep_dot_chain_warning.labels.is_empty(),
+        "expected at least one label on the DeepDotChain warning, got: {:?}",
+        deep_dot_chain_warning
+    );
+
+    // Compute the expected chain span by locating "a.b.c.d.e" in the source.
+    let needle = "a.b.c.d.e";
+    let start = source
+        .find(needle)
+        .expect("test source must contain `a.b.c.d.e` literally") as u32;
+    let end = start + needle.len() as u32;
+
+    let has_full_span_label = deep_dot_chain_warning
+        .labels
+        .iter()
+        .any(|l| l.span.start == start && l.span.end == end);
+
+    assert!(
+        has_full_span_label,
+        "expected a label whose span covers the full chain (bytes {start}..{end}), \
+         got labels: {:?}",
+        deep_dot_chain_warning.labels
+    );
+}
