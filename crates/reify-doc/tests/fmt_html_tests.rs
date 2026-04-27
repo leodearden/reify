@@ -5,7 +5,7 @@
 //! `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_html::render_html;
-use reify_doc::model::{DocModel, ModuleDoc};
+use reify_doc::model::{DocModel, ItemDoc, ModuleDoc};
 
 /// `render_html` on the default (empty) `DocModel` must produce a structurally
 /// well-formed HTML5 document that is *self-contained*: no `<link>` / `<script>` /
@@ -148,4 +148,122 @@ fn html_escape_handles_special_chars() {
         out.contains("&#x27;") || out.contains("&#39;"),
         "expected single-quote escape (`&#x27;` or `&#39;`); got:\n{out}"
     );
+}
+
+/// Build a single-item module model and render it.
+fn render_one_item(item: ItemDoc) -> String {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![item],
+            ..Default::default()
+        }],
+    };
+    render_html(&model, None)
+}
+
+/// Each `ItemDoc` variant must render as `<section id="{name}">…<h2>…</h2>…`.
+/// Verifies the H2 heading text matches the keyword/visibility/name
+/// convention from `fmt_markdown::item_keyword`.
+#[test]
+fn item_section_h2_per_variant() {
+    let cases: Vec<(ItemDoc, &str)> = vec![
+        (
+            ItemDoc::Structure {
+                name: "Foo".into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![], params: vec![],
+                ports: vec![], constraints: vec![], sub_components: vec![],
+                realizations: vec![], meta: vec![],
+            },
+            "pub structure Foo",
+        ),
+        (
+            ItemDoc::Occurrence {
+                name: "Foo".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], params: vec![],
+                ports: vec![], constraints: vec![], sub_components: vec![],
+                realizations: vec![], meta: vec![],
+            },
+            "occurrence Foo",
+        ),
+        (
+            ItemDoc::Trait {
+                name: "Foo".into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![], members: vec![],
+            },
+            "pub trait Foo",
+        ),
+        (
+            ItemDoc::Function {
+                name: "Foo".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                signature: "fn Foo()".into(),
+            },
+            "fn Foo",
+        ),
+        (
+            ItemDoc::Field {
+                name: "Foo".into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![],
+                type_repr: "i32".into(), default_repr: None,
+            },
+            "pub let Foo",
+        ),
+        (
+            ItemDoc::Purpose {
+                name: "Foo".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                expr_repr: "x".into(), direction: "minimize".into(),
+            },
+            "purpose Foo",
+        ),
+        (
+            ItemDoc::Enum {
+                name: "Foo".into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![], variants: vec![],
+            },
+            "pub enum Foo",
+        ),
+        (
+            ItemDoc::Unit {
+                name: "Foo".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                base_unit: "Meter".into(), scale: "1.0".into(),
+            },
+            "unit Foo",
+        ),
+        (
+            ItemDoc::TypeAlias {
+                name: "Foo".into(), doc: None, is_pub: true,
+                annotations: vec![], pragmas: vec![],
+                type_repr: "f64".into(),
+            },
+            "pub type Foo",
+        ),
+        (
+            ItemDoc::ConstraintDef {
+                name: "Foo".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                expr_repr: "x > 0".into(),
+            },
+            "constraint Foo",
+        ),
+    ];
+
+    for (item, expected_h2_text) in cases {
+        let out = render_one_item(item);
+        assert!(
+            out.contains("<section id=\"Foo\">"),
+            "missing wrapping <section id=\"Foo\"> for variant with H2 `{expected_h2_text}`; got:\n{out}"
+        );
+        let expected_h2 = format!("<h2>{expected_h2_text}</h2>");
+        assert!(
+            out.contains(&expected_h2),
+            "missing `{expected_h2}` for variant; got:\n{out}"
+        );
+        assert!(
+            out.contains("</section>"),
+            "missing closing </section>; got:\n{out}"
+        );
+    }
 }
