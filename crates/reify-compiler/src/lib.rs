@@ -262,6 +262,7 @@ pub fn compile_with_prelude_context(
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
     compile_builder::post_passes::phase_dup_sig_check(&mut compile_ctx);
     compile_builder::post_passes::phase_field_composition(&mut compile_ctx);
+    compile_builder::post_passes::phase_augment_composed_captures(&mut compile_ctx);
 
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut compile_ctx, parsed);
     let content_hash =

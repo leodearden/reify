@@ -13,7 +13,9 @@ use reify_syntax::ParsedModule;
 use reify_types::{ContentHash, Diagnostic, Type};
 
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::functions::check_field_composition_types;
+use crate::functions::{
+    check_field_composition_types, collect_composed_field_dependencies,
+};
 use crate::scc;
 use crate::termination::check_recursive_termination;
 use crate::traits::compile_purpose;
@@ -82,6 +84,79 @@ pub(crate) fn phase_field_composition(ctx: &mut CompilationCtx) {
     for field in &ctx.fields {
         if let CompiledFieldSource::Composed { expr } = &field.source {
             check_field_composition_types(expr, &field_registry, &mut ctx.diagnostics);
+        }
+    }
+}
+
+/// Post-compilation pass: for each composed field, inject the
+/// `__field.<name>` cell IDs of every other field referenced inside its
+/// compiled lambda body into the lambda's `captures` Vec. This surfaces
+/// field-to-field dependencies through the existing
+/// `Lambda { captures, .. }` arm of `collect_value_refs_inner`, so
+/// `extract_dependency_trace` and the reverse-dependency index pick them
+/// up without any new traversal mode.
+///
+/// Self-references are excluded by removing the outer field's name from
+/// the registry passed to [`collect_composed_field_dependencies`] for
+/// each iteration. Existing entries in `captures` (from lambda-time
+/// scope analysis) are preserved; only missing field-cell deps are added.
+///
+/// Runs after `phase_field_composition` so the field registry shape is
+/// identical and any future field-related post-pass can reuse the
+/// pattern.
+pub(crate) fn phase_augment_composed_captures(ctx: &mut CompilationCtx) {
+    // First, collect all field names so we can build a per-iteration
+    // registry that excludes the outer field. We snapshot the names into
+    // owned Strings to avoid borrowing `ctx.fields` while we mutate it.
+    let field_names: Vec<String> = ctx.fields.iter().map(|f| f.name.clone()).collect();
+
+    // Snapshot read-only field references keyed by name, used to rebuild a
+    // registry for each composed field with the outer name omitted. Stored
+    // as `(name, Box::leak-style)` is unnecessary — we re-collect against
+    // `&ctx.fields` after the mutating loop completes for each field, but
+    // because we mutate `ctx.fields[i].source.expr.kind.captures` and not
+    // structural fields, we can hold a parallel index of (i, deps) computed
+    // before the mutation. Simpler: pre-compute `(field_idx, deps_to_add)`
+    // pairs in a read-only pass, then merge them in a separate mutating
+    // pass. This avoids any aliased borrow.
+    let mut deps_to_add: Vec<(usize, Vec<reify_types::ValueCellId>)> = Vec::new();
+
+    for (idx, field) in ctx.fields.iter().enumerate() {
+        if let CompiledFieldSource::Composed { expr } = &field.source {
+            // Build a registry mapping every *other* field's name → field ref.
+            // Excluding the outer field ensures recursive composed fields
+            // (e.g. `composed { |p| f3(...) }` inside f3) do not produce a
+            // self-capture entry.
+            let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
+            for other in &ctx.fields {
+                if other.name != field.name {
+                    registry.insert(other.name.as_str(), other);
+                }
+            }
+            // The body lives inside a Lambda; walking the outer expr is fine
+            // because `walk` recurses into Lambda bodies and will surface
+            // FunctionCall nodes referencing fields. This matches the
+            // traversal `check_field_composition_types` already performs.
+            let deps = collect_composed_field_dependencies(expr, &registry);
+            deps_to_add.push((idx, deps));
+        }
+    }
+
+    // Suppress dead_code warning: `field_names` is reserved for a future
+    // diagnostic-emission path and is not currently consumed.
+    let _ = field_names;
+
+    // Mutating pass: merge deps into each composed field's lambda captures.
+    for (idx, new_caps) in deps_to_add {
+        let field = &mut ctx.fields[idx];
+        if let CompiledFieldSource::Composed { expr } = &mut field.source
+            && let reify_types::CompiledExprKind::Lambda { captures, .. } = &mut expr.kind
+        {
+            for cap in new_caps {
+                if !captures.contains(&cap) {
+                    captures.push(cap);
+                }
+            }
         }
     }
 }
