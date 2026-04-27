@@ -548,9 +548,12 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             );
             continue;
         }
-        first_seen = true;
-
-        // First-seen pragma: interpret its args. The well-formed shape is
+        // NOTE: first_seen is set only once a well-formed pragma is stored —
+        // malformed first pragmas (zero args, bare-non-ident, KeyValue-first,
+        // multi-element non-ident-leading) do not consume the first-wins slot,
+        // so a following well-formed #solver is still recognised.
+        //
+        // Interpret the args. The well-formed shape is
         // `[Bare(Ident(name)), KeyValue*]`. The single bare-ident case is a
         // degenerate of that shape (empty tail). Every other shape leaves
         // `solver_pragma` as `None` and emits a single "expected #solver(...)"
@@ -605,6 +608,8 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     name: name.clone(),
                     options,
                 });
+                // Consume the first-wins slot only on success.
+                first_seen = true;
             }
             // Zero args: `#solver` with no arg list.
             [] => {
