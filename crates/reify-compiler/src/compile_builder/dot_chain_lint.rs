@@ -919,4 +919,41 @@ mod tests {
         assert_eq!(parse_overflow_depth(msg), 257);
     }
 
+    /// `render_chain_text` falls back to `_` for root variants that are
+    /// neither `Ident`, `EnumAccess`, `IndexAccess`, nor `FunctionCall` (e.g.
+    /// `BinOp`). The chain text is `_.c.d.e` when `members_outer_to_inner` is
+    /// `["e", "d", "c"]` (outermost first, reversed on output).
+    ///
+    /// Done as a unit test rather than an integration test because constructing
+    /// a `BinOp`-rooted chain via parsed source depends on `parenthesized_expression`
+    /// lowering specifics that are orthogonal to this task. The existing
+    /// `walk_expr_depth_panics_for_every_recursion_arm` test already builds
+    /// `Expr` trees by hand with `SourceSpan::empty(0)` — same pattern here.
+    #[test]
+    fn render_chain_text_uses_underscore_for_other_root_variants() {
+        let span = SourceSpan::empty(0);
+        let root = Expr {
+            kind: ExprKind::BinOp {
+                op: "+".to_string(),
+                left: Box::new(Expr {
+                    kind: ExprKind::Ident("a".to_string()),
+                    span,
+                }),
+                right: Box::new(Expr {
+                    kind: ExprKind::Ident("b".to_string()),
+                    span,
+                }),
+            },
+            span,
+        };
+        // members_outer_to_inner = ["e", "d", "c"] → output is "_.c.d.e"
+        let result = render_chain_text(&root, &["e", "d", "c"]);
+        assert_eq!(
+            result,
+            "_.c.d.e",
+            "render_chain_text must fall back to `_` for a BinOp root, got: {:?}",
+            result
+        );
+    }
+
 }
