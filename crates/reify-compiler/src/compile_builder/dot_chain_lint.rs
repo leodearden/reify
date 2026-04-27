@@ -45,6 +45,13 @@ pub(crate) const DEEP_DOT_CHAIN_THRESHOLD: usize = 4;
 /// by a fuzzer or a future parser bug, would burn one Rust frame per level.
 /// 256 is generous (typical hand-written code never exceeds ~20) and stops well
 /// short of overflowing default Rust stacks.
+///
+/// Exceeding this bound is treated as a "should never happen" invariant
+/// violation: in debug/test builds (i.e. when `debug_assertions` are enabled)
+/// `walk_expr_depth` fires a `debug_assert!(false, …)` so that fuzzers and the
+/// test suite catch a regression immediately via a panic. Release builds keep
+/// the existing silent-`return` fast-path — the `debug_assert!` compiles out —
+/// leaving production behaviour unchanged.
 const MAX_EXPR_DEPTH: usize = 256;
 
 /// Visit every expression-bearing position in `parsed` and emit a Warning for
@@ -251,6 +258,21 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
 
 fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize) {
     if depth > MAX_EXPR_DEPTH {
+        // Should never happen on real source: 256 is generous (typical hand-
+        // written code never exceeds ~20). Hitting this guard means a fuzzer
+        // input or upstream parser bug produced a pathologically deep AST and
+        // the dot-chain lint silently lost coverage on that subtree. Panic in
+        // debug/test builds so a regression bisects directly to this site;
+        // keep the silent `return` in release so end-users never see the
+        // unactionable diagnostic.
+        debug_assert!(
+            false,
+            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {}; \
+             dot-chain lint coverage truncated at this subtree — likely \
+             upstream parser bug or fuzzer input producing pathologically \
+             deep AST",
+            MAX_EXPR_DEPTH
+        );
         return;
     }
     let next = depth + 1;
