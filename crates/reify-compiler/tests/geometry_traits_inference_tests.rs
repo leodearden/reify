@@ -21,10 +21,13 @@
 use reify_compiler::geometry_traits_inference::{
     GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_modify,
     combine_pattern, combine_sweep, combine_transform, combine_union, infer_curve, infer_primitive,
-    infer_traits_for_op,
+    infer_traits_for_expr, infer_traits_for_op,
 };
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind,
+};
+use reify_types::{
+    CompiledExpr, CompiledExprKind, ContentHash, ResolvedFunction, Type, Value,
 };
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
@@ -372,4 +375,93 @@ fn infer_traits_for_op_treats_geomref_sub_as_bounded() {
     }];
     // Both Sub references default to all(); Union preserves only Bounded.
     assert_eq!(infer_traits_for_op(0, &ops), InferredTraits::bounded_only());
+}
+
+// ─── infer_traits_for_expr — walk CompiledExpr FunctionCall trees ───────────
+
+/// Build a `FunctionCall` `CompiledExpr` for the given function name and args.
+///
+/// Mirrors the construction pattern used at the call site in
+/// `crates/reify-compiler/src/functions.rs`: `ResolvedFunction { name, qualified_name }`
+/// where `qualified_name` is `"std::<name>"` for stdlib geometry constructors.
+/// The content_hash is a stable byte-derived value (test fixture only — the
+/// inference function does not inspect it).
+fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: ContentHash::of(name.as_bytes()),
+    }
+}
+
+/// `infer_traits_for_expr` recognises the four primitive constructors
+/// (`box`, `cylinder`, `sphere`, `tube`) as fully Bounded+Connected+Convex.
+/// The args are non-geometry literals — the inference does not inspect them.
+#[test]
+fn infer_traits_for_expr_handles_primitive_function_calls() {
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_expr = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    assert_eq!(infer_traits_for_expr(&box_expr), InferredTraits::all());
+
+    let cylinder_expr = make_function_call(
+        "cylinder",
+        vec![ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    assert_eq!(infer_traits_for_expr(&cylinder_expr), InferredTraits::all());
+
+    let sphere_expr = make_function_call("sphere", vec![ten_mm()], Type::Geometry);
+    assert_eq!(infer_traits_for_expr(&sphere_expr), InferredTraits::all());
+
+    let tube_expr = make_function_call(
+        "tube",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    assert_eq!(infer_traits_for_expr(&tube_expr), InferredTraits::all());
+}
+
+/// `infer_traits_for_expr` recurses into geometry-typed args of `union`,
+/// applying `combine_union`. Two Bounded boxes union to `bounded_only`
+/// (Connected and Convex dropped per `combine_union`).
+#[test]
+fn infer_traits_for_expr_handles_nested_union_of_boxes() {
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_a = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let box_b = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let union_expr = make_function_call("union", vec![box_a, box_b], Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr(&union_expr),
+        InferredTraits::bounded_only()
+    );
+}
+
+/// `infer_traits_for_expr` of a non-FunctionCall expression (e.g. a
+/// `Literal` or `ValueRef`) defaults to `InferredTraits::all()`. This
+/// safe-default-Bounded fallback matches the conformance walker's
+/// behaviour for non-geometry args: an opaque expression at a Bounded
+/// slot is assumed to satisfy the bound (otherwise every `let g = box(...)`
+/// passed through a value-ref would spuriously fail).
+#[test]
+fn infer_traits_for_expr_defaults_to_all_for_non_function_call() {
+    let lit = CompiledExpr::literal(Value::Int(42), Type::Int);
+    assert_eq!(infer_traits_for_expr(&lit), InferredTraits::all());
 }
