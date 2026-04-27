@@ -184,19 +184,32 @@ fn relative_to_examples_dir_output_round_trips_to_existing_file() {
     );
 }
 
-/// Verify that every path returned by `discover_ri_files()` is accepted by
-/// `relative_to_examples_dir` without panicking.
+/// Verify two invariants for every path returned by `discover_ri_files()`:
 ///
-/// This locks the contract between the two functions: if `discover_ri_files`
-/// ever begins canonicalizing paths (which would resolve `..` and break the
-/// lexical `strip_prefix` inside `relative_to_examples_dir`), this test will
-/// fail, surfacing the regression before it silently corrupts SKIP_SET lookups
-/// or failure reports.
+/// (a) `relative_to_examples_dir` accepts the path without panicking (i.e. the
+///     path is lexically rooted under `EXAMPLES_DIR`, as `discover_ri_files`
+///     guarantees).  If `discover_ri_files` ever starts canonicalizing paths
+///     (resolving `..`), the `strip_prefix` inside `relative_to_examples_dir`
+///     would break and this test would surface the regression before it silently
+///     corrupts SKIP_SET lookups or failure reports.
+///
+/// (b) The relative form round-trips back to the original absolute path when
+///     joined onto `EXAMPLES_DIR`: `Path::new(EXAMPLES_DIR).join(rel) == path`.
+///     This locks the SKIP_SET-key join-compatibility contract across the full
+///     corpus — both top-level (`bracket.ri`-style) and nested
+///     (`fields/composed_stiffness.ri`-style) entries.
 #[test]
 fn relative_to_examples_dir_accepts_all_discovered_paths() {
     for path in discover_ri_files() {
         // Will panic if path is not lexically rooted under EXAMPLES_DIR.
-        let _ = relative_to_examples_dir(&path);
+        let rel = relative_to_examples_dir(&path);
+        assert_eq!(
+            Path::new(EXAMPLES_DIR).join(&rel),
+            path,
+            "round-trip failed: EXAMPLES_DIR.join({:?}) != original {:?}",
+            rel,
+            path
+        );
     }
 }
 
