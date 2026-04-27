@@ -1678,3 +1678,131 @@ fn multiple_module_level_solver_pragmas_first_wins() {
         warns
     );
 }
+
+/// Helper: filter warnings that match the block-level `#solver` "deferred to
+/// v0.2" shape — message contains "ignored in v0.1" AND ("v0.2" OR
+/// "per-block").
+fn deferred_v02_solver_warnings<'a>(
+    module: &'a reify_compiler::CompiledModule,
+) -> Vec<&'a reify_types::Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("#solver")
+                && d.message.contains("ignored in v0.1")
+                && (d.message.contains("v0.2") || d.message.contains("per-block"))
+        })
+        .collect()
+}
+
+/// Block-level `#solver` on a structure emits exactly one "ignored in v0.1;
+/// per-block solver tuning deferred to v0.2" warning, leaves `solver_pragma`
+/// unset, and produces no errors.
+#[test]
+fn block_level_solver_pragma_on_structure_emits_deferred_warning() {
+    let module = compile_source(r#"structure S { #solver(libslvs) param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "block-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for structure-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for trait-level `#solver`.
+#[test]
+fn block_level_solver_pragma_on_trait_emits_deferred_warning() {
+    let module = compile_source(r#"trait T { #solver(libslvs) param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "trait-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for trait-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for purpose-level `#solver`.
+#[test]
+fn block_level_solver_pragma_on_purpose_emits_deferred_warning() {
+    let source = r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #solver(libslvs)
+            constraint 1 > 0
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "purpose-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for purpose-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// Same deferred-warning behaviour for `constraint def`-level `#solver`.
+#[test]
+fn block_level_solver_pragma_on_constraint_def_emits_deferred_warning() {
+    let source = r#"
+        constraint def C { #solver(libslvs) param x : Real }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.solver_pragma.is_none(),
+        "constraint-def-level #solver must NOT set the module field, got {:?}",
+        module.solver_pragma
+    );
+
+    let warns = deferred_v02_solver_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for constraint-def-level #solver, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
