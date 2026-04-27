@@ -299,6 +299,25 @@ pub enum DiagnosticCode {
     /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
     /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
     Shadowing,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (trait_bound iteration).
+    /// Canonical message form:
+    /// `"geometry trait '<TraitName>' on '<EntityName>' is treated as a user assertion; runtime conformance check is suppressed"`.
+    ///
+    /// Emitted as a `Warning` once per `(structure_def, geometry_marker_bound)` pair
+    /// when a structure (or occurrence) explicitly declares one of the seven stdlib
+    /// geometry-conformance marker traits (`Bounded`, `Closed`, `Manifold`,
+    /// `Orientable`, `Convex`, `Connected`, `Watertight`) in its `trait_bounds`
+    /// list. The declaration is treated as a user assertion that bypasses any future
+    /// runtime conformance check (PRD tasks 4/5 — OCCT BRepCheck hook — are not
+    /// yet wired; today the warning is the only observable effect).
+    ///
+    /// Detection is name-based against the canonical seven (case-sensitive) — see
+    /// [`crates/reify-compiler/src/geometry_traits_inference.rs`]'s
+    /// `is_geometry_marker_trait` helper and the design decision in task 2321.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TRAIT_USER_ASSERTED`
+    /// (see `docs/prds/geometry-traits.md` §"Scope" point 5).
+    TraitUserAsserted,
 }
 
 /// A diagnostic message with location and optional labels.
