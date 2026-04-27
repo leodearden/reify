@@ -1953,3 +1953,41 @@ fn kernel_pragma_with_occt_sets_kernel_pragma() {
         bad_warns
     );
 }
+
+/// `#kernel(brep_xyz)` (a non-occt kernel ident) emits exactly one error-level
+/// diagnostic with the literal text per PRD §4 / task acceptance, and stores
+/// the user-declared name verbatim per the storage-reflects-declared design
+/// decision. Mirrors the storage assertion shape of
+/// `version_pragma_too_new_number_form_emits_error_with_supported_wording`,
+/// which is the analogous non-warning policy for `#version`.
+#[test]
+fn kernel_pragma_with_other_ident_emits_v02_deferred_error() {
+    let module = compile_source("#kernel(brep_xyz)\nstructure S { param x : Real }");
+
+    let kernel_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message
+                == "kernel 'brep_xyz' is deferred to v0.2; v0.1 supports only #kernel(occt)"
+        })
+        .collect();
+    assert_eq!(
+        kernel_errors.len(),
+        1,
+        "expected exactly 1 v0.2-deferred error for #kernel(brep_xyz), got {}: {:?}",
+        kernel_errors.len(),
+        errors_only(&module)
+    );
+    // Severity is Error, not Warning — pin via errors_only above.
+    assert_eq!(kernel_errors[0].severity, Severity::Error);
+
+    // Storage-reflects-declared: kernel_pragma stores the user-declared
+    // ident verbatim, even though validation produced an error. Same policy
+    // used for `declared_version` on too-new versions.
+    assert_eq!(
+        module.kernel_pragma,
+        Some("brep_xyz".to_string()),
+        "expected kernel_pragma Some(\"brep_xyz\") for #kernel(brep_xyz) (storage reflects declared), got {:?}",
+        module.kernel_pragma
+    );
+}
