@@ -191,7 +191,11 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
                 walk_expr(u, diagnostics);
             }
         }
-        // Leaf expressions — no children.
+        // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
+        // `FunctionCall`, acts as a chain root simply by virtue of not being
+        // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm
+        // stops as soon as `cursor.kind` is no longer `MemberAccess`. Pinned
+        // by `enum_access_root_within_threshold_does_not_warn`.
         ExprKind::NumberLiteral(_)
         | ExprKind::QuantityLiteral { .. }
         | ExprKind::StringLiteral(_)
