@@ -1232,4 +1232,61 @@ mod tests {
             "after second trim: dropped_events == MAX (two × MAX/2 rounds accumulated)"
         );
     }
+
+    /// The auto-trim `tracing::warn!` must NOT include the `current_len` field.
+    ///
+    /// `current_len` is captured after the overflow push but before the drain, so it
+    /// is always `MAX_BUFFERED_EVENTS + 1` — a constant derivable from `cap`.  It
+    /// provides zero diagnostic signal and is explicitly excluded from the warn schema.
+    ///
+    /// This test also positively pins that `cap` and `total_dropped` ARE present, so
+    /// we're verifying the auto-trim warn and not some unrelated warn from the pool.
+    ///
+    /// # Why `#[cfg(not(debug_assertions))]`
+    /// In debug builds, `push_event`'s `debug_assert!` fires at the cap, so the
+    /// auto-trim and warn paths are never reached.  This test covers the release-mode
+    /// path exercised by the orchestrator's `cargo test -p reify-eval --release` pass.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn auto_trim_warn_omits_invariant_current_len_field() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut pool = WarmStatePool::unlimited();
+
+            // Donate MAX+1 events: the (MAX+1)-th push takes events.len() to
+            // MAX+1 > MAX, firing exactly one auto-trim round and one warn.
+            for i in 0..=WarmStatePool::MAX_BUFFERED_EVENTS {
+                let node =
+                    NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+                pool.donate(node, OpaqueState::new(0u8, 1));
+            }
+        });
+
+        // Exactly one warn must have fired (the auto-trim warn).
+        capture.assert_count(1);
+
+        let all_fields = capture.fields_by_event();
+        let event_fields = &all_fields[0];
+
+        // Positive assertions: pin that this is the auto-trim warn (not a stray warn).
+        assert!(
+            event_fields.contains_key("cap"),
+            "auto-trim warn must include `cap` field; got fields: {event_fields:?}"
+        );
+        assert!(
+            event_fields.contains_key("total_dropped"),
+            "auto-trim warn must include `total_dropped` field; got fields: {event_fields:?}"
+        );
+
+        // Negative assertion: the misleading invariant field must be absent.
+        assert!(
+            !event_fields.contains_key("current_len"),
+            "`current_len` must NOT appear in the auto-trim warn (it is always \
+             MAX_BUFFERED_EVENTS+1, a constant — zero diagnostic signal); \
+             got fields: {event_fields:?}"
+        );
+    }
 }
