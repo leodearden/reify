@@ -556,6 +556,35 @@ impl<'a> PendingWarmSeedsGuard<'a> {
     fn pool_mut(&mut self) -> &mut WarmStatePool {
         self.pool
     }
+
+    /// Drain the staging map: route each entry to `cache.donate_warm_state`
+    /// when the cache holds a matching entry, else re-donate to `self.pool`.
+    ///
+    /// Mirrors the existing (14b) drain loop body 1:1:
+    /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
+    ///   cache's warm-state slot for the upcoming evaluation round).
+    /// - **cache miss** → `pool.donate(nid, state)` (re-donates the entry so
+    ///   it remains recoverable on a subsequent topology event; re-donation
+    ///   refreshes the entry's LRU access time, matching the pre-refactor
+    ///   semantics of the (14b) loop).
+    ///
+    /// After this method returns, `self.map` is empty, so the natural `Drop`
+    /// is a no-op (no double-donation).  On any early-return / panic between
+    /// step (4c) and this call, `Drop` fires with a non-empty map and
+    /// re-donates all surviving entries to the pool — early-return preservation
+    /// is enforced by the guard's [`Drop`] impl.
+    ///
+    /// Cross-reference: see the block comment at step (14b) in `edit_source`
+    /// for the full rationale for re-donation on the cache-miss path.
+    fn drain_into_cache_or_repool(&mut self, cache: &mut CacheStore) {
+        for (nid, state) in self.map.drain() {
+            if cache.get(&nid).is_some() {
+                cache.donate_warm_state(&nid, state);
+            } else {
+                self.pool.donate(nid, state);
+            }
+        }
+    }
 }
 
 impl Drop for PendingWarmSeedsGuard<'_> {
