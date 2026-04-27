@@ -1521,25 +1521,19 @@ double query_distance(const OcctShape& shape1, const OcctShape& shape2) {
 }
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
-    try {
+    return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Ax1 axis(props.CentreOfMass(), gp_Dir(ax, ay, az));
         return props.MomentOfInertia(axis);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_moment_of_inertia: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_moment_of_inertia: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_moment_of_inertia: unknown C++ exception");
-    }
+    });
 }
 
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
-    // Guard covers the full body, mirroring sibling wrappers (e.g. query_moment_of_inertia).
+    // wrap_occt_call covers the full body, mirroring sibling wrappers (e.g. query_moment_of_inertia).
     // VolumeProperties is the primary throwing call; MatrixOfInertia() and m.Value() reads
     // are outside any guard in OCCT's own API but enclosed here as a defensive measure.
-    try {
+    return wrap_occt_call("query_inertia_tensor", [&]() {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Mat m = props.MatrixOfInertia();
@@ -1561,8 +1555,9 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
         // NOTE: this branch is best-effort defensive; it cannot be exercised in CI
         // without access to OCCT internals to construct a synthetic asymmetric gp_Mat.
         // The message is intentionally unprefixed here — the enclosing catch
-        // (std::exception const&) adds the "OCCT query_inertia_tensor: unexpected: "
-        // prefix, yielding a clean single-prefixed diagnostic at the Rust/cxx layer.
+        // (std::exception const&) in wrap_occt_call adds the
+        // "OCCT query_inertia_tensor: unexpected: " prefix, yielding a clean
+        // single-prefixed diagnostic at the Rust/cxx layer.
         auto check_sym = [](double a, double b, const char* label) {
             const double diff = std::abs(a - b);
             const double scale = std::max(std::abs(a), std::abs(b));
@@ -1591,19 +1586,13 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
             m23d,
             m.Value(3, 3) * density,
         };
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT query_inertia_tensor: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT query_inertia_tensor: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT query_inertia_tensor: unknown C++ exception");
-    }
+    });
 }
 
 // --- Conformance queries ---
 
 bool is_watertight(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("is_watertight", [&]() {
         // Shape-type guard: only SOLID, COMPSOLID, and SHELL can be watertight
         // (they can enclose a volume). COMPOUND is intentionally excluded:
         // BRepCheck_Analyzer.IsValid() on a compound reports topological
@@ -1618,17 +1607,11 @@ bool is_watertight(const OcctShape& shape) {
         }
         BRepCheck_Analyzer analyzer(shape.shape);
         return analyzer.IsValid();
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT is_watertight: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT is_watertight: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT is_watertight: unknown C++ exception");
-    }
+    });
 }
 
 bool is_manifold(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("is_manifold", [&]() {
         // Walk the cached edge→face incidence map. Every edge that has more
         // than 2 parent faces violates manifoldness. Shapes with no face
         // incidence (wires, edges, vertices) trivially return true.
@@ -1639,17 +1622,11 @@ bool is_manifold(const OcctShape& shape) {
             }
         }
         return true;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT is_manifold: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT is_manifold: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT is_manifold: unknown C++ exception");
-    }
+    });
 }
 
 bool is_orientable(const OcctShape& shape) {
-    try {
+    return wrap_occt_call("is_orientable", [&]() {
         ShapeAnalysis_Shell sa;
         sa.LoadShells(shape.shape);
         if (sa.NbLoaded() == 0) {
@@ -1660,13 +1637,7 @@ bool is_orientable(const OcctShape& shape) {
         // (edges with inconsistent orientation), i.e. true = problems found.
         // We invert: orientable iff no problems found.
         return !sa.CheckOrientedShells(shape.shape, Standard_False);
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT is_orientable: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT is_orientable: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT is_orientable: unknown C++ exception");
-    }
+    });
 }
 
 // --- Test fixture helpers ---
