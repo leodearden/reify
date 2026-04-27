@@ -214,6 +214,47 @@ fn doc_strings_flow_into_item_doc() {
     }
 }
 
+/// Assert that `ConstraintDoc.expr_repr` matches a byte-range slice of the source string.
+///
+/// `FIXTURE_SOURCE[32..50] == "length >= diameter"` is asserted as a sanity preamble,
+/// then the constraint's `expr_repr` must equal that slice.  Explicit byte indices (not
+/// a runtime `find()`) document the contract: the lowering pass records precise source
+/// spans and slices them to populate `expr_repr`.
+///
+/// Also verifies `line == Some(1)` (1-indexed source line).
+///
+/// TODO(build_doc_model): When the lowering pass lands, the constraint span comes from
+/// actual compiler source metadata. Update this test to re-anchor against the real span
+/// recorded on the compiled constraint rather than hardcoded indices.
+#[test]
+fn constraint_expr_repr_matches_source_byte_range_slice() {
+    // Sanity: confirm the hardcoded indices produce the expected sub-string.
+    assert_eq!(
+        &FIXTURE_SOURCE[32..50],
+        "length >= diameter",
+        "FIXTURE_SOURCE byte-range sanity check failed — indices out of sync"
+    );
+
+    let model = build_fixture();
+    let items = &model.modules[0].items;
+    let bolt = items
+        .iter()
+        .find(|i| matches!(i, ItemDoc::Structure { name, .. } if name == "Bolt"))
+        .expect("Structure 'Bolt' not found");
+    match bolt {
+        ItemDoc::Structure { constraints, .. } => {
+            assert!(!constraints.is_empty(), "Bolt must have at least one constraint");
+            let c = &constraints[0];
+            assert_eq!(
+                c.expr_repr, &FIXTURE_SOURCE[32..50],
+                "constraint expr_repr must match source byte-range slice"
+            );
+            assert_eq!(c.line, Some(1), "constraint line must be 1");
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// Assert canonical item ordering: Trait < Structure < Occurrence < Enum < Function < constant-like.
 ///
 /// Within each kind, items must be sorted alphabetically by name.
