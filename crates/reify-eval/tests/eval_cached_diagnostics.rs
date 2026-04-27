@@ -11,12 +11,12 @@
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
 use reify_eval::{CachedEvalResult, Engine};
-use reify_eval::cache::NodeId;
+use reify_eval::cache::{CachedResult, NodeId};
 use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
 use reify_types::{
-    BinOp, CompiledExpr, Diagnostic, DimensionVector, ModulePath, Severity, Type, Value,
-    ValueCellId, VersionId,
+    BinOp, CompiledExpr, Diagnostic, DeterminacyState, DimensionVector, ModulePath, Severity,
+    Type, Value, ValueCellId, VersionId,
 };
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
@@ -591,6 +591,147 @@ fn eval_cached_applies_valid_param_override_on_repeat_call() {
         result2.eval_result.diagnostics.is_empty(),
         "second call: valid override must produce no diagnostics; got: {:?}",
         result2.eval_result.diagnostics,
+    );
+}
+
+// ── task-2421: regression-lock for default_expr-fallback dedupe ────────────────────────────
+
+/// `eval_cached` with a REJECTED override on a NO-DEFAULT param must cache
+/// `(Value::Undef, DeterminacyState::Undetermined)`.
+///
+/// Without this test, a refactor that swapped `Undetermined` and `Determined`
+/// between the two no-default branches (the `Err` arm vs the `None` arm of the
+/// `match override_entry` in `eval_cached`) would pass the entire existing
+/// eval_cached_diagnostics suite undetected — the four task-2267/2273 regression
+/// tests all use a Param WITH a `default_expr`, so they exercise the `Determined`
+/// branch of the fallback block in both arms.  This test pins the `Undetermined`
+/// state that is unique to the `Err` arm when there is no default expression.
+///
+/// Characterization test: verifies the contract of the current implementation
+/// BEFORE the refactor that extracts a `default_or` helper closure (task-2421
+/// step-3).  Must pass against unrefactored code.
+#[test]
+fn eval_cached_rejected_param_override_no_default_caches_undef_undetermined() {
+    let x_id = ValueCellId::new("S", "x");
+
+    // No default expression — the `else` branch of the fallback block is taken.
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), None)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Push a Bool override into a Length param — triggers Err(TypeKindMismatch).
+    engine.set_param_and_invalidate(&x_id, Value::Bool(true));
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    // The rejected-override-no-default arm must write Value::Undef into the values map.
+    assert_eq!(
+        result.eval_result.values.get(&x_id),
+        Some(&Value::Undef),
+        "rejected Bool override on no-default param must produce Value::Undef in values map; \
+         got: {:?}",
+        result.eval_result.values.get(&x_id),
+    );
+
+    // The cache entry must record DeterminacyState::Undetermined — the unique discriminator
+    // for this arm.  A swap with the None-arm's Determined would silently corrupt the LSP
+    // determinacy signal but leave the values-map assertion above green.
+    let node_id = NodeId::Value(x_id.clone());
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("eval_cached must record a cache entry for the param node");
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined)
+        ),
+        "cache entry for rejected-override-no-default param must be \
+         CachedResult::Value(Undef, Undetermined); got: {:?}",
+        entry.result,
+    );
+
+    // The unconditional pre-check must surface the type-kind-mismatch warning.
+    let matches_warn = |d: &Diagnostic| {
+        d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
+    };
+    assert!(
+        result.eval_result.diagnostics.iter().any(matches_warn),
+        "eval_cached must emit a type-kind mismatch warning for a rejected Bool override; \
+         got: {:?}",
+        result.eval_result.diagnostics,
+    );
+}
+
+/// `eval_cached` with NO override on a NO-DEFAULT param must cache
+/// `(Value::Undef, DeterminacyState::Determined)`.
+///
+/// This is the orthogonal sibling of the test above: together the two tests pin
+/// BOTH no-default branches of the `match override_entry` block that the
+/// `default_or` helper closure (task-2421 step-3) will parameterise over.
+///
+/// The key invariant is the `Determined` state — it reflects that the evaluator
+/// ran to completion and no inconsistency was detected (there is simply nothing to
+/// resolve for a param with no override and no default).  Note this is intentionally
+/// asymmetric with the non-cached `eval()` path, which uses `continue` and omits
+/// the param from `values` altogether; `eval_cached` always writes a result.
+///
+/// Characterization test: must pass against unrefactored code.
+#[test]
+fn eval_cached_no_override_no_default_param_caches_undef_determined() {
+    let x_id = ValueCellId::new("S", "x");
+
+    // No default expression, no override pushed.
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), None)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Deliberately no call to set_param_and_invalidate — None arm is exercised.
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    // The None-arm-no-default path must write Value::Undef into the values map.
+    assert_eq!(
+        result.eval_result.values.get(&x_id),
+        Some(&Value::Undef),
+        "no-override-no-default param must produce Value::Undef in values map; \
+         got: {:?}",
+        result.eval_result.values.get(&x_id),
+    );
+
+    // The cache entry must record DeterminacyState::Determined — the unique discriminator
+    // for the None arm (contrasts with Undetermined in the Err arm above).
+    let node_id = NodeId::Value(x_id.clone());
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("eval_cached must record a cache entry for the param node");
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(Value::Undef, DeterminacyState::Determined)
+        ),
+        "cache entry for no-override-no-default param must be \
+         CachedResult::Value(Undef, Determined); got: {:?}",
+        entry.result,
+    );
+
+    // No param-override warning must be emitted (there is no override to reject).
+    assert!(
+        result.eval_result.diagnostics.is_empty(),
+        "no-override-no-default param must produce no diagnostics; \
+         got: {:?}",
+        result.eval_result.diagnostics,
     );
 }
 
