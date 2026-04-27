@@ -112,6 +112,32 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 _ => Value::Undef,
             }
         }
+        "joint_axis" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    m.get(&Value::String("axis".to_string()))
+                        .cloned()
+                        .unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
+        "joint_range" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    m.get(&Value::String("range".to_string()))
+                        .cloned()
+                        .unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
         _ => return None,
     })
 }
