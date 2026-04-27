@@ -2,6 +2,7 @@ pub(super) mod checker;
 use checker::*;
 
 use super::*;
+use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
@@ -482,6 +483,66 @@ fn check_leaf_trait_conformance(
     // is canonicalized to Int by the expression compiler).
     let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
     let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
+
+    // Geometry args at compile-inferred trait slots (`Bounded`/`Connected`/`Convex`):
+    // route to the per-op inference table instead of the StructureRef/TraitObject
+    // walker. The set of compile-inferred geometry traits is closed by the trait
+    // markers in `crates/reify-compiler/stdlib/geometry_traits.ri` (task 2297) and
+    // mirrored by the [`GeometryTrait`] enum in
+    // `crates/reify-compiler/src/geometry_traits_inference.rs`.
+    //
+    // Per design decision §2 (see plan): missing `Bounded` emits the dedicated
+    // [`DiagnosticCode::GeometryUnbounded`] code via [`emit_geometry_unbounded`];
+    // missing `Connected`/`Convex` reuse the existing
+    // [`DiagnosticCode::TypeNotConformingToTrait`] code (the PRD only allocates
+    // `E_GEOMETRY_UNBOUNDED` for the Bounded case).
+    //
+    // The arg is treated as geometry-typed when **either**:
+    //   1. `result_type == Type::Geometry` (a value-ref to a `let g = box(...)`
+    //      previously registered as `Type::Geometry`), or
+    //   2. it is a `FunctionCall` whose callee is in
+    //      [`is_geometry_function`] — `box(...)` etc. compile to a
+    //      `Type::dimensionless_scalar()` *placeholder* in the expression
+    //      compiler (see `expr.rs:782`); without this fallback the placeholder
+    //      Scalar would route to the generic-cascade arm.
+    let is_geometry_arg = matches!(effective_arg_type, Type::Geometry)
+        || extract_function_call_name(compiled_arg)
+            .map(is_geometry_function)
+            .unwrap_or(false);
+    if is_geometry_arg {
+        let geom_trait = match required_trait {
+            "Bounded" => Some(GeometryTrait::Bounded),
+            "Connected" => Some(GeometryTrait::Connected),
+            "Convex" => Some(GeometryTrait::Convex),
+            _ => None,
+        };
+        if let Some(trait_kind) = geom_trait {
+            let inferred = infer_traits_for_expr(compiled_arg);
+            if !inferred.has(trait_kind) {
+                if matches!(trait_kind, GeometryTrait::Bounded) {
+                    emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
+                } else {
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "geometry argument '{}' does not conform to trait '{}' required by param '{}'",
+                            ctx.arg_name, required_trait, ctx.arg_name
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                        .with_label(DiagnosticLabel::new(
+                            ctx.span,
+                            format!(
+                                "geometry argument '{}' is not {}",
+                                ctx.arg_name, required_trait
+                            ),
+                        )),
+                    );
+                }
+            }
+            return;
+        }
+        // Other required traits against a geometry arg fall through to the
+        // existing anti-cascade arm below.
+    }
 
     // Check conformance based on effective_arg_type.
     // StructureRef and TraitObject are handled by the shared helper; non-struct/non-trait
