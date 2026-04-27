@@ -132,7 +132,13 @@ fn collect_body_frame_into(
             }
             MemberDecl::GuardedGroup(g) => {
                 // Both branches register into the SAME parent frame as
-                // siblings (spec §6.4); recurse to handle nested groups.
+                // siblings (spec §6.4 — match-arm-style guarded decls
+                // are mutually-exclusive siblings, NOT a child scope).
+                // Same-name decls across the two branches silently
+                // overwrite in the frame; we do NOT flag intra-frame
+                // duplicates here — those belong to the existing
+                // duplicate-decl error path. Recurse so nested groups
+                // also fold into the same parent frame.
                 collect_body_frame_into(&g.members, frame, depth + 1);
                 collect_body_frame_into(&g.else_members, frame, depth + 1);
             }
