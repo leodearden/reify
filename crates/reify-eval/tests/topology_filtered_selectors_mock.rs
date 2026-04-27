@@ -233,6 +233,27 @@ fn faces_by_normal_nan_target_returns_query_failed() {
 // edges_parallel_to
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// FaceNormal contract requires Value::String. A Value::Real payload must
+/// produce QueryFailed — pins the non-string fall-through arm of
+/// `parse_xyz_value` for FaceNormal.
+#[test]
+fn faces_by_normal_returns_query_failed_when_normal_is_real() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(f, Value::Real(1.0)); // intentionally wrong type
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for non-string FaceNormal value, got {:?}",
+        result
+    );
+}
+
 #[test]
 fn edges_parallel_to_anti_parallel_tangent_is_accepted() {
     // edges_parallel_to is orientation-agnostic: the kernel may return either
@@ -289,6 +310,27 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
         "NaN axis must produce Err(QueryFailed), got {:?}",
+        result
+    );
+}
+
+/// EdgeTangent contract requires Value::String. A Value::Real payload must
+/// produce QueryFailed — pins the non-string fall-through arm of
+/// `parse_xyz_value` for EdgeTangent.
+#[test]
+fn edges_parallel_to_returns_query_failed_when_tangent_is_real() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_tangent_result(e, Value::Real(1.0)); // intentionally wrong type
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for non-string EdgeTangent value, got {:?}",
         result
     );
 }
@@ -418,6 +460,28 @@ fn faces_by_normal_malformed_json_returns_query_failed() {
     }
 }
 
+/// A well-formed FaceNormal JSON that omits the `z` key must produce
+/// QueryFailed. This pins the per-key Some/None branch of `parse_xyz_json`:
+/// `x` and `y` are set but `z?` short-circuits to `None`, so
+/// `parse_xyz_value` surfaces "FaceNormal returned malformed JSON Point3".
+#[test]
+fn faces_by_normal_well_formed_xyz_missing_z_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(f, Value::String("{\"x\":1.0,\"y\":0.0}".into()));
+
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for missing-z face normal JSON, got {:?}",
+        result
+    );
+}
+
 /// A face whose normal parses as the zero vector must produce QueryFailed.
 /// This exercises the normalize3 degenerate-face guard (distinct from the
 /// zero-target guard tested by faces_by_normal_zero_target_returns_query_failed).
@@ -475,9 +539,29 @@ fn edges_parallel_to_malformed_tangent_json_returns_query_failed() {
     }
 }
 
+/// A well-formed EdgeTangent JSON that omits the `z` key must produce
+/// QueryFailed. This pins the per-key Some/None branch of `parse_xyz_json`
+/// via the EdgeTangent label: `x` and `y` are set but `z?` short-circuits
+/// to `None`, surfacing "EdgeTangent returned malformed JSON Point3".
+#[test]
+fn edges_parallel_to_well_formed_xyz_missing_z_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_tangent_result(e, Value::String("{\"x\":1.0,\"y\":0.0}".into()));
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for missing-z edge tangent JSON, got {:?}",
+        result
+    );
+}
+
 /// Malformed JSON in the BoundingBox payload must produce QueryFailed.
-/// Also exercises the missing-zmin/zmax branch since the malformed string
-/// will fail the parser entirely.
 #[test]
 fn edges_at_height_malformed_bbox_json_returns_query_failed() {
     let parent = GeometryHandleId(1);
@@ -500,4 +584,30 @@ fn edges_at_height_malformed_bbox_json_returns_query_failed() {
             other
         ),
     }
+}
+
+/// A structurally-valid bbox JSON that omits `zmin`/`zmax` must produce
+/// QueryFailed. This drives `parse_flat_number_object` through every
+/// iteration (xmin/xmax/ymin/ymax are all tolerated by
+/// `parse_flat_number_object`) and only fails at the final `Some((zmin?, zmax?))`
+/// — the per-key Some/None branch of `parse_bbox_z_extents_json` that the
+/// malformed-string fixture above does NOT exercise.
+#[test]
+fn edges_at_height_well_formed_bbox_missing_zmin_zmax_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_bbox_result(
+            e,
+            Value::String("{\"xmin\":0.0,\"xmax\":1.0,\"ymin\":0.0,\"ymax\":1.0}".into()),
+        );
+
+    let result = topology_selectors::edges_at_height(&mut kernel, parent, 0.0, 1.0);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "expected Err(QueryFailed) for bbox missing zmin/zmax, got {:?}",
+        result
+    );
 }
