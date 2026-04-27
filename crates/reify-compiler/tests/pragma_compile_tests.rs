@@ -1347,119 +1347,36 @@ fn precision_pragma_with_negative_or_nan_quantity_emits_error_via_injection() {
         reify_compiler::compile(&parsed)
     }
 
-    // ── negative value ────────────────────────────────────────────────────────
-    {
-        let module = injected_precision_module(-0.001);
-
+    // ── table-driven: negative / NaN / INFINITY / NEG_INFINITY ──────────────
+    let cases: &[(f64, &str, &str)] = &[
+        (-0.001, "must be positive", "negative"),
+        (f64::NAN, "not finite", "NaN"),
+        (f64::INFINITY, "not finite", "INFINITY"),
+        (f64::NEG_INFINITY, "not finite", "NEG_INFINITY"),
+    ];
+    for (value, expected_substr, label) in cases {
+        let module = injected_precision_module(*value);
         assert!(
             module.default_tolerance.is_none(),
-            "expected default_tolerance None for #precision(-0.001m), got {:?}",
-            module.default_tolerance
+            "[{label}] expected default_tolerance None for #precision({value} m), got {:?}",
+            module.default_tolerance,
         );
-
-        let neg_errors: Vec<_> = module
+        let matched: Vec<_> = module
             .diagnostics
             .iter()
             .filter(|d| {
                 d.severity == Severity::Error
                     && d.message.contains("#precision")
-                    && d.message.contains("must be positive")
+                    && d.message.contains(expected_substr)
             })
             .collect();
         assert_eq!(
-            neg_errors.len(),
+            matched.len(),
             1,
-            "expected exactly 1 error mentioning '#precision' + 'must be positive' for \
-             #precision(-0.001m), got {}: {:?}",
-            neg_errors.len(),
-            module.diagnostics
-        );
-    }
-
-    // ── NaN value ─────────────────────────────────────────────────────────────
-    {
-        let module = injected_precision_module(f64::NAN);
-
-        assert!(
-            module.default_tolerance.is_none(),
-            "expected default_tolerance None for #precision(NaN m), got {:?}",
-            module.default_tolerance
-        );
-
-        let nan_errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Severity::Error
-                    && d.message.contains("#precision")
-                    && d.message.contains("not finite")
-            })
-            .collect();
-        assert_eq!(
-            nan_errors.len(),
-            1,
-            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
-             #precision(NaN m), got {}: {:?}",
-            nan_errors.len(),
-            module.diagnostics
-        );
-    }
-
-    // ── INFINITY value — also triggers !is_finite() ───────────────────────────
-    {
-        let module = injected_precision_module(f64::INFINITY);
-
-        assert!(
-            module.default_tolerance.is_none(),
-            "expected default_tolerance None for #precision(INFINITY m), got {:?}",
-            module.default_tolerance
-        );
-
-        let inf_errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Severity::Error
-                    && d.message.contains("#precision")
-                    && d.message.contains("not finite")
-            })
-            .collect();
-        assert_eq!(
-            inf_errors.len(),
-            1,
-            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
-             #precision(INFINITY m), got {}: {:?}",
-            inf_errors.len(),
-            module.diagnostics
-        );
-    }
-
-    // ── NEG_INFINITY value — also triggers !is_finite() ──────────────────────
-    {
-        let module = injected_precision_module(f64::NEG_INFINITY);
-
-        assert!(
-            module.default_tolerance.is_none(),
-            "expected default_tolerance None for #precision(NEG_INFINITY m), got {:?}",
-            module.default_tolerance
-        );
-
-        let neg_inf_errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Severity::Error
-                    && d.message.contains("#precision")
-                    && d.message.contains("not finite")
-            })
-            .collect();
-        assert_eq!(
-            neg_inf_errors.len(),
-            1,
-            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
-             #precision(NEG_INFINITY m), got {}: {:?}",
-            neg_inf_errors.len(),
-            module.diagnostics
+            "[{label}] expected exactly 1 error mentioning '#precision' + '{expected_substr}' \
+             for #precision({value} m), got {}: {:?}",
+            matched.len(),
+            module.diagnostics,
         );
     }
 
