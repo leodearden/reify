@@ -1110,3 +1110,131 @@ purpose check(subject : Structure) {
 // `expand_purpose_reflective_placeholders` directly with a hand-crafted
 // `ResolvedSchemaQuery`, pinning the precedence contract independently
 // of compiler-internal ordering.
+
+// ── §10: Composed-field reverse-index preservation across activate/deactivate ─
+//
+// Task-2343 step-13 regression test. Pins the cache invariant that the
+// reviewer flagged: after `activate_purpose` (and again after
+// `deactivate_purpose`) the reverse-dependency index must STILL register
+// each composed field as a dependent of every captured field cell.
+//
+// Background. Initial `eval()` builds the reverse index via
+// `ReverseDependencyIndex::build_from_graph_and_fields(&graph,
+// &module.fields)` (engine_eval.rs), which iterates `module.fields` and
+// surfaces composed-field deps via the augmented `Lambda { captures, .. }`
+// injected by the compiler's `phase_augment_composed_captures` post-pass.
+// `engine_edit.rs::edit_param` does the same. But `engine_purposes.rs`
+// historically called the no-fields wrappers
+// (`build_from_graph(&graph)` / `build_trace_map(&graph)`), which forward
+// to the `_and_fields` variants with an empty fields slice — so every
+// composed-field edge was DROPPED from the index after any
+// activate/deactivate. That broke the cache invariant: a subsequent
+// `edit_param` would see no dependents for `__field.<dep>` and skip
+// re-elaborating composed fields whose captures became stale.
+//
+// This test pins both the activate path and the deactivate path so a
+// future regression that re-introduces the no-fields wrappers in
+// `engine_purposes.rs` fails loudly.
+
+/// Pre-activation: confirm initial eval seeded the composed-field edge.
+/// Then activate_purpose, then deactivate_purpose, and after each rebuild,
+/// confirm the reverse_index still contains the f3 → f1 dependency edge
+/// AND the trace_map's `Value(__field.f3)` entry still records f1 as a read.
+#[test]
+fn purpose_activation_preserves_composed_field_reverse_index() {
+    use reify_eval::cache::NodeId;
+    use reify_types::FIELD_ENTITY_PREFIX;
+
+    let source = r#"
+field def f1 : Real -> Real { source = analytical { |p| p * 2.0 } }
+field def f3 : Real -> Real { source = composed { |p| f1(p) } }
+
+structure def S {
+    param k : Real = 2.0
+}
+
+purpose p1(subject : S) {
+    constraint subject.k > 0.0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let f1_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f1");
+    let f3_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f3");
+    let f3_node = NodeId::Value(f3_cell.clone());
+
+    // (1) Pre-activation sanity: initial eval used `_and_fields` so the
+    //     reverse-dep edge f1 → f3 is present. Without this assertion the
+    //     full test could pass vacuously if the index were always empty.
+    {
+        let state = engine.eval_state().expect("eval_state after eval()");
+        let f1_deps = state.reverse_index.dependents_of(&f1_cell);
+        assert!(
+            f1_deps.contains(&f3_node),
+            "pre-activation sanity: dependents_of(__field.f1) should contain \
+             Value(__field.f3) — initial eval must seed the composed-field edge \
+             via build_from_graph_and_fields; got: {:?}",
+            f1_deps
+        );
+    }
+
+    // (2) After activate_purpose: the rebuild path inside engine_purposes.rs
+    //     must use `_and_fields` so composed-field edges survive. If
+    //     activate_purpose calls the no-fields wrapper, this assertion fails:
+    //     the rebuilt index drops every composed-field edge.
+    engine.activate_purpose("p1", "S");
+    {
+        let state = engine.eval_state().expect("eval_state after activate_purpose");
+        let f1_deps = state.reverse_index.dependents_of(&f1_cell);
+        assert!(
+            f1_deps.contains(&f3_node),
+            "post-activate: dependents_of(__field.f1) must STILL contain \
+             Value(__field.f3) — engine_purposes.rs::activate_purpose must \
+             rebuild the reverse index with the `_and_fields` variant, otherwise \
+             composed-field edges are dropped; got: {:?}",
+            f1_deps
+        );
+
+        // (3) Symmetric check on trace_map — the forward edge from f3 to its
+        //     reads must include f1.
+        let trace = state
+            .trace_map
+            .get(&f3_node)
+            .expect("trace_map should contain Value(__field.f3) entry after activate");
+        assert!(
+            trace.reads.contains(&f1_cell),
+            "post-activate: trace_map[__field.f3].reads must contain __field.f1 \
+             — engine_purposes.rs::activate_purpose must rebuild the trace_map \
+             with the `_and_fields` variant; got reads: {:?}",
+            trace.reads
+        );
+    }
+
+    // (4) After deactivate_purpose: same invariants must hold. Pins that the
+    //     deactivate path also uses the `_and_fields` rebuild.
+    engine.deactivate_purpose("p1");
+    {
+        let state = engine
+            .eval_state()
+            .expect("eval_state after deactivate_purpose");
+        let f1_deps = state.reverse_index.dependents_of(&f1_cell);
+        assert!(
+            f1_deps.contains(&f3_node),
+            "post-deactivate: dependents_of(__field.f1) must STILL contain \
+             Value(__field.f3); got: {:?}",
+            f1_deps
+        );
+        let trace = state
+            .trace_map
+            .get(&f3_node)
+            .expect("trace_map should contain Value(__field.f3) entry after deactivate");
+        assert!(
+            trace.reads.contains(&f1_cell),
+            "post-deactivate: trace_map[__field.f3].reads must contain __field.f1; \
+             got reads: {:?}",
+            trace.reads
+        );
+    }
+}
