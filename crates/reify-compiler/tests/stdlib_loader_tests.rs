@@ -210,6 +210,44 @@ fn std_units_module_has_expected_units() {
     assert!((s.factor - 1.0).abs() < 1e-12);
 }
 
+// ─── step-2322: prelude bootstrap modules carry #no_prelude pragma ──
+
+/// The four stdlib modules that have no inter-stdlib dependencies must carry
+/// `#no_prelude` as a self-documenting bootstrap directive. This test fails
+/// until `#no_prelude` is added to each .ri file (Step 2 of task 2322).
+///
+/// Target modules (only built-in dims + hardcoded-fallback units, no prelude dep):
+///   - std/units, std/materials/mechanical, std/analysis, std/tolerancing
+///
+/// Asserts via `module.pragmas` so the full parse→load pipeline is exercised
+/// (a typo like `#no-prelude` would make the parser skip the pragma).
+#[test]
+fn prelude_modules_carry_no_prelude_pragma() {
+    let modules = stdlib_loader::load_stdlib();
+
+    let targets = [
+        "std/units",
+        "std/materials/mechanical",
+        "std/analysis",
+        "std/tolerancing",
+    ];
+
+    for target_path in &targets {
+        let module = modules
+            .iter()
+            .find(|m| format!("{}", m.path) == *target_path)
+            .unwrap_or_else(|| panic!("stdlib module '{}' not found in load_stdlib()", target_path));
+
+        assert!(
+            module.pragmas.iter().any(|p| p.name == "no_prelude"),
+            "stdlib module '{}' should carry `#no_prelude` pragma, but none found. \
+             pragmas: {:?}",
+            target_path,
+            module.pragmas
+        );
+    }
+}
+
 // ─── step-3: compile_with_prelude makes prelude traits visible ──────
 
 /// compile_with_prelude() makes prelude traits visible to user code.
