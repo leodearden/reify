@@ -1339,6 +1339,50 @@ mod tests {
         );
     }
 
+    /// Parity contract: `resolve_dimension_type` correctly maps every entry in
+    /// `reify_types::NAMED_DIMENSIONS` and the special-cased `"Dimensionless"`.
+    ///
+    /// This test is written BEFORE the implementation is switched to use the shared table
+    /// (step 4), so it serves as a regression-protection contract that will catch any
+    /// silent divergence between the old match-arm implementation and the new table-driven
+    /// one. It is expected to pass against both implementations.
+    #[test]
+    fn resolve_dimension_type_round_trips_all_named_dimensions() {
+        for &(dim, name) in reify_types::NAMED_DIMENSIONS {
+            let te = named_type_expr(name);
+            let mut diagnostics = Vec::new();
+            let result = resolve_dimension_type(&te, &mut diagnostics);
+            assert_eq!(
+                result,
+                Some(dim),
+                "resolve_dimension_type({:?}) should return Some({:?})",
+                name,
+                dim,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "resolve_dimension_type({:?}) should produce no diagnostics; got: {:?}",
+                name,
+                diagnostics,
+            );
+        }
+        // Special-case fallback: "Dimensionless" is intentionally absent from NAMED_DIMENSIONS
+        // but must still resolve to DimensionVector::DIMENSIONLESS.
+        let te = named_type_expr("Dimensionless");
+        let mut diagnostics = Vec::new();
+        let result = resolve_dimension_type(&te, &mut diagnostics);
+        assert_eq!(
+            result,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_dimension_type(\"Dimensionless\") should return Some(DIMENSIONLESS)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "resolve_dimension_type(\"Dimensionless\") should produce no diagnostics; got: {:?}",
+            diagnostics,
+        );
+    }
+
     #[test]
     fn solid_resolves_to_geometry() {
         assert_eq!(
