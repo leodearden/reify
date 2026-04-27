@@ -100,6 +100,95 @@ fn std_stock_module_loads_with_no_errors() {
     );
 }
 
+// ─── dispatch-path contract ───────────────────────────────────────────────────
+
+/// Proves that evaluating `standard_bolt_lengths` via a `CompiledExpr::UserFunctionCall`
+/// expression dispatches through `eval_user_function_call`, not a bare `result_expr` bypass.
+///
+/// NEGATIVE branch: `EvalContext::simple` (empty functions slice) → `Value::Undef`
+/// POSITIVE branch: `EvalContext::new(..., &module.functions)` → full 20-element list
+///
+/// This test documents the access-path contract that the rewritten `assert_length_constant`
+/// helper (step-2) enforces for all series tests.
+#[test]
+fn standard_bolt_lengths_dispatches_through_eval_user_function_call() {
+    let module = stock_module();
+
+    // Sanity: function exists, is pub, no params, returns List<Length>
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "standard_bolt_lengths")
+        .expect("standard_bolt_lengths not found in std.stock");
+    assert!(func.is_pub, "standard_bolt_lengths should be pub");
+    assert!(
+        func.params.is_empty(),
+        "standard_bolt_lengths should take no params"
+    );
+    assert_eq!(
+        func.return_type,
+        Type::List(Box::new(Type::length())),
+        "standard_bolt_lengths return type should be List<Length>"
+    );
+
+    // Build a UserFunctionCall expression — when passed to eval_expr this dispatches
+    // through eval_user_function_call, not directly to func.body.result_expr.
+    let call_expr = reify_types::CompiledExpr::user_function_call(
+        "standard_bolt_lengths".to_string(),
+        vec![],
+        Type::List(Box::new(Type::length())),
+    );
+
+    let empty = ValueMap::new();
+
+    // NEGATIVE branch: EvalContext::simple has no functions —
+    // eval_user_function_call's lookup finds nothing and returns Undef.
+    let bare_ctx = reify_expr::EvalContext::simple(&empty);
+    let bare_result = reify_expr::eval_expr(&call_expr, &bare_ctx);
+    assert_eq!(
+        bare_result,
+        Value::Undef,
+        "UserFunctionCall with empty functions slice should return Undef (function not found), \
+         got {:?}",
+        bare_result
+    );
+
+    // POSITIVE branch: EvalContext::new with module.functions — lookup succeeds → full list.
+    let populated_ctx = reify_expr::EvalContext::new(&empty, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &populated_ctx);
+    match result {
+        Value::List(ref elems) => {
+            assert_eq!(
+                elems.len(),
+                20,
+                "standard_bolt_lengths should have 20 elements via UserFunctionCall dispatch, \
+                 got {}",
+                elems.len()
+            );
+            // Spot-check element 0: 8 mm = 0.008 m
+            match &elems[0] {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "element 0 should have LENGTH dimension"
+                    );
+                    assert!(
+                        (si_value - 0.008).abs() < 1e-12,
+                        "element 0 si_value: expected 0.008, got {}",
+                        si_value
+                    );
+                }
+                other => panic!("element 0 should be Value::Scalar, got {:?}", other),
+            }
+        }
+        other => panic!(
+            "UserFunctionCall dispatch should return Value::List, got {:?}",
+            other
+        ),
+    }
+}
+
 // ─── step-3: standard_bolt_lengths function ───────────────────────────────────
 
 /// standard_bolt_lengths is present in std.stock, is pub, has no params,
