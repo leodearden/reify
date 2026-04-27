@@ -607,6 +607,33 @@ mod tests {
     }
 
     #[test]
+    fn money_display_outputs_usd() {
+        assert_eq!(format!("{}", DimensionVector::MONEY), "USD");
+    }
+
+    #[test]
+    fn money_display_with_squared_exponent() {
+        assert_eq!(format!("{}", DimensionVector::MONEY.pow(2)), "USD^2");
+    }
+
+    #[test]
+    fn money_per_mass_display_renders_compositely() {
+        // CostPerMass: MONEY / MASS → "USD·kg^-1"
+        assert_eq!(
+            format!("{}", DimensionVector::MONEY.div(&DimensionVector::MASS)),
+            "USD\u{00B7}kg^-1"
+        );
+    }
+
+    #[test]
+    fn money_dimensionless_after_self_cancel_displays_dimensionless() {
+        assert_eq!(
+            format!("{}", DimensionVector::MONEY.div(&DimensionVector::MONEY)),
+            "dimensionless"
+        );
+    }
+
+    #[test]
     fn money_constant_populates_slot_9() {
         // Slot 9 must be ONE; all other slots must be ZERO.
         assert_eq!(DimensionVector::MONEY.0[9], Rational::ONE);
