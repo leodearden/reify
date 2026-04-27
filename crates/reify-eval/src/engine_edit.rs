@@ -551,7 +551,7 @@ pub(crate) fn diff_realizations(
 /// The guard holds `&'a mut WarmStatePool` but no other `Engine` field.  Rust's
 /// disjoint-field borrow rules therefore allow the caller to hold simultaneous
 /// `&mut self.cache`, `&mut self.solver`, etc. while the guard is live.  Step (9)'s
-/// `donate_removed_warm_state` calls use [`pool_mut`](Self::pool_mut) to obtain a
+/// `donate_warm_state_and_invalidate` calls use [`pool_mut`](Self::pool_mut) to obtain a
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
 struct PendingWarmSeedsGuard<'a> {
@@ -688,18 +688,14 @@ fn checkout_added_warm_seeds<'a, I, T, F>(
     }
 }
 
-/// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap`,
-/// donate any cached warm state to `pool` (when present), then invalidate
-/// the cache entry. Donated state is keyed by `NodeId` and counts against
-/// the pool's `memory_budget_bytes`; LRU eviction inside the pool is the
-/// only memory bound (no engine-level eviction logic here), per arch §4.3
-/// lines 539-540 and §6.4 lines 654-660.
+/// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap`:
+/// (1) donates any cached warm state to `pool` (when present), then
+/// (2) invalidates the cache entry.
 ///
-/// Used by `edit_source` step (9) to drive the donation half of the
-/// WarmStatePool round-trip uniformly across the `removed` /
-/// `removed_constraints` / `removed_realizations` sets. A future `NodeId`
-/// variant slots in as a single additional call.
-fn donate_removed_warm_state<'a, I, T, F>(
+/// Used by `edit_source` step (9) for the `removed` / `removed_constraints` /
+/// `removed_realizations` sets. A future `NodeId` variant slots in as a single
+/// additional call.
+fn donate_warm_state_and_invalidate<'a, I, T, F>(
     pool: &mut WarmStatePool,
     cache: &mut CacheStore,
     ids: I,
@@ -1826,13 +1822,13 @@ impl Engine {
         // is the only memory bound (no engine-level eviction logic). Symmetric
         // across all three NodeId variants currently produced by `diff_*`
         // helpers — Value, Constraint, Realization — via the shared
-        // `donate_removed_warm_state` helper. Resolution is not yet in any
+        // `donate_warm_state_and_invalidate` helper. Resolution is not yet in any
         // `diff_*` helper (see TODO(resolution-diff) above), so it does not
         // donate today; ComputeNode is not yet a NodeId variant.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
-        donate_removed_warm_state(
+        donate_warm_state_and_invalidate(
             pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed,
@@ -1841,7 +1837,7 @@ impl Engine {
         for cid in &changed_constraints {
             self.cache.invalidate(&NodeId::Constraint(cid.clone()));
         }
-        donate_removed_warm_state(
+        donate_warm_state_and_invalidate(
             pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed_constraints,
@@ -1850,7 +1846,7 @@ impl Engine {
         for rid in &changed_realizations {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
-        donate_removed_warm_state(
+        donate_warm_state_and_invalidate(
             pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed_realizations,
