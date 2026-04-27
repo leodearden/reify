@@ -1446,4 +1446,45 @@ structure S {
             "freshly-constructed Engine's warm_pool must start empty"
         );
     }
+
+    /// Hermetic regression test: `Engine::new` must wire the warm pool through
+    /// `WarmStatePool::from_env_or_default()`.
+    ///
+    /// # Hermeticity argument
+    ///
+    /// Both `Engine::new(…)` and `WarmStatePool::from_env_or_default()` call
+    /// `std::env::var(BUDGET_ENV_VAR)` in the same test process, so they read
+    /// the same environment — the assertion holds regardless of whether
+    /// `REIFY_WARM_STATE_BUDGET_BYTES` is unset, `"unlimited"`, or a numeric
+    /// string.  Neither branch writes to the env var, so no `temp_env` serial
+    /// guard is needed.
+    ///
+    /// # What regressions this catches
+    ///
+    /// - Replacing `from_env_or_default()` with `WarmStatePool::unlimited()`:
+    ///   `engine.budget_bytes()` would return `None`, while
+    ///   `from_env_or_default().budget_bytes()` returns `Some(DEFAULT)` when
+    ///   the env var is absent — divergence detected.
+    /// - Replacing with `WarmStatePool::new(42)`:
+    ///   `engine.budget_bytes()` returns `Some(42)`, while
+    ///   `from_env_or_default().budget_bytes()` returns `Some(DEFAULT)` —
+    ///   divergence detected.
+    #[test]
+    fn engine_new_wires_warm_pool_through_from_env_or_default() {
+        use crate::warm_pool::WarmStatePool;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let expected = WarmStatePool::from_env_or_default();
+
+        assert_eq!(
+            engine.warm_pool().budget_bytes(),
+            expected.budget_bytes(),
+            "Engine::new must initialise warm_pool via \
+             WarmStatePool::from_env_or_default(); a regression to \
+             ::unlimited() or ::new(arbitrary) would diverge here \
+             (both sides read the same process env, so the assertion is \
+             hermetic and independent of REIFY_WARM_STATE_BUDGET_BYTES)"
+        );
+    }
 }
