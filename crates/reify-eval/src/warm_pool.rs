@@ -310,7 +310,6 @@ impl WarmStatePool {
             if !self.auto_trim_warned {
                 tracing::warn!(
                     cap = Self::MAX_BUFFERED_EVENTS,
-                    current_len = self.events.len(),
                     total_dropped = self.dropped_events,
                     task = "2345-followup",
                     "WarmStatePool events buffer exceeded cap; auto-trimming oldest half. \
