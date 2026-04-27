@@ -2,9 +2,34 @@
 //!
 //! See [`render_json`] for the public entry point.
 
+use crate::model::DocModel;
+
+/// Render a [`DocModel`] as JSON.
+///
+/// When `compact == false`, output is pretty-printed (multi-line, two-space
+/// indentation) via [`serde_json::to_string_pretty`].  When `compact == true`,
+/// output is the single-line `serde_json::to_string` form.
+///
+/// # Panics
+///
+/// `unwrap`s the `serde_json` result.  Every field in the [`DocModel`] graph
+/// is plain serde-derived data — no `#[serde(serialize_with = ...)]` adapters,
+/// no fallible custom `Serialize` impls — so `to_string` / `to_string_pretty`
+/// can only fail on a writer error, and we serialize into a `String` whose
+/// writer is infallible.  An unwrap here is therefore "never panics in
+/// practice"; we annotate the call with `expect` for diagnosability if a
+/// future refactor introduces a fallible adapter.
+pub fn render_json(model: &DocModel, compact: bool) -> String {
+    if compact {
+        serde_json::to_string(model).expect("DocModel serde never fails")
+    } else {
+        serde_json::to_string_pretty(model).expect("DocModel serde never fails")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::fmt_json::render_json;
+    use super::render_json;
     use crate::model::{DocModel, ItemDoc, ModuleDoc};
 
     /// Build a small `DocModel` with one `ModuleDoc` containing a single
