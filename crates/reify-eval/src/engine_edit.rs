@@ -3490,11 +3490,11 @@ mod tests {
         let result_was_none = std::sync::atomic::AtomicBool::new(false);
 
         let unwind_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let ret = tracing::subscriber::with_default(subscriber, || {
+            let _ret = tracing::subscriber::with_default(subscriber, || {
                 phase3_get_guard_val(&values, &guard_cell)
             });
             #[cfg(not(debug_assertions))]
-            result_was_none.store(ret.is_none(), Ordering::Release);
+            result_was_none.store(_ret.is_none(), Ordering::Release);
         }));
 
         assert_eq!(
