@@ -271,18 +271,21 @@ pub const fn infer_curve(kind: CurveKind) -> InferredTraits {
 ///
 /// `GeomRef::Step(i)` recurses into [`infer_traits_for_op`] with index
 /// `i`. `GeomRef::Sub(_)` returns [`InferredTraits::all()`] — the safe
-/// v0.1 default for cross-component references (see plan design decision
-/// §3 and the test
-/// `infer_traits_for_op_treats_geomref_sub_as_bounded`).
+/// v0.1 default for cross-component references.
+///
+/// # Design decision (plan §3, pinned by test)
+///
+/// Cross-component inference (resolving the sub's own realization to a
+/// real trait set) is intentionally deferred: structure instances built
+/// from primitives are typically bounded, so defaulting to "all three"
+/// avoids spurious `E_GEOMETRY_UNBOUNDED` at every cross-component
+/// boundary. The integration test
+/// `infer_traits_for_op_treats_geomref_sub_as_bounded` pins this
+/// behaviour so a future change to cross-component inference becomes a
+/// deliberate, observable diff rather than silent drift.
 fn resolve_geom_ref(geom_ref: &GeomRef, ops: &[CompiledGeometryOp]) -> InferredTraits {
     match geom_ref {
         GeomRef::Step(idx) => infer_traits_for_op(*idx, ops),
-        // Cross-component sub-reference: assume Bounded+Connected+Convex.
-        // Cross-component inference would require resolving the sub's own
-        // realization; for v0.1 we default to "all three" since structure
-        // instances built from primitives are typically bounded. This
-        // choice is pinned by a unit test so a future change becomes a
-        // deliberate, observable diff rather than silent drift.
         GeomRef::Sub(_) => InferredTraits::all(),
     }
 }
