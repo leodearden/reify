@@ -543,12 +543,12 @@ fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
 
 /// Render the `**Base:**` and `**Scale:**` lines for a `Unit`.
 fn render_unit_body(out: &mut String, base_unit: &str, scale: &str) {
-    out.push_str("**Base:** `");
-    out.push_str(base_unit);
-    out.push_str("`\n\n");
-    out.push_str("**Scale:** `");
-    out.push_str(scale);
-    out.push_str("`\n\n");
+    out.push_str("**Base:** ");
+    out.push_str(&md_inline_code(base_unit));
+    out.push_str("\n\n");
+    out.push_str("**Scale:** ");
+    out.push_str(&md_inline_code(scale));
+    out.push_str("\n\n");
 }
 
 /// Render the `= \`{type_repr}\`` line for a `TypeAlias`.
