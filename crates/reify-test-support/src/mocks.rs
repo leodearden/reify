@@ -391,6 +391,16 @@ enum QueryKey {
     IsWatertight(GeometryHandleId),
     IsManifold(GeometryHandleId),
     IsOrientable(GeometryHandleId),
+    /// CenterOfMass keys the handle + density (hashed via f64::to_bits).
+    CenterOfMass {
+        handle: GeometryHandleId,
+        density_bits: u64,
+    },
+    /// InertiaTensor keys the handle + density (hashed via f64::to_bits).
+    InertiaTensor {
+        handle: GeometryHandleId,
+        density_bits: u64,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -440,6 +450,26 @@ impl QueryKey {
             GeometryQuery::IsWatertight(id) => QueryKey::IsWatertight(*id),
             GeometryQuery::IsManifold(id) => QueryKey::IsManifold(*id),
             GeometryQuery::IsOrientable(id) => QueryKey::IsOrientable(*id),
+            GeometryQuery::CenterOfMass { handle, density } => {
+                debug_assert!(
+                    !density.is_nan(),
+                    "CenterOfMass density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
+                );
+                QueryKey::CenterOfMass {
+                    handle: *handle,
+                    density_bits: density.to_bits(),
+                }
+            }
+            GeometryQuery::InertiaTensor { handle, density } => {
+                debug_assert!(
+                    !density.is_nan(),
+                    "InertiaTensor density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
+                );
+                QueryKey::InertiaTensor {
+                    handle: *handle,
+                    density_bits: density.to_bits(),
+                }
+            }
         }
     }
 }
@@ -627,6 +657,8 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::IsWatertight(id) => id,
             GeometryQuery::IsManifold(id) => id,
             GeometryQuery::IsOrientable(id) => id,
+            GeometryQuery::CenterOfMass { handle, .. } => handle,
+            GeometryQuery::InertiaTensor { handle, .. } => handle,
         };
 
         self.queries

@@ -1507,6 +1507,31 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
     }
 }
 
+InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
+    try {
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(shape.shape, props);
+        gp_Mat m = props.MatrixOfInertia();
+        return InertiaTensor3x3{
+            m.Value(1, 1) * density,
+            m.Value(1, 2) * density,
+            m.Value(1, 3) * density,
+            m.Value(2, 1) * density,
+            m.Value(2, 2) * density,
+            m.Value(2, 3) * density,
+            m.Value(3, 1) * density,
+            m.Value(3, 2) * density,
+            m.Value(3, 3) * density,
+        };
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT query_inertia_tensor: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_inertia_tensor: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_inertia_tensor: unknown C++ exception");
+    }
+}
+
 // --- Conformance queries ---
 
 bool is_watertight(const OcctShape& shape) {

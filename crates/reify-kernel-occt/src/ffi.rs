@@ -27,6 +27,23 @@ pub mod ffi {
         normals: Vec<f32>,
     }
 
+    /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
+    ///
+    /// Fields are named m{row}{col} in row-major order (m11 = row 1, col 1).
+    /// The tensor is symmetric for principal-axes-aligned shapes; off-diagonal
+    /// entries are products of inertia and are zero for axis-aligned primitives.
+    struct InertiaTensor3x3 {
+        m11: f64,
+        m12: f64,
+        m13: f64,
+        m21: f64,
+        m22: f64,
+        m23: f64,
+        m31: f64,
+        m32: f64,
+        m33: f64,
+    }
+
     /// Topology-map cache build counts for an OcctShape.
     ///
     /// Each counter is 0 on a fresh shape and increments to 1 on the first
@@ -266,6 +283,16 @@ pub mod ffi {
 
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
+
+        /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.
+        ///
+        /// Uses `BRepGProp::VolumeProperties` + `GProp_GProps::MatrixOfInertia()`.
+        /// Each entry of OCCT's volume-weighted matrix is multiplied by `density`
+        /// so the result is the mass-weighted tensor. For a uniform-density solid
+        /// with mass m = density·volume, the diagonal entries are the principal
+        /// moments; off-diagonals are products of inertia (zero for axis-aligned
+        /// shapes).
+        fn query_inertia_tensor(shape: &OcctShape, density: f64) -> Result<InertiaTensor3x3>;
 
         /// Return cache build counts for all three topology-map slots of `shape`.
         /// Each counter is 0 on a fresh shape, 1 after first use, and never changes

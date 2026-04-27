@@ -70,6 +70,7 @@ struct Point3;
 struct BBox;
 struct TessResult;
 struct TopologyCacheBuildCounts;
+struct InertiaTensor3x3;
 
 // --- Primitive construction ---
 
@@ -241,6 +242,11 @@ BBox query_bbox(const OcctShape& shape);
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
+
+/// Compute the full 3×3 inertia tensor about the shape's centroid,
+/// scaled by `density` to yield mass-weighted moments (kg·m²).
+/// Uses BRepGProp::VolumeProperties + GProp_GProps::MatrixOfInertia().
+InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density);
 
 /// Return the number of times each topology-map cache slot has been built for
 /// `shape`. Each counter is 0 on a fresh shape and increments to 1 on first

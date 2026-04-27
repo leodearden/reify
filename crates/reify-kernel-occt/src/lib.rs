@@ -952,6 +952,43 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(moi))
             }
+            // For uniform-density solids, the center of mass equals the geometric centroid.
+            // density is intentionally ignored here (see GeometryQuery::CenterOfMass doc).
+            GeometryQuery::CenterOfMass { handle, density: _ } => {
+                let shape = self
+                    .get_shape(*handle)
+                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let pt = ffi::ffi::query_centroid(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::String(format!(
+                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
+                    pt.x, pt.y, pt.z
+                )))
+            }
+            GeometryQuery::InertiaTensor { handle, density } => {
+                let shape = self
+                    .get_shape(*handle)
+                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let t = ffi::ffi::query_inertia_tensor(shape, *density)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(vec![
+                    Value::List(vec![
+                        Value::Real(t.m11),
+                        Value::Real(t.m12),
+                        Value::Real(t.m13),
+                    ]),
+                    Value::List(vec![
+                        Value::Real(t.m21),
+                        Value::Real(t.m22),
+                        Value::Real(t.m23),
+                    ]),
+                    Value::List(vec![
+                        Value::Real(t.m31),
+                        Value::Real(t.m32),
+                        Value::Real(t.m33),
+                    ]),
+                ]))
+            }
             GeometryQuery::AdjacentFaces { shape, face_index } => {
                 let s = self
                     .get_shape(*shape)

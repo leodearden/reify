@@ -352,6 +352,40 @@ pub enum GeometryQuery {
     /// (FORWARD/REVERSED) orientations on its two incident faces. Shapes with
     /// no shells loaded (wires, isolated faces, vertices) trivially return `true`.
     IsOrientable(GeometryHandleId),
+    /// Compute the center of mass for a uniform-density solid.
+    ///
+    /// For uniform-density solids, the center of mass coincides with the
+    /// geometric centroid, so `density` is currently unused at the kernel
+    /// level — the result is identical to `Centroid(handle)`. The `density`
+    /// field is retained for API parity with the eventual stdlib
+    /// `center_of_mass(s, ρ)` function and for forward-compatibility with
+    /// non-uniform density models.
+    ///
+    /// Returns `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}`,
+    /// identical to the `Centroid` variant.
+    CenterOfMass {
+        handle: GeometryHandleId,
+        density: f64,
+    },
+    /// Compute the full 3×3 inertia tensor (mass-weighted) about the centroid.
+    ///
+    /// Uses `BRepGProp::VolumeProperties` + `GProp_GProps::MatrixOfInertia()`.
+    /// Each entry of OCCT's volume-weighted matrix is multiplied by `density`
+    /// to yield the mass-weighted tensor in kg·m².
+    ///
+    /// Returns `Value::List(rows)` where each row is `Value::List(Vec<Value::Real>)`
+    /// of three reals, in row-major order:
+    /// ```text
+    /// [[m11, m12, m13],
+    ///  [m21, m22, m23],
+    ///  [m31, m32, m33]]
+    /// ```
+    /// This 3-row 3-col layout matches the shape the eventual
+    /// `Tensor<2, 3, MomentOfInertia>` stdlib type will expect.
+    InertiaTensor {
+        handle: GeometryHandleId,
+        density: f64,
+    },
 }
 
 /// Export formats for geometry.
