@@ -276,3 +276,19 @@ fn edges_parallel_to_zero_axis_returns_query_failed() {
         other => panic!("expected Err(QueryFailed) for zero axis, got {:?}", other),
     }
 }
+
+#[test]
+fn edges_parallel_to_nan_axis_returns_query_failed() {
+    // Mirrors faces_by_normal_nan_target: the !mag.is_finite() guard in
+    // normalize3 is what catches the NaN-poisoned axis.
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [f64::NAN, 0.0, 1.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "NaN axis must produce Err(QueryFailed), got {:?}",
+        result
+    );
+}
