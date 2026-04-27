@@ -106,6 +106,7 @@ pub(crate) fn resolve_dimension_type(
         "LuminousIntensity" => Some(DimensionVector::LUMINOUS_INTENSITY),
         "Angle" => Some(DimensionVector::ANGLE),
         "SolidAngle" => Some(DimensionVector::SOLID_ANGLE),
+        "Money" => Some(DimensionVector::MONEY),
         // Geometric derived dimensions
         "Area" => Some(DimensionVector::AREA),
         "Volume" => Some(DimensionVector::VOLUME),
@@ -134,7 +135,7 @@ pub(crate) fn resolve_dimension_type(
                 Diagnostic::error(format!(
                     "unknown dimension type '{}': expected one of Length, Mass, Time, Current, \
                      Temperature, AmountOfSubstance, LuminousIntensity, Angle, SolidAngle, \
-                     Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage, \
+                     Money, Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage, \
                      Charge, Capacitance, Resistance, Conductance, Inductance, MagneticFlux, \
                      MagneticFluxDensity, LuminousFlux, Illuminance, AbsorbedDose, \
                      AngularVelocity, DynamicViscosity, Dimensionless",
