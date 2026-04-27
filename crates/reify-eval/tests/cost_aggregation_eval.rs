@@ -25,39 +25,19 @@ const EXAMPLE_PATH: &str = concat!(
     "/../../examples/cost_aggregation.ri"
 );
 
-// ─── step-7: two Costed structures aggregate via .sum ────────────────────────
+// ─── .sum dimension-preservation probe over Money literals ──────────────────
 
-/// Two structures conforming to `Costed` (Bolt @ 10USD * 3 = 30USD,
-/// Motor @ 5USD * 4 = 20USD) must aggregate via `[ ... ].sum` into a
-/// `Scalar<MONEY>` total of `50.0` on the assembly's `total_cost` cell.
-///
-/// Locks the runtime contract that the trait-let `line_cost` cell is
-/// reachable through `self.<sub>.line_cost` member access (the same
-/// pattern as `examples/large_assembly.ri:252+` for `self.b01.mass`) and
-/// that `.sum` over `List<Scalar<MONEY>>` preserves the MONEY dimension.
+/// Minimal probe: `.sum` over a `List<Money>` literal evaluates to a
+/// `Scalar<MONEY>` whose si_value is the arithmetic sum. Complements the
+/// example-file test below by isolating the `.sum` aggregation primitive
+/// on the Money dimension (no trait conformance, no sub-component member
+/// access) — so a regression in `.sum` dimension-preservation fails here
+/// rather than as a downstream miscalculation in the example test.
 #[test]
-fn cost_aggregation_eval_two_costed_structures_aggregate_via_sum() {
+fn cost_aggregation_eval_sum_over_money_list_literal_preserves_dim() {
     let source = r#"
-structure def Bolt : Costed {
-    param supplier         : String = "Acme"
-    param part_number      : String = "B-001"
-    param unit_cost        : Money  = 10USD
-    param lead_time        : Time   = 24h
-    param quantity_produced : Real  = 3.0
-}
-
-structure def Motor : Costed {
-    param supplier         : String = "Acme"
-    param part_number      : String = "M-001"
-    param unit_cost        : Money  = 5USD
-    param lead_time        : Time   = 48h
-    param quantity_produced : Real  = 4.0
-}
-
-structure def Assembly {
-    sub b = Bolt()
-    sub m = Motor()
-    let total_cost : Money = [self.b.line_cost, self.m.line_cost].sum
+structure def MoneySumProbe {
+    let total : Money = [10USD, 20USD].sum
 }
 "#;
 
@@ -75,18 +55,18 @@ structure def Assembly {
         eval_errors
     );
 
-    let id = ValueCellId::new("Assembly", "total_cost");
+    let id = ValueCellId::new("MoneySumProbe", "total");
     let val = result.values.get(&id).unwrap_or_else(|| {
         panic!(
-            "Assembly.total_cost not found in eval result; available cells: {:?}",
+            "MoneySumProbe.total not found in eval result; available cells: {:?}",
             result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
         )
     });
     match val {
         Value::Scalar { si_value, dimension } => {
             assert!(
-                (*si_value - 50.0).abs() < 1e-9,
-                "expected total_cost si_value 50.0 (Bolt 10*3 + Motor 5*4), got {}",
+                (*si_value - 30.0).abs() < 1e-9,
+                "expected total si_value 30.0 (10USD + 20USD), got {}",
                 si_value
             );
             assert_eq!(
