@@ -17,6 +17,12 @@ fn stock_module() -> &'static reify_compiler::CompiledModule {
 /// Assert that a named `pub fn` in `module` has no params, returns `List<Length>`,
 /// and evaluates to a `Value::List` whose elements match `expected_si` (SI metres,
 /// within 1e-12) with `DimensionVector::LENGTH` dimension.
+///
+/// Evaluation goes **via `eval_user_function_call`** (populating
+/// `ctx.functions = &module.functions`) rather than evaluating
+/// `func.body.result_expr` directly, so a future refactor that introduces
+/// `let` bindings inside either function does not silently drop bindings or
+/// yield `Undef`.
 fn assert_length_constant(
     module: &reify_compiler::CompiledModule,
     name: &str,
@@ -42,9 +48,14 @@ fn assert_length_constant(
         name
     );
 
+    let call_expr = reify_types::CompiledExpr::user_function_call(
+        name.to_string(),
+        vec![],
+        Type::List(Box::new(Type::length())),
+    );
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::simple(&values);
-    let result = reify_expr::eval_expr(&func.body.result_expr, &ctx);
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
 
     match result {
         Value::List(elems) => {
