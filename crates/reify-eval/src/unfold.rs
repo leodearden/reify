@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{find_template, TopologyTemplate, ValueCellKind};
+use reify_compiler::{TopologyTemplate, ValueCellKind, find_template};
 use reify_types::{
     CompiledFunction, DeterminacyState, Diagnostic, Value, ValueCellId, ValueMap, VersionId,
 };
@@ -198,7 +198,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
             journal,
             cache,
             version_id,
-            child_template,      // this level's child_template → next level's scope_template
+            child_template, // this level's child_template → next level's scope_template
             next_child_template, // target of next_sub → next level's child_template
             next_sub,
             &next_entity,
@@ -311,10 +311,7 @@ fn elaborate_child_params_only(
         let member = &cell.id.member;
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(
-                arg_expr,
-                &eval_ctx_with_meta(values, functions, meta_map),
-            )
+            reify_expr::eval_expr(arg_expr, &eval_ctx_with_meta(values, functions, meta_map))
         } else if let Some(ref default_expr) = cell.default_expr {
             reify_expr::eval_expr(
                 default_expr,
@@ -489,7 +486,11 @@ fn elaborate_child_lets_only<'t>(
         .value_cells
         .iter()
         .filter(|c| c.kind == ValueCellKind::Let)
-        .filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))
+        .filter_map(|c| {
+            c.default_expr
+                .as_ref()
+                .map(|expr| (NodeId::Value(c.id.clone()), expr))
+        })
         .collect();
 
     let child_let_node_ids: HashSet<NodeId> = child_let_cells.keys().cloned().collect();
@@ -530,7 +531,8 @@ fn elaborate_child_lets_only<'t>(
         debug_assert!(
             matches!(child_node_id, NodeId::Value(_)),
             "elaborate_child_lets_only: sorted_child_lets produced a non-Value NodeId: {:?}; construction invariant violated (entity {})",
-            child_node_id, scoped_entity,
+            child_node_id,
+            scoped_entity,
         );
         let child_cell_id = match &child_node_id {
             NodeId::Value(vcid) => vcid,
@@ -568,7 +570,12 @@ fn elaborate_child_lets_only<'t>(
         );
 
         // sorted_child_lets and child_let_traces are built from the same key set, so remove() cannot fail.
-        let trace = take_trace(&mut child_let_traces, &child_node_id, "sorted_child_lets", "child_let_traces");
+        let trace = take_trace(
+            &mut child_let_traces,
+            &child_node_id,
+            "sorted_child_lets",
+            "child_let_traces",
+        );
         let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
         let outcome =
             cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);

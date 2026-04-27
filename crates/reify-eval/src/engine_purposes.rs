@@ -350,10 +350,7 @@ fn expand_purpose_reflective_placeholders(
                                  snapshot.graph.value_cells \
                                  (purpose param={:?}, query_kind={:?}, \
                                  entity={:?})",
-                                cell_id,
-                                param_name_str,
-                                query_kind_str,
-                                entity_ref
+                                cell_id, param_name_str, query_kind_str, entity_ref
                             );
                             Type::Real
                         }
@@ -495,8 +492,7 @@ mod tests {
             resolved_ids: vec![cell_z.clone(), cell_a.clone()],
         }];
 
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
-            PersistentMap::default();
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
         for cell in [&cell_a, &cell_z] {
             value_cells.insert(
                 cell.clone(),
@@ -561,8 +557,7 @@ mod tests {
             resolved_ids: vec![cell_present.clone(), cell_absent.clone()],
         }];
 
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
-            PersistentMap::default();
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
         value_cells.insert(
             cell_present.clone(),
             ValueCellNode {
@@ -603,9 +598,9 @@ mod tests {
     /// debug builds.
     #[test]
     fn expand_signals_when_resolved_query_cell_missing_from_value_cells() {
+        use reify_test_support::CountingSubscriberBuilder;
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
-        use reify_test_support::CountingSubscriberBuilder;
 
         let (entity, queries, value_cells, mut expr) = missing_cell_fixture();
 
@@ -619,12 +614,7 @@ mod tests {
         // release builds both complete and let us read the warn counter.
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(
-                    &mut expr,
-                    &queries,
-                    entity,
-                    &value_cells,
-                );
+                expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
             });
         }));
 
@@ -717,9 +707,9 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn expand_missing_cell_debug_mode_halts_via_debug_assert() {
+        use reify_test_support::CountingSubscriberBuilder;
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
-        use reify_test_support::CountingSubscriberBuilder;
 
         let (entity, queries, value_cells, mut expr) = missing_cell_fixture();
 
@@ -731,12 +721,7 @@ mod tests {
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(
-                    &mut expr,
-                    &queries,
-                    entity,
-                    &value_cells,
-                );
+                expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
             });
         }));
 
@@ -758,7 +743,10 @@ mod tests {
         );
 
         assert!(
-            matches!(&expr.kind, CompiledExprKind::PurposeReflectiveAggregation { .. }),
+            matches!(
+                &expr.kind,
+                CompiledExprKind::PurposeReflectiveAggregation { .. }
+            ),
             "debug-mode posture: panic mid-.collect() must prevent \
              `*expr = CompiledExpr::list_literal(…)` from running; \
              expr.kind must remain PurposeReflectiveAggregation, got {:?}",
@@ -780,8 +768,7 @@ mod tests {
         // Empty queries — forces the fallback path for `params`.
         let queries: Vec<ResolvedSchemaQuery> = Vec::new();
 
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
-            PersistentMap::default();
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
         // Insert in non-alphabetical order to exercise the sort.
         for cell in [&cell_z, &cell_a] {
             value_cells.insert(

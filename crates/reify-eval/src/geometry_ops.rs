@@ -121,10 +121,7 @@ pub(crate) fn eval_all_args_to_f64(
 ) -> Option<Vec<f64>> {
     args.iter()
         .map(|(name, expr)| {
-            let v = reify_expr::eval_expr(
-                expr,
-                &eval_ctx_with_meta(values, functions, meta_map),
-            );
+            let v = reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map));
             match v.as_f64() {
                 Some(f) if f.is_finite() => Some(f),
                 _ => {
@@ -232,15 +229,19 @@ pub(crate) fn compile_geometry_op(
     //   emits a single Error-severity diagnostic per failed op.  This follows the
     //   "no Warning at origin, single Error at caller" convention documented in
     //   the `compile_geometry_op` doc-comment above.
-    let resolve_geom_ref = |r: &GeomRef,
-                            step_handles: &[GeometryHandleId]|
-     -> Result<GeometryHandleId, String> {
-        match r {
+    let resolve_geom_ref =
+        |r: &GeomRef, step_handles: &[GeometryHandleId]| -> Result<GeometryHandleId, String> {
+            match r {
             GeomRef::Step(idx) => step_handles
                 .get(*idx)
                 .copied()
                 .filter(|h| *h != GeometryHandleId::INVALID)
-                .ok_or_else(|| format!("unresolvable GeomRef::Step({}) — index out of bounds or INVALID handle", idx)),
+                .ok_or_else(|| {
+                    format!(
+                        "unresolvable GeomRef::Step({}) — index out of bounds or INVALID handle",
+                        idx
+                    )
+                }),
             // GeomRef::Sub(name) — look up the handle in the caller-supplied
             // named_steps map.  The map is populated by the engine as each
             // named realization completes (see execute_realization_ops).
@@ -256,9 +257,14 @@ pub(crate) fn compile_geometry_op(
                 .get(name)
                 .copied()
                 .filter(|h| *h != GeometryHandleId::INVALID)
-                .ok_or_else(|| format!("unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope", name)),
+                .ok_or_else(|| {
+                    format!(
+                        "unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope",
+                        name
+                    )
+                }),
         }
-    };
+        };
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
@@ -412,7 +418,9 @@ pub(crate) fn compile_geometry_op(
             let target_id = resolve_geom_ref(target, step_handles)?;
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                    .ok_or_else(|| {
+                        format!("missing or non-finite argument '{}' for {}", name, kind)
+                    })
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
@@ -484,7 +492,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
                     let count_raw = f64_arg("count")?;
@@ -518,7 +528,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
@@ -572,7 +584,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     Ok(reify_types::GeometryOp::Mirror {
                         target: target_id,
@@ -591,7 +605,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
                     let count1_raw = f64_arg("count1")?;
@@ -616,7 +632,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
                     let count2_raw = f64_arg("count2")?;
@@ -661,7 +679,9 @@ pub(crate) fn compile_geometry_op(
                                 meta_map,
                                 diagnostics,
                             )
-                            .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                            .ok_or_else(|| {
+                                format!("missing or non-finite argument '{}' for {}", name, kind)
+                            })
                         };
                         let dx = f64_arg(&format!("t{}_dx", idx))?;
                         let dy = f64_arg(&format!("t{}_dy", idx))?;
@@ -697,7 +717,9 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Extrude => {
                     let profile_handle = resolve_geom_ref(
-                        profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+                        profiles
+                            .first()
+                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let distance = eval_named_arg(
@@ -743,7 +765,9 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Revolve => {
                     let profile_handle = resolve_geom_ref(
-                        profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+                        profiles
+                            .first()
+                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
@@ -756,7 +780,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -808,11 +834,15 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Sweep => {
                     let profile_handle = resolve_geom_ref(
-                        profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+                        profiles
+                            .first()
+                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let path_handle = resolve_geom_ref(
-                        profiles.get(1).ok_or_else(|| "no path GeomRef supplied".to_string())?,
+                        profiles
+                            .get(1)
+                            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     Ok(reify_types::GeometryOp::Sweep {
@@ -822,7 +852,9 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::ExtrudeSymmetric => {
                     let profile_handle = resolve_geom_ref(
-                        profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+                        profiles
+                            .first()
+                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let distance = eval_named_arg(
@@ -874,15 +906,21 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::SweepGuided => {
                     let profile_handle = resolve_geom_ref(
-                        profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+                        profiles
+                            .first()
+                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let path_handle = resolve_geom_ref(
-                        profiles.get(1).ok_or_else(|| "no path GeomRef supplied".to_string())?,
+                        profiles
+                            .get(1)
+                            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let guide_handle = resolve_geom_ref(
-                        profiles.get(2).ok_or_else(|| "no guide GeomRef supplied".to_string())?,
+                        profiles
+                            .get(2)
+                            .ok_or_else(|| "no guide GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     Ok(reify_types::GeometryOp::SweepGuided {
@@ -904,9 +942,14 @@ pub(crate) fn compile_geometry_op(
                              profile refs + 1 guide ref (3 total), got {}",
                             profiles.len()
                         )));
-                        return Err(format!("loft_guided requires at least 3 refs, got {}", profiles.len()));
+                        return Err(format!(
+                            "loft_guided requires at least 3 refs, got {}",
+                            profiles.len()
+                        ));
                     }
-                    let guide_ref = profiles.last().ok_or_else(|| "no guide GeomRef supplied".to_string())?;
+                    let guide_ref = profiles
+                        .last()
+                        .ok_or_else(|| "no guide GeomRef supplied".to_string())?;
                     let profile_refs = &profiles[..profiles.len() - 1];
                     let resolved_profiles: Result<Vec<GeometryHandleId>, String> = profile_refs
                         .iter()
@@ -924,7 +967,9 @@ pub(crate) fn compile_geometry_op(
                     // `args` carries only "radius" (the scalar); no path placeholder
                     // exists here after task-383 S6 removed it from the compiler.
                     let path_handle = resolve_geom_ref(
-                        profiles.first().ok_or_else(|| "no path GeomRef supplied".to_string())?,
+                        profiles
+                            .first()
+                            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
                     let radius = eval_named_arg(
@@ -958,7 +1003,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     Ok(reify_types::GeometryOp::LineSegment {
                         x1: f64_arg("x1")?,
@@ -980,7 +1027,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     Ok(reify_types::GeometryOp::Arc {
                         center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
@@ -1001,7 +1050,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                        })
                     };
                     Ok(reify_types::GeometryOp::Helix {
                         radius: f64_arg("radius")?,
@@ -1085,7 +1136,10 @@ pub(crate) fn compile_geometry_op(
                             "nurbs() got fewer arguments than expected for {} control points",
                             n_points,
                         )));
-                        return Err(format!("nurbs() too few arguments for {} control points", n_points));
+                        return Err(format!(
+                            "nurbs() too few arguments for {} control points",
+                            n_points
+                        ));
                     }
                     let pole_start = 2;
                     let pole_end = pole_start + n_points * 3;
@@ -1108,7 +1162,11 @@ pub(crate) fn compile_geometry_op(
                             "nurbs() expected {} knots (n_points + degree + 1 = {} + {} + 1), got {}",
                             expected_knots, n_points, degree, knots.len(),
                         )));
-                        return Err(format!("nurbs() wrong knot count: expected {}, got {}", expected_knots, knots.len()));
+                        return Err(format!(
+                            "nurbs() wrong knot count: expected {}, got {}",
+                            expected_knots,
+                            knots.len()
+                        ));
                     }
                     Ok(reify_types::GeometryOp::NurbsCurve {
                         control_points,
@@ -2705,10 +2763,7 @@ mod tests {
             &HashMap::new(),
             &mut diagnostics,
         );
-        assert!(
-            result.is_ok(),
-            "Translate with all args should return Some"
-        );
+        assert!(result.is_ok(), "Translate with all args should return Some");
         assert!(
             diagnostics.is_empty(),
             "no diagnostics expected for Translate with all args, got: {:?}",
@@ -4110,10 +4165,8 @@ mod tests {
         let values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
-        let undef_expr = reify_types::CompiledExpr::literal(
-            reify_types::Value::Undef,
-            reify_types::Type::Real,
-        );
+        let undef_expr =
+            reify_types::CompiledExpr::literal(reify_types::Value::Undef, reify_types::Type::Real);
         let args = vec![("width".to_string(), undef_expr)];
 
         let result = eval_named_arg_f64(
@@ -4128,10 +4181,12 @@ mod tests {
 
         assert!(result.is_none(), "Undef value should return None");
         assert!(
-            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
-                && d.message.contains("width")
-                && d.message.contains("box")
-                && d.message.contains("non-numeric/non-finite")),
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_types::Severity::Warning
+                    && d.message.contains("width")
+                    && d.message.contains("box")
+                    && d.message.contains("non-numeric/non-finite")),
             "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
              got: {:?}",
             diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
@@ -4157,10 +4212,12 @@ mod tests {
 
         assert!(result.is_none(), "NaN value should return None");
         assert!(
-            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
-                && d.message.contains("width")
-                && d.message.contains("box")
-                && d.message.contains("non-numeric/non-finite")),
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_types::Severity::Warning
+                    && d.message.contains("width")
+                    && d.message.contains("box")
+                    && d.message.contains("non-numeric/non-finite")),
             "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
              got: {:?}",
             diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
@@ -4186,10 +4243,12 @@ mod tests {
 
         assert!(result.is_none(), "infinity should return None");
         assert!(
-            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
-                && d.message.contains("width")
-                && d.message.contains("box")
-                && d.message.contains("non-numeric/non-finite")),
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_types::Severity::Warning
+                    && d.message.contains("width")
+                    && d.message.contains("box")
+                    && d.message.contains("non-numeric/non-finite")),
             "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
              got: {:?}",
             diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()

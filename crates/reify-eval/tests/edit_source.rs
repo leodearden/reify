@@ -13,7 +13,9 @@ use std::collections::HashSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::cache::NodeId;
 use reify_eval::{Engine, EngineError, EvalResult};
-use reify_test_support::{bracket_compiled_module, parse_and_compile, wave2_flip_fixture, MockConstraintChecker};
+use reify_test_support::{
+    MockConstraintChecker, bracket_compiled_module, parse_and_compile, wave2_flip_fixture,
+};
 
 use reify_compiler::CompiledModule;
 use reify_types::{
@@ -56,7 +58,9 @@ fn run_eval_then_edit_source(
 ) -> (EvalResult, EvalResult) {
     let mut engine = fresh_engine();
     let a = engine.eval(module_a);
-    let b = engine.edit_source(module_b).expect("edit_source should succeed");
+    let b = engine
+        .edit_source(module_b)
+        .expect("edit_source should succeed");
     (a, b)
 }
 
@@ -227,8 +231,9 @@ fn edit_source_modified_let_reevaluates_only_dependents() {
     );
 
     // Module B: volume = original * 2.0.  Params unchanged.
-    let module_b =
-        parse_and_compile(&bracket_with_volume_expr("width * height * thickness * 2.0"));
+    let module_b = parse_and_compile(&bracket_with_volume_expr(
+        "width * height * thickness * 2.0",
+    ));
     let result_b = engine
         .edit_source(&module_b)
         .expect("edit_source must succeed after eval");
@@ -613,8 +618,9 @@ fn edit_source_preserves_param_overrides_for_unchanged_params() {
     // Module B: keep the width param identical in source; mutate only the
     // volume let expression. Width's content_hash is therefore unchanged,
     // so the seeding path must preserve its prior value.
-    let module_b =
-        parse_and_compile(&bracket_with_volume_expr("width * height * thickness * 2.0"));
+    let module_b = parse_and_compile(&bracket_with_volume_expr(
+        "width * height * thickness * 2.0",
+    ));
     let result_b = engine
         .edit_source(&module_b)
         .expect("edit_source must succeed after eval");
@@ -665,8 +671,9 @@ fn edit_param_clears_last_diff_value_cells_from_prior_edit_source() {
 
     // Module B mutates the let binding — guarantees a non-empty `changed` set
     // so that last_diff_value_cells is populated (not `None`).
-    let module_b =
-        parse_and_compile(&bracket_with_volume_expr("width * height * thickness * 2.0"));
+    let module_b = parse_and_compile(&bracket_with_volume_expr(
+        "width * height * thickness * 2.0",
+    ));
     engine
         .edit_source(&module_b)
         .expect("edit_source must succeed");
@@ -1301,8 +1308,7 @@ structure S {
             .get(&bolt_node)
             .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in cache after eval(A)", i));
         assert_eq!(
-            entry.basis_version,
-            v_a,
+            entry.basis_version, v_a,
             "S.bolts[{}].diameter must be at V_A before any edits",
             i
         );
@@ -1328,13 +1334,10 @@ structure S {
         let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
         if let Some(entry) = engine.cache_store().get(&bolt_node) {
             assert_eq!(
-                entry.basis_version,
-                current_version,
+                entry.basis_version, current_version,
                 "S.bolts[{}].diameter cache entry must be fresh after grow→shrink→re-grow; \
                  got basis_version {:?}, expected {:?}",
-                i,
-                entry.basis_version,
-                current_version
+                i, entry.basis_version, current_version
             );
         }
         // None is acceptable — Phase 4's create loop does not call
@@ -1390,8 +1393,7 @@ structure S { param n : Int = 4 }
             .get(&bolt_node)
             .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in cache after eval(A)", i));
         assert_eq!(
-            entry.basis_version,
-            v_a,
+            entry.basis_version, v_a,
             "S.bolts[{}].diameter must be at V_A before the edit",
             i
         );
@@ -1413,13 +1415,10 @@ structure S { param n : Int = 4 }
         let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
         if let Some(entry) = engine.cache_store().get(&bolt_node) {
             assert_eq!(
-                entry.basis_version,
-                current_version,
+                entry.basis_version, current_version,
                 "S.bolts[{}].diameter must be absent or fresh after sub removal via Step 9; \
                  got stale basis_version {:?}, expected {:?}",
-                i,
-                entry.basis_version,
-                current_version
+                i, entry.basis_version, current_version
             );
         }
     }
@@ -1568,10 +1567,8 @@ purpose mfg_ready(subject : Structure) {
     // match exactly.  A regression where the stale purpose body (from module_A) is
     // used could produce 2 constraints via a different expansion path — the count
     // check would pass accidentally, but the id-set check would detect the mismatch.
-    let incr_ids: HashSet<ConstraintNodeId> =
-        incr_snap.graph.constraints.keys().cloned().collect();
-    let cold_ids: HashSet<ConstraintNodeId> =
-        cold_snap.graph.constraints.keys().cloned().collect();
+    let incr_ids: HashSet<ConstraintNodeId> = incr_snap.graph.constraints.keys().cloned().collect();
+    let cold_ids: HashSet<ConstraintNodeId> = cold_snap.graph.constraints.keys().cloned().collect();
     assert_eq!(
         incr_ids, cold_ids,
         "after activate_purpose, incremental and cold graph ConstraintNodeId sets \
@@ -1818,12 +1815,12 @@ structure def Widget {
 /// Task 2087 — coverage gap 5.
 #[test]
 fn edit_source_refreshes_objectives_against_cold_eval() {
-    use std::collections::HashMap;
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
-        MultiCallSpyConstraintSolver, TopologyTemplateBuilder, gt, lt, literal, mm, value_ref,
+        MultiCallSpyConstraintSolver, TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
     };
     use reify_types::{ModulePath, OptimizationObjective, SolveResult, Type};
+    use std::collections::HashMap;
 
     let thickness_id = ValueCellId::new("S", "thickness");
 
@@ -1844,10 +1841,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
             None,
             lt(value_ref("S", "thickness"), literal(mm(20.0))),
         )
-        .objective(OptimizationObjective::Minimize(value_ref(
-            "S",
-            "thickness",
-        )))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
         .build();
 
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1877,10 +1871,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
             None,
             gt(value_ref("S", "thickness"), literal(mm(3.0))),
         )
-        .objective(OptimizationObjective::Maximize(value_ref(
-            "S",
-            "thickness",
-        )))
+        .objective(OptimizationObjective::Maximize(value_ref("S", "thickness")))
         .build();
 
     let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1902,8 +1893,8 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
     ]);
     let captured = spy.captured_problems();
 
-    let mut incremental = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(spy));
+    let mut incremental =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     incremental.eval(&module_a);
     let incr = incremental
         .edit_source(&module_b)
@@ -2179,7 +2170,9 @@ fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
     assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have 2 realizations in the graph.
-    let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
+    let incr_snap = incremental
+        .snapshot()
+        .expect("incremental snapshot must exist");
     let cold_snap = cold.snapshot().expect("cold snapshot must exist");
     assert_eq!(
         incr_snap.graph.realizations.len(),
@@ -2255,7 +2248,9 @@ fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
     assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have exactly 1 realization.
-    let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
+    let incr_snap = incremental
+        .snapshot()
+        .expect("incremental snapshot must exist");
     let cold_snap = cold.snapshot().expect("cold snapshot must exist");
     assert_eq!(
         incr_snap.graph.realizations.len(),
@@ -2323,7 +2318,9 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
     assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have exactly 1 realization.
-    let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
+    let incr_snap = incremental
+        .snapshot()
+        .expect("incremental snapshot must exist");
     let cold_snap = cold.snapshot().expect("cold snapshot must exist");
     assert_eq!(
         incr_snap.graph.realizations.len(),
@@ -2884,7 +2881,6 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
     );
 }
 
-
 // ── Wave2 guard flip: else_members must be activated when guard flips post-wave2 ──
 
 /// Regression guard for the cross-phase dedup guard-flip bug (task 2146).
@@ -2937,13 +2933,13 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
 /// Task 2146 — cross-phase dedup guard-flip fix.
 #[test]
 fn edit_source_wave2_guard_flip_activates_else_members() {
-    use std::collections::HashMap;
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
         TopologyTemplateBuilder, and, ge, gt, literal, mm, value_ref,
     };
     use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
+    use std::collections::HashMap;
 
     let depth_id = ValueCellId::new("S", "depth");
     let guard_id = ValueCellId::new("S", "__guard_0");
@@ -3211,13 +3207,13 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
 #[test]
 #[allow(clippy::doc_overindented_list_items)]
 fn edit_source_role_flip_wave2_and_phase3_dedup() {
-    use std::collections::HashMap;
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
         TopologyTemplateBuilder, eq, gt, literal, mm, value_ref, value_ref_typed,
     };
     use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
+    use std::collections::HashMap;
 
     let depth_id = ValueCellId::new("S", "depth");
     let guard_1_id = ValueCellId::new("S", "__guard_0");
@@ -3262,12 +3258,7 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
     //   constraint depth==10mm (solver placeholder; literal will change in B).
     let template_a = TopologyTemplateBuilder::new("S")
         .param("S", "x", Type::length(), Some(literal(mm(10.0))))
-        .param(
-            "S",
-            "u",
-            Type::Bool,
-            Some(literal(Value::Bool(true))),
-        )
+        .param("S", "u", Type::Bool, Some(literal(Value::Bool(true))))
         .auto_param("S", "depth", Type::length())
         .constraint(
             "S",
@@ -3324,9 +3315,9 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
         .guarded_group(
             guard_1_expr,
             guard_1_id.clone(),
-            vec![],               // members empty in B
+            vec![], // members empty in B
             vec![],
-            vec![m_decl],         // m ROLE-FLIPPED to else (inactive when guard=true)
+            vec![m_decl], // m ROLE-FLIPPED to else (inactive when guard=true)
             vec![],
         )
         // Group 2: structure unchanged; guard value will flip due to u=false.
@@ -3430,8 +3421,7 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
     // If counter<2: Phase 1 counter increment missing for role-flip or guard-flip path.
     let counter = engine.last_guard_phase_group_evals();
     assert_eq!(
-        counter,
-        2,
+        counter, 2,
         "expected exactly 2 non-skipped guard-phase group iterations \
          (Phase 1: group 1 via role-flip, group 2 via guard-value change; \
           Phase 3: both groups dedup-skipped via phase1_reelaborated); \
@@ -3525,8 +3515,7 @@ fn edit_source_role_flip_probe_deferred_when_every_guard_value_changes() {
     //         eliminates; probe is back behind sc_dirty short-circuit failure).
     // >  1 → memoization broke: detect_role_flip called more than once per edit.
     assert_eq!(
-        probes,
-        0,
+        probes, 0,
         "expected 0 detect_role_flip probes (sc_dirty fires the outer trigger; \
          all groups' guard VALUES changed so per-group skip short-circuits before \
          the role-flip branch); \
@@ -3592,8 +3581,7 @@ fn edit_source_role_flip_probe_skipped_when_guard_member_added() {
     //         added-member trigger fires.
     // >  1 → memoization broke.
     assert_eq!(
-        probes,
-        0,
+        probes, 0,
         "expected 0 detect_role_flip probes (has_added_guard_member fires the \
          outer trigger without entering the role-flip block); \
          got {} — \
@@ -3681,8 +3669,7 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
     // >= 2 → memoization broke: the per-group None arm called detect_role_flip
     //         again for a group that should have read role_flip_memo.
     assert_eq!(
-        probes,
-        1,
+        probes, 1,
         "expected exactly 1 detect_role_flip probe (outer deferred-probe block \
          fires once; per-group loop reads memo for both groups); \
          got {} — \
@@ -3711,9 +3698,9 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 #[test]
 #[cfg(debug_assertions)]
 fn edit_source_panics_on_unrepresentable_cell_type() {
-    use std::panic;
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use reify_types::{ModulePath, Type};
+    use std::panic;
 
     for ty in [Type::TypeParam("T".into()), Type::Geometry] {
         // edit_source requires an Initialized engine — seed one first with a valid eval.

@@ -61,7 +61,9 @@ fn violated_constraint_def_produces_labeled_diagnostic() {
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
     );
-    let has_label = error_diags.iter().any(|d| d.message.contains("MinWall#0[0]"));
+    let has_label = error_diags
+        .iter()
+        .any(|d| d.message.contains("MinWall#0[0]"));
     assert!(
         has_label,
         "expected at least one Error diagnostic containing 'MinWall[0]', got: {:?}",
@@ -430,12 +432,9 @@ impl ConstraintChecker for LabelEmittingChecker {
             .iter()
             .map(|(id, _)| {
                 let id_str = id.to_string();
-                let label = DiagnosticLabel::new(
-                    SourceSpan::empty(0),
-                    format!("near {}", id_str),
-                );
-                let diagnostic = Diagnostic::error(format!("constraint {} violated", id_str))
-                    .with_label(label);
+                let label = DiagnosticLabel::new(SourceSpan::empty(0), format!("near {}", id_str));
+                let diagnostic =
+                    Diagnostic::error(format!("constraint {} violated", id_str)).with_label(label);
                 ConstraintResult {
                     id: id.clone(),
                     satisfaction: Satisfaction::Violated,
@@ -591,8 +590,7 @@ fn non_embedding_checker_does_not_panic_on_labeled_constraint() {
         errors
     );
     assert_eq!(
-        errors[0].message,
-        "wall thickness below minimum",
+        errors[0].message, "wall thickness below minimum",
         "expected domain message to pass through verbatim, got: {:?}",
         errors[0].message
     );
@@ -611,8 +609,8 @@ fn non_embedding_checker_does_not_panic_on_labeled_constraint() {
 /// from debug instrumentation elsewhere in the crate or its transitive dependencies.
 #[test]
 fn drift_signal_fires_for_non_embedding_checker() {
-    use std::sync::atomic::Ordering;
     use reify_test_support::CountingSubscriberBuilder;
+    use std::sync::atomic::Ordering;
 
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::DEBUG)
@@ -631,8 +629,7 @@ fn drift_signal_fires_for_non_embedding_checker() {
 
     let count = debug_arc.load(Ordering::Acquire);
     assert_eq!(
-        count,
-        1,
+        count, 1,
         "expected exactly one DEBUG drift signal for a single labeled constraint \
          whose Error message omits the raw ConstraintNodeId; got {count}"
     );

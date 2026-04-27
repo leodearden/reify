@@ -195,9 +195,7 @@ fn eval_skips_type_kind_mismatched_override_and_emits_warning_diagnostic() {
     );
     let wmsg = warnings[0].message.as_str();
     assert!(
-        wmsg.contains("override")
-            || wmsg.contains("mismatch")
-            || wmsg.contains("type-kind"),
+        wmsg.contains("override") || wmsg.contains("mismatch") || wmsg.contains("type-kind"),
         "warning should mention override/mismatch/type-kind, got: {wmsg:?}"
     );
 
@@ -312,9 +310,8 @@ fn eval_partial_mismatch_preserves_compatible_overrides_and_warns_only_for_misma
 
     // Module B: width is now an Int (type-kind mismatch for its override);
     //           thickness stays Scalar[LENGTH] (override remains compatible).
-    let module_b = compile_source(
-        "structure S { param width: Int = 80\n param thickness: Scalar = 5mm }",
-    );
+    let module_b =
+        compile_source("structure S { param width: Int = 80\n param thickness: Scalar = 5mm }");
     let result_b = engine.eval(&module_b);
 
     // (a) thickness override survives unchanged.
@@ -1021,9 +1018,7 @@ fn eval_omits_no_default_no_override_param_cell_from_result_values() {
 
     // p has neither override (fresh engine) nor default_expr.
     // other has a default — exercises the NOT-omitted path as a positive control.
-    let module = compile_source(
-        "structure S { param p: Int\n param other: Int = 42 }",
-    );
+    let module = compile_source("structure S { param p: Int\n param other: Int = 42 }");
     let result = engine.eval(&module);
 
     // (a) Partial-map invariant: p must be ABSENT from result.values.
@@ -1119,7 +1114,9 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
         "journal must have a Started event for p (S4 path)"
     );
     assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::Completed { .. })),
         "journal must have a Completed event for p (S4 path)"
     );
 }
@@ -1328,7 +1325,11 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
         .expect("helper rejected-no-default arm must write a cache entry");
     match &entry.result {
         CachedResult::Value(val, det) => {
-            assert_eq!(*val, Value::Undef, "rejected-no-default cache value must be Undef");
+            assert_eq!(
+                *val,
+                Value::Undef,
+                "rejected-no-default cache value must be Undef"
+            );
             assert_eq!(
                 *det,
                 DeterminacyState::Undetermined,
@@ -1518,12 +1519,10 @@ fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
 
     for event in &events {
         assert_eq!(
-            event.version,
-            snapshot_version,
+            event.version, snapshot_version,
             "every journal event for S.width must carry the engine snapshot version \
              (event.version={:?}, snapshot.version={:?})",
-            event.version,
-            snapshot_version,
+            event.version, snapshot_version,
         );
     }
 }
@@ -1563,12 +1562,10 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
     );
     for event in &events_a {
         assert_eq!(
-            event.version,
-            snap_version_a,
+            event.version, snap_version_a,
             "members-branch journal event for S.x must carry the engine snapshot version \
              (event.version={:?}, snapshot.version={:?})",
-            event.version,
-            snap_version_a,
+            event.version, snap_version_a,
         );
     }
 
@@ -1588,12 +1585,10 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
     );
     for event in &events_b {
         assert_eq!(
-            event.version,
-            snap_version_b,
+            event.version, snap_version_b,
             "else-branch journal event for S.y must carry the engine snapshot version \
              (event.version={:?}, snapshot.version={:?})",
-            event.version,
-            snap_version_b,
+            event.version, snap_version_b,
         );
     }
 }

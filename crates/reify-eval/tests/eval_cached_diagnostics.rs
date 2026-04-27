@@ -10,13 +10,13 @@
 //! relevant diagnostic substring appears in `result.eval_result.diagnostics`.
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
-use reify_eval::{CachedEvalResult, Engine};
 use reify_eval::cache::{CachedResult, NodeId};
+use reify_eval::{CachedEvalResult, Engine};
 use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
 use reify_types::{
-    BinOp, CompiledExpr, Diagnostic, DeterminacyState, DimensionVector, ModulePath, Severity,
-    Type, Value, ValueCellId, VersionId,
+    BinOp, CompiledExpr, DeterminacyState, Diagnostic, DimensionVector, ModulePath, Severity, Type,
+    Value, ValueCellId, VersionId,
 };
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
@@ -201,11 +201,9 @@ fn eval_cached_emits_solver_infeasible_diagnostic() {
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert!(
-        result
-            .eval_result
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+        result.eval_result.diagnostics.iter().any(|d| d
+            .message
+            .contains("infeasible: x has no satisfying assignment")),
         "eval_cached must forward Infeasible solver diagnostics; got: {:?}",
         result.eval_result.diagnostics,
     );
@@ -383,7 +381,12 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result1.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result1
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "first eval_cached call must emit exactly one type-kind mismatch warning; got: {:?}",
         result1.eval_result.diagnostics,
@@ -400,7 +403,12 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     // validation — the diagnostic emission is gated on the cache-miss path.
     let result2 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result2.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result2
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "second eval_cached call (same version, fast-path hit) must emit exactly one \
          type-kind mismatch warning (must not drop or duplicate on cache hit); got: {:?}",
@@ -416,7 +424,12 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     // Third call — bumped version. Must still surface the warning.
     let result3 = engine.eval_cached(&module, VersionId(2));
     assert_eq!(
-        result3.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result3
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "third eval_cached call (bumped version) must emit exactly one type-kind mismatch \
          warning; got: {:?}",
@@ -474,7 +487,12 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result1.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result1
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "first eval_cached call must emit exactly one dimension mismatch warning; got: {:?}",
         result1.eval_result.diagnostics,
@@ -489,7 +507,12 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     // Second call — same version (fast-path hit). Must still surface the warning.
     let result2 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result2.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result2
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "second eval_cached call (same version, fast-path hit) must emit exactly one \
          dimension mismatch warning (must not drop or duplicate on cache hit); got: {:?}",
@@ -505,7 +528,12 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     // Third call — bumped version. Must still surface the warning.
     let result3 = engine.eval_cached(&module, VersionId(2));
     assert_eq!(
-        result3.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result3
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "third eval_cached call (bumped version) must emit exactly one dimension mismatch \
          warning; got: {:?}",
@@ -765,11 +793,9 @@ fn eval_cached_repeat_call_re_emits_solver_infeasible_diagnostic() {
     // First call — cold start (any_auto_miss = true, solver runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert!(
-        result1
-            .eval_result
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+        result1.eval_result.diagnostics.iter().any(|d| d
+            .message
+            .contains("infeasible: x has no satisfying assignment")),
         "first eval_cached call must forward Infeasible solver diagnostic; got: {:?}",
         result1.eval_result.diagnostics,
     );
@@ -778,11 +804,9 @@ fn eval_cached_repeat_call_re_emits_solver_infeasible_diagnostic() {
     // Auto cell hits the cache, any_auto_miss=false — solver must still run.
     let result2 = engine.eval_cached(&module, VersionId(2));
     assert!(
-        result2
-            .eval_result
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+        result2.eval_result.diagnostics.iter().any(|d| d
+            .message
+            .contains("infeasible: x has no satisfying assignment")),
         "second eval_cached call must also forward Infeasible solver diagnostic \
          (must not drop on cache hit); got: {:?}",
         result2.eval_result.diagnostics,
@@ -934,7 +958,12 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
     // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result1.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result1
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "first eval_cached call must emit exactly one unknown-structure diagnostic; got: {:?}",
         result1.eval_result.diagnostics,
@@ -945,7 +974,12 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
     // on a same-version repeat every cell hits the fast-path, so any_auto_miss=false.
     let result2 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result2.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result2
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "second eval_cached call (same version, fast-path hit) must emit exactly one \
          unknown-structure diagnostic (must not drop or duplicate on cache hit); got: {:?}",
@@ -957,7 +991,12 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
     // must NOT be gated on cache state or any_auto_miss.
     let result3 = engine.eval_cached(&module, VersionId(2));
     assert_eq!(
-        result3.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
+        result3
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| matches(d))
+            .count(),
         1,
         "third eval_cached call (bumped version) must emit exactly one unknown-structure \
          diagnostic (must not drop or duplicate on cache hit); got: {:?}",
@@ -1060,8 +1099,7 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
             .filter(|d| d.severity == Severity::Error)
             .count();
         assert_eq!(
-            error_count,
-            1,
+            error_count, 1,
             "{label}: must emit exactly one error-severity diagnostic for a cyclic-let module; got: {:?}",
             result.eval_result.diagnostics,
         );
@@ -1094,14 +1132,22 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
     );
 
     // ── eval_cached() first call invariants ───────────────────────────────────
-    assert_b_invariants("first eval_cached() call (VersionId(1))", &engine_b, &result_b);
+    assert_b_invariants(
+        "first eval_cached() call (VersionId(1))",
+        &engine_b,
+        &result_b,
+    );
 
     // ── second eval_cached call at bumped version: persistence invariant ──────
     // Models the LSP-keystroke pattern (VersionId increments per edit).  The fix
     // must hold across multiple calls; a regression that re-introduces caching only
     // on the second pass (e.g. via the cache fast-path) would be caught here.
     let result_b2 = engine_b.eval_cached(&module, VersionId(2));
-    assert_b_invariants("second eval_cached() call (VersionId(2))", &engine_b, &result_b2);
+    assert_b_invariants(
+        "second eval_cached() call (VersionId(2))",
+        &engine_b,
+        &result_b2,
+    );
 }
 
 // ── task-2268: wording-parity locks ────────────────────────────────────────────
@@ -1143,13 +1189,11 @@ fn assert_diag_parity<F>(
         "eval_cached() must emit exactly one {label} diagnostic; got: {cached_diags:?}",
     );
     assert_eq!(
-        msgs_eval[0],
-        msgs_cached[0],
+        msgs_eval[0], msgs_cached[0],
         "{label} must be byte-identical between eval() and eval_cached();\n\
          eval():        {:?}\n\
          eval_cached(): {:?}",
-        msgs_eval[0],
-        msgs_cached[0],
+        msgs_eval[0], msgs_cached[0],
     );
 }
 
@@ -1184,13 +1228,11 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
             .template(template)
             .build();
 
-        let mut engine_a =
-            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
         engine_a.set_param_and_invalidate(&x_id, Value::Bool(true));
         let result_a = engine_a.eval(&module);
 
-        let mut engine_b =
-            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
         engine_b.set_param_and_invalidate(&x_id, Value::Bool(true));
         let result_b = engine_b.eval_cached(&module, VersionId(1));
 
@@ -1198,8 +1240,7 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
             &result_a.diagnostics,
             &result_b.eval_result.diagnostics,
             |d| {
-                d.message.contains("param_override for")
-                    && d.message.contains("type-kind mismatch")
+                d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
             },
             "TypeKindMismatch param_override rejection warning",
         );
@@ -1227,13 +1268,11 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
             dimension: DimensionVector::MASS,
         };
 
-        let mut engine_a =
-            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
         engine_a.set_param_and_invalidate(&x_id, mass_val.clone());
         let result_a = engine_a.eval(&module);
 
-        let mut engine_b =
-            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
         engine_b.set_param_and_invalidate(&x_id, mass_val);
         let result_b = engine_b.eval_cached(&module, VersionId(1));
 
@@ -1241,8 +1280,7 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
             &result_a.diagnostics,
             &result_b.eval_result.diagnostics,
             |d| {
-                d.message.contains("param_override for")
-                    && d.message.contains("dimension mismatch")
+                d.message.contains("param_override for") && d.message.contains("dimension mismatch")
             },
             "ScalarDimensionMismatch param_override rejection warning",
         );
@@ -1281,12 +1319,10 @@ fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine_a =
-        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
     let result_a = engine_a.eval(&module);
 
-    let mut engine_b =
-        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
     assert_diag_parity(
@@ -1324,14 +1360,12 @@ fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
         .template(template)
         .build();
 
-    let mut engine_a =
-        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
-            .with_solver(Box::new(solver_a));
+    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver_a));
     let result_a = engine_a.eval(&module);
 
-    let mut engine_b =
-        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
-            .with_solver(Box::new(solver_b));
+    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+        .with_solver(Box::new(solver_b));
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
     assert_diag_parity(
@@ -1419,8 +1453,7 @@ fn eval_cached_caches_non_cyclic_let_cell_with_param_dependency_trace() {
         .filter(|d| d.severity == Severity::Error)
         .count();
     assert_eq!(
-        error_count,
-        0,
+        error_count, 0,
         "non-cyclic let cell fixture must emit zero error diagnostics; got: {:?}",
         result.eval_result.diagnostics,
     );

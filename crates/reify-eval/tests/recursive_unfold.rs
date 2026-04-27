@@ -2306,12 +2306,7 @@ fn unfold_recursive_inner_unknown_structure_emits_depth_tagged_diagnostic() {
             guard.clone(),
         )
         // Invalid sub — "Nonexistent" is not in the module; triggers Phase-2 diagnostic
-        .sub_component_with_guard(
-            "oops",
-            "Nonexistent",
-            vec![],
-            guard.clone(),
-        )
+        .sub_component_with_guard("oops", "Nonexistent", vec![], guard.clone())
         .build();
 
     let result = eval_single_template(template);
@@ -2324,7 +2319,9 @@ fn unfold_recursive_inner_unknown_structure_emits_depth_tagged_diagnostic() {
          the invalid sibling sub"
     );
     assert_eq!(
-        result.values.get(&ValueCellId::new("S.valid_child.valid_child", "n")),
+        result
+            .values
+            .get(&ValueCellId::new("S.valid_child.valid_child", "n")),
         Some(&Value::Int(0)),
         "S.valid_child.valid_child.n should be 0 (= 1-1); recursion reaches depth 2"
     );
@@ -2338,13 +2335,12 @@ fn unfold_recursive_inner_unknown_structure_emits_depth_tagged_diagnostic() {
     //     wording changes (quote style, preposition, punctuation).
     //     We do NOT assert an exact count because the engine_eval.rs top-level path
     //     also emits its own diagnostic for "oops" at root level (different wording).
-    let has_depth_tagged =
-        result.diagnostics.iter().any(|d| {
-            d.severity == Severity::Error
-                && d.message.contains("at depth 1")
-                && d.message.contains("oops")
-                && d.message.contains("Nonexistent")
-        });
+    let has_depth_tagged = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message.contains("at depth 1")
+            && d.message.contains("oops")
+            && d.message.contains("Nonexistent")
+    });
     assert!(
         has_depth_tagged,
         "Expected at least one Error diagnostic from the Phase-2 path (unfold.rs:175-178) \

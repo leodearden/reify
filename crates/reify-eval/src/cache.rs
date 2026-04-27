@@ -2089,7 +2089,11 @@ mod tests {
         let missing = NodeId::Value(ValueCellId::new("T", "missing"));
         let result = store.set_freshness(&missing, Freshness::Intermediate { generation: 1 });
         assert!(!result, "set_freshness on absent node must return false");
-        assert_eq!(store.len(), 0, "set_freshness must not auto-create a cache entry");
+        assert_eq!(
+            store.len(),
+            0,
+            "set_freshness must not auto-create a cache entry"
+        );
 
         // (b) Present node → set_freshness returns true.
         let node = NodeId::Value(ValueCellId::new("T", "present"));

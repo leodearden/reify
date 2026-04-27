@@ -272,11 +272,7 @@ impl Engine {
     /// and the previous solver is dropped. Mirrors `register_optimized_impl`'s
     /// `HashMap::insert` semantics; intentional to support hot-reload and test
     /// fixture scenarios where callers swap impls between runs.
-    pub fn register_solver(
-        &mut self,
-        name: impl Into<String>,
-        solver: Box<dyn ConstraintSolver>,
-    ) {
+    pub fn register_solver(&mut self, name: impl Into<String>, solver: Box<dyn ConstraintSolver>) {
         self.solvers.insert(name.into(), solver);
     }
 
@@ -426,10 +422,7 @@ impl Engine {
     /// `engine_edit.rs`).  Until that merge lands the two predicates
     /// must remain behaviourally identical — if you refine one, refine
     /// the other.
-    pub(crate) fn prune_param_overrides_against(
-        &mut self,
-        graph: &crate::graph::EvaluationGraph,
-    ) {
+    pub(crate) fn prune_param_overrides_against(&mut self, graph: &crate::graph::EvaluationGraph) {
         self.param_overrides.retain(|id, _| {
             graph
                 .value_cells
@@ -497,9 +490,7 @@ impl Engine {
     /// Integration tests reach this method via the self-dev-dep with the
     /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
     #[cfg(any(test, feature = "test-instrumentation"))]
-    pub fn last_diff_value_cells(
-        &self,
-    ) -> Option<&crate::engine_edit::ValueCellDiff> {
+    pub fn last_diff_value_cells(&self) -> Option<&crate::engine_edit::ValueCellDiff> {
         self.last_diff_value_cells.as_ref()
     }
 

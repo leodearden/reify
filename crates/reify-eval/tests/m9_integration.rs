@@ -635,12 +635,16 @@ fn full_pipeline_cross_feature_values() {
     let bracket_dir_inst0: Vec<_> = check_result
         .constraint_results
         .iter()
-        .filter(|e| e.id.entity == "Bracket" && e.label == Some("DeterminedInRange#0[0]".to_string()))
+        .filter(|e| {
+            e.id.entity == "Bracket" && e.label == Some("DeterminedInRange#0[0]".to_string())
+        })
         .collect();
     let bracket_dir_inst1: Vec<_> = check_result
         .constraint_results
         .iter()
-        .filter(|e| e.id.entity == "Bracket" && e.label == Some("DeterminedInRange#1[0]".to_string()))
+        .filter(|e| {
+            e.id.entity == "Bracket" && e.label == Some("DeterminedInRange#1[0]".to_string())
+        })
         .collect();
     assert_eq!(
         bracket_dir_inst0.len(),

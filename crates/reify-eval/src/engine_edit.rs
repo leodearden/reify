@@ -41,8 +41,8 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
-    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
+    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup, build_meta_map,
+    eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -274,8 +274,13 @@ fn phase3_get_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<V
 /// the per-group `continue` check inside the Phase 3 loop in both `edit_param`
 /// and `edit_source` — four call sites total — so the extraction lives in one
 /// place rather than being repeated verbatim each time.
-fn old_guard_for<'a>(eval_state: Option<&'a EvaluationState>, gc: &ValueCellId) -> Option<&'a Value> {
-    eval_state.and_then(|s| s.snapshot.values.get(gc)).map(|(v, _)| v)
+fn old_guard_for<'a>(
+    eval_state: Option<&'a EvaluationState>,
+    gc: &ValueCellId,
+) -> Option<&'a Value> {
+    eval_state
+        .and_then(|s| s.snapshot.values.get(gc))
+        .map(|(v, _)| v)
 }
 
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
@@ -297,7 +302,10 @@ fn old_guard_for<'a>(eval_state: Option<&'a EvaluationState>, gc: &ValueCellId) 
 /// two distinct guards.  Intra-group duplicates (same `guard_cell`) are
 /// permitted and resolved by last-write-wins.
 fn build_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
-    let capacity: usize = groups.iter().map(|g| g.members.len() + g.else_members.len()).sum();
+    let capacity: usize = groups
+        .iter()
+        .map(|g| g.members.len() + g.else_members.len())
+        .sum();
     let mut roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
     for group in groups.iter() {
         for mid in &group.members {
@@ -429,7 +437,11 @@ where
 /// - `0` (`changed`): present in both graphs with differing `content_hash`.
 /// - `1` (`added`):   present only in the new graph.
 /// - `2` (`removed`): present only in the old graph.
-pub(crate) type ValueCellDiff = (HashSet<ValueCellId>, HashSet<ValueCellId>, HashSet<ValueCellId>);
+pub(crate) type ValueCellDiff = (
+    HashSet<ValueCellId>,
+    HashSet<ValueCellId>,
+    HashSet<ValueCellId>,
+);
 
 /// Classify every `ValueCellId` across a pair of graphs into three disjoint
 /// sets by comparing per-node `ValueCellNode::content_hash`:
@@ -1227,7 +1239,13 @@ impl Engine {
     /// is mutated, so `&mut self` is unambiguous.
     fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
         let result = detect_role_flip(
-            &self.eval_state.as_ref().unwrap().snapshot.graph.guarded_groups,
+            &self
+                .eval_state
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .graph
+                .guarded_groups,
             new_groups,
         );
         self.last_role_flip_probes += 1;
@@ -1320,10 +1338,8 @@ impl Engine {
         let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
 
         // (4) Diff the old and new graphs at value-cell granularity.
-        let (changed, added, removed) = diff_value_cells(
-            &eval_state.snapshot.graph,
-            &new_snapshot.graph,
-        );
+        let (changed, added, removed) =
+            diff_value_cells(&eval_state.snapshot.graph, &new_snapshot.graph);
         // (4a) Snapshot the diff for test-instrumentation — premise lock for T3 et al.
         // Disjoint-field borrow: `eval_state` is borrowed read-only above; this
         // assignment touches only the sibling field `last_diff_value_cells` — NLL
@@ -1345,14 +1361,10 @@ impl Engine {
         //      but we DO want them to appear in `last_eval_set()` when changed
         //      or added, so callers can observe the diff, and we want their
         //      stale cache entries invalidated when removed.
-        let (changed_constraints, added_constraints, removed_constraints) = diff_constraints(
-            &eval_state.snapshot.graph,
-            &new_snapshot.graph,
-        );
-        let (changed_realizations, added_realizations, removed_realizations) = diff_realizations(
-            &eval_state.snapshot.graph,
-            &new_snapshot.graph,
-        );
+        let (changed_constraints, added_constraints, removed_constraints) =
+            diff_constraints(&eval_state.snapshot.graph, &new_snapshot.graph);
+        let (changed_realizations, added_realizations, removed_realizations) =
+            diff_realizations(&eval_state.snapshot.graph, &new_snapshot.graph);
 
         // (5) Compute the dirty cone over changed ∪ added using the NEW
         //     reverse index (which reflects post-edit dependencies). The
@@ -1472,12 +1484,8 @@ impl Engine {
                 continue;
             }
 
-            if unchanged_hash
-                && let Some((val, det)) = old_graph_snapshot_values.get(id)
-            {
-                new_snapshot
-                    .values
-                    .insert(id.clone(), (val.clone(), *det));
+            if unchanged_hash && let Some((val, det)) = old_graph_snapshot_values.get(id) {
+                new_snapshot.values.insert(id.clone(), (val.clone(), *det));
                 values.insert(id.clone(), val.clone());
                 continue;
             }
@@ -1551,8 +1559,7 @@ impl Engine {
         self.objectives.clear();
         for template in &module.templates {
             if let Some(obj) = &template.objective {
-                self.objectives
-                    .insert(template.name.clone(), obj.clone());
+                self.objectives.insert(template.name.clone(), obj.clone());
             }
         }
 
@@ -1861,7 +1868,12 @@ impl Engine {
                             }
                         } else {
                             // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                            deactivate_if_not_auto(
+                                graph,
+                                mid,
+                                &mut values,
+                                &mut new_snapshot.values,
+                            );
                         }
                     }
                     for mid in &group.else_members {
@@ -1880,7 +1892,12 @@ impl Engine {
                             }
                         } else {
                             // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                            deactivate_if_not_auto(
+                                graph,
+                                mid,
+                                &mut values,
+                                &mut new_snapshot.values,
+                            );
                         }
                     }
                 }
@@ -2173,14 +2190,10 @@ impl Engine {
                     }
                 }
 
-                let guard_state_hash = guard_state_fingerprint(
-                    &graph.guarded_groups,
-                    &values,
-                    GuardLookup::Strict,
-                );
-                new_snapshot.topology_fingerprint = graph
-                    .topology_fingerprint()
-                    .combine(guard_state_hash);
+                let guard_state_hash =
+                    guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Strict);
+                new_snapshot.topology_fingerprint =
+                    graph.topology_fingerprint().combine(guard_state_hash);
             }
         }
 
@@ -2395,8 +2408,8 @@ mod tests {
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
     use super::{
-        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged,
-        phase3_get_guard_val, reelaborate_guarded_group,
+        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_get_guard_val,
+        reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
@@ -2429,7 +2442,10 @@ mod tests {
         graph: EvaluationGraph,
         group: GuardedGroupInfo,
         guard: bool,
-    ) -> (ValueMap, PersistentMap<ValueCellId, (Value, DeterminacyState)>) {
+    ) -> (
+        ValueMap,
+        PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    ) {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
         reelaborate_guarded_group(
@@ -2466,7 +2482,10 @@ mod tests {
         deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
 
         // Auto cell: helper must NOT insert anything.
-        assert!(values.get(&id).is_none(), "Auto cell must not be deactivated in values");
+        assert!(
+            values.get(&id).is_none(),
+            "Auto cell must not be deactivated in values"
+        );
         assert!(
             snapshot_values.get(&id).is_none(),
             "Auto cell must not be deactivated in snapshot_values"
@@ -2742,10 +2761,32 @@ mod tests {
         let auto_else_id = ValueCellId::new("E", "auto_else");
 
         let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
-        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, Some(CompiledExpr::literal(Value::Int(42), Type::Int))));
-        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None));
-        graph.value_cells.insert(auto_else_id.clone(), make_cell(&auto_else_id, ValueCellKind::Auto { free: false }, Type::Real, None));
+        graph.value_cells.insert(
+            guard_id.clone(),
+            make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None),
+        );
+        graph.value_cells.insert(
+            member_id.clone(),
+            make_cell(
+                &member_id,
+                ValueCellKind::Param,
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(42), Type::Int)),
+            ),
+        );
+        graph.value_cells.insert(
+            else_member_id.clone(),
+            make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None),
+        );
+        graph.value_cells.insert(
+            auto_else_id.clone(),
+            make_cell(
+                &auto_else_id,
+                ValueCellKind::Auto { free: false },
+                Type::Real,
+                None,
+            ),
+        );
 
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
@@ -2772,7 +2813,10 @@ mod tests {
         );
 
         // Inactive Auto else_member: absent from both maps.
-        assert!(values.get(&auto_else_id).is_none(), "Auto cell must not appear in values");
+        assert!(
+            values.get(&auto_else_id).is_none(),
+            "Auto cell must not appear in values"
+        );
         assert!(
             snapshot_values.get(&auto_else_id).is_none(),
             "Auto cell must not appear in snapshot_values"
@@ -2798,9 +2842,15 @@ mod tests {
 
         let mut graph = EvaluationGraph::default();
         // Guard cell is present (guard itself doesn't need a default_expr).
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        graph.value_cells.insert(
+            guard_id.clone(),
+            make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None),
+        );
         // Member cell IS present in the graph, but has no default_expr.
-        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, None));
+        graph.value_cells.insert(
+            member_id.clone(),
+            make_cell(&member_id, ValueCellKind::Param, Type::Int, None),
+        );
 
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
@@ -2844,7 +2894,10 @@ mod tests {
 
         let mut graph = EvaluationGraph::default();
         // Only the guard cell is in the graph.
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        graph.value_cells.insert(
+            guard_id.clone(),
+            make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None),
+        );
 
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
@@ -2887,9 +2940,15 @@ mod tests {
         let else_member_id = ValueCellId::new("E", "else_member");
 
         let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        graph.value_cells.insert(
+            guard_id.clone(),
+            make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None),
+        );
         // else_member IS in the graph but has no default_expr.
-        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None));
+        graph.value_cells.insert(
+            else_member_id.clone(),
+            make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None),
+        );
 
         // guard=true → members active, else_members INACTIVE → deactivate_if_not_auto.
         let group = GuardedGroupInfo {
@@ -2935,7 +2994,10 @@ mod tests {
 
         let mut graph = EvaluationGraph::default();
         // Only the guard cell is in the graph.
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        graph.value_cells.insert(
+            guard_id.clone(),
+            make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None),
+        );
 
         // guard=true → members active, else_members INACTIVE → deactivate_if_not_auto.
         let group = GuardedGroupInfo {
@@ -2976,10 +3038,32 @@ mod tests {
         let else_member_id = ValueCellId::new("E", "else_member");
 
         let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
-        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, None));
-        graph.value_cells.insert(auto_member_id.clone(), make_cell(&auto_member_id, ValueCellKind::Auto { free: false }, Type::Real, None));
-        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, Some(CompiledExpr::literal(Value::Int(7), Type::Int))));
+        graph.value_cells.insert(
+            guard_id.clone(),
+            make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None),
+        );
+        graph.value_cells.insert(
+            member_id.clone(),
+            make_cell(&member_id, ValueCellKind::Param, Type::Int, None),
+        );
+        graph.value_cells.insert(
+            auto_member_id.clone(),
+            make_cell(
+                &auto_member_id,
+                ValueCellKind::Auto { free: false },
+                Type::Real,
+                None,
+            ),
+        );
+        graph.value_cells.insert(
+            else_member_id.clone(),
+            make_cell(
+                &else_member_id,
+                ValueCellKind::Param,
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(7), Type::Int)),
+            ),
+        );
 
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
@@ -3020,8 +3104,14 @@ mod tests {
             );
 
             // Inactive Auto member: absent.
-            assert!(values.get(&auto_member_id).is_none(), "Auto member must not appear");
-            assert!(snapshot_values.get(&auto_member_id).is_none(), "Auto member must not appear");
+            assert!(
+                values.get(&auto_member_id).is_none(),
+                "Auto member must not appear"
+            );
+            assert!(
+                snapshot_values.get(&auto_member_id).is_none(),
+                "Auto member must not appear"
+            );
         }
 
         // ── guard = Undef (non-Bool): both branches inactive ─────────────
@@ -3046,7 +3136,10 @@ mod tests {
                 snapshot_values.get(&member_id),
                 Some(&(Value::Undef, DeterminacyState::Undetermined))
             );
-            assert!(values.get(&auto_member_id).is_none(), "Auto member must not appear");
+            assert!(
+                values.get(&auto_member_id).is_none(),
+                "Auto member must not appear"
+            );
             assert_eq!(values.get(&else_member_id), Some(&Value::Undef));
             assert_eq!(
                 snapshot_values.get(&else_member_id),
@@ -3064,9 +3157,16 @@ mod tests {
         let guard_cell = ValueCellId::new("E", "guard");
         let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+        snapshot.insert(
+            guard_cell.clone(),
+            (Value::Bool(true), DeterminacyState::Determined),
+        );
 
-        assert!(guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(true)));
+        assert!(guard_value_unchanged(
+            Some(&snapshot),
+            &guard_cell,
+            &Value::Bool(true)
+        ));
     }
 
     /// (b) Snapshot contains guard_cell with Bool(true); new_val is Bool(false)
@@ -3076,9 +3176,16 @@ mod tests {
         let guard_cell = ValueCellId::new("E", "guard");
         let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+        snapshot.insert(
+            guard_cell.clone(),
+            (Value::Bool(true), DeterminacyState::Determined),
+        );
 
-        assert!(!guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(false)));
+        assert!(!guard_value_unchanged(
+            Some(&snapshot),
+            &guard_cell,
+            &Value::Bool(false)
+        ));
     }
 
     /// (c) Snapshot does NOT contain guard_cell → old value is absent → returns false.
@@ -3088,7 +3195,11 @@ mod tests {
         let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();
 
-        assert!(!guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(true)));
+        assert!(!guard_value_unchanged(
+            Some(&snapshot),
+            &guard_cell,
+            &Value::Bool(true)
+        ));
     }
 
     /// (d) snapshot_values is None (no prior eval state) → returns false.
@@ -3096,7 +3207,11 @@ mod tests {
     fn guard_value_unchanged_returns_false_when_snapshot_is_none() {
         let guard_cell = ValueCellId::new("E", "guard");
 
-        assert!(!guard_value_unchanged(None, &guard_cell, &Value::Bool(true)));
+        assert!(!guard_value_unchanged(
+            None,
+            &guard_cell,
+            &Value::Bool(true)
+        ));
     }
 
     // ── group_needs_phase3 ────────────────────────────────────────────────
@@ -3126,7 +3241,10 @@ mod tests {
             Some(&Value::Bool(false)), // old
             &phase1,
         );
-        assert!(!needs, "case (a): Phase 1 still valid → skip → needs_phase3=false");
+        assert!(
+            !needs,
+            "case (a): Phase 1 still valid → skip → needs_phase3=false"
+        );
     }
 
     /// (b) Phase 1 recorded a **different** guard value from the current one
@@ -3159,7 +3277,10 @@ mod tests {
             Some(&Value::Bool(false)), // old snapshot
             &phase1,
         );
-        assert!(needs, "case (b): wave2 flip → must re-elaborate → needs_phase3=true");
+        assert!(
+            needs,
+            "case (b): wave2 flip → must re-elaborate → needs_phase3=true"
+        );
     }
 
     /// (c-skip) Phase 1 did NOT touch this group AND guard is unchanged
@@ -3184,7 +3305,10 @@ mod tests {
             Some(&Value::Bool(true)), // old == current → skip
             &phase1,
         );
-        assert!(!needs, "case (c): guard unchanged → skip → needs_phase3=false");
+        assert!(
+            !needs,
+            "case (c): guard unchanged → skip → needs_phase3=false"
+        );
     }
 
     /// (c-re-elaborate) Phase 1 did NOT touch this group AND guard changed
@@ -3209,7 +3333,10 @@ mod tests {
             Some(&Value::Bool(true)), // old ≠ current → must re-elaborate
             &phase1,
         );
-        assert!(needs, "case (c): guard changed → must re-elaborate → needs_phase3=true");
+        assert!(
+            needs,
+            "case (c): guard changed → must re-elaborate → needs_phase3=true"
+        );
     }
 
     /// (c-no-prior) Phase 1 did NOT touch this group AND there is no prior
@@ -3229,12 +3356,14 @@ mod tests {
         let phase1: HashMap<ValueCellId, Value> = HashMap::new();
 
         let needs = group_needs_phase3(
-            &group,
-            &values,
+            &group, &values,
             None, // no old value → None ≠ Some(Bool(true)) → must re-elaborate
             &phase1,
         );
-        assert!(needs, "case (c): no prior value → must re-elaborate → needs_phase3=true");
+        assert!(
+            needs,
+            "case (c): no prior value → must re-elaborate → needs_phase3=true"
+        );
     }
 
     /// (b-undef) Phase 1 recorded Bool(true) but current is Undef
@@ -3301,9 +3430,11 @@ mod tests {
         let phase1: HashMap<ValueCellId, Value> = HashMap::new();
 
         // guard_cell was present before (old_guard_val = Some)
-        let needs =
-            group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
-        assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
+        let needs = group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
+        assert!(
+            needs,
+            "guard cell disappeared → structural change → group_needs_phase3=true"
+        );
     }
 
     /// Happy path: `phase3_get_guard_val` returns `Some(value)` when the guard
@@ -3339,9 +3470,9 @@ mod tests {
     /// build mode.  The WARN-counter assertion is therefore unconditional.
     #[test]
     fn phase3_get_guard_val_warns_and_returns_none_when_guard_absent() {
+        use reify_test_support::CountingSubscriberBuilder;
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
-        use reify_test_support::CountingSubscriberBuilder;
 
         let guard_cell = ValueCellId::new("E", "guard");
         let values = ValueMap::default(); // guard_cell absent
@@ -3387,5 +3518,4 @@ mod tests {
              when the guard cell is absent"
         );
     }
-
 }

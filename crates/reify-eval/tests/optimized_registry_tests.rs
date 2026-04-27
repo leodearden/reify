@@ -848,13 +848,11 @@ structure def S {
         .find(|t| t.name == "S")
         .expect("template S must exist in the compiled module");
     assert_eq!(
-        check_result.constraint_results[0].id,
-        s_template.constraints[0].id,
+        check_result.constraint_results[0].id, s_template.constraints[0].id,
         "result[0].id must match the first declared constraint (declaration order preserved)"
     );
     assert_eq!(
-        check_result.constraint_results[1].id,
-        s_template.constraints[1].id,
+        check_result.constraint_results[1].id, s_template.constraints[1].id,
         "result[1].id must match the second declared constraint (declaration order preserved)"
     );
 

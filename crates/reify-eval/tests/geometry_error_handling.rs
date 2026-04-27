@@ -1209,7 +1209,8 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
         .filter(|d| d.severity == reify_types::Severity::Warning)
         .count();
     assert_eq!(
-        warning_count, 1,
+        warning_count,
+        1,
         "anti-cascade invariant: expected exactly one Warning diagnostic across the whole realization; got {}: {:?}",
         warning_count,
         result
@@ -2766,7 +2767,8 @@ fn build_boolean_intersection_unresolved_both_no_kernel_error() {
         .filter(|d| d.message.contains("unresolvable GeomRef::Step"))
         .count();
     assert_eq!(
-        unresolved_count, 1,
+        unresolved_count,
+        1,
         "fail-fast invariant: expected exactly one 'unresolvable GeomRef::Step' Error (short-circuit on `left`), got {}: {:?}",
         unresolved_count,
         result

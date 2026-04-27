@@ -623,8 +623,12 @@ mod tests {
         let cell_x = ValueCellId::new("E", "x");
         let cell_y = ValueCellId::new("E", "y");
 
-        let trace_a = DependencyTrace { reads: vec![cell_x.clone()] };
-        let trace_b = DependencyTrace { reads: vec![cell_y.clone()] };
+        let trace_a = DependencyTrace {
+            reads: vec![cell_x.clone()],
+        };
+        let trace_b = DependencyTrace {
+            reads: vec![cell_y.clone()],
+        };
 
         let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
         map.insert(node_id_a.clone(), trace_a);
@@ -632,9 +636,19 @@ mod tests {
 
         let returned = take_trace(&mut map, &node_id_a, "sorted_lets", "let_traces");
 
-        assert_eq!(returned.reads, vec![cell_x], "returned trace should match the inserted reads for node_id_a");
-        assert!(!map.contains_key(&node_id_a), "node_id_a should be removed from the map");
-        assert!(map.contains_key(&node_id_b), "node_id_b should remain in the map");
+        assert_eq!(
+            returned.reads,
+            vec![cell_x],
+            "returned trace should match the inserted reads for node_id_a"
+        );
+        assert!(
+            !map.contains_key(&node_id_a),
+            "node_id_a should be removed from the map"
+        );
+        assert!(
+            map.contains_key(&node_id_b),
+            "node_id_b should remain in the map"
+        );
     }
 
     /// Step 5: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored

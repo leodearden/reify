@@ -1772,8 +1772,18 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         .auto_param("S", "a1", Type::length())
         .auto_param("S", "a2", Type::length())
         // Top-level constraints so the resolution phase can match them
-        .constraint("S", 0, Some("a1_gt_2mm"), gt(value_ref("S", "a1"), literal(mm(2.0))))
-        .constraint("S", 1, Some("a2_gt_3mm"), gt(value_ref("S", "a2"), literal(mm(3.0))))
+        .constraint(
+            "S",
+            0,
+            Some("a1_gt_2mm"),
+            gt(value_ref("S", "a1"), literal(mm(2.0))),
+        )
+        .constraint(
+            "S",
+            1,
+            Some("a2_gt_3mm"),
+            gt(value_ref("S", "a2"), literal(mm(3.0))),
+        )
         .guarded_group(
             guard_expr,
             guard_id.clone(),
@@ -1854,7 +1864,10 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         a1_p2
     );
     let snap2 = engine.snapshot().expect("snapshot after guard→false");
-    let (_, a1_det2) = snap2.values.get(&a1_id).expect("a1 in snapshot after guard→false");
+    let (_, a1_det2) = snap2
+        .values
+        .get(&a1_id)
+        .expect("a1 in snapshot after guard→false");
     assert_eq!(
         *a1_det2,
         DeterminacyState::Determined,
@@ -1876,7 +1889,10 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         "Phase 2: a2 should retain 7mm after else_members activate (solver-resolved value preserved), got {:?}",
         a2_p2
     );
-    let (_, a2_det2) = snap2.values.get(&a2_id).expect("a2 in snapshot after guard→false");
+    let (_, a2_det2) = snap2
+        .values
+        .get(&a2_id)
+        .expect("a2 in snapshot after guard→false");
     assert_eq!(
         *a2_det2,
         DeterminacyState::Determined,
@@ -1919,7 +1935,10 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         a2_p3
     );
     let snap3 = engine.snapshot().expect("snapshot after guard→true");
-    let (_, a2_det3) = snap3.values.get(&a2_id).expect("a2 in snapshot after guard→true");
+    let (_, a2_det3) = snap3
+        .values
+        .get(&a2_id)
+        .expect("a2 in snapshot after guard→true");
     assert_eq!(
         *a2_det3,
         DeterminacyState::Determined,
@@ -2127,7 +2146,8 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
             pre_val.as_ref(),
             "unaffected cell {id} must retain pre-edit value after edit_param(u3, false); \
              pre={:?}, post={:?}",
-            pre_val, post_val
+            pre_val,
+            post_val
         );
     }
 
@@ -2218,7 +2238,8 @@ fn edit_param_phase1_fires_but_skips_when_same_value_edit_on_structure_controlli
             pre_val.as_ref(),
             "cell {id} must retain pre-edit value after no-op edit_param(u3, true); \
              pre={:?}, post={:?}",
-            pre_val, post_val
+            pre_val,
+            post_val
         );
     }
 
@@ -2288,12 +2309,7 @@ fn edit_param_phase3_fires_for_auto_driven_guard_change() {
 
     let template = TopologyTemplateBuilder::new("S")
         // ref_depth: a param that the solver uses but that does NOT feed the guard
-        .param(
-            "S",
-            "ref_depth",
-            Type::length(),
-            Some(literal(mm(5.0))),
-        )
+        .param("S", "ref_depth", Type::length(), Some(literal(mm(5.0))))
         // depth: auto param resolved by the solver
         .auto_param("S", "depth", Type::length())
         // constraint reads both depth and ref_depth → dirty when ref_depth changes
@@ -2619,7 +2635,6 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
     );
 }
 
-
 /// Symmetric regression test for the wave2 guard-flip bug in `edit_param`.
 /// Task 2146.
 ///
@@ -2921,7 +2936,12 @@ fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
         // depth: auto param resolved by solver.
         .auto_param("S", "depth", Type::length())
         // constraint reads depth and x → dirty when x changes → solver re-runs.
-        .constraint("S", 0, Some("depth_ge_x"), ge(value_ref("S", "depth"), value_ref("S", "x")))
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
         // Group A: guard reads x → guard_a in dirty_cone(x) → Phase 1 fires.
         .guarded_group(
             guard_a_expr,
@@ -2956,8 +2976,14 @@ fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
     let mut solved2 = HashMap::new();
     solved2.insert(depth_id.clone(), mm(3.0));
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1, unique: true },
-        SolveResult::Solved { values: solved2, unique: true },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let checker = MockConstraintChecker::new();
@@ -3089,10 +3115,10 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
         .guarded_group(
             guard_expr.clone(),
             guard_id.clone(),
-            vec![],               // members (nothing active when guard=true)
-            vec![],               // constraints
+            vec![],                 // members (nothing active when guard=true)
+            vec![],                 // constraints
             vec![thickness_decl()], // else_members (active only when guard=false)
-            vec![],               // else_constraints
+            vec![],                 // else_constraints
         )
         .build();
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -3117,10 +3143,10 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
         .guarded_group(
             guard_expr.clone(),
             guard_id.clone(),
-            vec![],               // members
-            vec![],               // constraints
+            vec![],                 // members
+            vec![],                 // constraints
             vec![thickness_decl()], // else_members (active when guard=false)
-            vec![],               // else_constraints
+            vec![],                 // else_constraints
         )
         .build();
     let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -3193,8 +3219,7 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
     //   * Count > 1 → redundant re-invocations during eval() (unexpected).
     let count_a = counter_a.load(Ordering::Relaxed);
     assert_eq!(
-        count_a,
-        1,
+        count_a, 1,
         "Path A: expected exactly 1 solver invocation during eval(), got {}; \
          0 means the engine skipped solving (pre-fix Auto-cell overwrite regression), \
          >1 means redundant re-invocations during eval()",
@@ -3210,8 +3235,7 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
     //     constraint (unnecessary work, and a sign the dirty-cone logic regressed).
     let count_b = counter_b.load(Ordering::Relaxed);
     assert_eq!(
-        count_b,
-        1,
+        count_b, 1,
         "Path B: expected exactly 1 solver invocation across eval()+edit_param(), got {}; \
          0 means the cold solve was skipped (stale Undef → false-positive value match), \
          2 means edit_param spuriously re-invoked the solver for a non-dirty constraint",
@@ -3308,9 +3332,9 @@ fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
             guard_expr,
             guard_id.clone(),
             vec![auto_inner_decl, param_inner_decl, let_inner_decl], // members (active when guard=true)
-            vec![],  // constraints
-            vec![],  // else_members
-            vec![],  // else_constraints
+            vec![],                                                  // constraints
+            vec![],                                                  // else_members
+            vec![],                                                  // else_constraints
         )
         .build();
 
@@ -3403,5 +3427,4 @@ fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
         DeterminacyState::Determined,
         "let_inner must be Determined in snapshot"
     );
-
 }

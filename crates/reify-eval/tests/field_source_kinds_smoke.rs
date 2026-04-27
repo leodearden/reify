@@ -16,7 +16,9 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
-use reify_types::{FieldSourceKind, ModulePath, Satisfaction, Severity, Value, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_types::{
+    FIELD_ENTITY_PREFIX, FieldSourceKind, ModulePath, Satisfaction, Severity, Value, ValueCellId,
+};
 
 /// Absolute path to the fixture, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

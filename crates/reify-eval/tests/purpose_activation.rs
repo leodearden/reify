@@ -760,7 +760,7 @@ purpose weight_target(subject : Structure) {
         .find(|(id, _)| id.entity.starts_with("purpose:weight_target@Bracket"))
         .map(|(_, data)| data.clone())
         .expect(
-            "expected at least one constraint with entity prefix 'purpose:weight_target@Bracket'"
+            "expected at least one constraint with entity prefix 'purpose:weight_target@Bracket'",
         );
 
     // Post-activation: remap_entity must have rewritten the ValueRef entity to "Bracket".
@@ -828,7 +828,10 @@ purpose manufacturing_ready(subject : Structure) {
         "fixture failed to compile cleanly"
     );
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture produced unexpected error diagnostics: {:?}",
         compiled.diagnostics
     );
@@ -851,7 +854,10 @@ purpose manufacturing_ready(subject : Structure) {
     // Format: "purpose:<name>@<entity>" (engine_purposes.rs:41).
     let purpose_result = constraint_results
         .iter()
-        .find(|e| e.id.entity.starts_with("purpose:manufacturing_ready@Bracket"))
+        .find(|e| {
+            e.id.entity
+                .starts_with("purpose:manufacturing_ready@Bracket")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected a purpose-injected constraint with entity prefix \

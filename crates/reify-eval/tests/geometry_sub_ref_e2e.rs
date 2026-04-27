@@ -96,9 +96,7 @@ fn sketch_with_multiple_named_sub_refs_resolves_correctly() {
     let not_yet_impl_warnings: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning && d.message.contains("not yet implemented")
-        })
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("not yet implemented"))
         .collect();
     assert!(
         not_yet_impl_warnings.is_empty(),
@@ -119,7 +117,10 @@ fn sketch_with_multiple_named_sub_refs_resolves_correctly() {
         "expected at least 2 recorded ops (body Box, hole Cylinder) before checking Difference; \
          got {}: {:?}",
         recorded_ops.len(),
-        recorded_ops.iter().map(|r| format!("{:?}", r.op)).collect::<Vec<_>>()
+        recorded_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
     );
     let body_handle = recorded_ops[0].result_handle;
     let hole_handle = recorded_ops[1].result_handle;
@@ -133,7 +134,10 @@ fn sketch_with_multiple_named_sub_refs_resolves_correctly() {
         1,
         "expected exactly 1 Difference op, got {}: {:?}",
         diff_ops.len(),
-        recorded_ops.iter().map(|r| format!("{:?}", r.op)).collect::<Vec<_>>()
+        recorded_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
     );
 
     match &diff_ops[0].op {
@@ -191,7 +195,8 @@ fn sketch_with_unknown_sub_ref_returns_error() {
         .iter()
         .filter(|d| {
             d.severity == Severity::Error
-                && d.message.contains("unresolvable GeomRef::Sub('nonexistent')")
+                && d.message
+                    .contains("unresolvable GeomRef::Sub('nonexistent')")
         })
         .collect();
 
@@ -212,9 +217,7 @@ fn sketch_with_unknown_sub_ref_returns_error() {
     let not_yet_impl_warnings: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning && d.message.contains("not yet implemented")
-        })
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("not yet implemented"))
         .collect();
     assert!(
         not_yet_impl_warnings.is_empty(),

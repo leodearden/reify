@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use reify_compiler::{find_template, CompiledGeometryOp, TopologyTemplate, ValueCellKind};
+use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind, find_template};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
     ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
@@ -1525,8 +1525,14 @@ mod tests {
             },
         );
 
-        assert!(graph.is_auto_cell(&auto_strict_id), "Auto {{ free: false }} should be auto");
-        assert!(graph.is_auto_cell(&auto_free_id), "Auto {{ free: true }} should be auto");
+        assert!(
+            graph.is_auto_cell(&auto_strict_id),
+            "Auto {{ free: false }} should be auto"
+        );
+        assert!(
+            graph.is_auto_cell(&auto_free_id),
+            "Auto {{ free: true }} should be auto"
+        );
         assert!(!graph.is_auto_cell(&param_id), "Param should not be auto");
         assert!(!graph.is_auto_cell(&let_id), "Let should not be auto");
         assert!(

@@ -1153,8 +1153,8 @@ structure S {
             .template(template)
             .build();
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-            .with_solver(Box::new(spy));
+        let mut engine =
+            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
         engine.eval(&module);
 
@@ -1222,8 +1222,8 @@ structure S {
             .template(template)
             .build();
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-            .with_solver(Box::new(spy));
+        let mut engine =
+            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
         // Initial eval — solver fires once.
         engine.eval(&module);
@@ -1297,8 +1297,8 @@ structure S {
             .template(template)
             .build();
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-            .with_solver(Box::new(spy));
+        let mut engine =
+            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
         // Initial eval — solver fires once.
         engine.eval(&module);
@@ -1361,5 +1361,4 @@ structure S {
             "dimension mismatch for Assembly.height: expected m, got kg"
         );
     }
-
 }

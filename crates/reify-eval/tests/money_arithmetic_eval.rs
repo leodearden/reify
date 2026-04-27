@@ -32,7 +32,10 @@ fn money_per_mass_times_mass_evaluates_to_50_usd() {
         .get(&id)
         .unwrap_or_else(|| panic!("'p' not found in eval result"));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - 50.0).abs() < 1e-9,
                 "expected si_value 50.0, got {}",
@@ -66,7 +69,10 @@ fn cross_currency_addition_evaluates_to_1125_usd() {
         .get(&id)
         .unwrap_or_else(|| panic!("'p' not found in eval result"));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - 11.25).abs() < 1e-9,
                 "expected si_value 11.25 (5*1.25 + 5*1.0), got {}",

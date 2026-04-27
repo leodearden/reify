@@ -492,9 +492,7 @@ fn tube_inner_greater_than_outer_emits_error_diagnostic() {
     // "outer" — routed from GeometryError::OperationFailed through the
     // eval layer's geometry-error diagnostic channel.
     let has_inner_outer_error = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error
-            && d.message.contains("inner")
-            && d.message.contains("outer")
+        d.severity == Severity::Error && d.message.contains("inner") && d.message.contains("outer")
     });
     assert!(
         has_inner_outer_error,

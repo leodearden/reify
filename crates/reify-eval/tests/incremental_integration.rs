@@ -841,7 +841,12 @@ fn edit_param_dimension_mismatch_pins_cell_and_dimensions() {
     let err = engine
         .edit_param(height_id.clone(), kg(5.0))
         .expect_err("edit_param with dimension mismatch should return Err");
-    let reify_eval::EngineError::DimensionMismatch { cell, expected, got } = err else {
+    let reify_eval::EngineError::DimensionMismatch {
+        cell,
+        expected,
+        got,
+    } = err
+    else {
         panic!("expected EngineError::DimensionMismatch, got {err:?}");
     };
     assert_eq!(cell, height_id, "cell should be the height cell id");

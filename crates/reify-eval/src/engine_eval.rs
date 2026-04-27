@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{find_template, CompiledModule, ValueCellDecl, ValueCellKind};
+use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_types::{
-    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, FIELD_ENTITY_PREFIX,
-    PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
+    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, FIELD_ENTITY_PREFIX, PersistentMap,
+    ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -20,8 +20,8 @@ use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
-    CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
+    CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup, build_meta_map,
+    eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
 
 /// Sentinel substring included in every panic raised by
@@ -149,9 +149,7 @@ pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::Evalua
 /// single helper so a future node kind (e.g. Resolution, once it
 /// participates in demand) is added once rather than drifting between
 /// the two call sites.
-pub(crate) fn build_demand_for_graph(
-    graph: &crate::graph::EvaluationGraph,
-) -> DemandRegistry {
+pub(crate) fn build_demand_for_graph(graph: &crate::graph::EvaluationGraph) -> DemandRegistry {
     let mut demand = DemandRegistry::new();
     for (_, node) in graph.value_cells.iter() {
         demand.add_demand(NodeId::Value(node.id.clone()));
@@ -199,7 +197,8 @@ fn post_solver_re_eval_guard_cells(
                                 .with_determinacy(snapshot_values),
                         );
                         values.insert(cell.id.clone(), val.clone());
-                        snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                        snapshot_values
+                            .insert(cell.id.clone(), (val, DeterminacyState::Determined));
                     } else {
                         values.insert(cell.id.clone(), Value::Undef);
                         snapshot_values.insert(
@@ -547,7 +546,9 @@ fn eval_guarded_group_param_cell(
 
     // Override-accepted or default-eval path: write determined value.
     values.insert(cell.id.clone(), val.clone());
-    snapshot.values.insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
+    snapshot
+        .values
+        .insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
     record_eval_completed(
         ctx.journal,
         ctx.cache,
@@ -1220,8 +1221,7 @@ impl Engine {
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` Arc::clones `functions` — O(1) refcount bump,
                 // not a deep copy (task #2286).
-                let Some(problem) =
-                    build_solver_problem(template, &values, Arc::clone(&functions))
+                let Some(problem) = build_solver_problem(template, &values, Arc::clone(&functions))
                 else {
                     continue;
                 };
@@ -1581,10 +1581,10 @@ impl Engine {
                     //                          not mutated here).  one .clone() only in the cache-miss
                     //                          Ok(()) arm — the previous shape cloned on every Param
                     //                          cell visit even on the LSP fast-path.
-                    let override_entry: Option<(&Value, Result<(), ParamOverrideRejection>)> =
-                        self.param_overrides
-                            .get(&cell.id)
-                            .map(|v| (v, validate_param_override(v, &cell.cell_type)));
+                    let override_entry: Option<(&Value, Result<(), ParamOverrideRejection>)> = self
+                        .param_overrides
+                        .get(&cell.id)
+                        .map(|v| (v, validate_param_override(v, &cell.cell_type)));
 
                     // Unconditional override-validation diagnostic pre-check.
                     // Mirrors the step-10/step-11 pattern from task 2259: the solver pass and
@@ -1671,19 +1671,24 @@ impl Engine {
                     // borrow is moved out of override_entry and cloned here to produce the owned
                     // Value written to the cache.  Validate-once invariant is preserved — the
                     // Result in override_entry.1 is the same one computed at the top.
-                    let default_or = |no_default_state: DeterminacyState| -> (Value, DeterminacyState) {
-                        if let Some(ref expr) = cell.default_expr {
-                            (
-                                reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                                ),
-                                DeterminacyState::Determined,
-                            )
-                        } else {
-                            (reify_types::Value::Undef, no_default_state)
-                        }
-                    };
+                    let default_or =
+                        |no_default_state: DeterminacyState| -> (Value, DeterminacyState) {
+                            if let Some(ref expr) = cell.default_expr {
+                                (
+                                    reify_expr::eval_expr(
+                                        expr,
+                                        &eval_ctx_with_meta(
+                                            &values,
+                                            &self.functions,
+                                            &self.meta_map,
+                                        ),
+                                    ),
+                                    DeterminacyState::Determined,
+                                )
+                            } else {
+                                (reify_types::Value::Undef, no_default_state)
+                            }
+                        };
                     let (val, det) = match override_entry {
                         Some((override_val, Ok(()))) => {
                             (override_val.clone(), DeterminacyState::Determined)
@@ -1699,8 +1704,7 @@ impl Engine {
                     // Build dependency trace (params have no reads - they are roots)
                     let trace = DependencyTrace::default();
 
-                    let cached_result =
-                        CachedResult::Value(val.clone(), det);
+                    let cached_result = CachedResult::Value(val.clone(), det);
                     let outcome = self.cache.record_evaluation(
                         node_id.clone(),
                         cached_result,
@@ -1745,9 +1749,7 @@ impl Engine {
             let ordered_let_cells: Vec<&ValueCellDecl> = sorted_lets
                 .iter()
                 .filter_map(|nid| match nid {
-                    NodeId::Value(vcid) => {
-                        template.value_cells.iter().find(|c| &c.id == vcid)
-                    }
+                    NodeId::Value(vcid) => template.value_cells.iter().find(|c| &c.id == vcid),
                     _ => None,
                 })
                 .collect();
@@ -1820,7 +1822,9 @@ impl Engine {
                     // would indicate detect_let_cycle was modified to drop entries while
                     // still returning them in sorted_lets — surface that loud rather than
                     // mask it with a defensive recomputation.
-                    let trace = let_traces.get(&node_id).cloned()
+                    let trace = let_traces
+                        .get(&node_id)
+                        .cloned()
                         .expect("sorted_lets ⊆ let_traces.keys() by detect_let_cycle invariant");
 
                     let cached_result =
@@ -1949,8 +1953,7 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        let (let_cells, mut let_traces, sorted_lets) =
-            detect_let_cycle(template, diagnostics);
+        let (let_cells, mut let_traces, sorted_lets) = detect_let_cycle(template, diagnostics);
 
         for node_id in sorted_lets {
             let expr = let_cells[&node_id];
@@ -1985,8 +1988,7 @@ impl Engine {
 
             let val = reify_expr::eval_expr(
                 expr,
-                &eval_ctx_with_meta(values, functions, meta_map)
-                    .with_determinacy(&snapshot.values),
+                &eval_ctx_with_meta(values, functions, meta_map).with_determinacy(&snapshot.values),
             );
             values.insert(cell_id.clone(), val.clone());
 
@@ -2099,5 +2101,4 @@ mod invariant_tests {
         }
         super::assert_value_cell_types_representable(&graph);
     }
-
 }

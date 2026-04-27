@@ -175,10 +175,11 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_per_side_below"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_extsym_per_side_below",
+    ))
+    .template(template)
+    .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -220,7 +221,8 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     // future refactor can't silently regress the Err back to "extrude distance ...".
     let has_extsym_error = result.diagnostics.iter().any(|d| {
         matches!(d.severity, reify_types::Severity::Error)
-            && d.message.contains("extrude_symmetric distance is degenerate")
+            && d.message
+                .contains("extrude_symmetric distance is degenerate")
     });
     assert!(
         has_extsym_error,
@@ -399,9 +401,7 @@ fn extrude_symmetric_distance_negative_above_threshold_accepted() {
                 ops.iter().map(|o| &o.op).collect::<Vec<_>>()
             )
         });
-    let dist_si = extsym
-        .as_f64()
-        .expect("distance should be a numeric value");
+    let dist_si = extsym.as_f64().expect("distance should be a numeric value");
     assert!(
         (dist_si - (-0.01)).abs() < 1e-9,
         "ExtrudeSymmetric distance should preserve negative sign (-0.01 m), got {}",

@@ -20,8 +20,7 @@ use reify_types::{DimensionVector, ModulePath, Value, ValueCellId, VersionId};
 /// TypeKindMismatch override (Bool on a Scalar param).
 #[test]
 fn param_override_type_kind_rejection_counter_increments() {
-    let compiled =
-        parse_and_compile_with_stdlib("structure S { param width: Scalar = 100mm }");
+    let compiled = parse_and_compile_with_stdlib("structure S { param width: Scalar = 100mm }");
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
     // Warm the engine state; no override yet.
@@ -56,8 +55,7 @@ fn param_override_type_kind_rejection_counter_increments() {
 /// ScalarDimensionMismatch override (mass dimension on a length-typed param).
 #[test]
 fn param_override_dimension_rejection_counter_increments() {
-    let compiled =
-        parse_and_compile_with_stdlib("structure S { param width: Scalar = 100mm }");
+    let compiled = parse_and_compile_with_stdlib("structure S { param width: Scalar = 100mm }");
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
     // Warm the engine state; no override yet.

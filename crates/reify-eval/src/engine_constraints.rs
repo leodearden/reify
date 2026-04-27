@@ -345,8 +345,7 @@ impl Engine {
             );
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
                 debug_assert_eq!(
-                    result.id,
-                    cnode.id,
+                    result.id, cnode.id,
                     "check_constraints_with_values: result.id must match cnode.id \
                      — dispatch_constraints reordered results or constraint_nodes changed",
                 );
@@ -474,8 +473,7 @@ impl Engine {
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 debug_assert_eq!(
-                    result.id,
-                    compiled.id,
+                    result.id, compiled.id,
                     "check_constraints_against_templates: result.id must match compiled.id \
                      — dispatch_constraints reordered results or active_constraints changed",
                 );

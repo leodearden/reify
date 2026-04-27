@@ -56,7 +56,8 @@ fn extract_eigenvalues_panics_on_too_many_items() {
 
 #[test]
 fn eval_analytical_field_at_point() {
-    let result = eval_source("field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }");
+    let result =
+        eval_source("field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }");
 
     // The field should be stored in the values map
     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");

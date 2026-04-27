@@ -345,14 +345,11 @@ impl Engine {
                 },
                 Err(err) => {
                     diagnostics.push(
-                        Diagnostic::error(format!(
-                            "failed to compile geometry operation: {}",
-                            err
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            realization_span,
-                            "in this realization",
-                        )),
+                        Diagnostic::error(format!("failed to compile geometry operation: {}", err))
+                            .with_label(DiagnosticLabel::new(
+                                realization_span,
+                                "in this realization",
+                            )),
                     );
                     step_handles.push(GeometryHandleId::INVALID);
                     had_failure = true;
@@ -360,7 +357,8 @@ impl Engine {
             }
         }
         // Discard intermediate handles from partially-failed realizations
-        let rolled_back = had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
+        let rolled_back =
+            had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
         if rolled_back {
             step_handles.truncate(handle_start);
         } else if let Some(name) = realization_name {
@@ -838,7 +836,10 @@ mod tests {
              successfully produced"
         );
         // Verify rollback did happen (existing invariant)
-        assert!(step_handles.is_empty(), "handles should be truncated on failure");
+        assert!(
+            step_handles.is_empty(),
+            "handles should be truncated on failure"
+        );
     }
 
     /// Pins the last-write-wins (shadowing) semantics for `named_steps` when
@@ -916,8 +917,7 @@ mod tests {
 
         // The kernel must have issued distinct handles so the test is non-trivial
         assert_ne!(
-            h1,
-            h2,
+            h1, h2,
             "MockGeometryKernel must return distinct handles for distinct ops"
         );
 
@@ -1003,7 +1003,10 @@ mod tests {
             SourceSpan::new(0, 0),
         );
         let h1 = named_steps["body"];
-        assert!(diagnostics.is_empty(), "first realization must succeed cleanly");
+        assert!(
+            diagnostics.is_empty(),
+            "first realization must succeed cleanly"
+        );
 
         // Second binding: let body = <invalid> — fails (rollback path).
         Engine::execute_realization_ops(
@@ -1101,12 +1104,10 @@ mod tests {
             compile_err_diag.labels
         );
         assert_eq!(
-            compile_err_diag.labels[0].span,
-            realization_span,
+            compile_err_diag.labels[0].span, realization_span,
             "compile-failure label span should equal the supplied realization_span \
              {:?}, got {:?}",
-            realization_span,
-            compile_err_diag.labels[0].span
+            realization_span, compile_err_diag.labels[0].span
         );
     }
 
@@ -1163,10 +1164,7 @@ mod tests {
         // Find the kernel-error Error diagnostic.
         let kernel_err_diag = diagnostics
             .iter()
-            .find(|d| {
-                d.message.contains("geometry error")
-                    && matches!(d.severity, Severity::Error)
-            })
+            .find(|d| d.message.contains("geometry error") && matches!(d.severity, Severity::Error))
             .expect("expected an Error diagnostic with 'geometry error'");
 
         assert_eq!(
@@ -1178,12 +1176,10 @@ mod tests {
             kernel_err_diag.labels
         );
         assert_eq!(
-            kernel_err_diag.labels[0].span,
-            realization_span,
+            kernel_err_diag.labels[0].span, realization_span,
             "kernel-error label span should equal the supplied realization_span \
              {:?}, got {:?}",
-            realization_span,
-            kernel_err_diag.labels[0].span
+            realization_span, kernel_err_diag.labels[0].span
         );
     }
 

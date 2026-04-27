@@ -11,7 +11,9 @@
 //!
 //! Tests will FAIL until step-10 lands `examples/drivebelt_trait_bounds.ri`.
 
-use reify_test_support::{assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib,
+};
 use reify_types::{Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -75,7 +77,13 @@ fn drivebelt_example_compiles_and_produces_five_templates() {
     );
 
     let template_names: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
-    for expected in &["DriveBelt", "CeramicLiner", "Copper", "BorosilicateGlass", "TitaniumImplant"] {
+    for expected in &[
+        "DriveBelt",
+        "CeramicLiner",
+        "Copper",
+        "BorosilicateGlass",
+        "TitaniumImplant",
+    ] {
         assert!(
             template_names.contains(expected),
             "expected template '{}' in drivebelt_trait_bounds.ri, got: {:?}",
@@ -102,9 +110,7 @@ fn drivebelt_trait_bounds_and_value_cells() {
     // trait_bounds
     for expected_trait in &["ElasticallyDeformable", "ImpactResistant", "Damping"] {
         assert!(
-            template
-                .trait_bounds
-                .contains(&expected_trait.to_string()),
+            template.trait_bounds.contains(&expected_trait.to_string()),
             "DriveBelt should have trait bound '{}', got: {:?}",
             expected_trait,
             template.trait_bounds
@@ -113,14 +119,14 @@ fn drivebelt_trait_bounds_and_value_cells() {
 
     // value cells: eight inherited members across the chain
     let expected_members = [
-        "stiffness",        // from Flexible via ElasticallyDeformable
-        "max_deflection",   // from Flexible via ElasticallyDeformable
+        "stiffness",          // from Flexible via ElasticallyDeformable
+        "max_deflection",     // from Flexible via ElasticallyDeformable
         "max_elastic_strain", // from ElasticallyDeformable
-        "density",          // from MaterialSpec via ImpactResistant / Damping
-        "name",             // from MaterialSpec via ImpactResistant / Damping
-        "impact_energy",    // from ImpactResistant
-        "damping_ratio",    // from Damping
-        "loss_factor",      // from Damping
+        "density",            // from MaterialSpec via ImpactResistant / Damping
+        "name",               // from MaterialSpec via ImpactResistant / Damping
+        "impact_energy",      // from ImpactResistant
+        "damping_ratio",      // from Damping
+        "loss_factor",        // from Damping
     ];
     let cell_members: Vec<&str> = template
         .value_cells
@@ -194,9 +200,9 @@ fn all_constraints_satisfied_for_all_entities() {
     // (entity, expects_non_empty_constraint_results)
     // Only assert non-empty for traits that inject numeric constraints.
     let entity_expectations: &[(&str, bool)] = &[
-        ("DriveBelt", true),      // Flexible + ED constraints
-        ("CeramicLiner", true),   // Refractory: max_service_temperature >= 1500
-        ("Copper", true),         // Conductive: resistivity < 1e-4
+        ("DriveBelt", true),          // Flexible + ED constraints
+        ("CeramicLiner", true),       // Refractory: max_service_temperature >= 1500
+        ("Copper", true),             // Conductive: resistivity < 1e-4
         ("BorosilicateGlass", false), // OpticallyCharacterized: no constraints
         ("TitaniumImplant", false),   // Biocompatible + CorrosionResistant: no constraints
     ];

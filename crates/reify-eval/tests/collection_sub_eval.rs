@@ -783,17 +783,13 @@ fn edit_param_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instanc
     // This proves the cache was populated, so the post-edit None-or-fresh check
     // is meaningful rather than trivially satisfied by a never-populated cache.
     for i in 0..4_usize {
-        let bolt_node =
-            NodeId::Value(ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter"));
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter"));
         let entry = engine
             .cache_store()
             .get(&bolt_node)
-            .unwrap_or_else(|| {
-                panic!("Parent.bolts[{}].diameter must be in cache after eval", i)
-            });
+            .unwrap_or_else(|| panic!("Parent.bolts[{}].diameter must be in cache after eval", i));
         assert_eq!(
-            entry.basis_version,
-            v_a,
+            entry.basis_version, v_a,
             "Parent.bolts[{}].diameter must be at V_A before any edits",
             i
         );
@@ -821,17 +817,13 @@ fn edit_param_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instanc
     // artifact this test pins.  None is acceptable — Phase 4's create loop does
     // not call cache.record_evaluation, so invalidated entries remain absent.
     for i in 0..4_usize {
-        let bolt_node =
-            NodeId::Value(ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter"));
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter"));
         if let Some(entry) = engine.cache_store().get(&bolt_node) {
             assert_eq!(
-                entry.basis_version,
-                current_version,
+                entry.basis_version, current_version,
                 "Parent.bolts[{}].diameter cache entry must be fresh after shrink→regrow; \
                  got basis_version {:?}, expected {:?}",
-                i,
-                entry.basis_version,
-                current_version
+                i, entry.basis_version, current_version
             );
         }
         // None is acceptable — Phase 4's create loop does not call
