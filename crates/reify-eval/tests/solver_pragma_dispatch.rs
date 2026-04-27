@@ -190,3 +190,64 @@ fn eval_falls_back_to_default_solver_with_warning_when_named_solver_not_register
             .collect::<Vec<_>>()
     );
 }
+
+/// Same fallback policy as
+/// `eval_falls_back_to_default_solver_with_warning_when_named_solver_not_registered`,
+/// but exercising `eval_cached` (the LSP / on-keystroke path) instead of
+/// `eval`. Pins the at-most-once-warning invariant for the cached-eval path:
+/// because the entire point of routing both invocation sites through the
+/// shared `resolve_solver_for_module` helper is to keep behaviour identical,
+/// the eval_cached side must surface exactly one fallback warning per call —
+/// never zero (silent fallback hiding a misconfiguration), never N (one per
+/// auto-param template). Without this test, a refactor that moves the
+/// `resolve_solver_for_module` call inside the template loop in
+/// `eval_cached` could regress silently.
+#[test]
+fn eval_cached_falls_back_to_default_solver_with_warning_when_named_solver_not_registered() {
+    use reify_types::VersionId;
+
+    let mut module = make_module_with_two_auto_param_templates();
+    module.solver_pragma = Some(SolverPragma {
+        name: "libslvs".to_string(),
+        options: BTreeMap::new(),
+    });
+
+    let default_spy = SpyConstraintSolver::new_solved(HashMap::new());
+
+    // NB: no `register_solver("libslvs", …)` call — the named back-end is
+    // intentionally absent so the resolver must fall back to the default.
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(default_spy));
+
+    // Prime the cache via a regular eval so eval_cached has state to consult.
+    // The eval call itself emits one fallback warning, but those diagnostics
+    // are returned in `engine.eval(&module)`'s result and do NOT carry over
+    // to the eval_cached return value (each call returns its own
+    // diagnostics vec).
+    let _ = engine.eval(&module);
+
+    let result = engine.eval_cached(&module, VersionId(0));
+
+    let fallback_warnings: Vec<&reify_types::Diagnostic> = result
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| {
+            d.message.contains("libslvs")
+                && (d.message.contains("not registered") || d.message.contains("falling back"))
+        })
+        .collect();
+
+    assert_eq!(
+        fallback_warnings.len(),
+        1,
+        "expected exactly one 'named back-end not registered / falling back' warning per \
+         eval_cached call (regardless of template count); got {} warnings: {:?}",
+        fallback_warnings.len(),
+        fallback_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
