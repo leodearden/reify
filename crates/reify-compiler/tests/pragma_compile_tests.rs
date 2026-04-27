@@ -2058,6 +2058,17 @@ fn kernel_pragma_malformed_args_emit_warning_and_leave_kernel_pragma_none() {
             "#kernel(name=\"occt\")\nstructure S { param x : Real }",
             "key-value-first",
         ),
+        // Multi-arg shapes whose first element is a bare ident reach the
+        // catch-all arm in `apply_kernel_pragma` (the leading-bare-ident
+        // single-arg arms above don't match).
+        (
+            "#kernel(occt, foo)\nstructure S { param x : Real }",
+            "multi-arg-bare",
+        ),
+        (
+            "#kernel(occt, name=\"x\")\nstructure S { param x : Real }",
+            "multi-arg-keyvalue",
+        ),
     ];
 
     for (source, label) in cases {

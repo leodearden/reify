@@ -39,9 +39,9 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 const COMPILER_SUPPORTED_VERSION: (u16, u16) = (0, 1);
 
 /// Append the spans of every pragma whose `name` matches `target_name` in
-/// `pragmas` to `out`. Shared by `warn_block_level_precision` and
-/// `warn_block_level_solver` so a future container-set change updates both
-/// passes from a single edit.
+/// `pragmas` to `out`. Shared by `warn_block_level_precision`,
+/// `warn_block_level_solver`, and `warn_block_level_kernel` so a future
+/// container-set change updates all three passes from a single edit.
 fn collect_named_pragma_spans(target_name: &str, pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
     for pragma in pragmas {
         if pragma.name == target_name {
@@ -701,9 +701,10 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
-            // Catch-all for any remaining shape (e.g. multi-bare-arg lists).
-            // Currently unreachable because the prior arms cover every
-            // single-arg shape; left as a future-proofing safety net.
+            // Catch-all for any remaining multi-arg shape — reached for
+            // forms like `#kernel(occt, foo)` or `#kernel(occt, name="x")`
+            // whose first element is a bare ident (so the `[Bare(_)]` and
+            // `[KeyValue { .. }, ..]` arms above don't match).
             _ => {
                 module.diagnostics.push(
                     Diagnostic::warning("#kernel: expected #kernel(occt); ignored")
