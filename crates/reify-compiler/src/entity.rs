@@ -1424,9 +1424,11 @@ pub(crate) fn compile_entity(
                     &geometry_lets,
                     &mut HashSet::new(),
                 ) {
+                    let feature_tags = derive_feature_tags(&ops, let_decl.span);
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
+                        feature_tags,
                         operations: ops,
                         span: let_decl.span,
                     });
@@ -1450,9 +1452,11 @@ pub(crate) fn compile_entity(
                         &mut HashSet::new(),
                     )
                 {
+                    let feature_tags = derive_feature_tags(&ops, param.span);
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(param.name.clone()),
+                        feature_tags,
                         operations: ops,
                         span: param.span,
                     });
@@ -1978,9 +1982,11 @@ fn emit_guarded_geometry_realizations(
                         &mut HashSet::new(),
                     )
                 {
+                    let feature_tags = derive_feature_tags(&ops, param.span);
                     sink.realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
                         name: Some(param.name.clone()),
+                        feature_tags,
                         operations: ops,
                         span: param.span,
                     });

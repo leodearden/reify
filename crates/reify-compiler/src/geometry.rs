@@ -902,6 +902,49 @@ pub(crate) fn unsupported_geometry_fn_message(name: &str) -> String {
 // added to one of the lists below, ensuring `geometry_arg_indices` is kept in
 // sync and geometry-arg resolution is not silently broken.
 
+// ─── Feature-tag derivation (task 2323) ──────────────────────────────────────
+
+/// Derive a parallel `Vec<FeatureTag>` for the given op stream.
+///
+/// Each tag carries the enclosing realization's `span`, the coarse `StepKind`
+/// classification of the op, and a zero-based `sub_index`.
+///
+/// The `match` is exhaustive over all `CompiledGeometryOp` variants so that
+/// adding a new variant forces a compile error here, keeping the mapping
+/// up-to-date (single source of truth, similar to `ModifyKind::ALL`).
+pub fn derive_feature_tags(
+    ops: &[CompiledGeometryOp],
+    span: reify_types::SourceSpan,
+) -> Vec<reify_types::FeatureTag> {
+    let tags: Vec<_> = ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let step_kind = match op {
+                CompiledGeometryOp::Primitive { .. } => reify_types::StepKind::Primitive,
+                CompiledGeometryOp::Boolean { .. } => reify_types::StepKind::Boolean,
+                CompiledGeometryOp::Modify { .. } => reify_types::StepKind::Modify,
+                CompiledGeometryOp::Transform { .. } => reify_types::StepKind::Transform,
+                CompiledGeometryOp::Pattern { .. } => reify_types::StepKind::Pattern,
+                CompiledGeometryOp::Sweep { .. } => reify_types::StepKind::Sweep,
+                CompiledGeometryOp::Curve { .. } => reify_types::StepKind::Curve,
+            };
+            reify_types::FeatureTag {
+                source_span: span,
+                step_kind,
+                sub_index: i as u32,
+            }
+        })
+        .collect();
+    debug_assert!(
+        tags.len() == ops.len(),
+        "derive_feature_tags: tag count {} != op count {}",
+        tags.len(),
+        ops.len()
+    );
+    tags
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

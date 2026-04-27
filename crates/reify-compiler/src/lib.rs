@@ -30,6 +30,7 @@ mod type_resolution;
 mod types;
 mod units;
 
+pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;

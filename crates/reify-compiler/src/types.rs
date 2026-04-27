@@ -599,6 +599,13 @@ pub struct RealizationDecl {
     /// a user-visible name use `realization_named(...)` instead.
     pub name: Option<String>,
     pub operations: Vec<CompiledGeometryOp>,
+    /// Feature tags parallel to `operations` — same length, same indexing.
+    ///
+    /// **Invariant**: `feature_tags.len() == operations.len()`.  Enforced
+    /// via `debug_assert!` at construction sites (all of which call
+    /// `derive_feature_tags`).  Tests in `feature_tag_tests.rs` lock this
+    /// invariant against future refactors.
+    pub feature_tags: Vec<reify_types::FeatureTag>,
     pub span: SourceSpan,
 }
 

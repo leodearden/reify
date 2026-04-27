@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fmt;
 
+use crate::diagnostics::SourceSpan;
 use crate::hash::ContentHash;
 use crate::value::Value;
 
@@ -636,6 +638,93 @@ pub fn debug_assert_query_many_invariant<Q, R>(queries: &[Q], reply: &[R]) {
         reply.len(),
         queries.len()
     );
+}
+
+// ─── Feature-tag IR (task 2323) ───────────────────────────────────────────────
+
+/// Coarse classification of the geometry operation kind that produced a shape.
+///
+/// Intentionally decoupled from `reify-compiler`'s fine-grained sub-kind enums
+/// (`PrimitiveKind`, `BooleanOp`, `ModifyKind`, …) so that `reify-types` does
+/// not gain a reverse dependency on `reify-compiler`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StepKind {
+    /// A primitive creation op (box, cylinder, sphere, tube).
+    Primitive,
+    /// A boolean op (union, difference, intersection).
+    Boolean,
+    /// A modify op (fillet, chamfer, shell, draft, thicken).
+    Modify,
+    /// A transform op (translate, rotate, scale, mirror, …).
+    Transform,
+    /// A pattern op (linear, circular, mirror pattern).
+    Pattern,
+    /// A sweep op (extrude, revolve, loft, pipe, …).
+    Sweep,
+    /// A curve construction op (line_segment, arc, helix, …).
+    Curve,
+}
+
+/// A feature tag attached to a compiler-generated geometry op.
+///
+/// Carries enough information to re-identify the op across re-compilations:
+/// the source span of the enclosing realization, the coarse step kind, and a
+/// zero-based index within the realization's op stream.
+///
+/// `source_span` stores the full `SourceSpan` rather than a line number so
+/// that consumers with access to the source text can derive a line/column via
+/// `byte_offset_to_line_col(source, span.start)` — the same pattern used
+/// everywhere else in the codebase (`Diagnostic::span`, `RealizationDecl::span`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureTag {
+    /// Byte-offset span of the enclosing realization in source.
+    pub source_span: SourceSpan,
+    /// Coarse classification of the op.
+    pub step_kind: StepKind,
+    /// Zero-based index of this op within the realization's op stream.
+    pub sub_index: u32,
+}
+
+/// Runtime table mapping geometry handle ids to their originating feature tags.
+///
+/// Populated by `Engine::execute_realization_ops` as each op succeeds.
+/// Keyed by `GeometryHandleId` so topology selectors can record per-edge /
+/// per-face tags derived from a parent solid's tag.
+#[derive(Debug, Default)]
+pub struct FeatureTagTable {
+    entries: HashMap<GeometryHandleId, FeatureTag>,
+}
+
+impl FeatureTagTable {
+    /// Create an empty table.
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Record that geometry handle `id` was produced by `tag`.
+    ///
+    /// Overwrites any prior entry for the same id (callers should avoid
+    /// duplicates, but this is not a hard error — the most recent tag wins).
+    pub fn record(&mut self, id: GeometryHandleId, tag: FeatureTag) {
+        self.entries.insert(id, tag);
+    }
+
+    /// Look up the tag for a given geometry handle, if any.
+    pub fn lookup(&self, id: GeometryHandleId) -> Option<&FeatureTag> {
+        self.entries.get(&id)
+    }
+
+    /// Number of entries currently in the table.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns `true` if the table has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 #[cfg(test)]
