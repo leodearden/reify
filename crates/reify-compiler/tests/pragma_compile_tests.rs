@@ -1347,3 +1347,36 @@ fn version_pragma_too_new_string_form_emits_error_with_supported_wording() {
         "expected declared_version Some((1, 0)) for #version(\"1.0\") (storage reflects declared)"
     );
 }
+
+/// `#version(0.0)` declares a too-old version: zero errors, exactly one warning
+/// containing "declared version 0.0", "predates the first stable language",
+/// and "treating as 0.1". `declared_version` reflects the user-declared tuple.
+#[test]
+fn version_pragma_too_old_emits_warning_predates_stable() {
+    let module = compile_source("#version(0.0)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors for #version(0.0): {:?}",
+        errors_only(&module)
+    );
+    let predates_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("declared version 0.0")
+                && d.message.contains("predates the first stable language")
+                && d.message.contains("treating as 0.1")
+        })
+        .collect();
+    assert_eq!(
+        predates_warns.len(),
+        1,
+        "expected exactly 1 too-old version warning for #version(0.0), got {}: {:?}",
+        predates_warns.len(),
+        warnings_only(&module)
+    );
+    assert_eq!(
+        module.declared_version,
+        Some((0, 0)),
+        "expected declared_version Some((0, 0)) for #version(0.0) (storage reflects declared)"
+    );
+}
