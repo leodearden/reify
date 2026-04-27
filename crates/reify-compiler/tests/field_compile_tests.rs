@@ -3,7 +3,7 @@
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
 use reify_test_support::{compile_source, errors_only};
-use reify_types::DiagnosticCode;
+use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
@@ -334,6 +334,80 @@ fn compile_field_analytical_int_body_widens_to_real_codomain() {
         errors_only(&module)
     );
     assert_eq!(module.fields.len(), 1, "expected exactly 1 compiled field");
+}
+
+// ── Task 2343 step-3: composed lambda captures referenced fields ────────────
+//
+// After `phase_augment_composed_captures` runs, a composed field's lambda's
+// `captures` Vec must contain the `__field.<name>` cell for each *other* field
+// it references inside the body — surfacing field-to-field deps to the
+// existing `Lambda { captures, .. }` arm of `collect_value_refs_inner`.
+// Analytical fields are unaffected (no field-to-field references possible
+// without composed semantics).
+
+#[test]
+fn compile_field_composed_lambda_captures_referenced_fields() {
+    let module = compile_source(
+        r#"
+field def f1 : Real -> Real { source = analytical { |p| p } }
+field def f2 : Real -> Real { source = analytical { |x| x } }
+field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
+"#,
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(module.fields.len(), 3, "expected 3 compiled fields");
+
+    let f3 = module
+        .fields
+        .iter()
+        .find(|f| f.name == "f3")
+        .expect("expected field 'f3' in compiled module");
+
+    let captures = match &f3.source {
+        reify_compiler::CompiledFieldSource::Composed { expr } => match &expr.kind {
+            reify_types::CompiledExprKind::Lambda { captures, .. } => captures.clone(),
+            other => panic!(
+                "expected composed source to wrap a Lambda expr, got: {:?}",
+                other
+            ),
+        },
+        other => panic!("expected Composed source for 'f3', got: {:?}", other),
+    };
+
+    let f1_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f1");
+    let f2_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f2");
+    assert!(
+        captures.contains(&f1_cell),
+        "f3 lambda captures should contain __field.f1, got: {:?}",
+        captures
+    );
+    assert!(
+        captures.contains(&f2_cell),
+        "f3 lambda captures should contain __field.f2, got: {:?}",
+        captures
+    );
+
+    // Pin the no-cross-talk contract: f1's analytical lambda must not have
+    // any field captures (it does not reference any field — and even if it
+    // did, only composed fields go through the augmentation pass).
+    let f1 = module.fields.iter().find(|f| f.name == "f1").unwrap();
+    if let reify_compiler::CompiledFieldSource::Analytical { expr } = &f1.source
+        && let reify_types::CompiledExprKind::Lambda { captures, .. } = &expr.kind
+    {
+        for cap in captures {
+            assert_ne!(
+                cap.entity, FIELD_ENTITY_PREFIX,
+                "f1 (analytical) should not capture any __field.* cells, got: {:?}",
+                cap
+            );
+        }
+    } else {
+        panic!("expected f1 to be Analytical Lambda");
+    }
 }
 
 // ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
