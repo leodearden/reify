@@ -5,7 +5,7 @@
 //! sibling `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::{DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc};
+use reify_doc::model::{ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc};
 
 /// Helper: build a single-module model with one item and return the rendered
 /// single-file output.
@@ -370,4 +370,105 @@ fn ports_table_omitted_when_empty() {
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Ports"), "should omit ports section, got:\n{out}");
+}
+
+/// Constraints render as `### Constraints` H3 then bulleted list. Entries
+/// with `line: Some(N)` get a ` *(line N)*` suffix; entries with `label`
+/// render as `- {label}: \`{expr}\``; entries without label render as
+/// `- \`{expr}\``.
+#[test]
+fn constraints_section_renders() {
+    let item = ItemDoc::Structure {
+        name: "Bolt".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![],
+        ports: vec![],
+        constraints: vec![
+            ConstraintDoc {
+                label: None,
+                expr_repr: "length >= diameter".into(),
+                annotations: vec![],
+                line: Some(42),
+            },
+            ConstraintDoc {
+                label: Some("safe_v".into()),
+                expr_repr: "v <= 5.5 V".into(),
+                annotations: vec![],
+                line: None,
+            },
+        ],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("### Constraints"), "H3 missing:\n{out}");
+    // First constraint: no label, line 42.
+    assert!(
+        out.contains("- `length >= diameter` *(line 42)*"),
+        "labelless+line bullet missing:\n{out}"
+    );
+    // Second: label, no line.
+    assert!(
+        out.contains("- safe_v: `v <= 5.5 V`"),
+        "labeled+no-line bullet missing:\n{out}"
+    );
+    // Sanity: the second bullet must NOT contain `*(line` since line is None.
+    let bullet_with_label = out
+        .lines()
+        .find(|l| l.contains("safe_v"))
+        .expect("found labeled bullet line");
+    assert!(
+        !bullet_with_label.contains("*(line"),
+        "labeled bullet should omit line suffix: {bullet_with_label}"
+    );
+}
+
+#[test]
+fn constraints_section_omitted_when_empty() {
+    let item = ItemDoc::Structure {
+        name: "NoC".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![],
+        ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("### Constraints"), "should omit, got:\n{out}");
+}
+
+/// Meta section: `### Meta` H3 then `- **{key}**: {value}` bullets, sorted
+/// alphabetically by key. Input order ["version","alpha"] must render
+/// "alpha" before "version".
+#[test]
+fn meta_section_renders_alphabetical() {
+    let item = ItemDoc::Structure {
+        name: "Meta".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![
+            ("version".into(), "1.0".into()),
+            ("alpha".into(), "yes".into()),
+        ],
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("### Meta"), "H3 missing:\n{out}");
+    let alpha_idx = out.find("**alpha**").expect("alpha bullet present");
+    let version_idx = out.find("**version**").expect("version bullet present");
+    assert!(
+        alpha_idx < version_idx,
+        "alpha must come before version (sorted), got alpha@{alpha_idx} version@{version_idx}"
+    );
+    assert!(
+        out.contains("- **alpha**: yes") && out.contains("- **version**: 1.0"),
+        "meta bullet shape wrong:\n{out}"
+    );
+}
+
+#[test]
+fn meta_section_omitted_when_empty() {
+    let item = ItemDoc::Structure {
+        name: "NoMeta".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("### Meta"), "should omit, got:\n{out}");
 }
