@@ -384,6 +384,10 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test();
 /// all three conformance predicates (watertight, manifold, orientable).
 std::unique_ptr<OcctShape> make_closed_shell_for_test();
 
+/// Build a single straight edge from (0,0,0) to (10mm,0,0).
+/// The returned shape has TopAbs_ShapeType() == TopAbs_EDGE.
+std::unique_ptr<OcctShape> make_edge_for_test();
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

@@ -376,6 +376,9 @@ pub mod ffi {
         /// Closed shell extracted from a 10×10×10 mm box → TopAbs_SHELL, all predicates true.
         fn make_closed_shell_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// Straight edge (0,0,0)→(10mm,0,0) → TopAbs_EDGE; type-guard fires for watertight.
+        fn make_edge_for_test() -> Result<UniquePtr<OcctShape>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

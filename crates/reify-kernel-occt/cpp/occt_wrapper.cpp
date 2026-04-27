@@ -1649,6 +1649,22 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
     });
 }
 
+std::unique_ptr<OcctShape> make_edge_for_test() {
+    // A simple straight edge along the X axis: (0,0,0) → (10mm,0,0).
+    // ShapeType() == TopAbs_EDGE; no face incidence → manifold trivially true;
+    // no shells loaded → orientable trivially true; hits the shape-type guard
+    // in is_watertight → returns false.
+    return wrap_occt_call("make_edge", [&]() {
+        BRepBuilderAPI_MakeEdge edge_maker(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(0.01, 0.0, 0.0));
+        if (!edge_maker.IsDone()) {
+            throw std::runtime_error("make_edge: edge construction failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = edge_maker.Edge();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_closed_shell_for_test() {
     // Extract the closed shell from a 10×10×10 mm box.
     // A BRepPrimAPI_MakeBox produces a solid whose single shell is already
