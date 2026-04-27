@@ -580,10 +580,16 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
         // MaterialSpec members and provides a concrete, unambiguous signal.  Checking
         // bare "name" is avoided because that substring appears in many unrelated
         // diagnostics ("unknown name", "name resolution failed", etc.) and could cause
-        // a false pass.
+        // a false pass.  The diagnostic is also anchored on the typed
+        // `DiagnosticCode::MissingRequiredMember` (not just the message substring)
+        // so that an unrelated stdlib regression that merely *mentions* "density"
+        // cannot produce a false-positive pass.
         assert!(
-            errors.iter().any(|d| d.message.contains("density")),
-            "'{}': expected error specifically mentioning missing inherited 'density', got: {:?}",
+            errors.iter().any(|d| {
+                d.code == Some(DiagnosticCode::MissingRequiredMember)
+                    && d.message.contains("density")
+            }),
+            "'{}': expected MissingRequiredMember error mentioning 'density', got: {:?}",
             trait_name,
             errors
         );
