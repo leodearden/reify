@@ -164,6 +164,43 @@ fn extract_faces_face_handles_have_correct_surface_area() {
 }
 
 #[test]
+fn query_edge_length_returns_correct_value_for_extracted_box_edge() {
+    // 10x20x30 mm box → 12 edges in 3 axis-aligned groups of 4:
+    //   - 4 × 10 mm = 4 × 0.010 m
+    //   - 4 × 20 mm = 4 × 0.020 m
+    //   - 4 × 30 mm = 4 × 0.030 m
+    let (mut kernel, box_id) = box_kernel(10.0, 20.0, 30.0);
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges on a valid box should succeed");
+
+    let mut lengths: Vec<f64> = edges
+        .iter()
+        .map(|id| match kernel.query(&GeometryQuery::EdgeLength(*id)) {
+            Ok(Value::Real(l)) => l,
+            other => panic!("EdgeLength({:?}) returned unexpected value: {:?}", id, other),
+        })
+        .collect();
+    lengths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let expected = [
+        0.010, 0.010, 0.010, 0.010, // x-axis edges
+        0.020, 0.020, 0.020, 0.020, // y-axis edges
+        0.030, 0.030, 0.030, 0.030, // z-axis edges
+    ];
+    let tol = 1e-9;
+    assert_eq!(lengths.len(), expected.len());
+    for (got, want) in lengths.iter().zip(expected.iter()) {
+        assert!(
+            (got - want).abs() < tol,
+            "edge length mismatch: got {got}, want {want} (tol={tol}). \
+             full sorted lengths: {:?}",
+            lengths
+        );
+    }
+}
+
+#[test]
 fn extract_edges_invalid_handle_returns_invalid_reference() {
     // Fresh kernel — no shapes registered, so handle id 999 is unknown.
     let mut kernel = OcctKernel::new();
