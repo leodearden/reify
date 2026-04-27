@@ -268,34 +268,13 @@ const DOC_USAGE: &str =
 /// Output format for `reify doc`.
 ///
 /// Default is `Html` per the PRD; the `--format` flag accepts `html`,
-/// `markdown`, or `json`.  Bad values are surfaced as usage errors via
-/// [`Format::from_str_or_usage_err`].
+/// `markdown`, or `json`.  Bad values exit 2 with a usage error written to
+/// stderr; the match is inline in `cmd_doc` since it has only one call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Html,
     Markdown,
     Json,
-}
-
-impl Format {
-    /// Parse a `--format` value, returning a usage-error [`ExitCode`] (`2`)
-    /// on unknown input so typos like `--format hmtl` fail loud.  The error
-    /// message and `DOC_USAGE` line are printed to stderr.
-    fn from_str_or_usage_err(s: &str) -> Result<Format, ExitCode> {
-        match s {
-            "html" => Ok(Format::Html),
-            "markdown" => Ok(Format::Markdown),
-            "json" => Ok(Format::Json),
-            other => {
-                eprintln!(
-                    "Error: unknown --format value: {} (expected html|markdown|json)",
-                    other
-                );
-                eprintln!("{}", DOC_USAGE);
-                Err(ExitCode::from(2u8))
-            }
-        }
-    }
 }
 
 /// Build a near-empty but well-formed [`reify_doc::model::DocModel`] from a
@@ -450,10 +429,17 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     // Resolve `--format` (default `html`) into a typed `Format`.  Bad values
     // exit 2 with a usage-error on stderr.
     let format = match format.as_deref() {
-        Some(s) => match Format::from_str_or_usage_err(s) {
-            Ok(f) => f,
-            Err(code) => return code,
-        },
+        Some("html") => Format::Html,
+        Some("markdown") => Format::Markdown,
+        Some("json") => Format::Json,
+        Some(other) => {
+            eprintln!(
+                "Error: unknown --format value: {} (expected html|markdown|json)",
+                other
+            );
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
         None => Format::Html,
     };
 
