@@ -405,3 +405,43 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_syntax::{Expr, ExprKind};
+    use reify_types::SourceSpan;
+
+    /// Hitting the `MAX_EXPR_DEPTH` guard inside `walk_expr_depth` must fire
+    /// the `debug_assert!` so debug/test builds catch a regression that
+    /// produces pathologically deep ASTs (fuzzer input, upstream parser bug)
+    /// instead of silently truncating dot-chain lint coverage.
+    ///
+    /// Release builds keep the silent-return fast-path — the assert compiles
+    /// out — so this test is gated on `debug_assertions`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "MAX_EXPR_DEPTH")]
+    fn walk_expr_depth_exceeding_max_depth_panics_in_debug_builds() {
+        // Wrap a leaf NumberLiteral in MAX_EXPR_DEPTH + 2 layers of UnOp.
+        // walk_expr_depth recurses via UnOp.operand (one frame per layer),
+        // so the (MAX_EXPR_DEPTH + 1)-th call satisfies depth > MAX_EXPR_DEPTH
+        // and trips the debug_assert! we are about to add.
+        let span = SourceSpan::empty(0);
+        let mut expr = Expr {
+            kind: ExprKind::NumberLiteral(0.0),
+            span,
+        };
+        for _ in 0..(MAX_EXPR_DEPTH + 2) {
+            expr = Expr {
+                kind: ExprKind::UnOp {
+                    op: "-".to_string(),
+                    operand: Box::new(expr),
+                },
+                span,
+            };
+        }
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        walk_expr(&expr, &mut diagnostics);
+    }
+}
