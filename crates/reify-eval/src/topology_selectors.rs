@@ -75,6 +75,30 @@ fn check_query_many_len(
     }
 }
 
+/// Shared collect / `query_many` / length-check trio used by every filtered
+/// selector. Builds a `Vec<GeometryQuery>` from `ids` via `mk_query`, issues
+/// a single `kernel.query_many` call, checks the returned length matches the
+/// input count (surfacing `QueryError::QueryFailed` with the `selector` label
+/// on a mismatch), and returns the `Vec<Value>` on success.
+///
+/// The selector-specific predicate loop (extract scalar, parse JSON, apply
+/// window / cone / dot test) stays in each selector body; only this boilerplate
+/// trio moves here.
+fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
+    kernel: &mut K,
+    ids: &[GeometryHandleId],
+    selector: &'static str,
+    mk_query: F,
+) -> Result<Vec<Value>, QueryError>
+where
+    F: Fn(GeometryHandleId) -> GeometryQuery,
+{
+    let queries: Vec<GeometryQuery> = ids.iter().map(|id| mk_query(*id)).collect();
+    let values = kernel.query_many(&queries)?;
+    check_query_many_len(selector, queries.len(), values.len())?;
+    Ok(values)
+}
+
 /// Return the subset of `extract_edges(handle)` whose length lies in
 /// `[min_m, max_m]` (inclusive on both ends).
 ///
