@@ -44,3 +44,23 @@ fn doc_no_args_prints_usage_and_exits_two() {
         "stderr should contain 'Usage: reify doc', got: {stderr}"
     );
 }
+
+#[test]
+fn doc_unknown_flag_exits_two() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc with an unknown flag must exit 2.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unknown flag"),
+        "stderr should contain 'unknown flag', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--frobnicate"),
+        "stderr should name the offending flag '--frobnicate', got: {stderr}"
+    );
+}
