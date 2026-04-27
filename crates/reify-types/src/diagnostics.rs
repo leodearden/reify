@@ -193,6 +193,22 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
     /// Reserved for the conformance-checker producer that emits "type does not conform to trait …".
     TypeNotConformingToTrait,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (call-site Bounded check
+    /// at trait-typed parameters of `Type::Geometry` arguments — task 2312).
+    /// Canonical message form:
+    /// `"geometry argument '<name>' is not Bounded; required by trait parameter"`.
+    ///
+    /// Emitted when a parameter has a trait-object type whose required trait is
+    /// `Bounded` (the compile-inferred geometry trait declared in
+    /// `crates/reify-compiler/stdlib/geometry_traits.ri`) and the argument's
+    /// inferred [`InferredTraits`](../../reify_compiler/geometry_traits_inference/struct.InferredTraits.html)
+    /// set lacks `bounded`. The PRD-prose mnemonic is `E_GEOMETRY_UNBOUNDED`
+    /// (see `docs/prds/geometry-traits.md` §"Architectural decisions" point 2).
+    ///
+    /// Reserved for the Bounded case only. `Connected` and `Convex` violations
+    /// at the same call-site shape reuse [`TypeNotConformingToTrait`] per the
+    /// task's design decision §2.
+    GeometryUnbounded,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
@@ -531,6 +547,31 @@ mod tests {
     fn diagnostic_code_dimension_mismatch_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionMismatch).unwrap();
         assert_eq!(s, "\"DimensionMismatch\"");
+    }
+
+    // --- GeometryUnbounded tests (geometry-traits task 2312) ---
+    // Pairs with the conformance-walker producer in
+    // `crates/reify-compiler/src/conformance/mod.rs` for the call-site
+    // Bounded check at trait-typed parameters of `Type::Geometry` arguments.
+
+    /// `DiagnosticCode::GeometryUnbounded` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the variant-agnostic
+    /// `diagnostic_code_derives` shape but targeted at the new variant so a
+    /// future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_geometry_unbounded_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GeometryUnbounded);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryUnbounded));
+        assert_eq!(format!("{:?}", DiagnosticCode::GeometryUnbounded), "GeometryUnbounded");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GeometryUnbounded` serializes as
+    /// `"GeometryUnbounded"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_geometry_unbounded_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
+        assert_eq!(s, "\"GeometryUnbounded\"");
     }
 }
 

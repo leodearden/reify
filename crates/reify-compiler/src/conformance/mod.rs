@@ -2,6 +2,7 @@ pub(super) mod checker;
 use checker::*;
 
 use super::*;
+use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
@@ -278,6 +279,37 @@ fn walk_param_against_arg(
     }
 }
 
+/// Emit `DiagnosticCode::GeometryUnbounded` for a geometry-typed argument
+/// at a `param g : Bounded`-shaped call site whose inferred trait set lacks
+/// `bounded`.
+///
+/// Pushes exactly one `Diagnostic::error(...)` with code
+/// [`DiagnosticCode::GeometryUnbounded`] and a single label at `span`. The
+/// canonical message wording is documented on the variant declaration in
+/// `crates/reify-types/src/diagnostics.rs` — keep the two in sync.
+///
+/// Reserved for the **Bounded** case only. `Connected`/`Convex` violations
+/// at the same call-site shape reuse [`DiagnosticCode::TypeNotConformingToTrait`]
+/// per the task's design decision §2 (the PRD only allocates
+/// `E_GEOMETRY_UNBOUNDED` for missing Bounded).
+pub(crate) fn emit_geometry_unbounded(
+    arg_name: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "geometry argument '{}' is not Bounded; required by trait parameter",
+            arg_name
+        ))
+        .with_code(DiagnosticCode::GeometryUnbounded)
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!("geometry argument '{}' is not Bounded", arg_name),
+        )),
+    );
+}
+
 /// Shared leaf helper: emit a "does not conform to trait" diagnostic if `arg_type`
 /// does not satisfy `required_trait`.
 ///
@@ -451,6 +483,66 @@ fn check_leaf_trait_conformance(
     // is canonicalized to Int by the expression compiler).
     let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
     let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
+
+    // Geometry args at compile-inferred trait slots (`Bounded`/`Connected`/`Convex`):
+    // route to the per-op inference table instead of the StructureRef/TraitObject
+    // walker. The set of compile-inferred geometry traits is closed by the trait
+    // markers in `crates/reify-compiler/stdlib/geometry_traits.ri` (task 2297) and
+    // mirrored by the [`GeometryTrait`] enum in
+    // `crates/reify-compiler/src/geometry_traits_inference.rs`.
+    //
+    // Per design decision §2 (see plan): missing `Bounded` emits the dedicated
+    // [`DiagnosticCode::GeometryUnbounded`] code via [`emit_geometry_unbounded`];
+    // missing `Connected`/`Convex` reuse the existing
+    // [`DiagnosticCode::TypeNotConformingToTrait`] code (the PRD only allocates
+    // `E_GEOMETRY_UNBOUNDED` for the Bounded case).
+    //
+    // The arg is treated as geometry-typed when **either**:
+    //   1. `result_type == Type::Geometry` (a value-ref to a `let g = box(...)`
+    //      previously registered as `Type::Geometry`), or
+    //   2. it is a `FunctionCall` whose callee is in
+    //      [`is_geometry_function`] — `box(...)` etc. compile to a
+    //      `Type::dimensionless_scalar()` *placeholder* in the expression
+    //      compiler (see `expr.rs:782`); without this fallback the placeholder
+    //      Scalar would route to the generic-cascade arm.
+    let is_geometry_arg = matches!(effective_arg_type, Type::Geometry)
+        || extract_function_call_name(compiled_arg)
+            .map(is_geometry_function)
+            .unwrap_or(false);
+    if is_geometry_arg {
+        let geom_trait = match required_trait {
+            "Bounded" => Some(GeometryTrait::Bounded),
+            "Connected" => Some(GeometryTrait::Connected),
+            "Convex" => Some(GeometryTrait::Convex),
+            _ => None,
+        };
+        if let Some(trait_kind) = geom_trait {
+            let inferred = infer_traits_for_expr(compiled_arg);
+            if !inferred.has(trait_kind) {
+                if matches!(trait_kind, GeometryTrait::Bounded) {
+                    emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
+                } else {
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "geometry argument '{}' does not conform to trait '{}' required by param '{}'",
+                            ctx.arg_name, required_trait, ctx.arg_name
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                        .with_label(DiagnosticLabel::new(
+                            ctx.span,
+                            format!(
+                                "geometry argument '{}' is not {}",
+                                ctx.arg_name, required_trait
+                            ),
+                        )),
+                    );
+                }
+            }
+            return;
+        }
+        // Other required traits against a geometry arg fall through to the
+        // existing anti-cascade arm below.
+    }
 
     // Check conformance based on effective_arg_type.
     // StructureRef and TraitObject are handled by the shared helper; non-struct/non-trait
@@ -3572,5 +3664,43 @@ mod tests {
             Type::Real,
             "Expected Type::Real defensive fallback when no annotation and no inferred expression"
         );
+    }
+
+    /// `emit_geometry_unbounded` pushes exactly one `Diagnostic` with severity
+    /// `Error`, code `Some(DiagnosticCode::GeometryUnbounded)`, a message
+    /// mentioning the arg name and the `Bounded` trait, and a `DiagnosticLabel`
+    /// at the supplied span. This pins the diagnostic-shape contract
+    /// independent of the conformance-walker integration (which is exercised
+    /// end-to-end by the inference test file's positive case).
+    #[test]
+    fn emit_geometry_unbounded_helper_produces_error_with_code_and_label() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = SourceSpan::new(7, 19);
+        emit_geometry_unbounded("g", span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "emit_geometry_unbounded should push exactly one diagnostic"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryUnbounded));
+        assert!(
+            d.message.contains("Bounded"),
+            "message should mention the Bounded trait, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'g'"),
+            "message should mention the arg name 'g', got: {}",
+            d.message
+        );
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly one label attached at the supplied span"
+        );
+        assert_eq!(d.labels[0].span, span);
     }
 }
