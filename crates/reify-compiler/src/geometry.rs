@@ -936,12 +936,11 @@ pub fn derive_feature_tags(
             }
         })
         .collect();
-    debug_assert!(
-        tags.len() == ops.len(),
-        "derive_feature_tags: tag count {} != op count {}",
-        tags.len(),
-        ops.len()
-    );
+    // No debug_assert needed: `tags` is constructed by `.map(...).collect()` over
+    // `ops.iter()`, so it is structurally impossible for the lengths to diverge.
+    // The meaningful invariant — that the caller passes a feature_tags slice of the
+    // same length as operations when invoking execute_realization_ops — is enforced
+    // at the call site in engine_build.rs.
     tags
 }
 

@@ -667,9 +667,16 @@ pub enum StepKind {
 
 /// A feature tag attached to a compiler-generated geometry op.
 ///
-/// Carries enough information to re-identify the op across re-compilations:
-/// the source span of the enclosing realization, the coarse step kind, and a
-/// zero-based index within the realization's op stream.
+/// `source_span` identifies the **enclosing realization** (the `let`-binding
+/// that produced this op stream); all ops within one realization share the same
+/// span.  The only distinguisher *within* a realization is `sub_index`, which
+/// is a zero-based position in the op sequence.
+///
+/// **Stability caveat:** `sub_index` is fragile under op insertion or
+/// reordering.  A follow-up task can improve stability by threading per-op
+/// source spans through `CompiledGeometryOp`; for now, consumers should treat
+/// `(source_span, sub_index)` as stable only when the program text is
+/// unchanged.
 ///
 /// `source_span` stores the full `SourceSpan` rather than a line number so
 /// that consumers with access to the source text can derive a line/column via
@@ -696,13 +703,6 @@ pub struct FeatureTagTable {
 }
 
 impl FeatureTagTable {
-    /// Create an empty table.
-    pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-
     /// Record that geometry handle `id` was produced by `tag`.
     ///
     /// Overwrites any prior entry for the same id (callers should avoid
