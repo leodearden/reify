@@ -5623,7 +5623,7 @@ mod tests {
             "I_xy must be large (> 1e12) for rotated non-cubic box, got {}",
             entries[0][1]
         );
-        // T7 strengthening: analytical magnitude check for I_xy (1% relative tolerance).
+        // T7 strengthening: analytical magnitude check for I_xy (0.1% relative tolerance).
         // Derivation: m=1e9, I_xx_local=m/12·(2000²+500²)≈3.5417e14, I_yy_local=m/12·(1000²+500²)≈1.0417e14
         //   I'_xy = (√3/4)·(I_xx_local − I_yy_local) = (√3/4)·2.5e14 ≈ 1.0825e14
         let i_xy_expected = (3.0_f64.sqrt() / 4.0) * 2.5e14_f64; // ≈ 1.0825e14
