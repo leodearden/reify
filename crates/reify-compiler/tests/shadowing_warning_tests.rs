@@ -907,3 +907,222 @@ structure S {
         errors
     );
 }
+
+/// A function-body `let` whose name matches a fn-param shadows the param.
+///
+/// Per spec §8.5, an inner-scope binder (the body let) hides an enclosing-
+/// scope name (the fn param). The lint treats the fn body as a CHILD scope
+/// of the params, not as siblings — `fn f(x: Real) -> Real { let x = 2.0; x }`
+/// MUST emit one Shadowing warning. (See review suggestion #1 for the
+/// scope-model rationale.)
+#[test]
+fn fn_body_let_shadows_fn_param() {
+    let source = r#"fn f(x: Scalar) -> Scalar { let x = 2.0 ; x }"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (body `let x` vs fn param `x`), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'x'"),
+        "expected the warning to be about `x`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    // The fn param `x` appears in the signature `(x: Scalar)`. The body's
+    // `let x` appears AFTER the `{`. Verify the original-decl span sits
+    // before the let.
+    let fn_param_x = source
+        .find("(x:")
+        .expect("source must contain `(x:` (fn signature)");
+    let body_let_x = source
+        .find("let x")
+        .expect("source must contain `let x`");
+
+    let l0 = &warning.labels[0]; // child site (body let)
+    let l1 = &warning.labels[1]; // original-decl site (fn param)
+    assert!(
+        (l1.span.start as usize) >= fn_param_x
+            && (l1.span.start as usize) < body_let_x,
+        "original-decl span must point at the fn param `x` \
+         (between byte {} and {}), got {:?}",
+        fn_param_x,
+        body_let_x,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= body_let_x,
+        "child-site span must point at the body's `let x` (>= byte {}), \
+         got {:?}",
+        body_let_x,
+        l0.span
+    );
+}
+
+/// A purpose-body `let` whose name matches a purpose-param shadows the param.
+///
+/// Same scope-model rule as the fn-body case: the purpose body is a CHILD
+/// scope of the purpose params (not siblings). `purpose mfg(subject :
+/// Structure) { let subject = … }` MUST emit one Shadowing warning. (See
+/// review suggestion #1.)
+#[test]
+fn purpose_body_let_shadows_purpose_param() {
+    let source = r#"
+purpose mfg(subject : Structure) {
+    let subject = 1
+    constraint subject > 0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (body `let subject` vs purpose \
+         param `subject`), got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'subject'"),
+        "expected the warning to be about `subject`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    let purpose_param = source
+        .find("(subject :")
+        .expect("source must contain `(subject :`");
+    let body_let_subject = source
+        .find("let subject")
+        .expect("source must contain `let subject`");
+
+    let l0 = &warning.labels[0]; // child site (body let)
+    let l1 = &warning.labels[1]; // original-decl site (purpose param)
+    assert!(
+        (l1.span.start as usize) >= purpose_param
+            && (l1.span.start as usize) < body_let_subject,
+        "original-decl span must point at the purpose param `subject` \
+         (between byte {} and {}), got {:?}",
+        purpose_param,
+        body_let_subject,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= body_let_subject,
+        "child-site span must point at the body's `let subject` (>= byte {}), \
+         got {:?}",
+        body_let_subject,
+        l0.span
+    );
+}
+
+/// A lambda inside a port-internal member shadows a port-internal binder.
+///
+/// Ports have their own lexical scope (port-internal members are NOT folded
+/// into the enclosing entity scope). The lint pushes a port-internal frame
+/// onto the stack before walking port members, so a lambda inside a
+/// port-internal `let` sees port-internal binders as a parent scope.
+///
+/// Source (port syntax: `port <name> : <Type> { <members> }`, see
+/// `crates/reify-syntax/tests/member_span_tests.rs:115`):
+///
+/// ```text
+/// structure S {
+///     port p : MechPort {
+///         param q : Real = 1
+///         let f = |q| q
+///     }
+/// }
+/// ```
+///
+/// The lambda's `q` shadows the port's `param q`. Exactly ONE Shadowing
+/// warning is expected. (See review suggestion #4 for the scope-model
+/// rationale.)
+#[test]
+fn lambda_in_port_member_shadows_port_internal_binder() {
+    let source = r#"
+structure S {
+    port p : MechPort {
+        param q : Real = 1
+        let f = |q| q
+    }
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda `|q|` vs port-internal \
+         `param q`), got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'q'"),
+        "expected the warning to be about `q`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    let param_q = source
+        .find("param q")
+        .expect("source must contain `param q`");
+    let lambda_q = source.find("|q|").expect("source must contain `|q|`");
+
+    let l0 = &warning.labels[0]; // child site (lambda)
+    let l1 = &warning.labels[1]; // original-decl site (port-internal param)
+    assert!(
+        (l1.span.start as usize) >= param_q
+            && (l1.span.start as usize) < lambda_q,
+        "original-decl span must point at the port-internal `param q` \
+         (between byte {} and {}), got {:?}",
+        param_q,
+        lambda_q,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= lambda_q,
+        "child-site span must point at the lambda's `|q|` (>= byte {}), \
+         got {:?}",
+        lambda_q,
+        l0.span
+    );
+}

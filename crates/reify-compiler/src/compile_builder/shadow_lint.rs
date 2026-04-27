@@ -10,9 +10,23 @@
 //! occurrence, trait, fn, constraint def, field, purpose) we build an initial
 //! frame containing the body's locally-declared names (params, lets, ports,
 //! subs, guarded-group members) along with the source span of the declaring
-//! site. The frame stack is then threaded through the expression walker;
-//! entering a `Lambda` or `Quantifier` pushes a new frame (the binder names),
-//! recursing into the body sees both frames, and exiting pops the frame.
+//! site. The frame stack is then threaded through the expression walker as a
+//! [`FrameStack`] linked list (one node per scope, each living on the call
+//! stack); entering a `Lambda` or `Quantifier` constructs a new node referencing
+//! the binder names with `parent` set to the current stack, recursing into the
+//! body sees both frames, and the new node drops automatically when the match
+//! arm exits.
+//!
+//! Function and purpose bodies are treated as a CHILD scope of their params:
+//! a body let-binding (or sub/port/etc.) that re-uses a param name shadows the
+//! param and emits a Warning. (Inside a structure or trait body, params and
+//! lets are siblings in the same scope — collisions belong to the duplicate-
+//! decl error path, not this lint.)
+//!
+//! Port-internal members are treated as a CHILD scope of the enclosing entity
+//! body: lambda params inside a port's `let f = …` see the port's own param
+//! and let names as a parent scope. (Without this, a `port p { param q ; let f
+//! = |q| q }` would not detect the lambda's `q` shadow.)
 //!
 //! # Exclusion rules (spec §6.4, §8.8, §8.11)
 //!
@@ -46,6 +60,34 @@ const MAX_EXPR_DEPTH: usize = 256;
 /// declaration spans.
 type Frame = HashMap<String, SourceSpan>;
 
+/// A linked-list-of-stack-frames lexical scope stack.
+///
+/// Each [`FrameStack`] node lives on the call stack: pushing a new scope is
+/// `let new = FrameStack { frame: &child, parent: outer }` and passing
+/// `Some(&new)` into the recursive call. Popping is automatic when the new
+/// node drops at the end of the enclosing block.
+///
+/// This avoids the per-recursion `frames.to_vec()` allocation that the prior
+/// `&[&Frame]` design incurred — important for the lambda/quantifier hot path
+/// (every nested binder paid an O(depth) heap allocation, even though the
+/// stack only grew by one entry).
+struct FrameStack<'a> {
+    frame: &'a Frame,
+    parent: Option<&'a FrameStack<'a>>,
+}
+
+impl<'a> FrameStack<'a> {
+    /// Walk the stack from innermost to outermost, returning the first
+    /// matching parent decl span. Implements the "nearest visible parent"
+    /// rule used by [`push_shadow_diagnostic`] sites.
+    fn lookup(&self, name: &str) -> Option<SourceSpan> {
+        if let Some(span) = self.frame.get(name) {
+            return Some(*span);
+        }
+        self.parent.and_then(|p| p.lookup(name))
+    }
+}
+
 /// Walk every top-level declaration in `parsed` and emit a Warning for each
 /// shadowing binder discovered.
 ///
@@ -72,15 +114,21 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             // false-positive shadow. Exclusion is automatic by single-source
             // iteration; no explicit filter is required.
             let frame = collect_body_frame(&s.members);
-            let frames: Vec<&Frame> = vec![&frame];
-            walk_members(&s.members, &frames, diagnostics);
+            let stack = FrameStack {
+                frame: &frame,
+                parent: None,
+            };
+            walk_members(&s.members, Some(&stack), diagnostics);
         }
         Declaration::Occurrence(o) => {
             // Same single-source-iteration rule as Structure (§8.8): we never
             // visit trait member sets, only the occurrence's own members.
             let frame = collect_body_frame(&o.members);
-            let frames: Vec<&Frame> = vec![&frame];
-            walk_members(&o.members, &frames, diagnostics);
+            let stack = FrameStack {
+                frame: &frame,
+                parent: None,
+            };
+            walk_members(&o.members, Some(&stack), diagnostics);
         }
         // Imports do NOT participate in upward visibility per spec §8.11.
         // Match the variant explicitly and pass through: no frame is built,
@@ -91,46 +139,62 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
         // exist as far as this lint is concerned.
         Declaration::Import(_) => {}
         Declaration::Function(f) => {
-            // Build a single body frame from the fn's params and the let
-            // bindings inside its body. Both register into the SAME frame
-            // (the fn body is one lexical scope from the lint's POV — let
-            // bindings are siblings of params, not a child scope). Walk
-            // every let-binding value and the result expression against
-            // that frame.
-            let mut frame: Frame = HashMap::new();
+            // The fn body is a CHILD scope of the params: a body `let` whose
+            // name matches a fn-param is a shadow per spec §8.5. Build the
+            // params frame first, then collect body lets into a separate
+            // body frame, emitting a Warning for each let-vs-param collision.
+            let mut params_frame: Frame = HashMap::new();
             for p in &f.params {
-                frame.insert(p.name.clone(), p.span);
+                params_frame.insert(p.name.clone(), p.span);
             }
+            let params_stack = FrameStack {
+                frame: &params_frame,
+                parent: None,
+            };
+
+            let mut body_frame: Frame = HashMap::new();
             for l in &f.body.let_bindings {
-                frame.insert(l.name.clone(), l.span);
+                if let Some(parent_span) = params_stack.lookup(&l.name) {
+                    push_shadow_diagnostic(diagnostics, &l.name, l.span, parent_span);
+                }
+                body_frame.insert(l.name.clone(), l.span);
             }
-            let frames: Vec<&Frame> = vec![&frame];
+            let body_stack = FrameStack {
+                frame: &body_frame,
+                parent: Some(&params_stack),
+            };
+
             for l in &f.body.let_bindings {
-                walk_expr(&l.value, &frames, diagnostics);
+                walk_expr(&l.value, Some(&body_stack), diagnostics);
                 if let Some(wc) = &l.where_clause {
-                    walk_expr(&wc.condition, &frames, diagnostics);
+                    walk_expr(&wc.condition, Some(&body_stack), diagnostics);
                 }
             }
-            walk_expr(&f.body.result_expr, &frames, diagnostics);
+            walk_expr(&f.body.result_expr, Some(&body_stack), diagnostics);
         }
         Declaration::Constraint(cd) => {
             // Build a frame from the constraint def's params and walk every
-            // predicate expression and every param default against it.
+            // predicate expression and every param default against it. The
+            // constraint def has no separate body-scope (predicates are bare
+            // expressions, not let-bindings), so a single frame is correct.
             let mut frame: Frame = HashMap::new();
             for p in &cd.params {
                 frame.insert(p.name.clone(), p.span);
             }
-            let frames: Vec<&Frame> = vec![&frame];
+            let stack = FrameStack {
+                frame: &frame,
+                parent: None,
+            };
             for p in &cd.params {
                 if let Some(default) = &p.default {
-                    walk_expr(default, &frames, diagnostics);
+                    walk_expr(default, Some(&stack), diagnostics);
                 }
                 if let Some(wc) = &p.where_clause {
-                    walk_expr(&wc.condition, &frames, diagnostics);
+                    walk_expr(&wc.condition, Some(&stack), diagnostics);
                 }
             }
             for predicate in &cd.predicates {
-                walk_expr(predicate, &frames, diagnostics);
+                walk_expr(predicate, Some(&stack), diagnostics);
             }
         }
         Declaration::Trait(t) => {
@@ -145,8 +209,11 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             // own lexical scope. This mirrors the structure-side §8.8
             // single-source iteration rule applied to trait merging.
             let frame = collect_body_frame(&t.members);
-            let frames: Vec<&Frame> = vec![&frame];
-            walk_members(&t.members, &frames, diagnostics);
+            let stack = FrameStack {
+                frame: &frame,
+                parent: None,
+            };
+            walk_members(&t.members, Some(&stack), diagnostics);
         }
         Declaration::Field(f) => {
             // Fields have no body params at the top level — the lambda
@@ -157,35 +224,52 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             // binders; any inner lambda binding the same name then shadows
             // against that pushed frame.
             let frame: Frame = HashMap::new();
-            let frames: Vec<&Frame> = vec![&frame];
+            let stack = FrameStack {
+                frame: &frame,
+                parent: None,
+            };
             match &f.source {
                 reify_syntax::FieldSource::Analytical { expr }
                 | reify_syntax::FieldSource::Composed { expr } => {
-                    walk_expr(expr, &frames, diagnostics);
+                    walk_expr(expr, Some(&stack), diagnostics);
                 }
                 reify_syntax::FieldSource::Sampled { config } => {
-                    for (_, value) in config {
-                        walk_expr(value, &frames, diagnostics);
+                    for (_cfg_name, value) in config {
+                        // _cfg_name is a sampled-config key (e.g. "resolution"),
+                        // not a binder.
+                        walk_expr(value, Some(&stack), diagnostics);
                     }
                 }
                 reify_syntax::FieldSource::Imported { .. } => {}
             }
         }
         Declaration::Purpose(p) => {
-            // Build a frame from the purpose's params and walk every member
-            // expression (constraints, minimize/maximize, lets, etc.)
-            // against that frame.
-            let mut frame: Frame = HashMap::new();
+            // The purpose body is a CHILD scope of the params: a body `let`
+            // (or any other body decl) whose name matches a purpose-param is
+            // a shadow per spec §8.5. Build the params frame first, then
+            // collect body decls into a separate body frame, emitting a
+            // Warning for each body-vs-param collision.
+            let mut params_frame: Frame = HashMap::new();
             for pp in &p.params {
-                frame.insert(pp.name.clone(), pp.span);
+                params_frame.insert(pp.name.clone(), pp.span);
             }
-            // Lets declared inside the purpose body register as siblings of
-            // the params (one lexical scope), via `collect_body_frame`.
+            let params_stack = FrameStack {
+                frame: &params_frame,
+                parent: None,
+            };
+
+            let mut body_frame: Frame = HashMap::new();
             for (name, span) in collect_body_frame(&p.members) {
-                frame.insert(name, span);
+                if let Some(parent_span) = params_stack.lookup(&name) {
+                    push_shadow_diagnostic(diagnostics, &name, span, parent_span);
+                }
+                body_frame.insert(name, span);
             }
-            let frames: Vec<&Frame> = vec![&frame];
-            walk_members(&p.members, &frames, diagnostics);
+            let body_stack = FrameStack {
+                frame: &body_frame,
+                parent: Some(&params_stack),
+            };
+            walk_members(&p.members, Some(&body_stack), diagnostics);
         }
         // The remaining declaration arms (Enum, Unit, TypeAlias) do not
         // introduce expression-bearing scopes that the lint needs to walk;
@@ -238,6 +322,10 @@ fn collect_body_frame_into(
                 frame.insert(p.name.clone(), p.span);
                 // Port-internal members live in the port's own scope, not the
                 // enclosing entity's scope, so we do NOT fold them upward.
+                // The `walk_members_depth` arm for Port pushes a port-internal
+                // frame onto the stack before recursing, so lambda params
+                // inside a port member still see port-internal binders as a
+                // parent scope.
             }
             MemberDecl::GuardedGroup(g) => {
                 // Both branches register into the SAME parent frame as
@@ -269,7 +357,7 @@ fn collect_body_frame_into(
 /// against the supplied frame stack.
 fn walk_members(
     members: &[reify_syntax::MemberDecl],
-    frames: &[&Frame],
+    frames: Option<&FrameStack>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     walk_members_depth(members, frames, diagnostics, 0);
@@ -277,7 +365,7 @@ fn walk_members(
 
 fn walk_members_depth(
     members: &[reify_syntax::MemberDecl],
-    frames: &[&Frame],
+    frames: Option<&FrameStack>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
@@ -308,7 +396,11 @@ fn walk_members_depth(
                 }
             }
             MemberDecl::ConstraintInst(c) => {
-                for (_, expr) in &c.args {
+                for (_arg_name, expr) in &c.args {
+                    // _arg_name belongs to the callee's parameter scope (the
+                    // referenced constraint def's param list); it is NOT a
+                    // binder in this scope. The argument expression IS
+                    // evaluated in this scope and must be walked.
                     walk_expr(expr, frames, diagnostics);
                 }
                 if let Some(wc) = &c.where_clause {
@@ -316,7 +408,10 @@ fn walk_members_depth(
                 }
             }
             MemberDecl::Sub(s) => {
-                for (_, expr) in &s.args {
+                for (_arg_name, expr) in &s.args {
+                    // _arg_name belongs to the callee's parameter scope (the
+                    // referenced structure's param list); it is NOT a binder
+                    // in this scope.
                     walk_expr(expr, frames, diagnostics);
                 }
                 if let Some(wc) = &s.where_clause {
@@ -341,15 +436,28 @@ fn walk_members_depth(
                 walk_members_depth(&g.else_members, frames, diagnostics, depth + 1);
             }
             MemberDecl::Port(p) => {
-                if let Some(frame) = &p.frame_expr {
-                    walk_expr(frame, frames, diagnostics);
+                if let Some(frame_expr) = &p.frame_expr {
+                    walk_expr(frame_expr, frames, diagnostics);
                 }
-                walk_members_depth(&p.members, frames, diagnostics, depth + 1);
+                // Port has its own scope — build a port-internal frame from
+                // the port's own members and push it onto the stack before
+                // recursing, so lambda params inside a port member see the
+                // port-internal binders as a parent scope. (Without this,
+                // `port p { param q ; let f = |q| q }` would not detect the
+                // inner-lambda shadow.)
+                let port_frame = collect_body_frame(&p.members);
+                let port_stack = FrameStack {
+                    frame: &port_frame,
+                    parent: frames,
+                };
+                walk_members_depth(&p.members, Some(&port_stack), diagnostics, depth + 1);
             }
             MemberDecl::Connect(c) => {
                 walk_expr(&c.left.expr, frames, diagnostics);
                 walk_expr(&c.right.expr, frames, diagnostics);
-                for (_, expr) in &c.params {
+                for (_arg_name, expr) in &c.params {
+                    // _arg_name belongs to the callee's parameter scope; no
+                    // binding is introduced here.
                     walk_expr(expr, frames, diagnostics);
                 }
             }
@@ -364,13 +472,13 @@ fn walk_members_depth(
 }
 
 /// Walk a single expression, detecting shadowing at lambda/quantifier sites.
-fn walk_expr(expr: &Expr, frames: &[&Frame], diagnostics: &mut Vec<Diagnostic>) {
+fn walk_expr(expr: &Expr, frames: Option<&FrameStack>, diagnostics: &mut Vec<Diagnostic>) {
     walk_expr_depth(expr, frames, diagnostics, 0);
 }
 
 fn walk_expr_depth(
     expr: &Expr,
-    frames: &[&Frame],
+    frames: Option<&FrameStack>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
@@ -392,14 +500,18 @@ fn walk_expr_depth(
             // that shadows a name from an enclosing frame.
             let mut child: Frame = HashMap::new();
             for p in params {
-                if let Some(parent_span) = lookup_in_stack(frames, &p.name) {
+                if let Some(parent_span) = frames.and_then(|f| f.lookup(&p.name)) {
                     push_shadow_diagnostic(diagnostics, &p.name, p.span, parent_span);
                 }
                 child.insert(p.name.clone(), p.span);
             }
-            let mut next_frames: Vec<&Frame> = frames.to_vec();
-            next_frames.push(&child);
-            walk_expr_depth(body, &next_frames, diagnostics, next);
+            let new_stack = FrameStack {
+                frame: &child,
+                parent: frames,
+            };
+            walk_expr_depth(body, Some(&new_stack), diagnostics, next);
+            // `new_stack` drops here; the parent stack frame is restored
+            // automatically without an explicit pop.
         }
         ExprKind::Quantifier {
             variable,
@@ -410,14 +522,23 @@ fn walk_expr_depth(
             // The collection is evaluated in the OUTER scope (the variable is
             // not yet bound). The predicate sees the variable.
             walk_expr_depth(collection, frames, diagnostics, next);
-            if let Some(parent_span) = lookup_in_stack(frames, variable) {
+            if let Some(parent_span) = frames.and_then(|f| f.lookup(variable)) {
                 push_shadow_diagnostic(diagnostics, variable, expr.span, parent_span);
             }
+            // TODO(suggestion #3): once `reify_syntax::ExprKind::Quantifier`
+            // carries a separate `variable_span` field, replace `expr.span`
+            // here with that span so editor squigglies highlight only the
+            // bound variable rather than the entire `forall x in coll: pred`
+            // expression. The AST extension is a one-line addition in
+            // `crates/reify-syntax/src/lib.rs`; this lint emits a wider-than-
+            // ideal child label until that lands.
             let mut child: Frame = HashMap::new();
             child.insert(variable.clone(), expr.span);
-            let mut next_frames: Vec<&Frame> = frames.to_vec();
-            next_frames.push(&child);
-            walk_expr_depth(predicate, &next_frames, diagnostics, next);
+            let new_stack = FrameStack {
+                frame: &child,
+                parent: frames,
+            };
+            walk_expr_depth(predicate, Some(&new_stack), diagnostics, next);
         }
         ExprKind::BinOp { left, right, .. } => {
             walk_expr_depth(left, frames, diagnostics, next);
@@ -492,17 +613,6 @@ fn walk_expr_depth(
         | ExprKind::EnumAccess { .. }
         | ExprKind::Auto { .. } => {}
     }
-}
-
-/// Walk the frame stack from innermost to outermost, returning the first
-/// matching parent decl span. Implements the "nearest visible parent" rule.
-fn lookup_in_stack(frames: &[&Frame], name: &str) -> Option<SourceSpan> {
-    for frame in frames.iter().rev() {
-        if let Some(span) = frame.get(name) {
-            return Some(*span);
-        }
-    }
-    None
 }
 
 /// Push a single Shadowing warning with the canonical message, code, and
