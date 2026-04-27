@@ -126,4 +126,70 @@ mod tests {
         assert!(!NodeTraits::WARM_STARTABLE.contains(NodeTraits::PROGRESSIVE));
         assert!(!NodeTraits::WARM_STARTABLE.contains(NodeTraits::COMMITTABLE));
     }
+
+    // --- Step 5: bitwise operators and const helpers ---
+
+    #[test]
+    fn bitor_contains_both_flags() {
+        let combined = NodeTraits::IMMEDIATE | NodeTraits::COMMITTABLE;
+        assert!(combined.contains(NodeTraits::IMMEDIATE));
+        assert!(combined.contains(NodeTraits::COMMITTABLE));
+        assert!(!combined.contains(NodeTraits::WARM_STARTABLE));
+        assert!(!combined.contains(NodeTraits::PROGRESSIVE));
+    }
+
+    #[test]
+    fn bitand_gives_intersection() {
+        let warm_committable = NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE;
+        let result = warm_committable & NodeTraits::WARM_STARTABLE;
+        assert_eq!(result, NodeTraits::WARM_STARTABLE);
+    }
+
+    #[test]
+    fn bitor_assign_mutates_in_place() {
+        let mut t = NodeTraits::IMMEDIATE;
+        t |= NodeTraits::COMMITTABLE;
+        assert_eq!(t, NodeTraits::IMMEDIATE | NodeTraits::COMMITTABLE);
+    }
+
+    #[test]
+    fn bitand_assign_mutates_in_place() {
+        let mut t = NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE;
+        t &= NodeTraits::WARM_STARTABLE;
+        assert_eq!(t, NodeTraits::WARM_STARTABLE);
+    }
+
+    #[test]
+    fn not_immediate_excludes_immediate_includes_others() {
+        let not_immediate = !NodeTraits::IMMEDIATE;
+        assert!(!not_immediate.contains(NodeTraits::IMMEDIATE));
+        assert!(not_immediate.contains(NodeTraits::WARM_STARTABLE));
+        assert!(not_immediate.contains(NodeTraits::PROGRESSIVE));
+        assert!(not_immediate.contains(NodeTraits::COMMITTABLE));
+    }
+
+    #[test]
+    fn union_equals_bitor() {
+        assert_eq!(
+            NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
+
+    #[test]
+    fn intersection_equals_bitand() {
+        let combined = NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE;
+        assert_eq!(
+            combined.intersection(NodeTraits::WARM_STARTABLE),
+            NodeTraits::WARM_STARTABLE
+        );
+    }
+
+    // Compile-time check: const expressible via union
+    const FOO: NodeTraits = NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE);
+
+    #[test]
+    fn const_union_is_usable() {
+        assert_eq!(FOO, NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE);
+    }
 }
