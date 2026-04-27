@@ -15,7 +15,7 @@ pub use solvespace::SolveSpaceSolver;
 
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
-    DiagnosticCode, Satisfaction, Severity, Value,
+    DiagnosticCode, Satisfaction, Value,
 };
 
 /// Simple constraint checker for M1: evaluates constraint expressions
