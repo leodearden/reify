@@ -324,15 +324,13 @@ pub(crate) fn format_dimension_mismatch_diagnostic(
         Type::Scalar { dimension: ldim },
         Type::Scalar { dimension: rdim },
     ) = (left_ty, right_ty)
+        && let (Some(lname), Some(rname)) = (ldim.canonical_name(), rdim.canonical_name())
+        && lname != rname
     {
-        if let (Some(lname), Some(rname)) = (ldim.canonical_name(), rdim.canonical_name()) {
-            if lname != rname {
-                return d.with_label(DiagnosticLabel::new(
-                    span,
-                    format!("{lname} and {rname} are different dimensions and cannot be combined directly"),
-                ));
-            }
-        }
+        return d.with_label(DiagnosticLabel::new(
+            span,
+            format!("{lname} and {rname} are different dimensions and cannot be combined directly"),
+        ));
     }
 
     d
