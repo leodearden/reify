@@ -648,6 +648,51 @@ mod tests {
     }
 
     #[test]
+    fn edges_parallel_to_uses_query_many_once() {
+        // Three edges with tangents +X, -X, +Y. Filter on +X axis with
+        // 1 deg tolerance: the +X and -X edges are both retained
+        // (sign-tolerant predicate); the +Y edge is rejected.
+        let edge_ids = vec![
+            GeometryHandleId(401),
+            GeometryHandleId(402),
+            GeometryHandleId(403),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(
+                edge_ids[1],
+                Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+
+        let source = GeometryHandleId(1);
+        let result = edges_parallel_to(
+            &mut kernel,
+            source,
+            [1.0, 0.0, 0.0],
+            1f64.to_radians(),
+        )
+        .expect("selector should succeed");
+
+        assert_eq!(
+            result,
+            vec![edge_ids[0], edge_ids[1]],
+            "expected both x-aligned edges (sign-tolerant)"
+        );
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "edges_parallel_to must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "edges_parallel_to must not loop over per-element query"
+        );
+    }
+
+    #[test]
     fn faces_by_area_uses_query_many_once() {
         // Three faces with surface areas 200, 300, 600 in mm^2 (i.e.
         // 200e-6, 300e-6, 600e-6 m^2). The window [199e-6, 201e-6] m^2
