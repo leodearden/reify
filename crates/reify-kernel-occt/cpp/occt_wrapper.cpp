@@ -1570,6 +1570,26 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
 
         auto result = std::make_unique<OcctShape>();
         result->shape = compound;
+
+        // Defensive structural self-check: at least one edge must have 3+ parent
+        // faces. If OCCT's wire-stitching changes in a future version, the compound
+        // may become manifold, silently breaking nonmanifold_compound_fails_is_manifold.
+        {
+            const auto& m = result->edge_face_map();
+            bool found_nonmanifold = false;
+            for (Standard_Integer i = 1; i <= m.Extent(); ++i) {
+                if (m.FindFromIndex(i).Extent() >= 3) {
+                    found_nonmanifold = true;
+                    break;
+                }
+            }
+            if (!found_nonmanifold) {
+                throw std::runtime_error(
+                    "make_nonmanifold_compound: structural precondition broken — "
+                    "no edge has 3+ parent faces (likely an OCCT wire-stitching change)");
+            }
+        }
+
         return result;
     });
 }
@@ -1592,6 +1612,26 @@ std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
         int face_count = 0;
         for (TopExp_Explorer ex(box, TopAbs_FACE); ex.More() && face_count < 5; ex.Next(), ++face_count) {
             builder.Add(shell, ex.Current());
+        }
+
+        // Defensive structural self-check: the open shell must have at least one
+        // free edge (an edge with exactly 1 parent face), left behind by the missing
+        // 6th box face. If the shell construction changes, this test could silently pass.
+        {
+            TopTools_IndexedDataMapOfShapeListOfShape shell_efm;
+            TopExp::MapShapesAndAncestors(shell, TopAbs_EDGE, TopAbs_FACE, shell_efm);
+            bool found_free_edge = false;
+            for (Standard_Integer i = 1; i <= shell_efm.Extent(); ++i) {
+                if (shell_efm.FindFromIndex(i).Extent() == 1) {
+                    found_free_edge = true;
+                    break;
+                }
+            }
+            if (!found_free_edge) {
+                throw std::runtime_error(
+                    "make_malformed_solid: structural precondition broken — "
+                    "inner shell has no free edges (expected 4 edges with 1 parent face)");
+            }
         }
 
         // Wrap the open shell in a solid (TopAbs_SOLID type, passes shape-type
@@ -1643,6 +1683,41 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
         builder.MakeShell(shell);
         builder.Add(shell, face1.Face());
         builder.Add(shell, face2.Face());
+
+        // Defensive structural self-check: the shared edge must appear with the
+        // SAME orientation in both faces (same = non-orientable precondition).
+        // If OCCT's wire-stitching flips the shared edge in a future version, the
+        // shell would become well-oriented, silently breaking nonorientable_shell_fails_is_orientable.
+        {
+            TopAbs_Orientation orient_in_f1 = TopAbs_FORWARD;
+            TopAbs_Orientation orient_in_f2 = TopAbs_FORWARD;
+            bool found_in_f1 = false, found_in_f2 = false;
+            for (TopExp_Explorer e(face1.Face(), TopAbs_EDGE); e.More(); e.Next()) {
+                if (e.Current().IsSame(shared)) {
+                    orient_in_f1 = e.Current().Orientation();
+                    found_in_f1 = true;
+                    break;
+                }
+            }
+            for (TopExp_Explorer e(face2.Face(), TopAbs_EDGE); e.More(); e.Next()) {
+                if (e.Current().IsSame(shared)) {
+                    orient_in_f2 = e.Current().Orientation();
+                    found_in_f2 = true;
+                    break;
+                }
+            }
+            if (!found_in_f1 || !found_in_f2) {
+                throw std::runtime_error(
+                    "make_nonorientable_shell: structural precondition broken — "
+                    "shared edge not found in one or both faces");
+            }
+            if (orient_in_f1 != orient_in_f2) {
+                throw std::runtime_error(
+                    "make_nonorientable_shell: structural precondition broken — "
+                    "shared edge has opposite orientations in the two faces "
+                    "(shell became well-oriented; likely an OCCT wire-stitching change)");
+            }
+        }
 
         auto result = std::make_unique<OcctShape>();
         result->shape = shell;
