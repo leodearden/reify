@@ -194,3 +194,36 @@ structure S {
         (member_access
           object: (identifier)
           member: (identifier))))))
+
+================================================================================
+nested-quantifier collection (regression pin)
+================================================================================
+
+structure S {
+  forall v in (forall x in xs: x > 0): connect v.a -> v.b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (forall_statement
+      variable: (identifier)
+      collection: (parenthesized_expression
+        (quantifier_expression
+          variable: (identifier)
+          collection: (identifier)
+          predicate: (binary_expression
+            left: (identifier)
+            right: (number_literal))))
+      body: (connect_statement
+        left: (port_ref
+          (member_access
+            object: (identifier)
+            member: (identifier)))
+        operator: (connect_operator)
+        right: (port_ref
+          (member_access
+            object: (identifier)
+            member: (identifier)))))))
