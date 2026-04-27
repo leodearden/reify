@@ -26,6 +26,19 @@ enum DisposalMethod { Recycle, Landfill, Reprocess }
 // The file or display format for an output sink.
 enum OutputFormat { STEP, STL, ThreeMF, Display }
 
+// ── Provenance structure ─────────────────────────────────────────────────────
+
+// Records where a design element originated.
+// ISO 8601 string for timestamp; no Date type exists in v0.1.
+// tolerance_guarantee is left without a default because no `undef` keyword
+// exists — see header comment.  Consumers must supply all four fields.
+structure def Provenance {
+    param source_tool : String
+    param source_version : String
+    param timestamp : String
+    param tolerance_guarantee : Length
+}
+
 // ── Marker traits ────────────────────────────────────────────────────────────
 
 // Something enters design scope — raw stock, a purchased component, or an
