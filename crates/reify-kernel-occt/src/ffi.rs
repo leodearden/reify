@@ -373,6 +373,9 @@ pub mod ffi {
         /// Two faces sharing one edge with identical orientation → non-orientable shell.
         fn make_nonorientable_shell_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// Closed shell extracted from a 10×10×10 mm box → TopAbs_SHELL, all predicates true.
+        fn make_closed_shell_for_test() -> Result<UniquePtr<OcctShape>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

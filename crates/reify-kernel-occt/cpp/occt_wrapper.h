@@ -379,6 +379,11 @@ std::unique_ptr<OcctShape> make_malformed_solid_for_test();
 /// requirement for an oriented shell.
 std::unique_ptr<OcctShape> make_nonorientable_shell_for_test();
 
+/// Extract the closed shell of a 10×10×10 mm box via TopExp_Explorer.
+/// The returned shape has TopAbs_ShapeType() == TopAbs_SHELL and passes
+/// all three conformance predicates (watertight, manifold, orientable).
+std::unique_ptr<OcctShape> make_closed_shell_for_test();
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

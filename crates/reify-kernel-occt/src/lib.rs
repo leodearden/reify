@@ -1434,6 +1434,19 @@ impl OcctKernel {
         let h = self.store(shape);
         h.id
     }
+
+    /// Extract the closed shell of a 10×10×10 mm box and store it.
+    ///
+    /// The returned shape has `TopAbs_ShapeType() == TopAbs_SHELL` and passes
+    /// all three conformance predicates (`is_watertight`, `is_manifold`,
+    /// `is_orientable`). Used by `conformance_integration` tests to exercise
+    /// the `TopAbs_SHELL` guard arm in `is_watertight`.
+    pub fn store_closed_shell_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_closed_shell_for_test()
+            .expect("make_closed_shell_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
 }
 
 #[cfg(all(test, has_occt))]

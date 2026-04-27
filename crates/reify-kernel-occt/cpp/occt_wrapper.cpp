@@ -1649,6 +1649,32 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test() {
     });
 }
 
+std::unique_ptr<OcctShape> make_closed_shell_for_test() {
+    // Extract the closed shell from a 10×10×10 mm box.
+    // A BRepPrimAPI_MakeBox produces a solid whose single shell is already
+    // topologically valid: 6 faces, 12 edges each with exactly 2 parent faces,
+    // and consistent face orientations. Extracting it via TopExp_Explorer gives
+    // a stand-alone TopAbs_SHELL that exercises the SHELL guard arm in
+    // is_watertight without having to re-derive the correctness from primitives.
+    return wrap_occt_call("make_closed_shell", [&]() {
+        BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
+        box_maker.Build();
+        if (!box_maker.IsDone()) {
+            throw std::runtime_error("make_closed_shell: box construction failed");
+        }
+        TopoDS_Shape box = box_maker.Shape();
+
+        TopExp_Explorer ex(box, TopAbs_SHELL);
+        if (!ex.More()) {
+            throw std::runtime_error("make_closed_shell: no shell found");
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = ex.Current();
+        return result;
+    });
+}
+
 // --- OcctShape lazy accessor implementations ---
 
 // STRONG-EXCEPTION-GUARANTEE: Build into a local `unique_ptr` (`tmp`) and only
