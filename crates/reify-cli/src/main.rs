@@ -328,10 +328,31 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
     }
 
-    let _ = (format, output, split, compact, input);
-    // TODO(post-2361): subsequent steps add format dispatch, parse_and_compile
-    // wiring, and writer plumbing.  Stub returns SUCCESS so step-7's
-    // unknown-flag test passes; later steps tighten the happy path.
+    let input = match input {
+        Some(s) => s,
+        None => {
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
+    };
+
+    let compiled = match parse_and_compile(input) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let _ = (format, output, split, compact, &compiled);
+    // TODO(post-2361): subsequent steps add format dispatch and writer
+    // plumbing.  Stub returns SUCCESS once parse + compile have completed
+    // without errors; later steps tighten the happy path.
     ExitCode::SUCCESS
 }
 
