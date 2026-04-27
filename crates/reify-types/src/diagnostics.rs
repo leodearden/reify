@@ -286,6 +286,19 @@ pub enum DiagnosticCode {
     /// secondary label naming the canonical dimensions when both are known
     /// (e.g. `"Money and Force are different dimensions and cannot be combined directly"`).
     DimensionMismatch,
+    /// Origin: `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
+    /// Emitted as a Warning when a child-scope binder (e.g. lambda parameter,
+    /// quantifier-bound variable) uses the same name as a name visible from an
+    /// enclosing parent scope.
+    ///
+    /// Canonical message form:
+    /// `"declaration of '<name>' shadows enclosing declaration"`.
+    ///
+    /// Two labels accompany the warning: the child binder site
+    /// (`"shadows the enclosing declaration"`) and the original parent decl site
+    /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
+    /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
+    Shadowing,
 }
 
 /// A diagnostic message with location and optional labels.
