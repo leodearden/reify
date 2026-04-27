@@ -234,7 +234,10 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             );
             continue;
         }
-        first_seen = true;
+
+        // NOTE: first_seen is set only once a tolerance is actually stored —
+        // malformed first pragmas (wrong dimension, bad unit, bare number, etc.)
+        // do not consume the first-wins slot.
 
         // First-seen pragma: interpret its args.
         match pragma.args.as_slice() {
@@ -276,6 +279,7 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                             );
                         } else {
                             module.default_tolerance = Some(si_value);
+                            first_seen = true;
                         }
                     }
                     Some(_) => {
