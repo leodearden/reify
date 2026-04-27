@@ -39,6 +39,15 @@ fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
 /// `validate_pragmas` pre-pass deliberately does NOT warn on `#precision` (it
 /// is in `KNOWN_BLOCK_PRAGMAS`), so this is the single site that flags
 /// block-level usage.
+///
+/// **Invariant — keep these four containers in sync with `CompiledModule`.**
+/// Every field on `CompiledModule` whose element type carries
+/// `pub pragmas: Vec<reify_syntax::Pragma>` must be walked here. Today those
+/// fields are: `templates` (`TopologyTemplate`), `trait_defs` (`CompiledTrait`),
+/// `compiled_purposes` (`CompiledPurpose`), and `constraint_defs`
+/// (`CompiledConstraintDef`). If a future PR adds a fifth pragma-bearing
+/// container (e.g. `compiled_functions`), append a matching loop below or the
+/// new container will silently bypass the deferred-to-v0.2 warning.
 fn warn_block_level_precision(module: &mut CompiledModule) {
     let mut spans: Vec<SourceSpan> = Vec::new();
 
@@ -65,11 +74,40 @@ fn warn_block_level_precision(module: &mut CompiledModule) {
     }
 }
 
+/// Sane upper bound for the global tessellation tolerance, in SI metres.
+///
+/// Values larger than this are almost certainly a unit mistake (e.g. the user
+/// wrote `1m` thinking millimetres) and would push OCCT into a regime where it
+/// either errors, hangs, or produces meaningless meshes. The default
+/// (`Engine::DEFAULT_TESSELLATION_TOLERANCE`, 0.0001 m = 0.1 mm) is four orders
+/// of magnitude tighter than this cap, so users who genuinely need a coarser
+/// tolerance can still pick anything up to and including 1 m.
+const MAX_PRECISION_TOLERANCE_M: f64 = 1.0;
+
 /// Process the first well-formed module-level `#precision(<Length-quantity>)` pragma:
 /// store its SI-metres value on `module.default_tolerance`. All other shapes emit a
 /// warning (or info, for the legacy `#precision(float64)` form) and leave
 /// `default_tolerance` unset. Subsequent `#precision` pragmas (regardless of arg
 /// shape) emit a "subsequent pragma ignored; first one wins" warning.
+///
+/// **Unit-resolution scope (v0.1).** Only the built-in SI/imperial length units
+/// understood by [`unit_to_scalar`] are accepted: `m`, `mm`, `cm`, `in`. The
+/// per-module/per-prelude `UnitRegistry` that compiled expressions consult via
+/// `lookup_unit_in_registry` (see `expr.rs::QuantityLiteral`) is **not** queried
+/// here because the registry is owned by `CompilationCtx` and is consumed before
+/// this post-pass runs. As a consequence, `#precision(1ft)` after a user
+/// declaration of `unit ft = 0.3048m` will emit an "unrecognised unit" warning
+/// even though the rest of the language accepts it. Plumbing the prelude /
+/// in-module `UnitRegistry` into this pass is deferred to v0.2; see PRD
+/// `docs/prds/pragmas.md` §2.
+///
+/// **Range bounds (v0.1).** The accepted SI-metres value must be finite,
+/// strictly positive, and ≤ [`MAX_PRECISION_TOLERANCE_M`]. Values outside this
+/// range emit a warning and leave `default_tolerance` unset (so the engine
+/// falls back to its built-in default). The grammar's `number_literal` regex
+/// (`\d+(\.\d+)?`) currently produces only non-negative finite f64 values, so
+/// the non-finite / negative branches are unreachable from source today; they
+/// remain as defence-in-depth against a future grammar relaxation.
 fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -93,18 +131,40 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     Some((Value::Scalar { si_value, dimension }, _))
                         if dimension == DimensionVector::LENGTH =>
                     {
-                        // Defensive sanity check: the grammar's `number_literal`
-                        // regex (`\d+(\.\d+)?`) currently produces only non-negative
-                        // finite f64 values, so this branch is unreachable from
-                        // source today. `debug_assert!` keeps the safety net active
-                        // in dev/test builds without silently dropping the value (and
-                        // its diagnostic) in release if a future grammar relaxation
-                        // ever produces a negative or non-finite quantity.
-                        debug_assert!(
-                            si_value.is_finite() && si_value >= 0.0,
-                            "#precision: tolerance must be finite and non-negative, got {si_value}"
-                        );
-                        module.default_tolerance = Some(si_value);
+                        // Range gate: tolerance must be finite, > 0, and within
+                        // a sane upper bound. Out-of-range values warn and leave
+                        // default_tolerance unset so the engine falls back to
+                        // Engine::DEFAULT_TESSELLATION_TOLERANCE.
+                        //
+                        // Negative / non-finite cases are currently unreachable
+                        // from source (see fn-level docstring) but the check
+                        // stays as a safety net.
+                        if !si_value.is_finite() {
+                            module.diagnostics.push(
+                                Diagnostic::warning(
+                                    "#precision: tolerance is not finite; ignored",
+                                )
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        } else if si_value <= 0.0 {
+                            module.diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "#precision: tolerance must be positive (got {si_value}m); \
+                                     ignored"
+                                ))
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        } else if si_value > MAX_PRECISION_TOLERANCE_M {
+                            module.diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "#precision: tolerance {si_value}m exceeds the v0.1 cap of \
+                                     {MAX_PRECISION_TOLERANCE_M}m; ignored"
+                                ))
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        } else {
+                            module.default_tolerance = Some(si_value);
+                        }
                     }
                     Some(_) => {
                         // unit_to_scalar matched, but the dimension is not LENGTH
@@ -117,7 +177,8 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         );
                     }
                     None => {
-                        // Unrecognised unit (e.g. `1foo`).
+                        // Unrecognised unit (e.g. `1foo`). See fn-level docstring
+                        // for the v0.1 unit-resolution scope.
                         module.diagnostics.push(
                             Diagnostic::warning(format!(
                                 "#precision: unrecognised unit '{unit}'; v0.1 supports m/mm/cm/in"
