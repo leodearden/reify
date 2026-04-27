@@ -41,6 +41,10 @@ pub enum EventKind {
     CacheHit,
     /// A warm-start state was used for evaluation.
     WarmStartUsed,
+    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    Evicted { size_bytes: usize },
+    /// A warm state was donated to the pool (insertion or topology-removal donation).
+    Donated { size_bytes: usize },
 }
 
 /// Optional payload attached to an evaluation event.
