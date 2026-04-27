@@ -512,8 +512,8 @@ mod tests {
         assert_eq!(pool.len(), 1, "contains must not remove entries");
         assert_eq!(pool.used_bytes(), 100, "contains must not modify used_bytes");
 
-        // After retrieve (destructive): no longer present.
-        pool.retrieve(&node);
+        // After checkout (destructive): no longer present.
+        pool.checkout(&node);
         assert!(!pool.contains(&node));
 
         // After clear: no longer present.
