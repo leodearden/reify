@@ -619,6 +619,25 @@ pub trait GeometryKernel: Send + Sync {
     }
 }
 
+/// Debug-build invariant check for kernel implementors that override
+/// [`GeometryKernel::query_many`]. Asserts the kernel's reply has one
+/// `Value` per input query so a buggy actor-channel or FFI path is caught
+/// in tests rather than silently truncating consumer results via `zip`'s
+/// shorter-of-two behaviour. In release builds this is a no-op
+/// (`debug_assert_eq!`).
+///
+/// Generic in `Q` because only `queries.len()` is read — overriders may
+/// call this with any query slice without an explicit turbofish.
+pub fn debug_assert_query_many_invariant<Q>(queries: &[Q], reply: &[Value]) {
+    debug_assert_eq!(
+        reply.len(),
+        queries.len(),
+        "query_many length invariant: kernel returned {} values for {} queries",
+        reply.len(),
+        queries.len()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

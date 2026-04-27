@@ -42,6 +42,7 @@ pub use expr::{
 pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind, TessError,
+    debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;
