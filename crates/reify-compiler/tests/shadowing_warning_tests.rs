@@ -203,3 +203,64 @@ structure S {
         l0.span
     );
 }
+
+/// Sibling lambdas under the same parent that both bind `x` must NOT warn —
+/// neither lambda is inside the other; they are mutually-disjoint scopes.
+/// Without an entity-scope `x`, neither lambda's `x` shadows anything, so
+/// the lint must emit zero Shadowing diagnostics.
+#[test]
+fn sibling_lambdas_with_same_param_do_not_warn() {
+    let source = r#"
+structure S {
+    let f = |x| x
+    let g = |x| x * 2
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        0,
+        "sibling lambdas with the same param must NOT shadow each other; \
+         got: {:?}",
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A lambda parameter with a unique name (different from any visible
+/// parent-scope name) must NOT warn. Even with `param x` at the entity
+/// scope, a lambda `|y| y * x` introduces no shadow on either `y` (unique)
+/// or `x` (referenced, not bound).
+#[test]
+fn lambda_param_with_unique_name_does_not_warn() {
+    let source = r#"
+structure S {
+    param x : Real = 1
+    let f = |y| y * x
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        0,
+        "unique lambda param name must NOT trigger a shadow warning; got: {:?}",
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+}
