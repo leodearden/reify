@@ -22,6 +22,14 @@ namespace occt {
 /// `!Send + !Sync` `OcctKernel`, which pins all accesses to a single thread.
 /// If a future change wraps OcctShape in something `Sync`, a synchronization
 /// primitive (e.g. `std::call_once`) must be added to the lazy accessors.
+///
+/// STRONG-EXCEPTION-GUARANTEE: Each lazy accessor builds the map into a local
+/// `unique_ptr` and moves it into the cache slot only after MapShapes /
+/// MapShapesAndAncestors returns successfully.  On a throw the local dies, the
+/// slot stays null, and the build counter stays at 0, so the next call retries
+/// cleanly and observability remains honest.  See the per-accessor comments in
+/// occt_wrapper.cpp for the rationale; do NOT reorder back to the
+/// assign-then-fill pattern.
 struct OcctShape {
     TopoDS_Shape shape;
 

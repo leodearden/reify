@@ -1505,10 +1505,21 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
 
 // --- OcctShape lazy accessor implementations ---
 
+// STRONG-EXCEPTION-GUARANTEE: Build into a local `unique_ptr` (`tmp`) and only
+// move it into the cache slot after TopExp::MapShapes returns successfully.
+// If MapShapes throws (OOM, corrupted topology, etc.), `tmp` is destroyed on
+// stack unwind, the slot stays null, and the counter stays at its prior value.
+// The next call therefore retries cleanly and observability remains honest.
+// Do NOT revert to the "slot = make_unique; MapShapes(*slot); ++counter" order —
+// that leaves the slot non-null with an empty map after a throw, masking the
+// failure on every subsequent call.
+
 const TopTools_IndexedMapOfShape& OcctShape::face_map() const {
     if (!face_map_cache_) {
-        face_map_cache_ = std::make_unique<TopTools_IndexedMapOfShape>();
-        TopExp::MapShapes(shape, TopAbs_FACE, *face_map_cache_);
+        // STRONG-EXCEPTION-GUARANTEE: build into `tmp`; move into slot only on success.
+        auto tmp = std::make_unique<TopTools_IndexedMapOfShape>();
+        TopExp::MapShapes(shape, TopAbs_FACE, *tmp);
+        face_map_cache_ = std::move(tmp);
         ++face_map_builds_;
     }
     return *face_map_cache_;
@@ -1516,8 +1527,10 @@ const TopTools_IndexedMapOfShape& OcctShape::face_map() const {
 
 const TopTools_IndexedMapOfShape& OcctShape::edge_map() const {
     if (!edge_map_cache_) {
-        edge_map_cache_ = std::make_unique<TopTools_IndexedMapOfShape>();
-        TopExp::MapShapes(shape, TopAbs_EDGE, *edge_map_cache_);
+        // STRONG-EXCEPTION-GUARANTEE: build into `tmp`; move into slot only on success.
+        auto tmp = std::make_unique<TopTools_IndexedMapOfShape>();
+        TopExp::MapShapes(shape, TopAbs_EDGE, *tmp);
+        edge_map_cache_ = std::move(tmp);
         ++edge_map_builds_;
     }
     return *edge_map_cache_;
@@ -1525,9 +1538,10 @@ const TopTools_IndexedMapOfShape& OcctShape::edge_map() const {
 
 const TopTools_IndexedDataMapOfShapeListOfShape& OcctShape::edge_face_map() const {
     if (!edge_face_map_cache_) {
-        edge_face_map_cache_ =
-            std::make_unique<TopTools_IndexedDataMapOfShapeListOfShape>();
-        TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, *edge_face_map_cache_);
+        // STRONG-EXCEPTION-GUARANTEE: build into `tmp`; move into slot only on success.
+        auto tmp = std::make_unique<TopTools_IndexedDataMapOfShapeListOfShape>();
+        TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, *tmp);
+        edge_face_map_cache_ = std::move(tmp);
         ++edge_face_map_builds_;
     }
     return *edge_face_map_cache_;
