@@ -647,17 +647,17 @@ fn field_body_uses_safe_inline_code_fence() {
     assert!(out.contains(type_repr), "type_repr not verbatim:\n{out}");
     assert!(out.contains(default_repr), "default_repr not verbatim:\n{out}");
 
-    // (b) Single-backtick forms must NOT appear.
+    // (b) Default uses single-backtick fence without padding: the single-fence
+    // form for `default_repr` would be "``zero``" — the space pad in the safe
+    // form ensures this does NOT appear in the output.
+    let default_bad = format!("`{default_repr}`"); // "``zero``"
     assert!(
-        !out.contains(&format!("`{type_repr}`")),
-        "type uses single-backtick form:\n{out}"
-    );
-    assert!(
-        !out.contains(&format!("`{default_repr}`")),
+        !out.contains(&default_bad),
         "default uses single-backtick form:\n{out}"
     );
 
     // (c) Type line: no leading/trailing backtick in value → no pad.
+    // Positive assertion is sufficient to prove the fence is correct.
     let type_fenced = format!("**Type:** ``{type_repr}``");
     assert!(
         out.contains(&type_fenced),

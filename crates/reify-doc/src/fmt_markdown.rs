@@ -521,13 +521,13 @@ fn render_enum_variants(out: &mut String, variants: &[String]) {
 
 /// Render the `**Type:**` (and optional `**Default:**`) lines for a `Field`.
 fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&str>) {
-    out.push_str("**Type:** `");
-    out.push_str(type_repr);
-    out.push_str("`\n\n");
+    out.push_str("**Type:** ");
+    out.push_str(&md_inline_code(type_repr));
+    out.push_str("\n\n");
     if let Some(d) = default_repr {
-        out.push_str("**Default:** `");
-        out.push_str(d);
-        out.push_str("`\n\n");
+        out.push_str("**Default:** ");
+        out.push_str(&md_inline_code(d));
+        out.push_str("\n\n");
     }
 }
 
