@@ -1896,3 +1896,60 @@ fn block_level_solver_pragma_on_constraint_def_emits_deferred_warning() {
         warns
     );
 }
+
+// ── Task 2313: #kernel pragma — kernel_pragma plumbing ─────────────────────────
+
+/// No `#kernel` pragma at all leaves `kernel_pragma` as `None`. Regression
+/// pin for the field default after prereq-1.
+#[test]
+fn kernel_pragma_absent_keeps_kernel_pragma_none() {
+    let module = compile_source("structure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.kernel_pragma.is_none(),
+        "expected kernel_pragma None when no #kernel pragma, got {:?}",
+        module.kernel_pragma
+    );
+}
+
+/// `#kernel(occt)` (the only valid v0.1 kernel ident) sets
+/// `kernel_pragma = Some("occt")`, emits no errors, and emits no warnings about
+/// expected/ignored/unknown/deferred forms. Mirrors the structure of
+/// `solver_pragma_with_bare_ident_sets_name_and_empty_options`.
+#[test]
+fn kernel_pragma_with_occt_sets_kernel_pragma() {
+    let module = compile_source("#kernel(occt)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.kernel_pragma,
+        Some("occt".to_string()),
+        "expected kernel_pragma Some(\"occt\") for #kernel(occt), got {:?}",
+        module.kernel_pragma
+    );
+
+    // No malformed-shape, deferred-to-v0.2, or unknown-kernel warnings about #kernel.
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("#kernel")
+                && (m.contains("expected")
+                    || m.contains("ignored")
+                    || m.contains("unknown")
+                    || m.contains("deferred"))
+        })
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(occt), got: {:?}",
+        bad_warns
+    );
+}
