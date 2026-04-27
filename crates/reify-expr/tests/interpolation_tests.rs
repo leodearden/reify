@@ -6,7 +6,7 @@
 //! their fall-back-with-warning path.
 
 use reify_expr::interp::{
-    InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d,
+    InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d, interpolate_3d,
 };
 
 const TOL: f64 = 1e-12;
@@ -599,6 +599,191 @@ fn cubic_2d_separable_against_1d_cubic_tensor_product() {
             r_tensor
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 3D Trilinear (Linear method)
+// ---------------------------------------------------------------------------
+
+/// Build a row-major 3D values vector with shape `(nx, ny, nz)` from a closure
+/// using the layout `values[i * ny * nz + j * nz + k]`.
+fn build_3d(
+    grid_x: &[f64],
+    grid_y: &[f64],
+    grid_z: &[f64],
+    f: impl Fn(f64, f64, f64) -> f64,
+) -> Vec<f64> {
+    let mut v = Vec::with_capacity(grid_x.len() * grid_y.len() * grid_z.len());
+    for &x in grid_x {
+        for &y in grid_y {
+            for &z in grid_z {
+                v.push(f(x, y, z));
+            }
+        }
+    }
+    v
+}
+
+/// Corners of a 2x2x2 grid reproduce their sample values exactly.
+#[test]
+fn linear_3d_corners_reproduce_samples() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let gz = [0.0f64, 1.0];
+    let f = |x: f64, y: f64, z: f64| 100.0 * x + 10.0 * y + z;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let ny = gy.len();
+    let nz = gz.len();
+    for (i, &x) in gx.iter().enumerate() {
+        for (j, &y) in gy.iter().enumerate() {
+            for (k, &z) in gz.iter().enumerate() {
+                let r = interpolate_3d(
+                    InterpolationMethod::Linear,
+                    &gx,
+                    &gy,
+                    &gz,
+                    &values,
+                    (x, y, z),
+                );
+                let expected = values[i * ny * nz + j * nz + k];
+                assert!(
+                    approx_eq(r.value, expected, TOL),
+                    "corner ({},{},{}) got {}, expected {}",
+                    i,
+                    j,
+                    k,
+                    r.value,
+                    expected
+                );
+                assert!(r.diagnostics.is_empty());
+            }
+        }
+    }
+}
+
+/// Center `(0.5, 0.5, 0.5)` of the unit cell is the arithmetic mean of the
+/// eight corner values.
+#[test]
+fn linear_3d_unit_cell_center_is_mean() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let gz = [0.0f64, 1.0];
+    // Hand-picked distinct corner values.
+    let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let r = interpolate_3d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (0.5, 0.5, 0.5),
+    );
+    let expected = (1.0 + 2.0 + 3.0 + 4.0 + 5.0 + 6.0 + 7.0 + 8.0) / 8.0;
+    assert!(approx_eq(r.value, expected, TOL), "got {}", r.value);
+}
+
+/// Separability against `interpolate_2d(Linear, ...)` along constant z: build
+/// a 2D slice of values at z=qz by interpolating each (i,j) z-column at qz,
+/// then evaluate that 2D slice at (qx, qy); the result must match the direct
+/// 3D evaluation.
+#[test]
+fn linear_3d_separable_against_2d_linear_at_constant_z() {
+    let gx = vec![0.0f64, 1.0, 3.0];
+    let gy = vec![0.0f64, 2.0, 5.0];
+    let gz = vec![0.0f64, 1.0, 4.0];
+    let f =
+        |x: f64, y: f64, z: f64| 1.0 + 2.0 * x - 0.5 * y + 0.7 * z + 0.1 * x * y - 0.3 * y * z;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let nx = gx.len();
+    let ny = gy.len();
+    let nz = gz.len();
+
+    let qz = 0.6;
+    // Build a 2D slice of size (nx, ny) at z=qz by interpolating each z-column.
+    let mut slice2d = Vec::with_capacity(nx * ny);
+    for i in 0..nx {
+        for j in 0..ny {
+            let col: Vec<f64> = (0..nz).map(|k| values[i * ny * nz + j * nz + k]).collect();
+            let v = interpolate_1d(InterpolationMethod::Linear, &gz, &col, qz).value;
+            slice2d.push(v);
+        }
+    }
+
+    let xs = [0.4, 1.7];
+    let ys = [0.5, 3.0];
+    for &qx in &xs {
+        for &qy in &ys {
+            let r3 = interpolate_3d(
+                InterpolationMethod::Linear,
+                &gx,
+                &gy,
+                &gz,
+                &values,
+                (qx, qy, qz),
+            );
+            let r2 = interpolate_2d(
+                InterpolationMethod::Linear,
+                &gx,
+                &gy,
+                &slice2d,
+                (qx, qy),
+            )
+            .value;
+            assert!(
+                approx_eq(r3.value, r2, 1e-9),
+                "({},{},{}): 3D={} vs 2D-on-slice={}",
+                qx,
+                qy,
+                qz,
+                r3.value,
+                r2
+            );
+        }
+    }
+}
+
+/// Out-of-range queries clamp each axis independently.
+#[test]
+fn linear_3d_out_of_range_clamps_each_axis() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let gz = [0.0f64, 1.0];
+    let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+    // All three below: clamp to corner (0,0,0)
+    let r1 = interpolate_3d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (-1.0, -1.0, -1.0),
+    );
+    assert!(approx_eq(r1.value, 1.0, TOL), "below got {}", r1.value);
+
+    // All three above: clamp to corner (1,1,1)
+    let r2 = interpolate_3d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (10.0, 10.0, 10.0),
+    );
+    assert!(approx_eq(r2.value, 8.0, TOL), "above got {}", r2.value);
+
+    // Mixed: x in range, y above, z below — clamp y→1 and z→0; lerp in x.
+    // Face at (y=1, z=0) has corners values[(0,1,0)]=3 and values[(1,1,0)]=7.
+    let r3 = interpolate_3d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (0.5, 10.0, -2.0),
+    );
+    let expected = 0.5 * (3.0 + 7.0);
+    assert!(approx_eq(r3.value, expected, TOL), "got {}", r3.value);
 }
 
 /// Larger 4x4 monotone grid: the midpoint of any cell equals the mean of its
