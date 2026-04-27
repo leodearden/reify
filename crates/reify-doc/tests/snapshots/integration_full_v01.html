@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>integration_full_v01</title>
+<style>
+body {
+  max-width: 900px;
+  margin: 2em auto;
+  padding: 0 1em;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  color: #222;
+}
+nav {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  padding: 0.5em 0;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 1.5em;
+}
+nav h2 {
+  margin: 0 0 0.25em 0;
+}
+nav h3 {
+  margin: 0.5em 0 0.25em 0;
+}
+nav ul {
+  margin: 0 0 0.5em 1em;
+  padding: 0;
+}
+code, pre {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+pre {
+  padding: 0.5em;
+  background: #f6f8fa;
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+th, td {
+  border: 1px solid #ddd;
+  padding: 0.4em 0.6em;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: #f6f8fa;
+}
+dl {
+  margin: 0.5em 0 1em 0;
+}
+dt {
+  font-weight: bold;
+}
+dd {
+  margin: 0 0 0.5em 1em;
+}
+h1, h2, h3 {
+  line-height: 1.2;
+}
+section {
+  margin: 1.5em 0;
+}
+aside.deprecated {
+  padding: 0.5em 1em;
+  background: #fff8e1;
+  border-left: 4px solid #f0ad4e;
+  margin: 0.5em 0;
+}
+p.optimized {
+  color: #555;
+  margin: 0.25em 0;
+}
+</style>
+</head>
+<body>
+<h1>integration_full_v01</h1>
+<p>Comprehensive v0.1 language feature integration.</p>
+<nav>
+<h2>Contents</h2>
+<h3>Traits</h3>
+<ul>
+<li><a href="#Physical">Physical</a></li>
+</ul>
+<h3>Structures</h3>
+<ul>
+<li><a href="#Board">Board</a></li>
+<li><a href="#Bolt">Bolt</a></li>
+<li><a href="#OldThing">OldThing</a></li>
+</ul>
+<h3>Occurrences</h3>
+<ul>
+<li><a href="#MCU">MCU</a></li>
+</ul>
+<h3>Enums</h3>
+<ul>
+<li><a href="#Grade">Grade</a></li>
+</ul>
+<h3>Functions</h3>
+<ul>
+<li><a href="#safety_factor">safety_factor</a></li>
+</ul>
+<h3>Constants</h3>
+<ul>
+<li><a href="#Positive">Positive</a></li>
+<li><a href="#Pressure">Pressure</a></li>
+<li><a href="#mil">mil</a></li>
+<li><a href="#minimize_area">minimize_area</a></li>
+</ul>
+</nav>
+<section id="Pressure">
+<h2>pub type Pressure</h2>
+<p>Pressure is Force per Area (SI unit: Pa).</p>
+<p>= <code>Force / Area</code></p>
+</section>
+<section id="mil">
+<h2>pub unit mil</h2>
+<p>One mil = 1/1000 inch.</p>
+<dl>
+<dt>Base</dt><dd><code>Length</code></dd>
+<dt>Scale</dt><dd><code>0.0000254</code></dd>
+</dl>
+</section>
+<section id="Grade">
+<h2>pub enum Grade</h2>
+<p>Material grade classification.</p>
+<h3>Variants</h3>
+<ul>
+<li>Standard</li>
+<li>Reinforced</li>
+<li>Premium</li>
+</ul>
+</section>
+<section id="safety_factor">
+<h2>pub fn safety_factor</h2>
+<p>Safety factor for real-valued loads.</p>
+<pre><code>fn safety_factor(load: Real) -&gt; Real</code></pre>
+</section>
+<section id="Physical">
+<h2>pub trait Physical</h2>
+<p>Trait for objects with a measurable mass.</p>
+<h3>Members</h3>
+<ul>
+<li>mass: Mass</li>
+</ul>
+</section>
+<section id="Positive">
+<h2>pub constraint Positive</h2>
+<p>Length value v is strictly positive.</p>
+<p><code>v &gt; 0mm</code></p>
+</section>
+<section id="minimize_area">
+<h2>purpose minimize_area</h2>
+<dl>
+<dt>Direction</dt><dd>minimize</dd>
+<dt>Expression</dt><dd><code>total_area</code></dd>
+</dl>
+</section>
+<section id="Bolt">
+<h2>pub structure Bolt</h2>
+<p class="optimized"><em>Optimized: <code>area</code></em></p>
+<p>A standard fastening bolt.</p>
+<h3>Parameters</h3>
+<table>
+<thead><tr><th>Name</th><th>Type</th><th>Dimension</th><th>Default</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>length</code></td><td><code>Length</code></td><td>—</td><td><code>100 mm</code></td><td>Bolt length. <em>hint: discrete_set(standard_bolt_lengths)</em></td></tr>
+<tr><td><code>diameter</code></td><td><code>Length</code></td><td>—</td><td><code>M8</code></td><td></td></tr>
+</tbody>
+</table>
+<h3>Constraints</h3>
+<ul>
+<li><code>length &gt;= diameter</code> <em>(line 42)</em></li>
+</ul>
+<h3>Meta</h3>
+<dl>
+<dt>version</dt><dd>1.0</dd>
+</dl>
+<h3>Conforms to</h3>
+<ul>
+<li><a href="#Physical">Physical</a></li>
+</ul>
+</section>
+<section id="Board">
+<h2>pub structure Board</h2>
+<p>Main PCB board.</p>
+<h3>Ports</h3>
+<table>
+<thead><tr><th>Name</th><th>Kind</th><th>Role</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>pwr_in</code></td><td>—</td><td>in</td><td><code>Power</code></td><td>voltage, current</td></tr>
+</tbody>
+</table>
+</section>
+<section id="MCU">
+<h2>pub occurrence MCU</h2>
+<p>Microcontroller occurrence.</p>
+<h3>Used by</h3>
+<ul>
+<li><a href="#Board">Board</a></li>
+</ul>
+</section>
+<section id="OldThing">
+<h2>pub structure OldThing</h2>
+<aside class="deprecated"><strong>Deprecated:</strong> use Bolt instead</aside>
+<p>Deprecated legacy structure.</p>
+</section>
+<h2>Tests</h2>
+<section id="TestSelfWeight">
+<h2>structure TestSelfWeight</h2>
+<p>Self-weight regression test.</p>
+</section>
+</body>
+</html>
