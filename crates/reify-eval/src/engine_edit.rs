@@ -366,6 +366,27 @@ fn detect_role_flip(old_groups: &[GuardedGroupInfo], new_groups: &[GuardedGroupI
     build_role_map(old_groups) != build_role_map(new_groups)
 }
 
+/// Invoke [`detect_role_flip`] and bump the probe counter in one place.
+///
+/// Both call sites in `Engine::edit_source` Phase 1 — the outer short-circuit
+/// block and the per-group lazy-memo `None` arm — share the same two-line
+/// pattern: call `detect_role_flip`, increment the counter.  This free function
+/// ensures the counter increment cannot be omitted if a third call site ever
+/// appears.
+///
+/// Accepts explicit disjoint borrows rather than `&mut Engine` so it can be
+/// called while [`PendingWarmSeedsGuard`] holds `&mut warm_pool` (which would
+/// prevent a whole-self `&mut self` method call).
+fn probe_role_flip(
+    old_groups: &[GuardedGroupInfo],
+    new_groups: &[GuardedGroupInfo],
+    counter: &mut usize,
+) -> bool {
+    let result = detect_role_flip(old_groups, new_groups);
+    *counter += 1;
+    result
+}
+
 /// Returns `true` when the guard cell's value in the pre-edit snapshot equals
 /// `new_val`, meaning the guard has not changed and member re-elaboration can
 /// be skipped.
@@ -511,14 +532,15 @@ pub(crate) fn diff_realizations(
 /// # Safety contract
 ///
 /// `WarmStatePool::checkout` has take semantics — once an entry is removed from the
-/// pool it cannot be recovered except by re-donation.  The original code held the
-/// checked-out entries in a plain `HashMap`, meaning that any early-return (`?`),
-/// `return Err(...)`, or panic between (4c) and (14b) would silently discard state
-/// that was already taken from the pool.
+/// pool it cannot be recovered except by re-donation.  Today no `?` or
+/// `return Err(...)` exists between steps (4c) and (14b); the guard primarily
+/// protects against panics (e.g. a failed `unwrap()` on `eval_state` or a snapshot
+/// operation), and against any `?` / early-return added by a future refactor.
 ///
-/// This guard fixes that: it holds both the staging map **and** a `&mut WarmStatePool`
-/// reborrow.  On `Drop` it drains `self.map` and re-donates every surviving entry to
-/// `self.pool`, ensuring recoverability regardless of how the enclosing scope exits.
+/// This guard fixes the hazard: it holds both the staging map **and** a
+/// `&mut WarmStatePool` reborrow.  On `Drop` it drains `self.map` and re-donates
+/// every surviving entry to `self.pool`, ensuring recoverability regardless of how
+/// the enclosing scope exits.
 ///
 /// On the success path, call [`drain_into_cache_or_repool`](Self::drain_into_cache_or_repool)
 /// before the guard goes out of scope.  That method empties `self.map` so the natural
@@ -590,10 +612,20 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 impl Drop for PendingWarmSeedsGuard<'_> {
     /// Re-donate all remaining staged entries back to the pool.
     ///
-    /// This is the early-return / panic safety net: if `drain_into_cache_or_repool`
-    /// was already called (success path), `self.map` is empty and this is a no-op.
-    /// Otherwise every surviving entry is re-donated so the pool can recover it on
-    /// the next `edit_source` call.
+    /// This is the panic safety net: if `drain_into_cache_or_repool` was already
+    /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
+    /// every surviving entry is re-donated so the pool can recover it on the next
+    /// `edit_source` call.
+    ///
+    /// # Double-panic note
+    ///
+    /// `pool.donate` routes through an internal `push_event` → `debug_assert!`
+    /// (events-buffer capacity check).  In debug builds, if this `Drop` fires
+    /// during stack-unwinding from another panic **and** the events buffer happens
+    /// to be at its cap (65 536 entries), the `debug_assert!` itself panics,
+    /// triggering an unconditional `std::process::abort`.  In practice this is
+    /// essentially impossible — the buffer would need to be saturated before the
+    /// first panic — but is documented here for completeness.
     fn drop(&mut self) {
         for (nid, state) in self.map.drain() {
             self.pool.donate(nid, state);
@@ -1454,43 +1486,6 @@ impl Engine {
         })
     }
 
-    /// Invoke [`detect_role_flip`] and bump `last_role_flip_probes` in one place.
-    ///
-    /// Both call sites in `edit_source` Phase 1 — the outer short-circuit block
-    /// and the per-group lazy-memo `None` arm — share the same three-line
-    /// pattern: build `old_groups` from `eval_state`, call `detect_role_flip`,
-    /// write the memo, increment the counter. Extracting that here ensures the
-    /// counter increment cannot be omitted if a third call site ever appears.
-    ///
-    /// `new_groups` is sliced from the freshly-built snapshot and does NOT
-    /// borrow `self`. NLL releases the `self.eval_state` borrow (used only as
-    /// an argument to `detect_role_flip`) before `self.last_role_flip_probes`
-    /// is mutated, so `&mut self` is unambiguous.
-    ///
-    /// # Why this is not called directly from `edit_source`
-    ///
-    /// `PendingWarmSeedsGuard` holds `&mut self.warm_pool` for the duration of
-    /// `edit_source`, which prevents `&mut self` method calls (Rust's disjoint-
-    /// field borrow rules). Both call sites in `edit_source` inline this body
-    /// via explicit disjoint-field accesses instead; see the comments at those
-    /// sites. The method body is kept here as the canonical single-source-of-
-    /// truth for the pattern.
-    #[allow(dead_code)]
-    fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
-        let result = detect_role_flip(
-            &self
-                .eval_state
-                .as_ref()
-                .unwrap()
-                .snapshot
-                .graph
-                .guarded_groups,
-            new_groups,
-        );
-        self.last_role_flip_probes += 1;
-        result
-    }
-
     /// Incrementally re-evaluate after a structural source edit.
     ///
     /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
@@ -2069,15 +2064,13 @@ impl Engine {
             // Correctness pinned by task-2084 locks. Counter tracked via
             // `self.last_role_flip_probes` for the perf-lock test (task 2094).
             //
-            // Note: `pending_warm_seeds` holds `&mut self.warm_pool` for the
-            // entire edit_source call, so we cannot call `self.probe_role_flip`
-            // (which takes `&mut self`) here — that would be a whole-self borrow
-            // conflict. Instead we inline the two-line body of `probe_role_flip`
-            // via disjoint field accesses (`self.eval_state` and
-            // `self.last_role_flip_probes` are distinct from `self.warm_pool`).
+            // `pending_warm_seeds` holds `&mut self.warm_pool` for the duration
+            // of edit_source. The free function `probe_role_flip` accepts
+            // disjoint borrows (`self.eval_state` and `self.last_role_flip_probes`
+            // are distinct from `self.warm_pool`), so no whole-self conflict.
             let mut role_flip_memo: Option<bool> = None;
             let has_dirty_guards = sc_dirty || has_added_guard_member || {
-                let result = detect_role_flip(
+                let result = probe_role_flip(
                     &self
                         .eval_state
                         .as_ref()
@@ -2086,8 +2079,8 @@ impl Engine {
                         .graph
                         .guarded_groups,
                     &graph.guarded_groups,
+                    &mut self.last_role_flip_probes,
                 );
-                self.last_role_flip_probes += 1;
                 role_flip_memo = Some(result);
                 result
             };
@@ -2141,14 +2134,10 @@ impl Engine {
                     {
                         // Lazy role-flip check (task 2094): populate role_flip_memo
                         // on first query, reuse on subsequent groups.
-                        // Inlined from probe_role_flip for the same reason as
-                        // the first call site above — pending_warm_seeds holds
-                        // &mut self.warm_pool, so &mut self method calls are
-                        // not allowed here; disjoint field accesses are.
                         let flipped = match role_flip_memo {
                             Some(v) => v,
                             None => {
-                                let result = detect_role_flip(
+                                let result = probe_role_flip(
                                     &self
                                         .eval_state
                                         .as_ref()
@@ -2157,8 +2146,8 @@ impl Engine {
                                         .graph
                                         .guarded_groups,
                                     &graph.guarded_groups,
+                                    &mut self.last_role_flip_probes,
                                 );
-                                self.last_role_flip_probes += 1;
                                 role_flip_memo = Some(result);
                                 result
                             }
@@ -4045,6 +4034,66 @@ mod tests {
                 .downcast::<u32>(),
             Some(0xFEED),
             "Realization payload preserved"
+        );
+    }
+
+    /// Guard re-donates its staged entries when dropped during a panic unwind.
+    ///
+    /// This is the end-to-end test for the guard's primary safety contract:
+    /// simulate `edit_source` step (4c) (checkout into the guard) followed by a
+    /// panic between (4c) and (14b), then assert that the pool can recover the
+    /// entry on the next call — i.e. the guard's `Drop` fired during unwind and
+    /// re-donated the checked-out state.
+    ///
+    /// # Why this test uses unsafe
+    ///
+    /// `std::panic::catch_unwind` requires its closure to be `UnwindSafe`.
+    /// `&mut WarmStatePool` is `!UnwindSafe`, so we wrap the closure in
+    /// `AssertUnwindSafe` and pass the pool via a raw pointer that is valid for
+    /// the entire test frame.  The raw deref is sound: `pool` outlives the
+    /// closure, and no other reference to `pool` exists while the closure runs.
+    #[test]
+    fn pending_warm_seeds_guard_redonates_on_panic() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+        use std::panic::{self, AssertUnwindSafe};
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(1024);
+        let node_id = NodeId::Value(ValueCellId::new("T", "panic_node"));
+
+        // Prime the pool with a known payload so we can verify recovery.
+        pool.donate(node_id.clone(), OpaqueState::new(0xCAFEu32, 4));
+
+        // Simulate step (4c): checkout → guard live → panic → Drop re-donates.
+        {
+            // SAFETY: `pool` is alive for the entire test; the raw pointer does
+            // not escape the `AssertUnwindSafe` closure.
+            let pool_ptr: *mut WarmStatePool = &mut pool;
+            let nid = node_id.clone();
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                let pool_ref = unsafe { &mut *pool_ptr };
+                let mut guard = PendingWarmSeedsGuard::new(pool_ref);
+                let state = guard
+                    .pool_mut()
+                    .checkout(&nid)
+                    .expect("state should be in pool before panic");
+                guard.insert(nid.clone(), state);
+                // Simulate a panic inside edit_source between steps (4c) and (14b).
+                panic!("simulated mid-edit panic");
+            }));
+            assert!(result.is_err(), "catch_unwind must catch the panic");
+        }
+
+        // After the unwind, the guard's Drop must have re-donated the entry.
+        let recovered = pool
+            .checkout(&node_id)
+            .expect("pool must contain the entry re-donated by guard Drop");
+        assert_eq!(
+            recovered.downcast::<u32>(),
+            Some(0xCAFE),
+            "payload must survive the panic → Drop → pool round-trip"
         );
     }
 }
