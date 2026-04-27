@@ -278,9 +278,21 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 // Malformed Number-form parses fall through silently for now;
                 // step-12 will add the warning.
             }
+            [PragmaArg::Bare(PragmaValue::String(s))] => {
+                // Strict MAJOR.MINOR — exactly two components, each parseable
+                // as u16. This is the form to use when the Number form would
+                // round-trip ambiguously (e.g. `0.10` vs `0.1`).
+                let parts: Vec<&str> = s.split('.').collect();
+                if parts.len() == 2
+                    && let (Ok(maj), Ok(min)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>())
+                {
+                    module.declared_version = Some((maj, min));
+                }
+                // Malformed String-form parses fall through silently for now;
+                // step-12 will add the warning.
+            }
             _ => {
-                // Other shapes are handled in later steps (string form in
-                // step-4, malformed catch-all in step-12).
+                // Other shapes are handled in step-12 (malformed catch-all).
             }
         }
     }
