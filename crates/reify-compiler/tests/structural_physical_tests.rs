@@ -460,6 +460,13 @@ structure def HeatSink : ThermallyConductive {
     assert_constraint_op(template, "volume", BinOp::Gt);
     // ThermallyConductive's own `thermal_conductivity > 0`.
     assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "expected exactly 2 constraints from ThermallyConductive+Physical+MaterialSpec \
+         (volume > 0, thermal_conductivity > 0), got {}",
+        template.constraints.len()
+    );
 }
 
 /// Conformance test: a structure conforming to ElectricallyConductive must
