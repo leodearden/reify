@@ -185,6 +185,36 @@ fn doc_strings_flow_into_item_doc() {
     }
 }
 
+/// Assert that Bolt's meta block is copied verbatim preserving insertion order.
+///
+/// `meta: Vec<(String, String)>` (model.rs:192) uses ordered pairs precisely so
+/// insertion order survives serialization and duplicate keys are allowed.
+///
+/// TODO(build_doc_model): Once the lowering pass lands, meta pairs are populated
+/// from the compiled structure's meta block. Assert shape stays the same.
+#[test]
+fn structure_meta_block_copied_verbatim_preserving_insertion_order() {
+    let model = build_fixture();
+    let items = &model.modules[0].items;
+    let bolt = items
+        .iter()
+        .find(|i| matches!(i, ItemDoc::Structure { name, .. } if name == "Bolt"))
+        .expect("Structure 'Bolt' not found");
+    match bolt {
+        ItemDoc::Structure { meta, .. } => {
+            assert_eq!(
+                meta,
+                &vec![
+                    ("part_number".to_string(), "ISO-4014-M8x25".to_string()),
+                    ("revision".to_string(), "B".to_string()),
+                ],
+                "meta insertion order mismatch"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// Assert that `@test` annotation is on Bolt (Structure) and `@deprecated` is on
 /// safety_factor (Function), each with the correct args.
 ///
