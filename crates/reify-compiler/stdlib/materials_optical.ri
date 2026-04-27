@@ -1,0 +1,29 @@
+// Stdlib: Optical Material Traits
+// Provides optical characterization trait definitions for engineering materials.
+// All dimensioned quantities use Real (dimensionless) pending dimensional type
+// system extensions in a future task.
+//
+// Spec reference: docs/reify-stdlib-reference.md §6.5 lines 713-722.
+// Audit reference: docs/notes/stdlib-trait-audit.md §6.5 (all traits marked MISSING).
+//
+// Note on parent trait name: the spec text says `: Material` but `Material` was
+// renamed to `MaterialSpec` in task 1876 (see BREAKING CHANGE block in
+// materials_mechanical.ri). This trait uses `: MaterialSpec` so the parent
+// edge resolves correctly; the convention is established by the §6.2-§6.4
+// traits in materials_mechanical.ri and materials_electrical.ri.
+
+// ── OpticallyCharacterized ───────────────────────────────────────────────────
+
+// Root optical-material trait. Every optically characterised material must
+// supply the four scalar optical properties below (all Real pending dimensional
+// type wiring):
+//   refractive_index       — dimensionless (n, ratio of c/phase-velocity)
+//   absorption_coefficient — 1/m (attenuation of optical power per unit length)
+//   transmittance          — dimensionless fraction [0, 1]
+//   reference_thickness    — m (thickness at which transmittance is measured)
+trait OpticallyCharacterized : MaterialSpec {
+    param refractive_index : Real
+    param absorption_coefficient : Real
+    param transmittance : Real
+    param reference_thickness : Real
+}

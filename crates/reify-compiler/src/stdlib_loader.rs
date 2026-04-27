@@ -67,6 +67,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/materials_electrical.ri"),
             ),
             (
+                "std.materials.optical",
+                include_str!("../stdlib/materials_optical.ri"),
+            ),
+            (
                 "std.structural.physical",
                 include_str!("../stdlib/structural_physical.ri"),
             ),
