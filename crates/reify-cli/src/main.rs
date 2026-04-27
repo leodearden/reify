@@ -271,7 +271,67 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::from(2u8);
     }
 
-    // TODO(post-2361): full arg parsing and dispatch lands in the next steps.
+    // Mirrors `cmd_gui`'s explicit-flag pattern: walk args, accept the
+    // documented flags, and reject any other `--`-prefixed token with a
+    // usage error.  The first non-flag positional is the input path; a
+    // second positional is rejected as a usage error.
+    let mut format: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut split = false;
+    let mut compact = false;
+    let mut input: Option<&str> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--split" => {
+                split = true;
+                i += 1;
+            }
+            "--compact" => {
+                compact = true;
+                i += 1;
+            }
+            "--format" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --format requires a value");
+                    eprintln!("{}", DOC_USAGE);
+                    return ExitCode::from(2u8);
+                }
+                format = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "-o" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: -o requires a path");
+                    eprintln!("{}", DOC_USAGE);
+                    return ExitCode::from(2u8);
+                }
+                output = Some(args[i + 1].clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `doc`: {}", flag);
+                eprintln!("{}", DOC_USAGE);
+                return ExitCode::from(2u8);
+            }
+            _ => {
+                if input.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", a);
+                    eprintln!("{}", DOC_USAGE);
+                    return ExitCode::from(2u8);
+                }
+                input = Some(a);
+                i += 1;
+            }
+        }
+    }
+
+    let _ = (format, output, split, compact, input);
+    // TODO(post-2361): subsequent steps add format dispatch, parse_and_compile
+    // wiring, and writer plumbing.  Stub returns SUCCESS so step-7's
+    // unknown-flag test passes; later steps tighten the happy path.
     ExitCode::SUCCESS
 }
 
