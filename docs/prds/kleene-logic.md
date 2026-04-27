@@ -18,17 +18,18 @@ for the authoritative tables.
 
 ## 2. Implementation Note — `kleene_implies`
 
-`BinOp::Implies` exists in the grammar (see `docs/reify-language-spec.md`
-§9.2.3 and the operator precedence table).  However, as of Task 2294
-(commit 31fc333c5), **no `kleene_implies` function exists** in
-`crates/reify-expr/src/kleene.rs`.  Task 2294's reviewer removed the helper as
-YAGNI:
+The `implies` keyword is part of the Reify language grammar: it appears in the
+EBNF production grammar (`docs/reify-language-spec.md` §14, around line 2409)
+and in the operator-precedence table (§13.4, around line 2484 — level 15,
+right-associative).  Its truth table is in §9.2.3 (already cited in §1 above).
 
-> "No BinOp::Implies exists in the grammar; the function and its truth-table
-> coverage will be reintroduced together with the operator in a future task."
-
-*(Note: `BinOp::Implies` does appear in the grammar and spec, but the
-evaluation path for it had not yet been wired up at the time of Task 2294.)*
+The Rust AST has not yet been extended to match: `BinOp` in
+`crates/reify-types/src/expr.rs` (line 153) currently enumerates
+`Add / Sub / Mul / Div / Mod / Pow / Eq / Ne / Lt / Le / Gt / Ge / And / Or`
+— there is no `Implies` variant.  Because no AST or evaluation path yet
+recognises `implies`, the `kleene_implies` helper was deferred as YAGNI in
+Task 2294 (commit `31fc333c5`); `crates/reify-expr/src/kleene.rs` therefore
+exposes only `kleene_and`, `kleene_or`, and `kleene_not`.
 
 Until the evaluation path is complete, `implies` is expressed via the
 **de-Morgan rewrite**:
