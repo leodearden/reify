@@ -482,16 +482,16 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let _ = output;
     let model = minimal_doc_model_from_compiled(&compiled);
 
     match format {
         Format::Json => {
+            // The JSON formatter has no trailing newline of its own; we add
+            // one to keep shell output tidy in stdout mode.  The `-o <file>`
+            // write does NOT add the trailing newline so the file body is
+            // exactly the formatter output.
             let body = reify_doc::fmt_json::render_json(&model, compact);
-            // Match `cmd_check`'s `println!` style: emit a single trailing
-            // newline regardless of pretty/compact so shell output is tidy.
-            println!("{body}");
-            ExitCode::SUCCESS
+            write_single_file_or_stdout(output.as_deref(), &body, /*trailing_newline=*/ true)
         }
         Format::Markdown => {
             // TODO(post-2361): once `reify_doc_build::build_doc_model`
@@ -501,11 +501,14 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             // would be degenerate, so `None` is byte-equivalent and saves a
             // workspace dep.
             let opts = reify_doc::fmt_markdown::MarkdownOptions { split };
-            let output = reify_doc::fmt_markdown::render_markdown(&model, None, &opts);
-            match output {
+            let rendered = reify_doc::fmt_markdown::render_markdown(&model, None, &opts);
+            match rendered {
                 reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
-                    print!("{body}");
-                    ExitCode::SUCCESS
+                    write_single_file_or_stdout(
+                        output.as_deref(),
+                        &body,
+                        /*trailing_newline=*/ false,
+                    )
                 }
                 reify_doc::fmt_markdown::MarkdownOutput::Split(_files) => {
                     // TODO(post-2361): split-write directory plumbing lands
@@ -518,7 +521,41 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         Format::Html => {
             // Default + explicit `--format html`: emit the in-CLI HTML stub.
             let body = render_html_stub(&model);
-            print!("{body}");
+            write_single_file_or_stdout(output.as_deref(), &body, /*trailing_newline=*/ false)
+        }
+    }
+}
+
+/// Write `body` to `target` (when `Some`) or stdout (when `None`).
+///
+/// On stdout mode, appends a single `'\n'` after `body` iff `trailing_newline`
+/// is true so JSON output ends in a newline (matches `cmd_check`'s
+/// `println!` style and keeps shell output tidy).  On file-write mode the
+/// trailing newline is *not* added; the on-disk body is exactly the
+/// formatter output so it round-trips cleanly through tools that expect
+/// canonical content.
+///
+/// Mirrors `cmd_build`'s `Error writing {path}: {e}` stderr format on I/O
+/// failure; returns `ExitCode::FAILURE` (1) on write errors.
+fn write_single_file_or_stdout(
+    target: Option<&str>,
+    body: &str,
+    trailing_newline: bool,
+) -> ExitCode {
+    match target {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, body.as_bytes()) {
+                eprintln!("Error writing {}: {}", path, e);
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
+        }
+        None => {
+            if trailing_newline {
+                println!("{body}");
+            } else {
+                print!("{body}");
+            }
             ExitCode::SUCCESS
         }
     }
