@@ -1385,3 +1385,42 @@ fn version_pragma_too_old_emits_warning_predates_stable() {
         "expected declared_version Some((0, 0)) for #version(0.0) (storage reflects declared)"
     );
 }
+
+/// Multiple module-level `#version` pragmas: per PRD §5, this is an error
+/// (escalated from the #precision "first wins" warning). The first pragma's
+/// declared value is still stored on `module.declared_version`; the second
+/// emits exactly one error containing "at most one #version declaration per
+/// module". No warnings about version. Naming mirrors the analogous
+/// `multiple_module_level_precision_pragmas_first_wins` test above.
+#[test]
+fn multiple_version_pragmas_emit_error_at_most_one() {
+    let module = compile_source(
+        "#version(0.1)\n#version(0.1)\nstructure S { param x : Real }",
+    );
+
+    let at_most_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("at most one #version declaration per module"))
+        .collect();
+    assert_eq!(
+        at_most_errs.len(),
+        1,
+        "expected exactly 1 'at most one #version' error, got {}: {:?}",
+        at_most_errs.len(),
+        errors_only(&module)
+    );
+
+    assert_eq!(
+        module.declared_version,
+        Some((0, 1)),
+        "expected declared_version Some((0, 1)) (first wins) for duplicate #version"
+    );
+
+    // No warnings about version (the duplicate is an error, not a warning).
+    let version_warns = pragma_warnings(&module, "version");
+    assert!(
+        version_warns.is_empty(),
+        "expected zero version warnings for duplicate #version, got: {:?}",
+        version_warns
+    );
+}
