@@ -426,7 +426,12 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 
         // First-seen pragma: interpret its args. The well-formed shape is
         // `[Bare(Ident(name)), KeyValue*]`. The single bare-ident case is a
-        // degenerate of that shape (empty tail).
+        // degenerate of that shape (empty tail). Every other shape leaves
+        // `solver_pragma` as `None` and emits a single "expected #solver(...)"
+        // warning whose message contains both "expected" and "ident" so the
+        // form-hint substring assertion in
+        // `solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none`
+        // holds.
         match pragma.args.as_slice() {
             [PragmaArg::Bare(PragmaValue::Ident(name)), tail @ ..] => {
                 let mut options: BTreeMap<String, PragmaValue> = BTreeMap::new();
@@ -461,10 +466,42 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     options,
                 });
             }
+            // Zero args: `#solver` with no arg list.
+            [] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // Bare Number / Bool / String / Quantity as the (only) first arg.
+            // The Ident case was already matched above; this arm catches the
+            // remaining bare scalar variants.
+            [PragmaArg::Bare(_)] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // KeyValue first (e.g. `#solver(method="gradient")`): the back-end
+            // ident is required as the leading positional argument in v0.1.
+            [PragmaArg::KeyValue { .. }, ..] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // Catch-all for any remaining shape (e.g. multi-bare-arg lists
+            // like `#solver(libslvs, argmin)` whose first arg isn't an
+            // Ident — actually unreachable today because the first arm
+            // handles `[Bare(Ident(_)), ..]`, but leave the catch-all as a
+            // future-proofing safety net).
             _ => {
-                // Catch-all placeholder — refined in step-8 with explicit arms
-                // for malformed shapes (zero args, KeyValue-only, bare Number/
-                // Bool/String/Quantity).
                 module.diagnostics.push(
                     Diagnostic::warning(
                         "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
