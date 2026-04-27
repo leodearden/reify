@@ -240,6 +240,31 @@ fn old_guard_for<'a>(eval_state: Option<&'a EvaluationState>, gc: &ValueCellId) 
     eval_state.and_then(|s| s.snapshot.values.get(gc)).map(|(v, _)| v)
 }
 
+/// Look up the current guard value for `guard_cell` from the per-group Phase 3
+/// value map. Returns `None` when the guard cell is absent.
+///
+/// Called immediately after `group_needs_phase3` signals that a guarded group
+/// requires re-elaboration. Both `edit_param` Phase 3 (~line 1005) and
+/// `edit_source` Phase 3 (~line 2095) call this helper via
+/// `let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else { continue; };`
+/// — the identical pattern at both sites makes the shared lookup-or-skip
+/// contract visible and eliminates the prior asymmetry where `edit_param`
+/// used `.expect()` (panic) while `edit_source` used `let-Some-else-continue`
+/// (defensive skip).
+///
+/// **Defensive-skip rationale** (task 2229): `group_needs_phase3` returns
+/// `true` in its absent-guard arm (`old_guard_val.is_some()` when the guard
+/// cell is missing from `values`). In current `edit_param`/`edit_source` flow
+/// this arm is unreachable in principle — Phase 1 seeds every guard cell in
+/// `structure_controlling` into `values`, so an old-snapshot guard cell is
+/// always present. However, a future refactor that narrows `structure_controlling`
+/// could leave a guard cell unevaluated. Callers skip those groups rather than
+/// panic, mirroring the rationale already established in `edit_source` Phase 3
+/// (engine_edit.rs ~line 2087-2094, tasks 2140/2146).
+fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
+    values.get(guard_cell).cloned()
+}
+
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
