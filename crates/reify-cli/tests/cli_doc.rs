@@ -46,6 +46,33 @@ fn doc_no_args_prints_usage_and_exits_two() {
 }
 
 #[test]
+fn doc_format_json_pretty_emits_valid_json_to_stdout() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "json", &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format json on bracket.ri must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let model: reify_doc::model::DocModel = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout must parse as DocModel JSON: {e}\nstdout: {stdout}"));
+    assert!(
+        model.modules.iter().any(|m| m.path == "bracket"),
+        "DocModel should contain a module with path == 'bracket', got modules: {:?}",
+        model.modules.iter().map(|m| &m.path).collect::<Vec<_>>()
+    );
+    // Pretty mode: stdout must contain newlines.
+    assert!(
+        stdout.contains('\n'),
+        "pretty json must be multi-line, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("error:"),
+        "stderr should not contain 'error:' on success, got: {stderr}"
+    );
+}
+
+#[test]
 fn doc_compile_error_exits_one_with_stderr() {
     let path = common::fixture_path("bracket_compile_error.ri");
     let (status, stdout, stderr) = run_doc(&[&path]);
