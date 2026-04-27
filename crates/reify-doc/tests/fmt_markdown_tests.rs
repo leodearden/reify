@@ -436,6 +436,64 @@ fn constraints_section_omitted_when_empty() {
     assert!(!out.contains("### Constraints"), "should omit, got:\n{out}");
 }
 
+/// Constraints section uses safe inline-code fencing when `expr_repr` contains
+/// literal backticks.
+///
+/// * Labelled entry (`label = Some("safe")`), `expr_repr = "v <= \`max\` V"`:
+///   internal backtick, no leading/trailing → `- safe: ``v <= \`max\` V```.
+/// * Unlabelled entry, `expr_repr = "\`a\` && b"`: starts with backtick →
+///   pad required → `- `` \`a\` && b `` *(line 7)*`.
+#[test]
+fn constraints_section_uses_safe_inline_code_fence() {
+    let labeled_expr = "v <= `max` V"; // internal backtick, no leading/trailing
+    let unlabeled_expr = "`a` && b";   // starts with backtick → pad
+    let item = ItemDoc::Structure {
+        name: "Safe".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![],
+        ports: vec![],
+        constraints: vec![
+            ConstraintDoc {
+                label: Some("safe".into()),
+                expr_repr: labeled_expr.into(),
+                annotations: vec![],
+                line: None,
+            },
+            ConstraintDoc {
+                label: None,
+                expr_repr: unlabeled_expr.into(),
+                annotations: vec![],
+                line: Some(7),
+            },
+        ],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+
+    assert!(out.contains("### Constraints"), "H3 missing:\n{out}");
+
+    // (a) Labelled constraint: no leading/trailing backtick → double fence, no pad.
+    let labeled_fenced = format!("- safe: ``{labeled_expr}``");
+    assert!(
+        out.contains(&labeled_fenced),
+        "labeled bullet not correctly fenced (`{labeled_fenced}`):\n{out}"
+    );
+    // Labelled entry has no line info — the bullet must not contain "*(line".
+    let labeled_line = out.lines().find(|l| l.contains("safe:"))
+        .expect("labeled bullet present");
+    assert!(
+        !labeled_line.contains("*(line"),
+        "labeled bullet should omit line suffix: {labeled_line}"
+    );
+
+    // (b) Unlabelled constraint: starts with backtick → double fence + pad +
+    //     trailing *(line 7)*.
+    let unlabeled_fenced = format!("- `` {unlabeled_expr} `` *(line 7)*");
+    assert!(
+        out.contains(&unlabeled_fenced),
+        "unlabeled bullet not correctly fenced (`{unlabeled_fenced}`):\n{out}"
+    );
+}
+
 /// Meta section: `### Meta` H3 then `- **{key}**: {value}` bullets, sorted
 /// alphabetically by key. Input order ["version","alpha"] must render
 /// "alpha" before "version".
