@@ -165,7 +165,7 @@ fn nearest_1d_out_of_range_clamps_to_endpoint() {
 }
 
 // ---------------------------------------------------------------------------
-// 1D Cubic (Catmull-Rom)
+// 1D Cubic (4-point Lagrange)
 // ---------------------------------------------------------------------------
 
 const CUBIC_TOL: f64 = 1e-10;
@@ -189,8 +189,8 @@ fn cubic_1d_knot_exact_reproduction_uniform() {
     }
 }
 
-/// Catmull-Rom reproduces a synthetic cubic polynomial exactly within
-/// interior cells (where the 4-point stencil is fully available).
+/// The 4-point Lagrange cubic reproduces a synthetic cubic polynomial exactly
+/// within interior cells (where the full 4-point stencil is available).
 ///
 /// Polynomial: f(x) = 2 - 3*x + 1.5*x^2 - 0.4*x^3.
 #[test]

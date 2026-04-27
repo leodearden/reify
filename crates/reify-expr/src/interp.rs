@@ -14,8 +14,10 @@
 //!
 //! - [`InterpolationMethod::Linear`] — n-linear (lerp / bilinear / trilinear).
 //! - [`InterpolationMethod::NearestNeighbor`] — snap to nearest grid sample,
-//!   axis-independent ties broken with `f64::round_ties_even` (banker's
-//!   rounding) for reproducibility across platforms.
+//!   axis-independent ties broken with the even-grid-index tie-breaker (the
+//!   endpoint of the bracketing cell whose grid index is even wins) for
+//!   reproducibility across platforms. Note that this is a grid-offset-dependent
+//!   policy on the index, not banker's rounding on the value.
 //! - [`InterpolationMethod::Cubic`] — 4-point Lagrange cubic in 1D (i.e.
 //!   the unique cubic polynomial through four equally-spaced control values),
 //!   tensor product bicubic in 2D, tricubic in 3D. Edge cells extend the
@@ -47,10 +49,13 @@ use reify_types::{Diagnostic, DiagnosticCode};
 pub enum InterpolationMethod {
     /// n-linear interpolation: lerp (1D), bilinear (2D), trilinear (3D).
     Linear,
-    /// Snap to the nearest grid sample. Ties are broken with
-    /// `f64::round_ties_even` (banker's rounding) on each axis independently.
+    /// Snap to the nearest grid sample. Ties are broken with the
+    /// even-grid-index tie-breaker (the endpoint of the bracketing cell whose
+    /// grid index is even wins) on each axis independently.
     NearestNeighbor,
-    /// Catmull-Rom cubic (1D), tensor-product bicubic (2D), tricubic (3D).
+    /// 4-point Lagrange cubic (1D), tensor-product bicubic (2D), tricubic (3D).
+    /// See module-level docs for the rationale (Lagrange reproduces cubic
+    /// polynomials exactly; Catmull-Rom does not).
     Cubic,
     /// Radial basis function — deferred to post-v0.1; falls back to `Linear`.
     Rbf,
@@ -127,8 +132,12 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 /// Index of the grid sample nearest to `query`, with reproducible tie-breaking
-/// via `round_ties_even` semantics: when `query` is exactly halfway between
-/// two adjacent samples, the endpoint with the even index wins.
+/// via the even-grid-index policy: when `query` is exactly halfway between
+/// two adjacent samples, the endpoint of the bracketing cell whose grid index
+/// is even wins. This is reproducible across platforms but is grid-offset
+/// dependent — it depends on the index of the bracketing samples, not on the
+/// query's value alone, and is therefore not equivalent to
+/// `f64::round_ties_even` (banker's rounding) on the value.
 ///
 /// Out-of-range queries clamp to the first / last sample. The grid must have
 /// at least one element; for grids of length 1 the only sample wins.
@@ -152,9 +161,10 @@ fn nearest_index_on_axis(grid: &[f64], query: f64) -> usize {
     } else if d_hi < d_lo {
         i + 1
     } else {
-        // Exact tie: pick the endpoint with the even index (banker's rounding
-        // / round_ties_even). Since `i` and `i + 1` differ in parity, exactly
-        // one of them is even.
+        // Exact tie: pick the endpoint with the even grid index. Since `i` and
+        // `i + 1` differ in parity, exactly one of them is even. This is a
+        // reproducible grid-offset-dependent policy; not banker's rounding on
+        // the value.
         if i.is_multiple_of(2) { i } else { i + 1 }
     }
 }
