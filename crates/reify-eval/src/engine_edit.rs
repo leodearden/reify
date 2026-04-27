@@ -828,12 +828,9 @@ impl Engine {
         // wasting work and breaking the step-9 test.
         let compiled_fields = Arc::clone(&self.compiled_fields);
         for field in compiled_fields.iter() {
-            if !matches!(
-                field.source,
-                reify_compiler::CompiledFieldSource::Composed { .. }
-            ) {
+            let reify_compiler::CompiledFieldSource::Composed { expr } = &field.source else {
                 continue;
-            }
+            };
             let field_cell = ValueCellId::new(reify_types::FIELD_ENTITY_PREFIX, &field.name);
             let field_node = NodeId::Value(field_cell.clone());
             if !dirty_cone.contains(&field_node) {
@@ -851,11 +848,22 @@ impl Engine {
             // record_evaluation rather than mark_pending — the field is
             // freshly computed at this point and downstream consumers can
             // treat it as Final.
+            //
+            // Record the static dependency trace (matching the cold-start
+            // contract) rather than `DependencyTrace::default()`. Without
+            // this, `CacheStore::invalidate_dependents` (cache.rs) would
+            // see an empty `reads` set on the rebuilt entry and silently
+            // skip propagation when one of the field's actual deps later
+            // changes — leaving the cache invariant 'entries carry the
+            // static trace of their reads' broken on this code path. The
+            // reverse-index drives invalidation via `compute_dirty_cone`
+            // today, but the cache trace is the durable per-entry record
+            // and must stay consistent with the cold-start path.
             self.cache.record_evaluation(
                 field_node,
                 CachedResult::Value(new_field_value, DeterminacyState::Determined),
                 VersionId(version_id),
-                DependencyTrace::default(),
+                extract_dependency_trace(expr),
             );
         }
 
