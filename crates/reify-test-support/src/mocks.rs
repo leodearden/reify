@@ -2776,4 +2776,21 @@ mod tests {
             .unwrap();
         assert_eq!(result, expected);
     }
+
+    #[test]
+    fn density_bits_canonicalizes_signed_zero_and_passes_through_finite_values() {
+        // +0.0 → 0u64
+        assert_eq!(super::density_bits(0.0_f64), 0u64);
+        // -0.0 → 0u64 (canonicalization invariant: -0.0 and +0.0 must produce the same key)
+        assert_eq!(super::density_bits(-0.0_f64), 0u64);
+        // Finite positive: bits must round-trip exactly
+        assert_eq!(super::density_bits(1.0_f64), 1.0_f64.to_bits());
+        // Realistic density value
+        assert_eq!(super::density_bits(7850.0_f64), 7850.0_f64.to_bits());
+        // Non-zero non-special: infinity is a valid f64 bit pattern (not NaN)
+        assert_eq!(
+            super::density_bits(f64::INFINITY),
+            f64::INFINITY.to_bits()
+        );
+    }
 }
