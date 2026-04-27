@@ -228,3 +228,33 @@ fn faces_by_normal_nan_target_returns_query_failed() {
         result
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// edges_parallel_to
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn edges_parallel_to_anti_parallel_tangent_is_accepted() {
+    // edges_parallel_to is orientation-agnostic: the kernel may return either
+    // direction along an edge, so an anti-parallel tangent must be accepted.
+    // This is enforced via abs(dot) in the predicate (unlike faces_by_normal).
+    let parent = GeometryHandleId(1);
+    let edge = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![edge])
+        .with_edge_tangent_result(
+            edge,
+            Value::String("{\"x\":-1.0,\"y\":0.0,\"z\":0.0}".into()), // -x tangent
+        );
+
+    // Target axis is +x with 0.1 rad tolerance; anti-parallel -x tangent is accepted.
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1)
+            .expect("edges_parallel_to should succeed");
+    assert_eq!(
+        result,
+        vec![edge],
+        "anti-parallel tangent (-x) must be accepted when axis is +x (orientation-agnostic)"
+    );
+}
