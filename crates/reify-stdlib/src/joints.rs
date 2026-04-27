@@ -400,4 +400,137 @@ mod tests {
             "Length-dimensioned range for revolute should return Undef"
         );
     }
+
+    // ── transform_at on Prismatic: helpers ───────────────────────────────────
+
+    fn prismatic_x_joint() -> Value {
+        eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()])
+    }
+
+    fn prismatic_y_joint() -> Value {
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(5.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        eval_builtin("prismatic", &[axis, range])
+    }
+
+    fn prismatic_z_joint() -> Value {
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::length(-5.0))),
+            upper: Some(Box::new(Value::length(5.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        eval_builtin("prismatic", &[axis, range])
+    }
+
+    /// Assert two `Value::Transform` are component-wise within tolerance.
+    fn assert_transform_approx(result: &Value, exp_rot: (f64, f64, f64, f64), exp_trans: [f64; 3], tol: f64, label: &str) {
+        let (rot, trans) = match result {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("{}: expected Transform, got {:?}", label, other),
+        };
+        let (w, x, y, z) = match rot {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("{}: expected Orientation, got {:?}", label, other),
+        };
+        assert!((w - exp_rot.0).abs() < tol, "{}: rotation.w expected {} got {}", label, exp_rot.0, w);
+        assert!((x - exp_rot.1).abs() < tol, "{}: rotation.x expected {} got {}", label, exp_rot.1, x);
+        assert!((y - exp_rot.2).abs() < tol, "{}: rotation.y expected {} got {}", label, exp_rot.2, y);
+        assert!((z - exp_rot.3).abs() < tol, "{}: rotation.z expected {} got {}", label, exp_rot.3, z);
+
+        let comps = match trans {
+            Value::Vector(v) if v.len() == 3 => v,
+            other => panic!("{}: expected Vector(3), got {:?}", label, other),
+        };
+        for (i, (comp, &exp)) in comps.iter().zip(exp_trans.iter()).enumerate() {
+            let val = comp.as_f64().unwrap_or_else(|| panic!("{}: translation[{}] not numeric", label, i));
+            assert!((val - exp).abs() < tol, "{}: translation[{}] expected {} got {}", label, i, exp, val);
+        }
+    }
+
+    // ── transform_at on Prismatic: analytic tests ────────────────────────────
+
+    #[test]
+    fn prismatic_transform_at_x_axis_5m() {
+        let joint = prismatic_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::length(5.0)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [5.0, 0.0, 0.0], 1e-12,
+            "prismatic X, 5m");
+    }
+
+    #[test]
+    fn prismatic_transform_at_y_axis_3m() {
+        let joint = prismatic_y_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::length(3.0)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 3.0, 0.0], 1e-12,
+            "prismatic Y, 3m");
+    }
+
+    #[test]
+    fn prismatic_transform_at_z_axis_neg2m() {
+        let joint = prismatic_z_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::length(-2.0)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, -2.0], 1e-12,
+            "prismatic Z, -2m");
+    }
+
+    #[test]
+    fn prismatic_transform_at_zero_value() {
+        let joint = prismatic_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::length(0.0)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
+            "prismatic X, 0m");
+    }
+
+    #[test]
+    fn prismatic_transform_at_diagonal_axis() {
+        // axis = [1,1,0]/√2, value = √2 m → translation = [1m, 1m, 0m]
+        let sq2 = std::f64::consts::SQRT_2;
+        let axis = Value::Vector(vec![
+            Value::Real(1.0 / sq2),
+            Value::Real(1.0 / sq2),
+            Value::Real(0.0),
+        ]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(10.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("prismatic", &[axis, range]);
+        let result = eval_builtin("transform_at", &[joint, Value::length(sq2)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [1.0, 1.0, 0.0], 1e-12,
+            "prismatic diagonal [1,1,0]/√2, √2 m");
+    }
+
+    #[test]
+    fn prismatic_transform_at_unnormalized_axis() {
+        // axis = [2, 0, 0] (magnitude 2), value = 1m → normalized axis [1,0,0] → translation = [1m, 0, 0]
+        let axis = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(5.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("prismatic", &[axis, range]);
+        let result = eval_builtin("transform_at", &[joint, Value::length(1.0)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [1.0, 0.0, 0.0], 1e-12,
+            "prismatic unnormalized [2,0,0], 1m");
+    }
+
+    #[test]
+    fn prismatic_transform_at_bare_real_value() {
+        // bare Value::Real(0.5) accepted as 0.5 metres
+        let joint = prismatic_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::Real(0.5)]);
+        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.5, 0.0, 0.0], 1e-12,
+            "prismatic X, bare Real(0.5)");
+    }
 }
