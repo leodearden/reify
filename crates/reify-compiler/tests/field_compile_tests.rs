@@ -81,13 +81,16 @@ fn compile_field_sampled() {
     let field = &module.fields[0];
     assert_eq!(field.name, "pressure");
 
-    // Source should be sampled with config key-value pairs (defence-in-depth:
-    // compilation still produces the variant even though a diagnostic is emitted).
+    // Source should be Sampled with an empty config (mirrors Imported: compile-time
+    // deferral diagnostic only; engine_eval.rs:652-653 returns Value::Undef regardless
+    // of config contents, so there is no runtime consumer of the compiled config).
     match &field.source {
         reify_compiler::CompiledFieldSource::Sampled { config } => {
-            assert_eq!(config.len(), 2, "expected 2 config entries");
-            assert_eq!(config[0].0, "resolution");
-            assert_eq!(config[1].0, "interpolation");
+            assert!(
+                config.is_empty(),
+                "expected Sampled compiled config to be empty (dead at runtime — engine_eval.rs returns Undef), got: {:?}",
+                config.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
         }
         other => panic!("expected Sampled source, got: {:?}", other),
     }
