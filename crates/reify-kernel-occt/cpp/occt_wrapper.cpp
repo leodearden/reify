@@ -953,7 +953,7 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
 // --- Loft (generic N profiles) ---
 
 std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
-    try {
+    return wrap_occt_call("loft_profiles", [&]() {
         if (profiles.shapes.size() < 2) {
             throw std::runtime_error("loft_profiles: requires at least 2 profiles");
         }
@@ -968,19 +968,13 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
         auto result = std::make_unique<OcctShape>();
         result->shape = loft.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_profiles: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_profiles: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT loft_profiles: unknown C++ exception");
-    }
+    });
 }
 
 // --- Sweep ---
 
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
-    try {
+    return wrap_occt_call("make_pipe", [&]() {
         BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
         // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
         // an explicit Build() here is redundant and was removed (task-383 S1).
@@ -990,19 +984,13 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_pipe: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide) {
-    try {
+    return wrap_occt_call("make_pipe_shell", [&]() {
         // Spine and guide must both be wires; profile may be an edge,
         // wire, or face.
         BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
@@ -1017,18 +1005,12 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe_shell: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_pipe_shell: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_pipe_shell: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides) {
-    try {
+    return wrap_occt_call("loft_guided_profiles", [&]() {
         // DEFENSE-IN-DEPTH: Rust layer validates; this catches direct FFI paths.
         if (profiles.shapes.size() < 2) {
             throw std::runtime_error("loft_guided_profiles: requires at least 2 profiles");
@@ -1053,19 +1035,13 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_guided_profiles: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_guided_profiles: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT loft_guided_profiles: unknown C++ exception");
-    }
+    });
 }
 
 // --- Sweep / Extrude ---
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
-    try {
+    return wrap_occt_call("make_prism", [&]() {
         // DEFENSE-IN-DEPTH: Rust extrude validates distance; this catches direct FFI calls.
         double mag_sq = dx*dx + dy*dy + dz*dz;
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
@@ -1082,20 +1058,14 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_prism: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_prism: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_prism: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
     double angle_rad) {
-    try {
+    return wrap_occt_call("make_revolve", [&]() {
         // DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12 for axis).
         // These C++ checks (1e-30) are a safety net for future code paths that may bypass
         // the Rust layer (e.g., direct FFI calls from tests or hot-path optimizations).
@@ -1139,13 +1109,7 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
         auto result = std::make_unique<OcctShape>();
         result->shape = rev_shape;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_revolve: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_revolve: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_revolve: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_rect_face(double width, double height,
