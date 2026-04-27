@@ -41,7 +41,15 @@
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
 //! | `half_space(...)`       | `PrimitiveKind::HalfSpace` arm in [`infer_primitive`] / `"half_space"` arm in [`infer_traits_for_function_call`] | `InferredTraits { bounded: false, connected: true, convex: true }` |
 //! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` (or `"extrude_infinite"` name) routed to [`combine_sweep`] with an Unbounded profile, or a dedicated arm | `InferredTraits::none()`              |
-//! | (parametric ray curve)  | New `CurveKind` variant in [`infer_curve`]          | `InferredTraits::none()` (or tuned)   |
+//! | (parametric ray curve)  | New `"ray"`-style arm in [`infer_traits_for_function_call`] | `InferredTraits::none()` (or tuned)   |
+//!
+//! When an Unbounded source lands, double-check that every routing path the
+//! conformance walker uses is updated. In particular, both the **direct**
+//! arms (`box`, `cylinder`, `union`, `intersection`, `difference`, …) and
+//! the **variadic** arms (`union_all`, `intersection_all`) share the same
+//! `_ => all()` fallback, so an unknown name is silently treated as
+//! Bounded — adding a new Unbounded primitive without an explicit arm
+//! defeats the Bounded check.
 //!
 //! After the inference table is updated, add an end-to-end negative test
 //! in `geometry_traits_inference_tests.rs` exercising the
@@ -444,6 +452,21 @@ fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> Inferred
             combine_intersection(a, b)
         }
 
+        // ─── Variadic Boolean combinators → fold combine_* across args ──
+        //
+        // `union_all` / `intersection_all` are recognised by
+        // [`crate::units::is_geometry_function`] and routed here from the
+        // conformance walker. Without explicit arms they would silently take
+        // the unknown-name `_ => all()` fallback below, which is harmless
+        // today (every primitive is Bounded) but defeats the Bounded check
+        // the moment `half_space` / `extrude_infinite` lands and is fed
+        // through `union_all`. We fold the matching pairwise rule across
+        // every geometry-typed argument; an empty geometry-arg list defaults
+        // to `all()` (defensive — well-formed source always supplies at
+        // least one argument).
+        "union_all" => fold_geometry_args(args, combine_union),
+        "intersection_all" => fold_geometry_args(args, combine_intersection),
+
         // ─── Transform combinators → recurse + combine_transform ────────
         "translate" | "rotate" | "scale" | "rotate_around" => {
             let t = first_geometry_arg(args);
@@ -491,6 +514,21 @@ fn first_geometry_arg(args: &[CompiledExpr]) -> InferredTraits {
     args.iter()
         .find(|a| a.result_type == reify_types::Type::Geometry)
         .map(infer_traits_for_expr)
+        .unwrap_or(InferredTraits::all())
+}
+
+/// Fold `combine` across every geometry-typed argument (used by the
+/// variadic `union_all` / `intersection_all` dispatch arms). Returns
+/// `InferredTraits::all()` when no geometry arg is present, matching the
+/// defensive default used by the unary/binary helpers above.
+fn fold_geometry_args(
+    args: &[CompiledExpr],
+    combine: fn(InferredTraits, InferredTraits) -> InferredTraits,
+) -> InferredTraits {
+    args.iter()
+        .filter(|a| a.result_type == reify_types::Type::Geometry)
+        .map(infer_traits_for_expr)
+        .reduce(combine)
         .unwrap_or(InferredTraits::all())
 }
 

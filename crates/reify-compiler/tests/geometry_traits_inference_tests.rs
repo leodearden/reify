@@ -467,6 +467,70 @@ fn infer_traits_for_expr_defaults_to_all_for_non_function_call() {
     assert_eq!(infer_traits_for_expr(&lit), InferredTraits::all());
 }
 
+/// `union_all` is recognised by `is_geometry_function` and routed into
+/// `infer_traits_for_expr`, so it MUST have an explicit dispatch arm —
+/// without one, future Unbounded primitives fed through `union_all` would
+/// silently take the unknown-name `_ => all()` fallback and bypass the
+/// Bounded check. This test pins the arm: two Bounded boxes folded under
+/// `combine_union` must yield `bounded_only` (Bounded preserved, Connected
+/// and Convex dropped). If the arm fell through to the default, the result
+/// would be `all()` and the assertion would catch the regression.
+#[test]
+fn infer_traits_for_expr_handles_variadic_union_all() {
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_a = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let box_b = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let union_all_expr =
+        make_function_call("union_all", vec![box_a, box_b], Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr(&union_all_expr),
+        InferredTraits::bounded_only(),
+        "union_all of two Bounded boxes must fold combine_union → bounded_only"
+    );
+}
+
+/// `intersection_all` mirrors `union_all`: it must have an explicit dispatch
+/// arm folding `combine_intersection`. With two Bounded+Convex inputs, the
+/// fold preserves Bounded and Convex but drops Connected (per the
+/// `combine_intersection` rule). If the arm fell through to the default
+/// `_ => all()`, the result would still have `connected = true` — so the
+/// `connected = false` assertion catches a broken dispatch.
+#[test]
+fn infer_traits_for_expr_handles_variadic_intersection_all() {
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_a = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let box_b = make_function_call(
+        "box",
+        vec![ten_mm(), ten_mm(), ten_mm()],
+        Type::Geometry,
+    );
+    let intersection_all_expr =
+        make_function_call("intersection_all", vec![box_a, box_b], Type::Geometry);
+    let result = infer_traits_for_expr(&intersection_all_expr);
+    assert_eq!(
+        result,
+        InferredTraits {
+            bounded: true,
+            connected: false,
+            convex: true,
+        },
+        "intersection_all of two Bounded+Convex boxes must fold combine_intersection \
+         (bounded preserved, convex preserved, connected dropped)"
+    );
+}
+
 // ─── End-to-end: call site with `param g : Bounded` ─────────────────────────
 
 /// Positive end-to-end test: a structure declares `param g : Bounded` and a
