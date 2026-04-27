@@ -868,4 +868,102 @@ mod tests {
             "3 args should return Undef"
         );
     }
+
+    // ── joint_axis accessor ──────────────────────────────────────────────────
+
+    #[test]
+    fn joint_axis_prismatic_returns_stored_axis() {
+        let axis = axis_x_unit();
+        let joint = eval_builtin("prismatic", &[axis.clone(), length_range_0_to_1m()]);
+        assert_eq!(
+            eval_builtin("joint_axis", &[joint]),
+            axis,
+            "joint_axis(prismatic) should return stored axis"
+        );
+    }
+
+    #[test]
+    fn joint_axis_revolute_returns_stored_axis() {
+        let axis = axis_z_unit();
+        let joint = eval_builtin("revolute", &[axis.clone(), angle_range_0_to_pi()]);
+        assert_eq!(
+            eval_builtin("joint_axis", &[joint]),
+            axis,
+            "joint_axis(revolute) should return stored axis"
+        );
+    }
+
+    #[test]
+    fn joint_axis_non_joint_returns_undef() {
+        assert!(
+            eval_builtin("joint_axis", &[Value::Real(1.0)]).is_undef(),
+            "joint_axis of non-Map should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_axis_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("joint_axis", &[]).is_undef(),
+            "joint_axis with 0 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_axis_two_args_returns_undef() {
+        let joint = prismatic_x_joint();
+        assert!(
+            eval_builtin("joint_axis", &[joint, Value::Real(0.0)]).is_undef(),
+            "joint_axis with 2 args should return Undef"
+        );
+    }
+
+    // ── joint_range accessor ─────────────────────────────────────────────────
+
+    #[test]
+    fn joint_range_prismatic_returns_stored_range() {
+        let range = length_range_0_to_1m();
+        let joint = eval_builtin("prismatic", &[axis_x_unit(), range.clone()]);
+        assert_eq!(
+            eval_builtin("joint_range", &[joint]),
+            range,
+            "joint_range(prismatic) should return stored range"
+        );
+    }
+
+    #[test]
+    fn joint_range_revolute_returns_stored_range() {
+        let range = angle_range_0_to_pi();
+        let joint = eval_builtin("revolute", &[axis_z_unit(), range.clone()]);
+        assert_eq!(
+            eval_builtin("joint_range", &[joint]),
+            range,
+            "joint_range(revolute) should return stored range"
+        );
+    }
+
+    #[test]
+    fn joint_range_non_joint_returns_undef() {
+        assert!(
+            eval_builtin("joint_range", &[Value::String("foo".to_string())]).is_undef(),
+            "joint_range of non-Map should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_range_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("joint_range", &[]).is_undef(),
+            "joint_range with 0 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_range_two_args_returns_undef() {
+        let joint = revolute_z_joint();
+        assert!(
+            eval_builtin("joint_range", &[joint, Value::Real(0.0)]).is_undef(),
+            "joint_range with 2 args should return Undef"
+        );
+    }
 }
