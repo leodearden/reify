@@ -746,6 +746,65 @@ fn multiple_module_level_precision_pragmas_first_wins() {
     );
 }
 
+/// Malformed first `#precision` does not consume the "first wins" slot:
+/// `#precision(0.001s)` (wrong dimension — Time, not Length) emits exactly one
+/// warning mentioning "Length", but leaves the slot open so the following
+/// `#precision(0.001m)` is still recognised and stored.
+///
+/// Regression test for the bug where `first_seen = true` fired before the
+/// inner arg validation, causing the second well-formed pragma to be treated as
+/// a duplicate ("subsequent #precision pragma ignored; first one wins").
+#[test]
+fn malformed_then_valid_precision_pragmas_recover() {
+    let module = compile_source(
+        "#precision(0.001s)\n#precision(0.001m)\nstructure S { param x : Real }",
+    );
+
+    // (a) The well-formed second pragma must be stored.
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.001),
+        "expected default_tolerance Some(0.001) from the well-formed second #precision, \
+         got {:?}",
+        module.default_tolerance
+    );
+
+    // (b) Exactly one warning mentioning "Length" — from the malformed first
+    // pragma's dimension mismatch.
+    let length_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.to_lowercase().contains("length"))
+        .collect();
+    assert_eq!(
+        length_warns.len(),
+        1,
+        "expected exactly 1 'Length' warning for #precision(0.001s), got {}: {:?}",
+        length_warns.len(),
+        warnings_only(&module)
+    );
+
+    // (c) Zero warnings whose message contains "subsequent" — the valid second
+    // pragma must NOT be flagged as a duplicate.
+    let subsequent_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("subsequent"))
+        .collect();
+    assert!(
+        subsequent_warns.is_empty(),
+        "expected zero 'subsequent' warnings (second well-formed #precision must not be \
+         treated as duplicate), got {}: {:?}",
+        subsequent_warns.len(),
+        subsequent_warns
+    );
+
+    // No errors.
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+}
+
 /// `#precision(0.001s)` (a Time quantity, not a Length) emits a warning that
 /// mentions "Length" and does not set `default_tolerance`. Crucially the
 /// warning must NOT be the generic "unknown pragma" warning (which is reserved
