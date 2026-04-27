@@ -2139,6 +2139,15 @@ pub enum Freshness {
     Failed { error: ErrorRef },
 }
 
+impl Default for Freshness {
+    /// `Default::default()` returns `Final`; this is the canonical fallback for
+    /// cache reads on absent entries (see `CacheStore::freshness`) and pins
+    /// task #2326's "default to Final on read" contract.
+    fn default() -> Self {
+        Freshness::Final
+    }
+}
+
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
 fn sorted_captures(captures: &ValueMap) -> Vec<(&ValueCellId, &Value)> {
     let mut caps: Vec<_> = captures.iter().collect();
@@ -7113,6 +7122,16 @@ mod tests {
             None,
             "try_infer_type() on Option(Some(empty List)) should return None (inner is ambiguous)"
         );
+    }
+
+    // --- Freshness::default() tests (task #2326) ---
+
+    #[test]
+    fn freshness_default_is_final() {
+        // The canonical fallback for cache reads on absent entries must be Final.
+        // This pins the type-level default so CacheStore::freshness() (task #2326)
+        // can delegate to Freshness::default() rather than hard-coding Freshness::Final.
+        assert_eq!(Freshness::default(), Freshness::Final);
     }
 
     // ── dimension_unit_label / format_hover Money tests ──────────────────────
