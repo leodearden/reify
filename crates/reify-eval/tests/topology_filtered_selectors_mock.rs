@@ -76,3 +76,18 @@ fn edges_by_length_returns_query_failed_when_edge_length_is_int() {
         other => panic!("expected Err(QueryFailed), got {:?}", other),
     }
 }
+
+#[test]
+fn edges_by_length_propagates_invalid_handle_from_extract_edges() {
+    let parent = GeometryHandleId(1);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extract_edges_error(parent, QueryError::InvalidHandle(parent));
+
+    let result = topology_selectors::edges_by_length(&mut kernel, parent, 0.0, 1.0);
+    assert!(
+        matches!(result, Err(QueryError::InvalidHandle(h)) if h == parent),
+        "InvalidHandle from extract_edges should propagate unchanged, got {:?}",
+        result
+    );
+}
