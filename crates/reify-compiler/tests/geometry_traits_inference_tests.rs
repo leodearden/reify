@@ -516,3 +516,55 @@ fn bounded_param_accepting_box_geometry_emits_no_diagnostic() {
         g_conformance_failures
     );
 }
+
+/// Regression-pinning end-to-end test: `intersection(box, box)` at a `Bounded`
+/// slot must NOT emit `E_GEOMETRY_UNBOUNDED`.
+///
+/// Per `combine_intersection`, the result is Bounded if **either** operand is
+/// Bounded — and `box(...)` is fully Bounded. So the worked example from the
+/// PRD (`volume(intersection(half_space, box))` not erroring on the `box`
+/// half) is exercised in the half that is reachable today: substituting two
+/// boxes for `(half_space, box)`. When `half_space` lands, the negative end-
+/// to-end test (`intersection(half_space, half_space)` rejected) becomes a
+/// one-source-string change away.
+///
+/// This test pins the specific propagation rule (`intersection`'s bounded-
+/// from-either flow through nested `FunctionCall` recursion in
+/// `infer_traits_for_expr`) so a regression that breaks call-site recursion
+/// — e.g. accidentally taking `infer_traits_for_expr`'s default-`all()`
+/// fallback for `intersection` — would surface here even though the wrapping
+/// inference still says "Bounded".
+#[test]
+fn intersection_of_bounded_with_anything_remains_bounded_at_call_site() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: intersection(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm)))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+
+    let geometry_unbounded: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected no GeometryUnbounded diagnostic for `intersection(box, box)` at a Bounded slot, got: {:?}",
+        geometry_unbounded
+    );
+
+    let g_conformance_failures: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .filter(|d| d.message.contains("'g'") || d.message.contains("Bounded"))
+        .collect();
+    assert!(
+        g_conformance_failures.is_empty(),
+        "expected no TypeNotConformingToTrait diagnostic for the 'g' Bounded slot, got: {:?}",
+        g_conformance_failures
+    );
+}
