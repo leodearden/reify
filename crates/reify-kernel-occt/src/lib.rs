@@ -4921,6 +4921,47 @@ mod tests {
     }
 
     #[test]
+    fn center_of_mass_with_density_returns_translated_centroid() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10×10×10 box and translate it by dx=5 so centroid is at (5, 0, 0).
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let translated = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 5.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Use a deliberately non-trivial density (100.0) to confirm the kernel
+        // does not crash on large densities. For uniform-density bodies the result
+        // must equal what Centroid would return — density is irrelevant.
+        let result = kernel
+            .query(&GeometryQuery::CenterOfMass {
+                handle: translated.id,
+                density: 100.0,
+            })
+            .unwrap();
+        match result {
+            Value::String(s) => {
+                // The query_centroid JSON encoding is {"x":_,"y":_,"z":_}.
+                // After dx=5 translation on a centred box the centroid x ≈ 5.
+                assert!(
+                    s.contains("\"x\":5"),
+                    "expected centroid x=5 in JSON, got: {s:?}"
+                );
+            }
+            other => panic!("expected Value::String JSON centroid, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn inertia_tensor_box_with_density_analytic() {
         let mut kernel = OcctKernel::new();
         // Create a 20×10×5 axis-aligned box. Volume = 1000; mass = ρ·V = 2·1000 = 2000.
