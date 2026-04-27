@@ -1,0 +1,116 @@
+//! Integration tests for Money-vs-Force dimension-mismatch diagnostics.
+//!
+//! Tests that `25USD + 5N` (and related expressions) produce:
+//! - At least one error diagnostic
+//! - `code == Some(DiagnosticCode::DimensionMismatch)`
+//! - At least one label whose message contains both "Money" and "Force"
+//!
+//! Tests will fail until `expr.rs` delegates to `format_dimension_mismatch_diagnostic`
+//! (step-8 for binary-op, step-10 for range).
+
+use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_types::DiagnosticCode;
+
+/// Helper: find any error diagnostic with `code == DimensionMismatch`.
+fn has_dimension_mismatch_code(errors: &[&reify_types::Diagnostic]) -> bool {
+    errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch))
+}
+
+/// Helper: check if the labels of any error diagnostic mention both "Money" and "Force".
+fn has_money_and_force_label(errors: &[&reify_types::Diagnostic]) -> bool {
+    errors.iter().any(|d| {
+        d.labels
+            .iter()
+            .any(|l| l.message.contains("Money") && l.message.contains("Force"))
+    })
+}
+
+/// `25USD + 5N` should produce a DimensionMismatch error with "Money" and "Force" in labels.
+#[test]
+fn money_plus_force_has_dimension_mismatch_code() {
+    let source = r#"
+structure def S {
+    param p : Money = 25USD + 5N
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for 25USD + 5N, got: {:?}",
+        module.diagnostics
+    );
+
+    assert!(
+        has_dimension_mismatch_code(&errors),
+        "expected code == DimensionMismatch for 25USD + 5N, got codes: {:?}",
+        errors.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+
+    assert!(
+        has_money_and_force_label(&errors),
+        "expected a label containing both 'Money' and 'Force' for 25USD + 5N, labels: {:?}",
+        errors.iter().flat_map(|d| d.labels.iter().map(|l| &l.message)).collect::<Vec<_>>()
+    );
+
+    // Non-empty span on the first dimension-mismatch label
+    let dim_err = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::DimensionMismatch))
+        .unwrap();
+    assert!(
+        !dim_err.labels.is_empty(),
+        "expected at least one label on the DimensionMismatch diagnostic"
+    );
+    assert!(
+        !dim_err.labels[0].span.is_empty(),
+        "expected non-empty span on the DimensionMismatch diagnostic"
+    );
+}
+
+/// `25USD - 5N` (subtraction) should produce the same enriched diagnostic.
+#[test]
+fn money_minus_force_has_dimension_mismatch_code() {
+    let source = r#"
+structure def S {
+    param p : Money = 25USD - 5N
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+
+    assert!(!errors.is_empty(), "expected at least one error for 25USD - 5N");
+    assert!(
+        has_dimension_mismatch_code(&errors),
+        "expected DimensionMismatch code for 25USD - 5N"
+    );
+    assert!(
+        has_money_and_force_label(&errors),
+        "expected label with 'Money' and 'Force' for 25USD - 5N"
+    );
+}
+
+/// `5N + 25USD` (reverse polarity) should also produce the enriched diagnostic.
+#[test]
+fn force_plus_money_has_dimension_mismatch_code() {
+    let source = r#"
+structure def S {
+    param p : Force = 5N + 25USD
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+
+    assert!(!errors.is_empty(), "expected at least one error for 5N + 25USD");
+    assert!(
+        has_dimension_mismatch_code(&errors),
+        "expected DimensionMismatch code for 5N + 25USD"
+    );
+    assert!(
+        has_money_and_force_label(&errors),
+        "expected label with 'Money' and 'Force' for 5N + 25USD"
+    );
+}
