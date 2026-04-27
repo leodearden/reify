@@ -186,6 +186,17 @@ fn warn_block_level_kernel(module: &mut CompiledModule) {
 /// default at solve time. Both warnings are independently useful.
 const KNOWN_SOLVER_BACKENDS: &[&str] = &["libslvs", "argmin"];
 
+/// Form-hint warning emitted by every malformed-arg arm of
+/// `apply_solver_pragma`. Centralised so the four arms (`[]`,
+/// `[Bare(_)]`, `[KeyValue, ..]`, and the catch-all `_`) cannot drift
+/// in wording; the existing
+/// `solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none`
+/// test in `pragma_compile_tests.rs` continues to verify the
+/// `#solver` + `expected` + `ident` substring contract against this
+/// single source of truth.
+const SOLVER_FORM_HINT: &str =
+    "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored";
+
 /// Sane upper bound for the global tessellation tolerance, in SI metres.
 ///
 /// Values larger than this are almost certainly a unit mistake (e.g. the user
@@ -622,10 +633,8 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             // Zero args: `#solver` with no arg list.
             [] => {
                 module.diagnostics.push(
-                    Diagnostic::warning(
-                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
-                    )
-                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                    Diagnostic::warning(SOLVER_FORM_HINT)
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
             // Bare Number / Bool / String / Quantity as the (only) first arg.
@@ -633,20 +642,16 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             // remaining bare scalar variants.
             [PragmaArg::Bare(_)] => {
                 module.diagnostics.push(
-                    Diagnostic::warning(
-                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
-                    )
-                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                    Diagnostic::warning(SOLVER_FORM_HINT)
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
             // KeyValue first (e.g. `#solver(method="gradient")`): the back-end
             // ident is required as the leading positional argument in v0.1.
             [PragmaArg::KeyValue { .. }, ..] => {
                 module.diagnostics.push(
-                    Diagnostic::warning(
-                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
-                    )
-                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                    Diagnostic::warning(SOLVER_FORM_HINT)
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
             // Catch-all: live handler for multi-element shapes whose first
@@ -656,10 +661,8 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             // `[Bare(Ident(_)), ..]` (requires an Ident as first element).
             _ => {
                 module.diagnostics.push(
-                    Diagnostic::warning(
-                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
-                    )
-                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                    Diagnostic::warning(SOLVER_FORM_HINT)
+                        .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
         }
