@@ -606,6 +606,54 @@ fn constraints_section_omitted_when_empty() {
     assert!(!out.contains("<h3>Constraints</h3>"));
 }
 
+/// Meta section: `<h3>Meta</h3>` then `<dl>` with `<dt>{key}</dt><dd>{value}</dd>`
+/// pairs sorted alphabetically by key, regardless of insertion order.
+#[test]
+fn meta_section_renders_alphabetical() {
+    let item = structure_with_meta(
+        "Bolt",
+        vec![
+            ("version".into(), "1.0".into()),
+            ("alpha".into(), "yes".into()),
+        ],
+    );
+    let out = render_one_item(item);
+
+    assert!(
+        out.contains("<h3>Meta</h3>"),
+        "missing <h3>Meta</h3>; got:\n{out}"
+    );
+    assert!(out.contains("<dl>"), "missing <dl>; got:\n{out}");
+    assert!(
+        out.contains("<dt>alpha</dt><dd>yes</dd>"),
+        "missing alpha pair; got:\n{out}"
+    );
+    assert!(
+        out.contains("<dt>version</dt><dd>1.0</dd>"),
+        "missing version pair; got:\n{out}"
+    );
+    // Verify alphabetical ordering: alpha must precede version.
+    let alpha_pos = out
+        .find("<dt>alpha</dt>")
+        .expect("alpha key must be present");
+    let version_pos = out
+        .find("<dt>version</dt>")
+        .expect("version key must be present");
+    assert!(
+        alpha_pos < version_pos,
+        "expected alphabetical order (alpha before version); got alpha@{alpha_pos} version@{version_pos}\n{out}"
+    );
+}
+
+/// Empty meta list must produce no `<h3>Meta</h3>` and no `<dl>`.
+#[test]
+fn meta_section_omitted_when_empty() {
+    let item = structure_with_meta("Bolt", vec![]);
+    let out = render_one_item(item);
+    assert!(!out.contains("<h3>Meta</h3>"));
+    assert!(!out.contains("<dl>"));
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
