@@ -1719,6 +1719,69 @@ mod tests {
     }
 
     #[test]
+    fn repr_of_survives_warm_start_round_trip() {
+        // Pins the invariant that `repr_of` returns the correct ReprKind after a
+        // warm_state()/with_warm_state() round-trip. Prior to the fix, OcctWarmState
+        // did not persist the `reprs` map, so every restored handle returned None.
+
+        // 1. Build kernel A with a box → ReprKind::Solid (id 1).
+        let mut kernel_a = OcctKernel::new();
+        let box_h = kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+
+        // 2. Extract faces → each is ReprKind::Face. Capture the first face id.
+        let faces = kernel_a
+            .extract_faces(box_id)
+            .expect("extract_faces on a valid box should succeed");
+        assert_eq!(faces.len(), 6, "a box has 6 faces");
+        let face_id = faces[0];
+
+        // 3. Pre-condition: assert reprs are correct before warm-start.
+        assert_eq!(
+            kernel_a.repr_of(face_id),
+            Some(ReprKind::Face),
+            "pre-warm: face handle should have ReprKind::Face"
+        );
+        assert_eq!(
+            kernel_a.repr_of(box_id),
+            Some(ReprKind::Solid),
+            "pre-warm: box handle should have ReprKind::Solid"
+        );
+
+        // 4. Round-trip.
+        let state = kernel_a.warm_state().expect("kernel should have warm state");
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        // 5. Post-warm: face handle must still report ReprKind::Face (the regression).
+        assert_eq!(
+            kernel_b.repr_of(face_id),
+            Some(ReprKind::Face),
+            "post-warm: face handle should have ReprKind::Face, not None"
+        );
+
+        // 6. Post-warm: box handle must still report ReprKind::Solid.
+        assert_eq!(
+            kernel_b.repr_of(box_id),
+            Some(ReprKind::Solid),
+            "post-warm: box handle should have ReprKind::Solid"
+        );
+
+        // 7. Truly-unknown id must still report None.
+        assert_eq!(
+            kernel_b.repr_of(GeometryHandleId(99999)),
+            None,
+            "repr_of for unknown id should return None"
+        );
+    }
+
+    #[test]
     fn with_warm_state_ignores_wrong_type() {
         let mut kernel = OcctKernel::new();
         // Pass a String instead of OcctWarmState — should be silently ignored
