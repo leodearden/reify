@@ -1498,3 +1498,44 @@ fn solver_pragma_absent_keeps_solver_pragma_none() {
         module.solver_pragma
     );
 }
+
+/// `#solver(libslvs)` (single bare ident arg) sets
+/// `solver_pragma = Some(SolverPragma { name: "libslvs", options: empty })`,
+/// emits no errors, and emits no warnings about expected/ignored/unknown forms.
+#[test]
+fn solver_pragma_with_bare_ident_sets_name_and_empty_options() {
+    let module = compile_source("#solver(libslvs)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) for #solver(libslvs)");
+    assert_eq!(
+        solver_pragma.name, "libslvs",
+        "expected solver_pragma.name == \"libslvs\""
+    );
+    assert!(
+        solver_pragma.options.is_empty(),
+        "expected solver_pragma.options to be empty, got: {:?}",
+        solver_pragma.options
+    );
+
+    // No malformed-shape, deferred-to-v0.2, or unknown-back-end warnings about #solver.
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("#solver")
+                && (m.contains("expected") || m.contains("ignored") || m.contains("unknown"))
+        })
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no #solver expected/ignored/unknown warnings for #solver(libslvs), got: {:?}",
+        bad_warns
+    );
+}
