@@ -341,6 +341,35 @@ impl OcctKernelHandle {
         }
     }
 
+    /// Compress the build-channel + blocking-send + blocking-recv +
+    /// map-channel-died-twice boilerplate for synchronous inherent methods.
+    ///
+    /// Panics if called from within a tokio async execution context; use
+    /// [`send_request_async`](Self::send_request_async) instead.
+    fn send_request_blocking<Resp, E>(
+        &self,
+        build_req: impl FnOnce(oneshot::Sender<Resp>) -> OcctRequest,
+        chan_died: impl Fn() -> E,
+    ) -> Result<Resp, E> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx.blocking_send(build_req(reply_tx)).map_err(|_| chan_died())?;
+        reply_rx.blocking_recv().map_err(|_| chan_died())
+    }
+
+    /// Compress the build-channel + async-send + await-recv +
+    /// map-channel-died-twice boilerplate for async inherent methods.
+    ///
+    /// Safe to call from within a tokio async execution context.
+    async fn send_request_async<Resp, E>(
+        &self,
+        build_req: impl FnOnce(oneshot::Sender<Resp>) -> OcctRequest,
+        chan_died: impl Fn() -> E,
+    ) -> Result<Resp, E> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx.send(build_req(reply_tx)).await.map_err(|_| chan_died())?;
+        reply_rx.await.map_err(|_| chan_died())
+    }
+
     // --- Async companion methods ---
     //
     // Safe to call from within a tokio async execution context (unlike the
