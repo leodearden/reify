@@ -2322,6 +2322,45 @@ mod tests {
         );
     }
 
+    // --- derive_output_freshness Pending/Failed classification (task #2328, step-3) ---
+
+    /// Guards against regressions that would special-case Pending or Failed away from
+    /// the non-Final classification. Arch §7.2 says "any input != Final" — all three
+    /// non-Final variants (Intermediate, Pending, Failed) must propagate to Intermediate.
+    #[test]
+    fn derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final() {
+        use reify_types::{ErrorRef, Freshness, ResultRef};
+        let g = 9u64;
+
+        // Intermediate input → Intermediate output
+        let intermediate = Freshness::Intermediate { generation: 0 };
+        assert_eq!(
+            derive_output_freshness(false, std::slice::from_ref(&intermediate).iter(), g),
+            Freshness::Intermediate { generation: g },
+            "Intermediate input must yield Intermediate output"
+        );
+
+        // Pending input → Intermediate output
+        let pending = Freshness::Pending {
+            last_substantive: ResultRef::none(),
+        };
+        assert_eq!(
+            derive_output_freshness(false, std::slice::from_ref(&pending).iter(), g),
+            Freshness::Intermediate { generation: g },
+            "Pending input must yield Intermediate output (Pending is non-Final per §7.2)"
+        );
+
+        // Failed input → Intermediate output
+        let failed = Freshness::Failed {
+            error: ErrorRef::new("type mismatch"),
+        };
+        assert_eq!(
+            derive_output_freshness(false, std::slice::from_ref(&failed).iter(), g),
+            Freshness::Intermediate { generation: g },
+            "Failed input must yield Intermediate output (Failed is non-Final per §7.2)"
+        );
+    }
+
     // --- CacheStore::freshness() tests (task #2326, step-3) ---
 
     #[test]
