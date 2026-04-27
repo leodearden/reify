@@ -484,6 +484,123 @@ fn nearest_2d_out_of_range_clamps_each_axis() {
     assert!(approx_eq(r2.value, 30.0, TOL), "got {}", r2.value);
 }
 
+// ---------------------------------------------------------------------------
+// 2D Bicubic
+// ---------------------------------------------------------------------------
+
+/// Knot-exact reproduction at every grid point on a 5x5 uniform grid.
+#[test]
+fn cubic_2d_knot_exact_reproduction() {
+    let gx: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let gy: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let f = |x: f64, y: f64| 1.0 + x - 2.0 * y + x * y;
+    let values = build_2d(&gx, &gy, f);
+    for (i, &x) in gx.iter().enumerate() {
+        for (j, &y) in gy.iter().enumerate() {
+            let r = interpolate_2d(InterpolationMethod::Cubic, &gx, &gy, &values, (x, y));
+            let expected = values[i * gy.len() + j];
+            assert!(
+                approx_eq(r.value, expected, CUBIC_TOL),
+                "({},{}) got {}, expected {}",
+                i,
+                j,
+                r.value,
+                expected
+            );
+            assert!(r.diagnostics.is_empty());
+        }
+    }
+}
+
+/// Bicubic recovers a synthetic polynomial of total degree 3 exactly within
+/// interior cells (cell indices in `1..=2` on a 5-point grid have a fully
+/// available 4x4 stencil).
+///
+/// Polynomial: f(x,y) = 1 + 2x + 3y + xy + x^2 y - x y^2 + x^3 - y^3.
+#[test]
+fn cubic_2d_reproduces_total_degree_three_in_interior() {
+    let gx: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let gy: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let f = |x: f64, y: f64| {
+        1.0 + 2.0 * x + 3.0 * y + x * y + x * x * y - x * y * y + x * x * x - y * y * y
+    };
+    let values = build_2d(&gx, &gy, f);
+
+    for ci in 1..=2usize {
+        for cj in 1..=2usize {
+            let xs = [0.1, 0.5, 0.9];
+            let ys = [0.1, 0.5, 0.9];
+            for &dx in &xs {
+                for &dy in &ys {
+                    let qx = gx[ci] + dx;
+                    let qy = gy[cj] + dy;
+                    let r = interpolate_2d(
+                        InterpolationMethod::Cubic,
+                        &gx,
+                        &gy,
+                        &values,
+                        (qx, qy),
+                    );
+                    let expected = f(qx, qy);
+                    assert!(
+                        approx_eq(r.value, expected, 1e-9),
+                        "cell ({},{}) ({},{}) got {}, expected {}",
+                        ci,
+                        cj,
+                        qx,
+                        qy,
+                        r.value,
+                        expected
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Separability: bicubic equals tensor product of 1D Cubic — for any
+/// query, computing 4 1D-cubics along x (one per bracketing y-row) and
+/// then a 1D-cubic in y over those four intermediates must match
+/// `interpolate_2d(Cubic, ...)`.
+#[test]
+fn cubic_2d_separable_against_1d_cubic_tensor_product() {
+    let gx: Vec<f64> = (0..6).map(|i| i as f64).collect();
+    let gy: Vec<f64> = (0..6).map(|i| i as f64).collect();
+    let f = |x: f64, y: f64| (x - 1.0).sin() + (y * 0.5).cos();
+    let values = build_2d(&gx, &gy, f);
+
+    let qs = [(2.3f64, 2.7f64), (2.5, 3.5), (1.1, 4.4)];
+    for &(qx, qy) in &qs {
+        let r2 = interpolate_2d(
+            InterpolationMethod::Cubic,
+            &gx,
+            &gy,
+            &values,
+            (qx, qy),
+        );
+
+        // Manual tensor product: for each i, compute a 1D cubic along y of
+        // column i; this gives a row of length grid_x.len(); then 1D cubic
+        // along x to evaluate at qx.
+        let row: Vec<f64> = (0..gx.len())
+            .map(|i| {
+                let col: Vec<f64> = (0..gy.len()).map(|j| values[i * gy.len() + j]).collect();
+                interpolate_1d(InterpolationMethod::Cubic, &gy, &col, qy).value
+            })
+            .collect();
+        let r_tensor = interpolate_1d(InterpolationMethod::Cubic, &gx, &row, qx).value;
+
+        assert!(
+            approx_eq(r2.value, r_tensor, 1e-9),
+            "({},{}) 2D={} tensor={}",
+            qx,
+            qy,
+            r2.value,
+            r_tensor
+        );
+    }
+}
+
 /// Larger 4x4 monotone grid: the midpoint of any cell equals the mean of its
 /// four corner values.
 #[test]
