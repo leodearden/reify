@@ -1284,7 +1284,11 @@ impl WarmStartable for OcctKernel {
             return None;
         }
         let staged_count = warm_shapes.len();
-        // Overhead: HashMap + struct fields + 16 bytes per repr entry (u64 + enum byte, rounded up).
+        // size_estimate is a payload-bytes lower bound, not a true heap footprint.
+        // Per-repr entry: 16 bytes (u64 key + enum byte, payload only). True cost in
+        // hashbrown's open-addressing layout is ~32–48 bytes/entry, but the existing
+        // +64 struct overhead already underestimates the shapes HashMap the same way —
+        // callers treat this figure as approximate, not as a precise allocator reading.
         let size_estimate = total_bytes + staged_count * 16 + 64;
         Some(OpaqueState::new(
             OcctWarmState {
@@ -1324,13 +1328,20 @@ impl WarmStartable for OcctKernel {
             // Rebuild repr map: for every successfully staged id, take the
             // persisted repr if present, falling back to ReprKind::Solid
             // (matches the implicit default in OcctKernel::store).
-            let new_reprs = staged
-                .keys()
-                .map(|&id| {
-                    let repr = warm.reprs.get(&id).copied().unwrap_or(ReprKind::Solid);
-                    (id, repr)
-                })
-                .collect();
+            // debug_assert guards against a future producer that serializes
+            // warm.shapes and warm.reprs out of sync: if reprs is non-empty it
+            // must contain an entry for every shape id (the lock-step invariant
+            // maintained by warm_state()). The production fallback remains safe.
+            let mut new_reprs = HashMap::new();
+            for &id in staged.keys() {
+                debug_assert!(
+                    warm.reprs.is_empty() || warm.reprs.contains_key(&id),
+                    "warm.reprs and warm.shapes are out of sync: \
+                     id {id} present in shapes but missing from reprs"
+                );
+                let repr = warm.reprs.get(&id).copied().unwrap_or(ReprKind::Solid);
+                new_reprs.insert(id, repr);
+            }
             self.shapes = staged;
             self.reprs = new_reprs;
             self.next_id = warm.next_id;
