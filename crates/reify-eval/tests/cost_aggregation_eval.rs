@@ -91,10 +91,6 @@ structure def MoneySumProbe {
 ///
 /// USD has factor 1.0 and offset 0.0 in `units.ri:74`, so the SI value is
 /// the raw 36.88.
-///
-/// RED until the example file is in place AND the trait-let `line_cost`
-/// cell threads through the eval graph correctly via `self.<sub>.line_cost`
-/// member access.
 #[test]
 fn cost_aggregation_example_evaluates_total_cost_to_expected_money_value() {
     let source = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
