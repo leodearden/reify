@@ -106,6 +106,10 @@ unit EUR : Money = 1.09
   on a sibling branch. This PRD documents the target state as the canonical contract.
 - The compiler reads `std.units` at a bootstrap stage before parsing user code (spec §4.6).
   `unit USD : Money` therefore enters scope for all user files without an explicit import.
+- **Conversion factors must be compile-time constants.** A declaration of the form
+  `unit GBP : Money = exchange_rate()` (i.e. a non-constant initialiser) is a static
+  error: the unit-declaration scale factor must be a constant expression. The
+  unit-decl error path enforces this; live FX is structurally excluded.
 
 ---
 
@@ -339,3 +343,27 @@ or warning under `cargo test` or an equivalent integration harness.
 | § Source-form display | `crates/reify-types/src/dimension.rs::money_per_mass_display_renders_compositely` | landed |
 | § Source-form display | `crates/reify-types/src/dimension.rs::money_dimensionless_after_self_cancel_displays_dimensionless` | landed |
 | § Acceptance sweep | Angle/Torque regression (existing test suite) | in-flight (task 2383) |
+
+---
+
+## Out of scope
+
+The following are explicitly **not** covered by the v0.1 money-dimension feature
+set; each layers atop or sits adjacent to this primitive and may be addressed in
+later releases:
+
+- **Time-varying / live exchange rates.** Conversion factors between currencies
+  are constant for the lifetime of a project (see § Stdlib unit declaration
+  notes). Live FX feeds are out of scope.
+- **Currency-specific formatting / locale rules in the GUI.** Rendered output
+  uses the literal's source unit name (e.g. `25USD` displays as `"USD"` per
+  § Source-form unit display). Locale-aware grouping, currency symbol prefix
+  ordering, and decimal-separator rules are deferred.
+- **Tax / discount / margin idioms beyond raw aggregation.** The stdlib idiom
+  in § Cost-aggregation covers `sum(unit_cost * quantity)` only; tax/discount
+  layering is out of scope.
+- **Multi-currency disambiguation policies.** v0.1 picks "use the literal's
+  source unit" on display (e.g. mixed `USD`+`GBP` shows each in its declared
+  unit). Heuristics like "prefer USD" are deferred.
+- **Manufacturing-cost models.** Per-process or BOM-traversal cost models layer
+  atop the `Buy` aggregation primitive and are not in this scope.

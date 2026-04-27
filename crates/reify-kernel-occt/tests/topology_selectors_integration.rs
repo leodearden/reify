@@ -217,7 +217,7 @@ fn box_two_adjacent_faces_share_exactly_one_edge() {
             );
             let edge_idx = edges[0];
             assert!(
-                edge_idx >= 0 && edge_idx < 12,
+                (0..12).contains(&edge_idx),
                 "edge index {} out of expected box edge range [0, 12)",
                 edge_idx
             );
@@ -234,10 +234,10 @@ fn box_opposite_faces_share_no_edges() {
     let neighbors: Vec<std::collections::HashSet<i64>> =
         (0..6).map(|i| neighbors_of(&kernel, box_id, i)).collect();
 
-    for face in 0..6usize {
+    for (face, face_neighbors) in neighbors.iter().enumerate().take(6) {
         // The opposite face is the one in 0..6 that is not `face` and not a neighbor.
         let opposite_candidates: Vec<usize> = (0..6usize)
-            .filter(|&i| i != face && !neighbors[face].contains(&(i as i64)))
+            .filter(|&i| i != face && !face_neighbors.contains(&(i as i64)))
             .collect();
         assert_eq!(
             opposite_candidates.len(),

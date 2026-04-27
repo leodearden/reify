@@ -10,8 +10,8 @@
 
 use std::path::Path;
 
-use reify_compiler::module_dag::ModuleResolver;
-use reify_types::{Diagnostic, Severity, SourceSpan};
+use reify_compiler::{CompiledModule, module_dag::ModuleResolver, stdlib_loader};
+use reify_types::{Diagnostic, DimensionVector, Severity, SourceSpan};
 
 /// Parse `source` and compile it with the full stdlib prelude seeded into the
 /// unit registry.  Panics if the parser returns any errors.
@@ -114,6 +114,99 @@ pub fn expect_scalar(expr: &reify_types::CompiledExpr) -> (f64, reify_types::Dim
             other
         ),
     }
+}
+
+/// Return the compiled `std/units` module from the cached stdlib.
+///
+/// Uses the `OnceLock`-backed `load_stdlib()` so repeated calls are free.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn units_module() -> &'static CompiledModule {
+    stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found")
+}
+
+/// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.
+///
+/// Uses the larger magnitude as the scale so the tolerance is robust when one
+/// operand is zero. When both operands are zero, the scale is zero too — falls
+/// back to `rel_tol` as an absolute tolerance so the comparison still
+/// distinguishes 0 from a tiny non-zero value rather than producing `tol = 0`
+/// (which would falsely fail on bit-equal zeros under `<`).
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
+    let scale = a.abs().max(b.abs());
+    let tol = if scale == 0.0 { rel_tol } else { scale * rel_tol };
+    assert!(
+        (a - b).abs() < tol,
+        "{}: expected {} ≈ {} (tol {})",
+        msg,
+        a,
+        b,
+        tol
+    );
+}
+
+/// Assert that a named unit in `std/units` has the expected dimension, factor
+/// (within `rel_tol` relative tolerance), and no offset.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn assert_simple_unit(
+    name: &str,
+    expected_dim: DimensionVector,
+    expected_factor: f64,
+    rel_tol: f64,
+) {
+    let module = units_module();
+    let u = module
+        .units
+        .iter()
+        .find(|u| u.name == name)
+        .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
+    assert_eq!(u.dimension, expected_dim, "unit '{}' dimension wrong", name);
+    assert_eq_rel(
+        u.factor,
+        expected_factor,
+        rel_tol,
+        &format!("unit '{}' factor", name),
+    );
+    assert!(u.offset.is_none(), "unit '{}' should have no offset", name);
+}
+
+/// Compile a structure with a single default-valued param and return the
+/// Scalar's (si_value, dimension) from its default expression.
+///
+/// Source compiled: `structure def S { param x : <param_type> = <literal> }`
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
+    let source = format!(
+        "structure def S {{ param x : {} = {} }}",
+        param_type, literal
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "source `{}` produced errors: {:?}",
+        source,
+        errs
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x cell not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    expect_scalar(expr)
 }
 
 /// Extract an `(op, left, right)` triple from a `BinOp` expression.
