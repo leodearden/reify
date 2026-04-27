@@ -286,6 +286,19 @@ pub enum DiagnosticCode {
     /// secondary label naming the canonical dimensions when both are known
     /// (e.g. `"Money and Force are different dimensions and cannot be combined directly"`).
     DimensionMismatch,
+    /// Origin: `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
+    /// Emitted as a Warning when a child-scope binder (e.g. lambda parameter,
+    /// quantifier-bound variable) uses the same name as a name visible from an
+    /// enclosing parent scope.
+    ///
+    /// Canonical message form:
+    /// `"declaration of '<name>' shadows enclosing declaration"`.
+    ///
+    /// Two labels accompany the warning: the child binder site
+    /// (`"shadows the enclosing declaration"`) and the original parent decl site
+    /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
+    /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
+    Shadowing,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -572,6 +585,34 @@ mod tests {
     fn diagnostic_code_geometry_unbounded_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
         assert_eq!(s, "\"GeometryUnbounded\"");
+    }
+
+    // --- Shadowing tests (task 2310 — spec §8.5) ---
+    // Pairs with the lint pass in
+    // `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::Shadowing` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"Shadowing"`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `Shadowing` is caught here.
+    #[test]
+    fn diagnostic_code_shadowing_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::Shadowing);
+        assert_eq!(d.code, Some(DiagnosticCode::Shadowing));
+        assert_eq!(format!("{:?}", DiagnosticCode::Shadowing), "Shadowing");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::Shadowing` serializes as
+    /// `"Shadowing"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shadowing_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::Shadowing).unwrap();
+        assert_eq!(s, "\"Shadowing\"");
     }
 }
 
