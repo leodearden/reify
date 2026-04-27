@@ -160,3 +160,100 @@ fn nearest_1d_out_of_range_clamps_to_endpoint() {
         interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 99.0);
     assert!(approx_eq(r_above.value, 30.0, TOL));
 }
+
+// ---------------------------------------------------------------------------
+// 1D Cubic (Catmull-Rom)
+// ---------------------------------------------------------------------------
+
+const CUBIC_TOL: f64 = 1e-10;
+
+/// Knot-exact: querying at every grid point reproduces the corresponding
+/// sample value exactly on a 6-point uniform grid.
+#[test]
+fn cubic_1d_knot_exact_reproduction_uniform() {
+    let grid: Vec<f64> = (0..6).map(|i| i as f64).collect();
+    let values: Vec<f64> = vec![1.0, 5.0, -2.0, 3.5, 0.0, 7.25];
+    for (i, &x) in grid.iter().enumerate() {
+        let r = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, x);
+        assert!(
+            approx_eq(r.value, values[i], CUBIC_TOL),
+            "knot {} got {}, expected {}",
+            i,
+            r.value,
+            values[i]
+        );
+        assert!(r.diagnostics.is_empty());
+    }
+}
+
+/// Catmull-Rom reproduces a synthetic cubic polynomial exactly within
+/// interior cells (where the 4-point stencil is fully available).
+///
+/// Polynomial: f(x) = 2 - 3*x + 1.5*x^2 - 0.4*x^3.
+#[test]
+fn cubic_1d_reproduces_cubic_polynomial_in_interior() {
+    let f = |x: f64| 2.0 - 3.0 * x + 1.5 * x * x - 0.4 * x * x * x;
+    let grid: Vec<f64> = (0..8).map(|i| i as f64).collect();
+    let values: Vec<f64> = grid.iter().copied().map(f).collect();
+
+    // Interior cells: i=1..=5 are fully bracketed by valid stencil neighbours.
+    // Sample several non-knot positions inside each.
+    for cell in 1..=5 {
+        let xs = [
+            grid[cell] + 0.1,
+            grid[cell] + 0.25,
+            grid[cell] + 0.5,
+            grid[cell] + 0.75,
+            grid[cell] + 0.9,
+        ];
+        for &x in &xs {
+            let r = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, x);
+            let expected = f(x);
+            assert!(
+                approx_eq(r.value, expected, CUBIC_TOL),
+                "cell {} x={} got {}, expected {}",
+                cell,
+                x,
+                r.value,
+                expected
+            );
+        }
+    }
+}
+
+/// Edge-cell behaviour with linear-extrapolated ghost points: on a 4-point
+/// grid the first and last cells still reproduce both endpoint sample values
+/// exactly when queried at the knots.
+#[test]
+fn cubic_1d_edge_cell_endpoints_reproduce_samples() {
+    let grid = [0.0f64, 1.0, 2.0, 3.0];
+    let values = [1.0f64, 4.0, 9.0, 16.0];
+    for (i, &x) in grid.iter().enumerate() {
+        let r = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, x);
+        assert!(
+            approx_eq(r.value, values[i], CUBIC_TOL),
+            "knot {} got {}",
+            i,
+            r.value
+        );
+    }
+}
+
+/// Degenerate 2-point grid: Cubic collapses to Linear because both ghost
+/// points are linear extrapolations of the only cell's endpoints.
+#[test]
+fn cubic_1d_two_point_grid_matches_linear() {
+    let grid = [0.0f64, 1.0];
+    let values = [10.0f64, 30.0];
+    for &x in &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+        let cubic = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, x);
+        let linear = interpolate_1d(InterpolationMethod::Linear, &grid, &values, x);
+        assert!(
+            approx_eq(cubic.value, linear.value, CUBIC_TOL),
+            "x={} cubic={} linear={}",
+            x,
+            cubic.value,
+            linear.value
+        );
+    }
+}
