@@ -8,7 +8,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, QueryError, Value};
+use reify_types::{GeometryHandleId, GeometryOp, QueryError, ReprKind, Value};
 
 /// Helper: build a kernel containing one box of the given mm dimensions
 /// and return the kernel + its handle id.
@@ -54,6 +54,28 @@ fn extract_edges_box_returns_twelve_distinct_handles() {
             seen.insert(*id),
             "duplicate edge handle id {:?} in extract_edges result",
             id
+        );
+    }
+}
+
+#[test]
+fn extract_edges_handles_have_edge_repr_kind() {
+    let (mut kernel, box_id) = box_kernel(10.0, 20.0, 30.0);
+
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges on a valid box should succeed");
+
+    for id in &edges {
+        let repr = kernel
+            .repr_of(*id)
+            .unwrap_or_else(|| panic!("repr_of({:?}) returned None for an extracted edge", id));
+        assert_eq!(
+            repr,
+            ReprKind::Edge,
+            "extracted edge handle {:?} should have ReprKind::Edge, got {:?}",
+            id,
+            repr
         );
     }
 }
