@@ -459,24 +459,24 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
 /// `MemberAccess` arm collects. The output format is
 /// `"<root_repr>.<m_innermost>.....<m_outermost>"`.
 ///
-/// Root rendering:
+/// Root rendering (shape-hinting placeholders):
 ///   * `Ident(name)` → `name`
 ///   * `EnumAccess { type_name, variant }` → `"{type_name}.{variant}"`
-///   * Anything else (IndexAccess, FunctionCall, BinOp, …) → `"<expr>"`
+///   * `IndexAccess { .. }` → `"_[…]"` — echoes `expr[i]` index-access syntax
+///   * `FunctionCall { .. }` → `"_(…)"` — echoes `f(args)` call syntax
+///   * All other variants (BinOp, UnOp, Lambda, Conditional, literals, …) → `"_"`
 ///
-/// The `<expr>` placeholder is a deliberate v0.1 simplification — the
-/// diagnostic span ALREADY covers the entire chain in source so editor
-/// renderings (LSP/MCP) display the user's literal text via the squiggle.
-/// Bare-text consumers (CLI output, tools that print `Diagnostic.message`
-/// without span context) will see the placeholder; pinned by
-/// `index_access_resets_chain_root_emits_one_warning_post_index`.
+/// The placeholders are the contract for bare-text consumers (CLI output,
+/// tools that print `Diagnostic.message` without span context). Span-aware
+/// editor renderings (LSP/MCP) display the user's literal source text via
+/// the diagnostic squiggle and are unaffected by the placeholder text.
 fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
     let root_repr: String = match &root.kind {
         ExprKind::Ident(name) => name.clone(),
         ExprKind::EnumAccess { type_name, variant } => format!("{type_name}.{variant}"),
         ExprKind::IndexAccess { .. } => "_[\u{2026}]".to_string(),
         ExprKind::FunctionCall { .. } => "_(\u{2026})".to_string(),
-        _ => "<expr>".to_string(),
+        _ => "_".to_string(),
     };
 
     let mut out = root_repr;
