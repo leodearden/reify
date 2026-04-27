@@ -560,7 +560,9 @@ pub trait GeometryKernel: Send + Sync {
     /// single send/recv round-trip, eliminating the N+1 overhead that
     /// per-element `query` incurs in tight selector loops.
     fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
-        queries.iter().map(|q| self.query(q)).collect()
+        let out: Vec<Value> = queries.iter().map(|q| self.query(q)).collect::<Result<_, _>>()?;
+        debug_assert_eq!(out.len(), queries.len(), "query_many length invariant");
+        Ok(out)
     }
 
     /// Export a handle to the given format, writing to the provided writer.
