@@ -506,6 +506,10 @@ pub struct MockGeometryKernel {
     queries: HashMap<GeometryHandleId, Value>,
     /// Per-query-type results (takes precedence over generic).
     typed_queries: HashMap<QueryKey, Value>,
+    /// Per-parent edge-extraction results; `Ok(vec)` or `Err(e)`.
+    extracted_edges: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
+    /// Per-parent face-extraction results; `Ok(vec)` or `Err(e)`.
+    extracted_faces: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
 }
 
 impl MockGeometryKernel {
@@ -515,6 +519,8 @@ impl MockGeometryKernel {
             operations: Arc::new(Mutex::new(Vec::new())),
             queries: HashMap::new(),
             typed_queries: HashMap::new(),
+            extracted_edges: HashMap::new(),
+            extracted_faces: HashMap::new(),
         }
     }
 
@@ -647,6 +653,82 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a successful `extract_edges` result for `parent`.
+    ///
+    /// `kernel.extract_edges(parent)` will return `Ok(edges)`.
+    pub fn with_extracted_edges(
+        mut self,
+        parent: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
+    ) -> Self {
+        self.extracted_edges.insert(parent, Ok(edges));
+        self
+    }
+
+    /// Configure a successful `extract_faces` result for `parent`.
+    ///
+    /// `kernel.extract_faces(parent)` will return `Ok(faces)`.
+    pub fn with_extracted_faces(
+        mut self,
+        parent: GeometryHandleId,
+        faces: Vec<GeometryHandleId>,
+    ) -> Self {
+        self.extracted_faces.insert(parent, Ok(faces));
+        self
+    }
+
+    /// Configure `extract_edges(parent)` to return an error.
+    ///
+    /// Typically used to inject `QueryError::InvalidHandle(parent)` for
+    /// error-propagation tests.
+    pub fn with_extract_edges_error(
+        mut self,
+        parent: GeometryHandleId,
+        err: QueryError,
+    ) -> Self {
+        self.extracted_edges.insert(parent, Err(err));
+        self
+    }
+
+    /// Configure `extract_faces(parent)` to return an error.
+    pub fn with_extract_faces_error(
+        mut self,
+        parent: GeometryHandleId,
+        err: QueryError,
+    ) -> Self {
+        self.extracted_faces.insert(parent, Err(err));
+        self
+    }
+
+    /// Configure an EdgeLength query result for a specific edge handle.
+    pub fn with_edge_length_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::EdgeLength(handle), value);
+        self
+    }
+
+    /// Configure an EdgeTangent query result for a specific edge handle.
+    ///
+    /// The `value` should be a `Value::String` containing a JSON-encoded
+    /// `{"x":..,"y":..,"z":..}` unit vector, matching the OCCT kernel's
+    /// actual encoding consumed by `topology_selectors::edges_parallel_to`.
+    pub fn with_edge_tangent_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::EdgeTangent(handle), value);
+        self
+    }
+
+    /// Configure a FaceNormal query result for a specific face handle.
+    ///
+    /// The `value` should be a `Value::String` containing a JSON-encoded
+    /// `{"x":..,"y":..,"z":..}` unit vector, matching the OCCT kernel's
+    /// actual encoding consumed by `topology_selectors::faces_by_normal`.
+    pub fn with_face_normal_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::FaceNormal(handle), value);
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
@@ -746,6 +828,30 @@ impl GeometryKernel for MockGeometryKernel {
             .get(handle_id)
             .cloned()
             .ok_or_else(|| QueryError::QueryFailed(format!("no mock result for {:?}", handle_id)))
+    }
+
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        match self.extracted_edges.get(&handle) {
+            Some(result) => result.clone(),
+            None => Err(QueryError::QueryFailed(
+                "topology extraction not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        match self.extracted_faces.get(&handle) {
+            Some(result) => result.clone(),
+            None => Err(QueryError::QueryFailed(
+                "topology extraction not supported by this kernel".into(),
+            )),
+        }
     }
 
     fn export(
