@@ -310,6 +310,37 @@ pub(crate) fn emit_geometry_unbounded(
     );
 }
 
+/// Emit a "does not conform to trait" geometry diagnostic for the `Connected`/`Convex`
+/// cases — the symmetric sibling of [`emit_geometry_unbounded`] for the `Bounded` case.
+///
+/// Pushes exactly one `Diagnostic::error(...)` with code
+/// [`DiagnosticCode::TypeNotConformingToTrait`] and a single label at `span`. Per design
+/// decision §2 of task 2312, the PRD only allocates `E_GEOMETRY_UNBOUNDED` for missing
+/// `Bounded`; `Connected`/`Convex` reuse `TypeNotConformingToTrait`.
+///
+/// The message intentionally does **not** include a separate param-name slot. The old
+/// inline branch appended `required by param '{}'` with `arg_name` a second time, which
+/// was redundant under reify's keyword-arg convention (arg name == param name in practice).
+/// That clause was dropped in task 2493 — see design decision §1 there.
+pub(crate) fn emit_geometry_trait_violation(
+    arg_name: &str,
+    required_trait: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "geometry argument '{}' does not conform to trait '{}'",
+            arg_name, required_trait
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!("geometry argument '{}' is not {}", arg_name, required_trait),
+        )),
+    );
+}
+
 /// Shared leaf helper: emit a "does not conform to trait" diagnostic if `arg_type`
 /// does not satisfy `required_trait`.
 ///
