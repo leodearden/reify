@@ -343,6 +343,70 @@ mod tests {
         let _ = diags;
     }
 
+    /// End-to-end regression lock: a deep dot-chain in a `let` value flows
+    /// through `compute_diagnostics` as an LSP Warning whose source is `reify`,
+    /// whose message contains the rendered chain text, and whose range is
+    /// non-zero (anchored to the chain's source span via the diagnostic label).
+    ///
+    /// This pins the LSP-side surface for spec §5.7's `DeepDotChain` lint.
+    /// Conversion of the typed `DiagnosticCode::DeepDotChain` to the LSP
+    /// `code` field is intentionally out-of-scope here — see plan.json
+    /// design decision "Do NOT modify convert_diagnostic to populate
+    /// lsp_types::Diagnostic.code" — so we assert on severity, source,
+    /// message text, and a non-zero range only.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_deep_dot_chain_warning() {
+        // 6-segment chain `a.b.c.d.e.f` (length 6 > 4) inside a `let` value
+        // forces exactly one DeepDotChain warning from the compiler pre-pass.
+        let source = r#"
+structure S {
+    param a: Real = 0
+    let x = a.b.c.d.e.f
+}
+"#;
+        let diags = compute_diagnostics(source, &test_uri());
+
+        let deep_dot_chain_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::WARNING)
+                    && d.message.contains("a.b.c.d.e.f")
+            })
+            .collect();
+
+        assert_eq!(
+            deep_dot_chain_diags.len(),
+            1,
+            "expected exactly 1 LSP Warning with chain text `a.b.c.d.e.f`, got {}: {:#?}",
+            deep_dot_chain_diags.len(),
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        let diag = deep_dot_chain_diags[0];
+        assert_eq!(
+            diag.severity,
+            Some(DiagnosticSeverity::WARNING),
+            "expected WARNING severity, got {:?}",
+            diag.severity
+        );
+        assert_eq!(
+            diag.source.as_deref(),
+            Some("reify"),
+            "expected source `reify`, got {:?}",
+            diag.source
+        );
+        // Range must be non-zero — the diagnostic carries a label whose span
+        // covers the entire `a.b.c.d.e.f` chain. A zero range would mean the
+        // label was dropped and convert_diagnostic fell back to (0,0)-(0,0).
+        let range_is_zero = diag.range.start == diag.range.end;
+        assert!(
+            !range_is_zero,
+            "expected non-zero diagnostic range (label span should anchor to \
+             chain), got start={:?} end={:?}",
+            diag.range.start, diag.range.end
+        );
+    }
+
     // --- compute_diagnostics_with_state unit tests (step-25) ---
 
     #[test]
