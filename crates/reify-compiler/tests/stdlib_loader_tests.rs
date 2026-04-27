@@ -213,6 +213,21 @@ fn std_units_module_has_expected_units() {
 
 // ─── step-2492: bidirectional #no_prelude invariant ─────────────────
 
+/// Build a [`CompiledModule`] with dotted path `dotted` that carries a single
+/// `#no_prelude` pragma.  Used by the synthetic-fixture `#no_prelude` tests
+/// so the builder-and-push boilerplate lives in one place.
+fn module_with_no_prelude(dotted: &str) -> reify_compiler::CompiledModule {
+    let no_prelude = Pragma {
+        name: "no_prelude".to_string(),
+        args: vec![],
+        span: SourceSpan::new(0, 0),
+    };
+    let mut module =
+        CompiledModuleBuilder::new(ModulePath::from_dotted(dotted).unwrap()).build();
+    module.pragmas.push(no_prelude);
+    module
+}
+
 /// Synthetic fixture: a non-bootstrap module (`std/materials/thermal`) that
 /// incorrectly carries `#no_prelude` must cause the bidirectional invariant
 /// helper to panic, naming the offending path in the panic message.
@@ -226,27 +241,12 @@ fn std_units_module_has_expected_units() {
 #[test]
 #[should_panic(expected = "std/materials/thermal")]
 fn non_bootstrap_module_with_no_prelude_pragma_panics() {
-    let no_prelude = Pragma {
-        name: "no_prelude".to_string(),
-        args: vec![],
-        span: SourceSpan::new(0, 0),
-    };
-
     // Build a synthetic module set: std/units (bootstrap, pragma OK) plus
     // std/materials/thermal (non-bootstrap, pragma is the planted violation).
-    let mut units_module = CompiledModuleBuilder::new(
-        ModulePath::from_dotted("std.units").unwrap(),
-    )
-    .build();
-    units_module.pragmas.push(no_prelude.clone());
-
-    let mut thermal_module = CompiledModuleBuilder::new(
-        ModulePath::from_dotted("std.materials.thermal").unwrap(),
-    )
-    .build();
-    thermal_module.pragmas.push(no_prelude);
-
-    let modules = vec![units_module, thermal_module];
+    let modules = vec![
+        module_with_no_prelude("std.units"),
+        module_with_no_prelude("std.materials.thermal"),
+    ];
 
     // Only "std/units" is the bootstrap target in this synthetic set; the
     // other three production targets are omitted because they are not present
@@ -298,32 +298,11 @@ fn bootstrap_module_missing_no_prelude_pragma_panics() {
 /// developers don't have to iterate fix-and-rerun.
 #[test]
 fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
-    let no_prelude = Pragma {
-        name: "no_prelude".to_string(),
-        args: vec![],
-        span: SourceSpan::new(0, 0),
-    };
-
-    // std/units: bootstrap target, pragma is legitimately present.
-    let mut units_module =
-        CompiledModuleBuilder::new(ModulePath::from_dotted("std.units").unwrap()).build();
-    units_module.pragmas.push(no_prelude.clone());
-
-    // std/materials/thermal: non-bootstrap violation #1.
-    let mut thermal_module = CompiledModuleBuilder::new(
-        ModulePath::from_dotted("std.materials.thermal").unwrap(),
-    )
-    .build();
-    thermal_module.pragmas.push(no_prelude.clone());
-
-    // std/geometry/traits: non-bootstrap violation #2.
-    let mut geom_module = CompiledModuleBuilder::new(
-        ModulePath::from_dotted("std.geometry.traits").unwrap(),
-    )
-    .build();
-    geom_module.pragmas.push(no_prelude);
-
-    let modules = vec![units_module, thermal_module, geom_module];
+    let modules = vec![
+        module_with_no_prelude("std.units"),            // bootstrap target, pragma OK
+        module_with_no_prelude("std.materials.thermal"), // non-bootstrap violation #1
+        module_with_no_prelude("std.geometry.traits"),   // non-bootstrap violation #2
+    ];
     let targets = ["std/units"];
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -339,6 +318,12 @@ fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
         panic!("panic payload was neither String nor &'static str");
     };
 
+    // Anchor: confirm the panic originates from the aggregated-violations code
+    // path, not a stray panic from elsewhere (e.g. an unwrap() inside the helper).
+    assert!(
+        msg.contains("non-bootstrap stdlib modules"),
+        "panic message should be from the aggregated-violations code path, got:\n{msg}"
+    );
     assert!(
         msg.contains("std/materials/thermal"),
         "panic message should name 'std/materials/thermal', got:\n{msg}"
