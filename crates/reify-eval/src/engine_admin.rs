@@ -55,6 +55,22 @@ pub(crate) enum ParamOverrideRejection {
 ///
 /// Any future refinement lands here and is picked up by every call site
 /// automatically.
+/// Returns `true` iff at least one template in `module` declares at least one
+/// auto-param value cell (`ValueCellKind::Auto { .. }`).
+///
+/// Used by `resolve_solver_for_module` to suppress the "named back-end not
+/// registered, falling back to default solver" warning on modules that would
+/// never invoke the solver anyway: such modules see `build_solver_problem`
+/// return `None` for every template and the warning would refer to a fallback
+/// that never happens. This keeps `#solver(<name>)` usable as a forward-
+/// compatible declaration on auto-param-free modules without surfacing noise.
+fn module_has_auto_cells(module: &CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .any(|t| t.value_cells.iter().any(|c| c.kind.is_auto()))
+}
+
 pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,
@@ -322,6 +338,13 @@ impl Engine {
     /// [`Engine::lookup_solver_for_module`] inside the inner loop and rely on
     /// this method only for the one-shot warning + overall availability check.
     ///
+    /// The warning is suppressed when the module has zero auto-param cells
+    /// across all templates: such a module never invokes the solver, so a
+    /// "falling back" warning would be misleading (no solver was ever
+    /// consulted). This lets users write `#solver(libslvs)` purely as a
+    /// forward-compatible declaration on a module without any auto params
+    /// without surfacing a noisy diagnostic.
+    ///
     /// Mirrors the design decision: "Encapsulate the eval/eval_cached solver
     /// lookup in a single helper".
     pub(crate) fn resolve_solver_for_module(
@@ -331,6 +354,7 @@ impl Engine {
     ) -> Option<&dyn ConstraintSolver> {
         if let Some(p) = module.solver_pragma.as_ref()
             && !self.solvers.contains_key(&p.name)
+            && module_has_auto_cells(module)
         {
             diagnostics.push(Diagnostic::warning(format!(
                 "#solver: named back-end '{}' is not registered; falling back to default solver",
