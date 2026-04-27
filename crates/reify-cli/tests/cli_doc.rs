@@ -381,3 +381,21 @@ fn doc_unknown_flag_exits_two() {
         "stderr should name the offending flag '--frobnicate', got: {stderr}"
     );
 }
+
+#[test]
+fn doc_listed_in_top_level_usage() {
+    // Regression guard: invoking `reify` with no arguments prints a usage
+    // listing on stderr.  That listing must mention the `doc` subcommand so
+    // users can discover it.  Pins the line added to `main()` in step 6.
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("doc <file>"),
+        "top-level usage hint must list 'doc <file>', got stderr: {stderr}"
+    );
+}
