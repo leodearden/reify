@@ -267,3 +267,128 @@ fn item_section_h2_per_variant() {
         );
     }
 }
+
+/// Helper: build an `ItemDoc` of the given kind discriminant + name.
+fn mk_item(kind: &str, name: &str) -> ItemDoc {
+    match kind {
+        "trait" => ItemDoc::Trait {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], members: vec![],
+        },
+        "structure" => ItemDoc::Structure {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], params: vec![],
+            ports: vec![], constraints: vec![], sub_components: vec![],
+            realizations: vec![], meta: vec![],
+        },
+        "occurrence" => ItemDoc::Occurrence {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], params: vec![],
+            ports: vec![], constraints: vec![], sub_components: vec![],
+            realizations: vec![], meta: vec![],
+        },
+        "enum" => ItemDoc::Enum {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], variants: vec![],
+        },
+        "function" => ItemDoc::Function {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            signature: format!("fn {name}()"),
+        },
+        "field" => ItemDoc::Field {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            type_repr: "i32".into(), default_repr: None,
+        },
+        _ => panic!("unknown kind: {kind}"),
+    }
+}
+
+/// The TOC `<nav>` must contain a `<h2>Contents</h2>` plus per-group
+/// `<h3>{Group}</h3>` headings (Traits → Structures → Occurrences → Enums →
+/// Functions → Constants), each followed by an alphabetical `<ul>` of
+/// `<li><a href="#name">name</a></li>` entries.  Empty groups are omitted.
+/// The nav must appear after the module H1/doc and before the first item.
+#[test]
+fn toc_nav_renders_grouped_kinds_with_anchors() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            doc: Some("Top doc.".into()),
+            items: vec![
+                // Mixed kinds + within-group sort cases.
+                mk_item("structure", "Bravo"),
+                mk_item("structure", "Alpha"),
+                mk_item("trait", "Iface"),
+                mk_item("enum", "Color"),
+                mk_item("function", "compute"),
+                mk_item("field", "k"),
+                mk_item("occurrence", "Inst"),
+            ],
+            ..Default::default()
+        }],
+    };
+    let out = render_html(&model, None);
+
+    assert!(out.contains("<nav>"), "missing <nav>; got:\n{out}");
+    assert!(out.contains("</nav>"), "missing </nav>; got:\n{out}");
+    let nav_start = out.find("<nav>").expect("nav start");
+    let nav_end = out.find("</nav>").expect("nav end");
+    let nav = &out[nav_start..nav_end];
+
+    assert!(nav.contains("<h2>Contents</h2>"),
+        "missing <h2>Contents</h2> in nav:\n{nav}");
+    // Per-group headings present.
+    for h3 in &["<h3>Traits</h3>", "<h3>Structures</h3>", "<h3>Occurrences</h3>",
+                "<h3>Enums</h3>", "<h3>Functions</h3>", "<h3>Constants</h3>"] {
+        assert!(nav.contains(h3), "missing {h3} in nav:\n{nav}");
+    }
+    // Fixed group ordering.
+    let pos_traits = nav.find("<h3>Traits</h3>").unwrap();
+    let pos_structures = nav.find("<h3>Structures</h3>").unwrap();
+    let pos_occ = nav.find("<h3>Occurrences</h3>").unwrap();
+    let pos_enums = nav.find("<h3>Enums</h3>").unwrap();
+    let pos_fns = nav.find("<h3>Functions</h3>").unwrap();
+    let pos_consts = nav.find("<h3>Constants</h3>").unwrap();
+    assert!(pos_traits < pos_structures);
+    assert!(pos_structures < pos_occ);
+    assert!(pos_occ < pos_enums);
+    assert!(pos_enums < pos_fns);
+    assert!(pos_fns < pos_consts);
+
+    // Anchor-link entries are <li><a href="#name">name</a></li>.
+    assert!(nav.contains("<li><a href=\"#Alpha\">Alpha</a></li>"),
+        "expected anchor for Alpha in nav:\n{nav}");
+    assert!(nav.contains("<li><a href=\"#Bravo\">Bravo</a></li>"));
+    assert!(nav.contains("<li><a href=\"#Iface\">Iface</a></li>"));
+    assert!(nav.contains("<li><a href=\"#Color\">Color</a></li>"));
+    assert!(nav.contains("<li><a href=\"#compute\">compute</a></li>"));
+    assert!(nav.contains("<li><a href=\"#Inst\">Inst</a></li>"));
+    assert!(nav.contains("<li><a href=\"#k\">k</a></li>"));
+
+    // Within-group alphabetical sort: Alpha appears before Bravo in the nav.
+    let pos_alpha = nav.find("<li><a href=\"#Alpha\">").unwrap();
+    let pos_bravo = nav.find("<li><a href=\"#Bravo\">").unwrap();
+    assert!(pos_alpha < pos_bravo, "within-group alphabetical sort failed");
+
+    // Position: <h1> precedes <nav> precedes the first <section>.
+    let h1_pos = out.find("<h1>m</h1>").expect("h1");
+    let nav_pos = out.find("<nav>").expect("nav");
+    let first_section = out.find("<section id=").expect("section");
+    assert!(h1_pos < nav_pos, "<h1> must precede <nav>");
+    assert!(nav_pos < first_section, "<nav> must precede first <section>");
+}
+
+/// Empty module (no items) must produce no `<nav>` at all.
+#[test]
+fn toc_nav_omitted_when_no_items() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            ..Default::default()
+        }],
+    };
+    let out = render_html(&model, None);
+    assert!(!out.contains("<nav>"), "expected no <nav> for empty module; got:\n{out}");
+}
