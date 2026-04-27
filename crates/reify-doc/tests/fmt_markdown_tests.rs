@@ -1201,3 +1201,128 @@ fn solver_hint_annotation_appends_to_description_cell() {
         "solver_hint italic suffix missing in row: {row}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Split mode (one file per item plus index.md)
+// ---------------------------------------------------------------------------
+
+/// Helper: render the model in split mode and unwrap to the per-file vector.
+fn render_split(model: &DocModel) -> Vec<(String, String)> {
+    match render_markdown(model, None, &MarkdownOptions { split: true }) {
+        MarkdownOutput::Single(_) => panic!("expected Split output"),
+        MarkdownOutput::Split(v) => v,
+    }
+}
+
+/// Split mode produces one file per item plus an `index.md` whose body holds
+/// the TOC.  Verifies (a) presence of `index.md` with TOC content, (b) one
+/// file per item with kind-prefixed slug filenames, (c) per-item body matches
+/// what single-mode would emit for that item (modulo the per-item file's own
+/// header / back-link), and (d) deterministic ordering — `index.md` first,
+/// then items in module declaration order.
+#[test]
+fn split_mode_emits_index_and_per_item_files() {
+    let board = ItemDoc::Structure {
+        name: "Board".into(),
+        doc: Some("The main PCB board.".into()),
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let has_power = ItemDoc::Trait {
+        name: "HasPower".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        members: vec!["voltage: Voltage".into()],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "electronics.board".into(),
+            doc: Some("Electronics board module.".into()),
+            items: vec![board, has_power],
+            ..Default::default()
+        }],
+    };
+    let files = render_split(&model);
+
+    // (a) index.md present with TOC.
+    let index = files
+        .iter()
+        .find(|(n, _)| n == "index.md")
+        .expect("index.md missing in split output");
+    assert!(
+        index.1.contains("## Contents"),
+        "index.md must contain `## Contents` TOC, got:\n{}",
+        index.1
+    );
+    assert!(
+        index.1.contains("- [`Board`](#Board)"),
+        "TOC must list Board anchor, got:\n{}",
+        index.1
+    );
+    assert!(
+        index.1.contains("- [`HasPower`](#HasPower)"),
+        "TOC must list HasPower anchor, got:\n{}",
+        index.1
+    );
+
+    // (b) per-item filenames.
+    let board_file = files
+        .iter()
+        .find(|(n, _)| n == "structure-Board.md")
+        .expect("structure-Board.md missing");
+    let trait_file = files
+        .iter()
+        .find(|(n, _)| n == "trait-HasPower.md")
+        .expect("trait-HasPower.md missing");
+
+    // (c) per-item body matches the single-mode section for that item.
+    // The Board file must contain the H2 anchor heading and the doc paragraph.
+    assert!(
+        board_file.1.contains("## `pub structure Board`"),
+        "Board file must have H2 heading, got:\n{}",
+        board_file.1
+    );
+    assert!(
+        board_file.1.contains("<a id=\"Board\"></a>"),
+        "Board file must have anchor, got:\n{}",
+        board_file.1
+    );
+    assert!(
+        board_file.1.contains("The main PCB board."),
+        "Board file must contain doc paragraph, got:\n{}",
+        board_file.1
+    );
+    assert!(
+        trait_file.1.contains("## `pub trait HasPower`"),
+        "HasPower file must have H2 heading, got:\n{}",
+        trait_file.1
+    );
+    assert!(
+        trait_file.1.contains("- voltage: Voltage"),
+        "HasPower file must contain trait member, got:\n{}",
+        trait_file.1
+    );
+
+    // Per-item files must NOT replicate the TOC.
+    assert!(
+        !board_file.1.contains("## Contents"),
+        "Per-item file must not contain TOC, got:\n{}",
+        board_file.1
+    );
+
+    // (d) deterministic ordering: index.md first, then items in declaration order.
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names[0], "index.md",
+        "index.md must be the first entry, got order: {names:?}"
+    );
+    let board_pos = names.iter().position(|n| *n == "structure-Board.md").unwrap();
+    let trait_pos = names.iter().position(|n| *n == "trait-HasPower.md").unwrap();
+    assert!(
+        board_pos < trait_pos,
+        "Board (declared first) must precede HasPower in split output, got order: {names:?}"
+    );
+}
