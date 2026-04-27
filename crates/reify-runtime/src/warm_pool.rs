@@ -416,6 +416,34 @@ mod tests {
         assert!(pool.is_empty());
     }
 
+    #[test]
+    fn contains_reports_pool_membership_non_destructively() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+
+        // Before any donate: not present.
+        assert!(!pool.contains(&node));
+
+        // After donate: present.
+        pool.donate(node.clone(), OpaqueState::new(0u8, 100));
+        assert!(pool.contains(&node));
+
+        // Second call is idempotent — does not consume the entry.
+        assert!(pool.contains(&node));
+        assert_eq!(pool.len(), 1, "contains must not remove entries");
+        assert_eq!(pool.used_bytes(), 100, "contains must not modify used_bytes");
+
+        // After retrieve (destructive): no longer present.
+        pool.retrieve(&node);
+        assert!(!pool.contains(&node));
+
+        // After clear: no longer present.
+        pool.donate(node.clone(), OpaqueState::new(0u8, 100));
+        assert!(pool.contains(&node));
+        pool.clear();
+        assert!(!pool.contains(&node));
+    }
+
     // --- Step 1: unlimited-budget path tests ---
 
     #[test]
