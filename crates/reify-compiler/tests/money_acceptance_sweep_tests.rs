@@ -89,3 +89,100 @@ fn money_compound_with_force_keeps_angle_slot_zero() {
         "Angle slot 7 should remain ZERO after MONEY × FORCE"
     );
 }
+
+// ─── C3: Torque ≠ Energy at the DimensionVector level ────────────────────────
+
+/// Torque (Force·Length/Angle = kg·m²·s⁻²·rad⁻¹) and Energy (Force·Length =
+/// kg·m²·s⁻²) must be distinct dimensions.  The only difference is slot 7
+/// (Angle): torque has −1, energy has 0.
+///
+/// This is the core regression guard: a 10-slot exponent vector that silently
+/// conflates Angle with another slot would make these two dimensions equal,
+/// breaking all engineering models that distinguish "rotational energy" from
+/// "translational energy".
+#[test]
+fn torque_dim_differs_from_energy_dim_via_angle_slot() {
+    let torque = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    let energy = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+
+    assert_ne!(torque, energy, "Torque and Energy must be distinct dimensions");
+    assert_eq!(
+        torque.0[7],
+        Rational::new(-1, 1),
+        "Torque slot 7 (Angle) should be -1"
+    );
+    assert_eq!(
+        energy.0[7],
+        Rational::ZERO,
+        "Energy slot 7 (Angle) should be ZERO"
+    );
+}
+
+// ─── C4: Money added to Torque/Energy preserves the Angle-slot distinction ───
+
+/// Multiplying both Torque and Energy by MONEY produces `Money·Torque` and
+/// `Money·Energy`. Each compound dimension must:
+///   (a) carry slot 9 (Money) = +1, and
+///   (b) retain its original Angle-slot exponent (−1 vs 0 respectively),
+///       so the two compound dimensions remain distinct.
+///
+/// Guards against any future slot-propagation bug that might collapse the
+/// Angle-slot distinction once a Money factor is mixed in.
+#[test]
+fn torque_with_money_factor_remains_distinct_from_energy_with_money_factor() {
+    let torque = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    let energy = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+
+    let cost_per_torque = DimensionVector::MONEY.mul(&torque);
+    let cost_per_energy = DimensionVector::MONEY.mul(&energy);
+
+    assert_ne!(
+        cost_per_torque,
+        cost_per_energy,
+        "Money·Torque and Money·Energy must remain distinct"
+    );
+    assert_eq!(
+        cost_per_torque.0[9],
+        Rational::ONE,
+        "Money·Torque slot 9 should be ONE"
+    );
+    assert_eq!(
+        cost_per_energy.0[9],
+        Rational::ONE,
+        "Money·Energy slot 9 should be ONE"
+    );
+    assert_eq!(
+        cost_per_torque.0[7],
+        Rational::new(-1, 1),
+        "Money·Torque slot 7 (Angle) should be -1"
+    );
+    assert_eq!(
+        cost_per_energy.0[7],
+        Rational::ZERO,
+        "Money·Energy slot 7 (Angle) should be ZERO"
+    );
+}
+
+/// The content hashes of Torque and Energy must differ so that any future
+/// change to the hash-buffer layout cannot silently conflate the two dimensions.
+///
+/// Complements `torque_dim_differs_from_energy_dim_via_angle_slot` at the
+/// hash layer: if the content_hash incorrectly encodes slot 7, then dimension
+/// type-checking built on hashes would mis-identify torque as energy even
+/// though `DimensionVector::eq` would still be correct.
+#[test]
+fn torque_dim_content_hash_differs_from_energy_dim_content_hash() {
+    let torque = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    let energy = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+    assert_ne!(
+        torque.content_hash(),
+        energy.content_hash(),
+        "Torque and Energy content hashes must differ"
+    );
+}
