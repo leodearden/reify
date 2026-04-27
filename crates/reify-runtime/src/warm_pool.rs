@@ -54,6 +54,13 @@ pub struct WarmStatePool {
     budget_bytes: Option<usize>,
     used_bytes: usize,
     /// Buffered telemetry events (donations and evictions) — consumed via [`drain_events`](Self::drain_events).
+    ///
+    /// # Bounding note
+    /// This buffer is unbounded until the engine wires `drain_events()` at evaluation
+    /// boundaries (task 2345 follow-up).  In the interim every donate/evict appends
+    /// here; callers that keep a long-lived pool without draining will see slow growth.
+    /// TODO(task-2345): verify drain is called at every eval boundary and add an
+    /// integration test asserting buffer stays empty between drains in steady state.
     events: Vec<WarmPoolEvent>,
 }
 
@@ -259,7 +266,19 @@ impl WarmStatePool {
     }
 
     /// Remove all entries from the pool, reset used_bytes to 0, and clear the event buffer.
+    ///
+    /// # Telemetry note
+    /// Callers **must** call [`drain_events`](Self::drain_events) before `clear()` if they
+    /// care about pending telemetry events.  Any un-drained `WarmPoolEvent`s are silently
+    /// discarded by the buffer clear below.  A debug-mode assertion fires if this contract
+    /// is violated, surfacing the misuse during tests.
     pub fn clear(&mut self) {
+        debug_assert!(
+            self.events.is_empty(),
+            "WarmStatePool::clear() called with {} un-drained telemetry event(s); \
+             call drain_events() first to avoid losing diagnostic data",
+            self.events.len()
+        );
         self.pool.clear();
         self.used_bytes = 0;
         self.events.clear();
@@ -440,6 +459,8 @@ mod tests {
         assert_eq!(pool.len(), 2);
         assert_eq!(pool.used_bytes(), 300);
 
+        // Drain telemetry before clearing (required by the clear() contract).
+        let _ = pool.drain_events();
         pool.clear();
         assert_eq!(pool.len(), 0);
         assert_eq!(pool.used_bytes(), 0);
@@ -462,8 +483,6 @@ mod tests {
         assert_eq!(pool.len(), 0);
         assert!(pool.is_empty());
     }
-
-    // --- Step 1: unlimited-budget path tests ---
 
     #[test]
     fn with_budget_none_reports_unlimited() {
@@ -509,8 +528,6 @@ mod tests {
         assert_eq!(pool.budget_bytes(), Some(1024));
     }
 
-    // --- Step 3: env-var parsing tests (compile-fails until step-4) ---
-
     #[test]
     fn default_budget_is_two_gib() {
         assert_eq!(DEFAULT_BUDGET_BYTES, 2 * 1024 * 1024 * 1024);
@@ -546,8 +563,6 @@ mod tests {
         let pool = WarmStatePool::from_env_value(Some("not-a-number"));
         assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
     }
-
-    // --- Step 5: cost_per_byte metadata tests (compile-fails until step-6) ---
 
     #[test]
     fn donate_with_cost_records_cost_per_byte() {
@@ -612,8 +627,6 @@ mod tests {
         assert!(pool.retrieve(&node_d).is_some(), "D should be retained (just added)");
     }
 
-    // --- Amendment: robustness tests ---
-
     #[test]
     fn from_env_value_empty_string_uses_default() {
         // `VAR=` in shell exports an empty string rather than unsetting the var.
@@ -625,8 +638,6 @@ mod tests {
             "empty string should fall back to default, not trigger a warn"
         );
     }
-
-    // --- step-5: WarmPoolEvent emission tests (RED until step-6 adds the surface) ---
 
     #[test]
     fn donate_emits_donated_event() {

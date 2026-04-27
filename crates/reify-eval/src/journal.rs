@@ -42,8 +42,16 @@ pub enum EventKind {
     /// A warm-start state was used for evaluation.
     WarmStartUsed,
     /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    ///
+    /// Translation contract: when the engine translator converts a `WarmPoolEvent::Evicted`
+    /// into an `EvalEvent`, `EvalEvent.node_id` **must** be the evicted node (the victim
+    /// whose state was discarded), not the donating node that triggered the eviction.
     Evicted { size_bytes: usize },
     /// A warm state was donated to the pool (insertion or topology-removal donation).
+    ///
+    /// Translation contract: when the engine translator converts a `WarmPoolEvent::Donated`
+    /// into an `EvalEvent`, `EvalEvent.node_id` **must** be the donating node (the node
+    /// whose state was inserted into the pool).
     Donated { size_bytes: usize },
 }
 
@@ -132,20 +140,25 @@ impl EventJournal {
             .unwrap_or_default()
     }
 
+    /// Count events whose `EventKind` satisfies `predicate`.
+    ///
+    /// Generic base for diagnostic counters — prefer the typed convenience wrappers
+    /// (`count_donated`, `count_evicted`) for common cases.  As new `EventKind`
+    /// variants land (e.g. `CacheHit` stats, `Cancelled` counts) they can be
+    /// expressed as one-liners via this helper rather than duplicating the
+    /// filter-and-count pattern.
+    pub fn count_matching(&self, predicate: impl Fn(&EventKind) -> bool) -> usize {
+        self.events.iter().filter(|e| predicate(&e.kind)).count()
+    }
+
     /// Number of `EventKind::Donated` events recorded in this journal.
     pub fn count_donated(&self) -> usize {
-        self.events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::Donated { .. }))
-            .count()
+        self.count_matching(|k| matches!(k, EventKind::Donated { .. }))
     }
 
     /// Number of `EventKind::Evicted` events recorded in this journal.
     pub fn count_evicted(&self) -> usize {
-        self.events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::Evicted { .. }))
-            .count()
+        self.count_matching(|k| matches!(k, EventKind::Evicted { .. }))
     }
 
     /// The most recent event for a specific node, or None if no events exist.
@@ -569,8 +582,6 @@ mod tests {
         ));
     }
 
-    // --- step-3: diagnostic-count helper tests (RED until step-4 adds the methods) ---
-
     #[test]
     fn count_donated_returns_zero_for_empty_journal() {
         let journal = EventJournal::new();
@@ -619,24 +630,6 @@ mod tests {
         ));
         assert_eq!(journal.count_donated(), 0);
         assert_eq!(journal.count_evicted(), 0);
-    }
-
-    // --- step-1: new EventKind variant tests (RED until step-2 adds the variants) ---
-
-    #[test]
-    fn event_kind_evicted() {
-        let kind = EventKind::Evicted { size_bytes: 1024 };
-        let _ = format!("{:?}", kind); // Debug works
-        let cloned = kind.clone(); // Clone works
-        assert!(matches!(cloned, EventKind::Evicted { size_bytes: 1024 }));
-    }
-
-    #[test]
-    fn event_kind_donated() {
-        let kind = EventKind::Donated { size_bytes: 2048 };
-        let _ = format!("{:?}", kind);
-        let cloned = kind.clone();
-        assert!(matches!(cloned, EventKind::Donated { size_bytes: 2048 }));
     }
 
     #[test]
