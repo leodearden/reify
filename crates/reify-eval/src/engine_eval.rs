@@ -1232,6 +1232,17 @@ impl Engine {
                 // &mut self for evaluate_let_bindings and snapshot ID bumps
                 // below. `lookup_solver_for_module` re-runs the named-vs-default
                 // routing without re-emitting the warning.
+                //
+                // Cost: per-iteration this is one `solver_pragma.as_ref()` match
+                // plus at most one `HashMap::get` plus an `or(self.solver.as_deref())`
+                // — negligible relative to the `.solve(&problem)` call that follows.
+                // Hoisting the resolved name outside the loop would require either
+                // (a) a slimmer inner helper taking `Option<&str>`, or
+                // (b) duplicating the routing logic at the call site, both of
+                // which trade a minor speedup for an extra surface that must
+                // stay in lock-step with `lookup_solver_for_module`. Given typical
+                // template counts (single-digit per module), the current shape is
+                // the better trade. (Task 2300 reviewer comment.)
                 let solve_result = self
                     .lookup_solver_for_module(module)
                     .expect("has_active_solver is true => solver lookup returns Some")
@@ -1877,6 +1888,12 @@ impl Engine {
                 if let Some(problem) =
                     build_solver_problem(template, &values, Arc::clone(&self.functions))
                 {
+                    // Per-iteration cost of `lookup_solver_for_module`: one
+                    // `solver_pragma.as_ref()` match plus at most one
+                    // `HashMap::get`, negligible vs. `.solve(&problem)`. See
+                    // the matching note at the eval() site (~line 1235) for
+                    // why this is preferred over hoisting the name outside
+                    // the loop. (Task 2300 reviewer comment.)
                     let solve_result = self
                         .lookup_solver_for_module(module)
                         .expect("has_active_solver is true => solver lookup returns Some")
