@@ -733,6 +733,23 @@ mod tests {
     }
 
     #[test]
+    fn to_display_units_recognises_money() {
+        let (value, unit) = DimensionVector::MONEY.to_display_units(25.0);
+        assert_eq!(value, 25.0, "Money value should pass through unchanged");
+        assert_eq!(unit, "USD", "Money unit label should be USD, not SI fallback");
+        assert_ne!(unit, "SI", "Money must NOT fall through to the SI fallback");
+    }
+
+    #[test]
+    fn to_display_units_keeps_si_fallback_for_unknown_composed_dim() {
+        // A composed Money/Length dimension is not the canonical MONEY singleton,
+        // so it should still fall through to the "SI" catch-all.
+        let cost_per_length = DimensionVector::MONEY.div(&DimensionVector::LENGTH);
+        let (_, unit) = cost_per_length.to_display_units(1.0);
+        assert_eq!(unit, "SI", "composed Money/Length should fall through to SI");
+    }
+
+    #[test]
     fn money_constant_populates_slot_9() {
         // Slot 9 must be ONE; all other slots must be ZERO.
         assert_eq!(DimensionVector::MONEY.0[9], Rational::ONE);
