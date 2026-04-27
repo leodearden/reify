@@ -1391,6 +1391,30 @@ pub(crate) fn compile_entity(
                     }
                 }
             }
+            reify_syntax::MemberDecl::ForallConnect(f) => {
+                // TODO(task 2364): per-element elaboration not yet implemented.
+                diagnostics.push(
+                    Diagnostic::error(
+                        "statement-form forall (connect/chain) not yet elaborated",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        f.span,
+                        "not yet elaborated — see task 2364",
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::ForallConstraint(f) => {
+                // TODO(task 2364): per-element elaboration not yet implemented.
+                diagnostics.push(
+                    Diagnostic::error(
+                        "statement-form forall (constraint) not yet elaborated",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        f.span,
+                        "not yet elaborated — see task 2364",
+                    )),
+                );
+            }
         }
     }
 

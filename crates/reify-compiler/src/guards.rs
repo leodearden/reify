@@ -534,6 +534,22 @@ pub(crate) fn compile_guarded_members(
                     .with_label(DiagnosticLabel::new(m.span, "not yet supported")),
                 );
             }
+            reify_syntax::MemberDecl::ForallConnect(f) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "forall connect/chain statements in guarded blocks are not yet supported",
+                    )
+                    .with_label(DiagnosticLabel::new(f.span, "not yet supported")),
+                );
+            }
+            reify_syntax::MemberDecl::ForallConstraint(f) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "forall constraint statements in guarded blocks are not yet supported",
+                    )
+                    .with_label(DiagnosticLabel::new(f.span, "not yet supported")),
+                );
+            }
             reify_syntax::MemberDecl::Port(_)
             | reify_syntax::MemberDecl::Connect(_)
             | reify_syntax::MemberDecl::Chain(_)

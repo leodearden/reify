@@ -425,6 +425,30 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
+            reify_syntax::MemberDecl::ForallConnect(f) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "forall connect/chain statements in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        f.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::ForallConstraint(f) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "forall constraint statements in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        f.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
         }
     }
 

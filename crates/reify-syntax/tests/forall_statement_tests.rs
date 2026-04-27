@@ -85,7 +85,7 @@ structure S {
     );
     assert_ne!(
         decl.content_hash,
-        reify_types::ContentHash::from(0u64),
+        reify_types::ContentHash(0),
         "content_hash should be non-zero"
     );
 }

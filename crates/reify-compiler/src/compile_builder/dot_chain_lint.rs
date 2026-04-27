@@ -181,7 +181,7 @@ fn walk_members(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    use reify_syntax::MemberDecl;
+    use reify_syntax::{ForallConnectBody, ForallConstraintBody, MemberDecl};
     if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
         return;
     }
@@ -258,6 +258,42 @@ fn walk_members(
             MemberDecl::Chain(c) => {
                 for elem in &c.elements {
                     walk_expr(elem, diagnostics);
+                }
+            }
+            MemberDecl::ForallConnect(f) => {
+                walk_expr(&f.collection, diagnostics);
+                match &f.body {
+                    ForallConnectBody::Connect(c) => {
+                        walk_expr(&c.left.expr, diagnostics);
+                        walk_expr(&c.right.expr, diagnostics);
+                        for (_, expr) in &c.params {
+                            walk_expr(expr, diagnostics);
+                        }
+                    }
+                    ForallConnectBody::Chain(c) => {
+                        for elem in &c.elements {
+                            walk_expr(elem, diagnostics);
+                        }
+                    }
+                }
+            }
+            MemberDecl::ForallConstraint(f) => {
+                walk_expr(&f.collection, diagnostics);
+                match &f.body {
+                    ForallConstraintBody::Constraint(c) => {
+                        walk_expr(&c.expr, diagnostics);
+                        if let Some(wc) = &c.where_clause {
+                            walk_expr(&wc.condition, diagnostics);
+                        }
+                    }
+                    ForallConstraintBody::Instantiation(ci) => {
+                        for (_, expr) in &ci.args {
+                            walk_expr(expr, diagnostics);
+                        }
+                        if let Some(wc) = &ci.where_clause {
+                            walk_expr(&wc.condition, diagnostics);
+                        }
+                    }
                 }
             }
             // Members with no embedded expressions.

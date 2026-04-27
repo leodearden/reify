@@ -89,6 +89,10 @@ pub enum MemberDecl {
     Connect(ConnectDecl),
     Chain(ChainDecl),
     MetaBlock(MetaBlockDecl),
+    /// `forall v in coll: connect ...` or `forall v in coll: chain ...`
+    ForallConnect(ForallConnectDecl),
+    /// `forall v in coll: constraint ...` or `forall v in coll: constraint Inst(...)`
+    ForallConstraint(ForallConstraintDecl),
 }
 
 /// `where condition { ...members... } else { ...members... }`
@@ -323,6 +327,54 @@ pub struct MetaBlockDecl {
     pub entries: Vec<(String, String)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// `forall v in coll: connect ...` or `forall v in coll: chain ...`
+///
+/// The body is a connect-class statement applied per element of `collection`.
+#[derive(Debug, Clone)]
+pub struct ForallConnectDecl {
+    /// The bound variable name (e.g. `"v"` in `forall v in coll: ...`).
+    pub variable: String,
+    /// The collection expression iterated over.
+    pub collection: Expr,
+    /// The per-element connect or chain body.
+    pub body: ForallConnectBody,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// Body alternatives for a `forall ... : <connect-class>` statement.
+#[derive(Debug, Clone)]
+pub enum ForallConnectBody {
+    /// `forall v in coll: connect v.a -> b.c`
+    Connect(ConnectDecl),
+    /// `forall v in coll: chain v.a -> b -> c`
+    Chain(ChainDecl),
+}
+
+/// `forall v in coll: constraint ...` or `forall v in coll: constraint Inst(...)`
+///
+/// The body is a constraint-class declaration applied per element of `collection`.
+#[derive(Debug, Clone)]
+pub struct ForallConstraintDecl {
+    /// The bound variable name (e.g. `"v"` in `forall v in coll: ...`).
+    pub variable: String,
+    /// The collection expression iterated over.
+    pub collection: Expr,
+    /// The per-element constraint or constraint instantiation body.
+    pub body: ForallConstraintBody,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// Body alternatives for a `forall ... : <constraint-class>` statement.
+#[derive(Debug, Clone)]
+pub enum ForallConstraintBody {
+    /// `forall v in coll: constraint v.mass < 50`
+    Constraint(ConstraintDecl),
+    /// `forall v in coll: constraint MinDist(point: v.center)`
+    Instantiation(ConstraintInstDecl),
 }
 
 /// The kind of import (determines how names are brought into scope).

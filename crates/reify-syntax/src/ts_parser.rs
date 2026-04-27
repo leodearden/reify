@@ -1234,6 +1234,12 @@ impl<'a> Lowering<'a> {
                 "meta",
                 self.lower_meta_block(child).map(MemberDecl::MetaBlock)
             ),
+            "forall_statement" => check_and_lower!(
+                self,
+                child,
+                "forall statement",
+                self.lower_forall_statement(child)
+            ),
             "ERROR" => {
                 self.push_error(
                     format!("syntax error: {}", self.node_text(child)),
@@ -1910,6 +1916,97 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `forall_statement` node.
+    ///
+    /// Dispatches on the body node's kind:
+    /// - `connect_statement` → `MemberDecl::ForallConnect` with `ForallConnectBody::Connect`
+    /// - `chain_statement`   → `MemberDecl::ForallConnect` with `ForallConnectBody::Chain`
+    /// - `constraint_declaration` → `MemberDecl::ForallConstraint` with `ForallConstraintBody::Constraint`
+    /// - `constraint_instantiation` → `MemberDecl::ForallConstraint` with `ForallConstraintBody::Instantiation`
+    ///
+    /// Disambiguation contract: this lowers `forall ... : connect/chain/constraint/constraint_instantiation`
+    /// only; bare `forall x in C: pred` at expression positions remains an `ExprKind::Quantifier`
+    /// produced by `lower_quantifier_expression`.
+    fn lower_forall_statement(&mut self, node: tree_sitter::Node) -> Option<MemberDecl> {
+        let variable_node = node.child_by_field_name("variable")?;
+        let variable = self.node_text(variable_node).to_string();
+
+        let collection_node = node.child_by_field_name("collection")?;
+        let collection = self.lower_expr(collection_node)?;
+
+        let body_node = node.child_by_field_name("body")?;
+
+        match body_node.kind() {
+            "connect_statement" => {
+                let connect = check_and_lower!(
+                    self,
+                    body_node,
+                    "connect",
+                    self.lower_connect(body_node)
+                )?;
+                Some(MemberDecl::ForallConnect(ForallConnectDecl {
+                    variable,
+                    collection,
+                    body: ForallConnectBody::Connect(connect),
+                    span: self.span(node),
+                    content_hash: self.content_hash(node),
+                }))
+            }
+            "chain_statement" => {
+                let chain = check_and_lower!(
+                    self,
+                    body_node,
+                    "chain",
+                    self.lower_chain(body_node)
+                )?;
+                Some(MemberDecl::ForallConnect(ForallConnectDecl {
+                    variable,
+                    collection,
+                    body: ForallConnectBody::Chain(chain),
+                    span: self.span(node),
+                    content_hash: self.content_hash(node),
+                }))
+            }
+            "constraint_declaration" => {
+                let constraint = check_and_lower!(
+                    self,
+                    body_node,
+                    "constraint",
+                    self.lower_constraint(body_node)
+                )?;
+                Some(MemberDecl::ForallConstraint(ForallConstraintDecl {
+                    variable,
+                    collection,
+                    body: ForallConstraintBody::Constraint(constraint),
+                    span: self.span(node),
+                    content_hash: self.content_hash(node),
+                }))
+            }
+            "constraint_instantiation" => {
+                let inst = check_and_lower!(
+                    self,
+                    body_node,
+                    "constraint instantiation",
+                    self.lower_constraint_inst(body_node)
+                )?;
+                Some(MemberDecl::ForallConstraint(ForallConstraintDecl {
+                    variable,
+                    collection,
+                    body: ForallConstraintBody::Instantiation(inst),
+                    span: self.span(node),
+                    content_hash: self.content_hash(node),
+                }))
+            }
+            other => {
+                self.push_error(
+                    format!("unsupported forall body kind: {}", other),
+                    self.span(body_node),
+                );
+                None
+            }
+        }
+    }
+
     fn lower_meta_block(&self, node: tree_sitter::Node) -> Option<MetaBlockDecl> {
         let mut entries = Vec::new();
         let mut cursor = node.walk();
@@ -2554,6 +2651,8 @@ mod tests {
                 MemberDecl::Connect(_) => "connect".into(),
                 MemberDecl::Chain(_) => "chain".into(),
                 MemberDecl::MetaBlock(_) => "meta".into(),
+                MemberDecl::ForallConnect(_) => "forall_connect".into(),
+                MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
             })
             .collect();
         assert_eq!(
@@ -2736,6 +2835,8 @@ mod tests {
                 MemberDecl::Connect(c) => c.span,
                 MemberDecl::Chain(c) => c.span,
                 MemberDecl::MetaBlock(m) => m.span,
+                MemberDecl::ForallConnect(f) => f.span,
+                MemberDecl::ForallConstraint(f) => f.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!(
@@ -2850,6 +2951,22 @@ mod tests {
                         i
                     );
                 }
+                MemberDecl::ForallConnect(_) => {
+                    assert!(
+                        text.starts_with("forall"),
+                        "forall_connect member {} text: {:?}",
+                        i,
+                        text
+                    );
+                }
+                MemberDecl::ForallConstraint(_) => {
+                    assert!(
+                        text.starts_with("forall"),
+                        "forall_constraint member {} text: {:?}",
+                        i,
+                        text
+                    );
+                }
             }
         }
 
@@ -2905,6 +3022,8 @@ mod tests {
                 MemberDecl::Connect(c) => (c.span, c.content_hash),
                 MemberDecl::Chain(c) => (c.span, c.content_hash),
                 MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
+                MemberDecl::ForallConnect(f) => (f.span, f.content_hash),
+                MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(
@@ -3014,6 +3133,8 @@ mod tests {
                 MemberDecl::Connect(c) => (c.content_hash, c.span),
                 MemberDecl::Chain(c) => (c.content_hash, c.span),
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
+                MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
+                MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -3029,6 +3150,8 @@ mod tests {
                 MemberDecl::Connect(c) => (c.content_hash, c.span),
                 MemberDecl::Chain(c) => (c.content_hash, c.span),
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
+                MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
+                MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);

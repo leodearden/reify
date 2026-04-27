@@ -339,6 +339,9 @@ fn collect_body_frame_into(
                 collect_body_frame_into(&g.members, frame, depth + 1);
                 collect_body_frame_into(&g.else_members, frame, depth + 1);
             }
+            // Forall variants do NOT contribute the bound variable to the parent
+            // frame — the variable is scoped to the forall body only (child frame).
+            MemberDecl::ForallConnect(_) | MemberDecl::ForallConstraint(_) => {}
             // The remaining variants do not contribute named binders to the
             // body's name-resolution scope.
             MemberDecl::Constraint(_)
@@ -464,6 +467,62 @@ fn walk_members_depth(
             MemberDecl::Chain(c) => {
                 for elem in &c.elements {
                     walk_expr(elem, frames, diagnostics);
+                }
+            }
+            MemberDecl::ForallConnect(f) => {
+                use reify_syntax::ForallConnectBody;
+                // The collection is evaluated in the outer (parent) scope.
+                walk_expr(&f.collection, frames, diagnostics);
+                // Build a child frame containing the bound variable, then walk
+                // the body's expressions with the child frame on the stack.
+                // Mirrors the ExprKind::Quantifier arm in walk_expr_depth.
+                let mut child: Frame = HashMap::new();
+                child.insert(f.variable.clone(), f.span);
+                let forall_stack = FrameStack {
+                    frame: &child,
+                    parent: frames,
+                };
+                match &f.body {
+                    ForallConnectBody::Connect(c) => {
+                        walk_expr(&c.left.expr, Some(&forall_stack), diagnostics);
+                        walk_expr(&c.right.expr, Some(&forall_stack), diagnostics);
+                        for (_, expr) in &c.params {
+                            walk_expr(expr, Some(&forall_stack), diagnostics);
+                        }
+                    }
+                    ForallConnectBody::Chain(c) => {
+                        for elem in &c.elements {
+                            walk_expr(elem, Some(&forall_stack), diagnostics);
+                        }
+                    }
+                }
+            }
+            MemberDecl::ForallConstraint(f) => {
+                use reify_syntax::ForallConstraintBody;
+                // The collection is evaluated in the outer (parent) scope.
+                walk_expr(&f.collection, frames, diagnostics);
+                // Child frame with the bound variable for the body.
+                let mut child: Frame = HashMap::new();
+                child.insert(f.variable.clone(), f.span);
+                let forall_stack = FrameStack {
+                    frame: &child,
+                    parent: frames,
+                };
+                match &f.body {
+                    ForallConstraintBody::Constraint(c) => {
+                        walk_expr(&c.expr, Some(&forall_stack), diagnostics);
+                        if let Some(wc) = &c.where_clause {
+                            walk_expr(&wc.condition, Some(&forall_stack), diagnostics);
+                        }
+                    }
+                    ForallConstraintBody::Instantiation(ci) => {
+                        for (_, expr) in &ci.args {
+                            walk_expr(expr, Some(&forall_stack), diagnostics);
+                        }
+                        if let Some(wc) = &ci.where_clause {
+                            walk_expr(&wc.condition, Some(&forall_stack), diagnostics);
+                        }
+                    }
                 }
             }
             MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
