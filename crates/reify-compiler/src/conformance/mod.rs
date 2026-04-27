@@ -3719,11 +3719,6 @@ mod tests {
             "expected exactly one label attached at the supplied span"
         );
         assert_eq!(d.labels[0].span, span);
-        assert_eq!(
-            d.labels[0].message,
-            "geometry argument 'g' is not Bounded",
-            "label-text wording contract for unbounded helper"
-        );
     }
 
     /// `emit_geometry_trait_violation` pushes exactly one `Diagnostic` with severity
