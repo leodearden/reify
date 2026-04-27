@@ -153,6 +153,11 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
             }
         }
         ExprKind::IndexAccess { object, index } => {
+            // IndexAccess (and FunctionCall, EnumAccess, BinOp, etc.) are
+            // chain-roots: a chain stops at any non-MemberAccess node. We must
+            // still recurse into BOTH children so deep chains nested inside
+            // (e.g. a long chain inside `index`) are detected.
+            // Verified end-to-end by `index_access_resets_chain_root_emits_one_warning_post_index`.
             walk_expr(object, diagnostics);
             walk_expr(index, diagnostics);
         }
