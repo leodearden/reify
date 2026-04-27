@@ -18,11 +18,11 @@
 //! kept in the sibling file `geometry_traits_tests.rs`; this file is reserved
 //! for the inference pipeline.
 
-use reify_compiler::PrimitiveKind;
 use reify_compiler::geometry_traits_inference::{
-    GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_union,
-    infer_primitive,
+    GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_modify,
+    combine_pattern, combine_sweep, combine_transform, combine_union, infer_curve, infer_primitive,
 };
+use reify_compiler::{CurveKind, PrimitiveKind};
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
 
@@ -200,4 +200,110 @@ fn combine_intersection_of_two_full_inputs_preserves_bounded_and_convex() {
 fn combine_intersection_of_two_unbounded_inputs_is_none() {
     let result = combine_intersection(InferredTraits::none(), InferredTraits::none());
     assert_eq!(result, InferredTraits::none());
+}
+
+// ─── combine_transform — preserve all three ─────────────────────────────────
+
+/// Rigid (and uniform-scale) transforms preserve all three traits — they
+/// are bijective continuous maps that take bounded sets to bounded sets,
+/// connected sets to connected sets, and convex sets to convex sets.
+#[test]
+fn combine_transform_preserves_all_three_traits() {
+    assert_eq!(combine_transform(InferredTraits::all()), InferredTraits::all());
+    assert_eq!(combine_transform(InferredTraits::none()), InferredTraits::none());
+    assert_eq!(
+        combine_transform(InferredTraits::bounded_only()),
+        InferredTraits::bounded_only()
+    );
+}
+
+// ─── combine_modify — Convex dropped ────────────────────────────────────────
+
+/// Modify ops (Fillet/Chamfer/Shell/Draft/Thicken) preserve Bounded and
+/// Connected (they operate locally on a single body) but drop Convex —
+/// e.g. shelling a sphere produces a hollow non-convex result.
+#[test]
+fn combine_modify_drops_convex() {
+    assert_eq!(
+        combine_modify(InferredTraits::all()),
+        InferredTraits::bounded_connected()
+    );
+    assert_eq!(
+        combine_modify(InferredTraits::none()),
+        InferredTraits::none()
+    );
+}
+
+// ─── combine_pattern — only Bounded preserved ───────────────────────────────
+
+/// Pattern ops produce multiple disjoint copies, so Connected is always
+/// dropped. Convex is dropped (multiple convex pieces ≠ one convex set).
+/// Bounded is preserved iff the input was bounded.
+#[test]
+fn combine_pattern_drops_connected_and_convex() {
+    assert_eq!(
+        combine_pattern(InferredTraits::all()),
+        InferredTraits::bounded_only()
+    );
+    assert_eq!(
+        combine_pattern(InferredTraits::none()),
+        InferredTraits::none()
+    );
+}
+
+// ─── combine_sweep — Bounded+Connected from profile, Convex always dropped ──
+
+/// Sweep ops inherit Bounded and Connected from the profile (a bounded,
+/// connected profile swept along a finite path stays bounded and
+/// connected). Convex is always false: even a convex profile swept along
+/// a curved path produces a non-convex solid in general.
+#[test]
+fn combine_sweep_preserves_bounded_and_connected_drops_convex() {
+    assert_eq!(
+        combine_sweep(InferredTraits::all()),
+        InferredTraits::bounded_connected()
+    );
+    assert_eq!(
+        combine_sweep(InferredTraits::bounded_connected()),
+        InferredTraits::bounded_connected()
+    );
+}
+
+/// Sweep with an Unbounded profile yields an Unbounded sweep
+/// (extruding/lofting cannot bound an originally-unbounded profile).
+#[test]
+fn combine_sweep_with_unbounded_profile_is_none() {
+    assert_eq!(
+        combine_sweep(InferredTraits::none()),
+        InferredTraits::none()
+    );
+}
+
+// ─── infer_curve — every curve constructor is "all three" ───────────────────
+
+/// All current `CurveKind` variants (line_segment, arc, helix, interp,
+/// bezier, nurbs) are finite, single-piece, and treated as Convex from the
+/// inference table's perspective: a curve is a 1-D primitive used as a
+/// sweep input, where the propagation through `combine_sweep` will drop
+/// Convex anyway. Documenting them as `all()` here keeps the table
+/// uniform and lets `combine_sweep` remain the single decision point for
+/// sweep-output convexity.
+#[test]
+fn infer_curve_kind_yields_all_three_traits() {
+    let cases: [CurveKind; 6] = [
+        CurveKind::LineSegment,
+        CurveKind::Arc,
+        CurveKind::Helix,
+        CurveKind::InterpCurve,
+        CurveKind::BezierCurve,
+        CurveKind::NurbsCurve,
+    ];
+    for kind in cases {
+        assert_eq!(
+            infer_curve(kind),
+            InferredTraits::all(),
+            "CurveKind::{:?} should currently infer all three traits",
+            kind
+        );
+    }
 }
