@@ -4883,4 +4883,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn inertia_tensor_box_with_density_analytic() {
+        let mut kernel = OcctKernel::new();
+        // Create a 20×10×5 axis-aligned box. Volume = 1000; mass = ρ·V = 2·1000 = 2000.
+        // Analytic moments about centroid (box m/12·(h²+d²)):
+        //   I_xx = 2000/12 · (10² + 5²) = 2000/12 · 125 ≈ 20833.33
+        //   I_yy = 2000/12 · (20² + 5²) = 2000/12 · 425 ≈ 70833.33
+        //   I_zz = 2000/12 · (20² + 10²) = 2000/12 · 500 ≈ 83333.33
+        // Off-diagonals = 0 for axis-aligned box at origin.
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(5.0),
+            })
+            .unwrap();
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: box_h.id,
+                density: 2.0,
+            })
+            .unwrap();
+        // (a) result must be a 3-row list
+        let rows = match result {
+            Value::List(rows) => {
+                assert_eq!(rows.len(), 3, "expected 3 rows, got {}", rows.len());
+                rows
+            }
+            other => panic!("expected Value::List(rows), got {:?}", other),
+        };
+        // (b) extract the nine Real entries
+        let mut entries = [[0.0f64; 3]; 3];
+        for (i, row) in rows.iter().enumerate() {
+            let cols = match row {
+                Value::List(cols) => {
+                    assert_eq!(cols.len(), 3, "row {} expected 3 cols, got {}", i, cols.len());
+                    cols
+                }
+                other => panic!("row {} expected Value::List, got {:?}", i, other),
+            };
+            for (j, col) in cols.iter().enumerate() {
+                entries[i][j] = match col {
+                    Value::Real(v) => *v,
+                    other => panic!("entry [{i}][{j}] expected Value::Real, got {:?}", other),
+                };
+            }
+        }
+        let tol = 100.0;
+        // (c) diagonal entries
+        assert!(
+            (entries[0][0] - 20833.33).abs() < tol,
+            "I_xx expected ~20833.33, got {}", entries[0][0]
+        );
+        assert!(
+            (entries[1][1] - 70833.33).abs() < tol,
+            "I_yy expected ~70833.33, got {}", entries[1][1]
+        );
+        assert!(
+            (entries[2][2] - 83333.33).abs() < tol,
+            "I_zz expected ~83333.33, got {}", entries[2][2]
+        );
+        // (d) off-diagonal entries all near zero
+        let off_diag_pairs = [
+            (0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1),
+        ];
+        for (i, j) in off_diag_pairs {
+            assert!(
+                entries[i][j].abs() < tol,
+                "off-diagonal [{i}][{j}] expected ~0, got {}", entries[i][j]
+            );
+        }
+    }
+
 }
