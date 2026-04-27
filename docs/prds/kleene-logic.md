@@ -19,12 +19,12 @@ for the authoritative tables.
 ## 2. Implementation Note — `kleene_implies`
 
 The `implies` keyword is part of the Reify language grammar: it appears in the
-EBNF production grammar (`docs/reify-language-spec.md` §14, around line 2409)
-and in the operator-precedence table (§13.4, around line 2484 — level 15,
-right-associative).  Its truth table is in §9.2.3 (already cited in §1 above).
+EBNF production grammar (`docs/reify-language-spec.md` §15 Grammar Summary,
+around line 2409) and in the operator-precedence table (§16 Appendix: Operator
+Precedence Table, around line 2484 — level 15, right-associative).  Its truth table is in §9.2.3 (already cited in §1 above).
 
 The Rust AST has not yet been extended to match: `BinOp` in
-`crates/reify-types/src/expr.rs` (line 153) currently enumerates
+`crates/reify-types/src/expr.rs` currently enumerates
 `Add / Sub / Mul / Div / Mod / Pow / Eq / Ne / Lt / Le / Gt / Ge / And / Or`
 — there is no `Implies` variant.  Because no AST or evaluation path yet
 recognises `implies`, the `kleene_implies` helper was deferred as YAGNI in
