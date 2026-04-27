@@ -644,6 +644,55 @@ mod tests {
     }
 
     #[test]
+    fn money_mul_with_mass_keeps_both_slots() {
+        let result = DimensionVector::MONEY.mul(&DimensionVector::MASS);
+        assert_eq!(result.0[9], Rational::ONE, "slot 9 (Money) should be ONE");
+        assert_eq!(result.0[1], Rational::ONE, "slot 1 (Mass) should be ONE");
+    }
+
+    #[test]
+    fn money_div_by_mass_produces_cost_per_mass() {
+        // CostPerMass: MONEY/MASS → slot 9 = +1, slot 1 = -1, all others = 0
+        let make = |entries: &[(usize, i16)]| {
+            let mut v = [Rational::ZERO; 10];
+            for (i, e) in entries {
+                v[*i] = Rational::new(*e, 1);
+            }
+            DimensionVector(v)
+        };
+        assert_eq!(
+            DimensionVector::MONEY.div(&DimensionVector::MASS),
+            make(&[(1, -1), (9, 1)])
+        );
+    }
+
+    #[test]
+    fn money_pow_2_doubles_slot_9() {
+        assert_eq!(DimensionVector::MONEY.pow(2).0[9], Rational::new(2, 1));
+    }
+
+    #[test]
+    fn money_root_2_halves_slot_9() {
+        assert_eq!(DimensionVector::MONEY.root(2).0[9], Rational::new(1, 2));
+    }
+
+    #[test]
+    fn money_div_by_money_is_dimensionless() {
+        assert!(DimensionVector::MONEY.div(&DimensionVector::MONEY).is_dimensionless());
+    }
+
+    #[test]
+    fn money_does_not_leak_into_unrelated_arithmetic() {
+        // Slot 9 must stay zero when Money is not involved.
+        let result = DimensionVector::LENGTH.mul(&DimensionVector::MASS);
+        assert_eq!(
+            result.0[9],
+            Rational::ZERO,
+            "slot 9 should be zero for non-Money arithmetic"
+        );
+    }
+
+    #[test]
     fn money_content_hash_is_deterministic() {
         assert_eq!(
             DimensionVector::MONEY.content_hash(),
