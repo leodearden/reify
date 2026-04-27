@@ -4096,4 +4096,154 @@ mod tests {
             "payload must survive the panic → Drop → pool round-trip"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 2516 S1 — guard LRU-stamp preservation (step-3 / step-4)
+    // -----------------------------------------------------------------------
+
+    /// `drain_into_cache_or_repool` must re-donate cache-miss entries with
+    /// their *original* `last_accessed` stamp (via `donate_preserving_lru`),
+    /// not a fresh `Instant::now()`.
+    ///
+    /// Setup (budget = 300):
+    /// 1. Donate X (100 bytes) at time T_X.
+    /// 2. Sleep 2 ms so T_X is strictly older than any later timestamp.
+    /// 3. `checkout_with_lru_stamp(&X)` → `(x_state, x_stamp)`.
+    /// 4. Build a guard; `pending.insert(X, x_state, x_stamp)`.
+    /// 5. Donate Y (100 bytes) directly to pool; Y's stamp is newer than T_X.
+    ///    used_pool = 100 (only Y, since X was checked out).
+    /// 6. `drain_into_cache_or_repool(&mut empty_cache)`: X has no cache entry,
+    ///    so it must be re-pooled via `donate_preserving_lru` preserving T_X.
+    ///    used_pool = 200 (X + Y).
+    /// 7. Donate Z (200 bytes): 200+200=400 > 300 → evict exactly one entry.
+    ///    X's stamp (T_X) < Y's stamp → X is the LRU victim.
+    ///
+    /// Assert X is evicted and Y survives.  If `drain_into_cache_or_repool`
+    /// used `pool.donate(…)` instead (refreshing the stamp), X would appear
+    /// newer than Y and Y would be evicted — the test would flip.
+    #[test]
+    fn pending_warm_seeds_guard_drain_preserves_lru_stamp_for_repooled_entries() {
+        use crate::cache::{CacheStore, NodeId};
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+        use std::time::Duration;
+        use super::PendingWarmSeedsGuard;
+
+        // Budget just fits X+Y (200) but not X+Y+Z (400).
+        let mut pool = WarmStatePool::new(300);
+        let node_x = NodeId::Value(ValueCellId::new("T", "x"));
+        let node_y = NodeId::Value(ValueCellId::new("T", "y"));
+        let node_z = NodeId::Value(ValueCellId::new("T", "z"));
+
+        // Step 1-2: donate X, then sleep so T_X is strictly older.
+        pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
+        std::thread::sleep(Duration::from_millis(2));
+
+        // Step 3: capture X's state and its original stamp.
+        let (x_state, x_stamp) = pool
+            .checkout_with_lru_stamp(&node_x)
+            .expect("X must be in pool");
+        // pool is now empty (X checked out).
+
+        // Step 4: build guard and stage X with its original stamp.
+        let mut cache = CacheStore::new();
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(node_x.clone(), x_state, x_stamp);
+
+            // Step 5: donate Y directly (Y's stamp is fresh / newer than x_stamp).
+            pending.pool_mut().donate(node_y.clone(), OpaqueState::new(0xBBu8, 100));
+            // pool holds Y (100 bytes); X is still in the guard's staging map.
+
+            // Step 6: drain — X has no cache entry → cache-miss → donate_preserving_lru.
+            pending.drain_into_cache_or_repool(&mut cache);
+            // pool holds X (stamp = T_X) + Y (stamp > T_X), used = 200.
+        }
+
+        // Step 7: donate Z (200 bytes) — forces one eviction (200+200=400 > 300).
+        pool.donate(node_z.clone(), OpaqueState::new(0xCCu8, 200));
+
+        // X (oldest stamp) must be the LRU victim.
+        assert!(
+            pool.checkout(&node_x).is_none(),
+            "X must be evicted: its preserved stamp T_X is older than Y's; \
+             if drain used pool.donate() instead of donate_preserving_lru(), \
+             X would look fresh and Y would be evicted instead"
+        );
+        assert!(
+            pool.checkout(&node_y).is_some(),
+            "Y must survive: its stamp is newer than X's preserved stamp"
+        );
+        assert!(
+            pool.checkout(&node_z).is_some(),
+            "Z (just donated) must remain in the pool"
+        );
+    }
+
+    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru`
+    /// (preserving the original stamp), not the plain `donate` that refreshes
+    /// the LRU clock.
+    ///
+    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` but the
+    /// guard is dropped during a panic unwind instead of calling `drain_…`.
+    #[test]
+    fn pending_warm_seeds_guard_drop_preserves_lru_stamp_on_panic() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+        use std::panic::{self, AssertUnwindSafe};
+        use std::time::Duration;
+        use super::PendingWarmSeedsGuard;
+
+        let mut pool = WarmStatePool::new(300);
+        let node_x = NodeId::Value(ValueCellId::new("T", "x"));
+        let node_y = NodeId::Value(ValueCellId::new("T", "y"));
+        let node_z = NodeId::Value(ValueCellId::new("T", "z"));
+
+        // Donate X, sleep, then checkout to capture X's original (old) stamp.
+        pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
+        std::thread::sleep(Duration::from_millis(2));
+        let (x_state, x_stamp) = pool
+            .checkout_with_lru_stamp(&node_x)
+            .expect("X must be in pool");
+
+        // Run the panic scenario: guard stages X then panics before drain.
+        {
+            // SAFETY: `pool` outlives the closure; no other reference to `pool`
+            // exists while the closure runs.
+            let pool_ptr: *mut WarmStatePool = &mut pool;
+            let nid_x = node_x.clone();
+            let nid_y = node_y.clone();
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                let pool_ref = unsafe { &mut *pool_ptr };
+                let mut guard = PendingWarmSeedsGuard::new(pool_ref);
+                guard.insert(nid_x.clone(), x_state, x_stamp);
+                // Donate Y directly so it has a newer stamp than x_stamp.
+                guard.pool_mut().donate(nid_y.clone(), OpaqueState::new(0xBBu8, 100));
+                panic!("simulated mid-edit panic before drain");
+            }));
+            assert!(result.is_err(), "catch_unwind must catch the panic");
+        }
+        // Drop fired: X is back in pool with its preserved stamp.
+        // pool holds X (stamp = T_X) + Y (stamp > T_X), used = 200.
+
+        // Donate Z (200 bytes) → forces eviction (200+200=400 > 300).
+        // X (oldest stamp) must be the LRU victim.
+        pool.donate(node_z.clone(), OpaqueState::new(0xCCu8, 200));
+
+        assert!(
+            pool.checkout(&node_x).is_none(),
+            "X must be evicted after Drop: its preserved stamp is older than Y's; \
+             if Drop used pool.donate() instead of donate_preserving_lru(), \
+             X would look fresh and Y would be the LRU victim"
+        );
+        assert!(
+            pool.checkout(&node_y).is_some(),
+            "Y must survive: stamp is newer than X's preserved stamp"
+        );
+        assert!(
+            pool.checkout(&node_z).is_some(),
+            "Z must remain (just donated)"
+        );
+    }
 }
