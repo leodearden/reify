@@ -2216,8 +2216,12 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
         bolt_body.contains("- [`Fastener`](../beta/trait-Fastener.md)"),
         "Bolt cross-module Conforms-to must use ../beta/trait-Fastener.md, got:\n{bolt_body}"
     );
+    // Check for `](beta/` (start-of-link form) rather than `(beta/` so the
+    // guard actually distinguishes root-relative `](beta/...` from the
+    // correct `](../beta/...` — the `(` in `](../beta/...` is followed by
+    // `..`, not `b`, so a `(beta/` check would be vacuously true.
     assert!(
-        !bolt_body.contains("(beta/trait-Fastener.md)"),
+        !bolt_body.contains("](beta/trait-Fastener.md)"),
         "Bolt must NOT use root-relative beta/ path (would resolve as alpha/beta/...), \
          got:\n{bolt_body}"
     );
@@ -2234,5 +2238,108 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
     assert!(
         !bolt_body.contains("(alpha/trait-LocalT.md)"),
         "Bolt must NOT use module-prefixed path for same-module LocalT, got:\n{bolt_body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ambiguous cross-ref fallback
+// ---------------------------------------------------------------------------
+
+/// When the same name exists in two modules, `unique_resolve` returns `None`
+/// because the reference is genuinely ambiguous — `CrossRefs` carries only
+/// bare names, not module-qualified names.  In that case the resolver must
+/// fall back to the fragment form `#Name`, which is no worse than the
+/// pre-task behaviour (the fragment will dangle, but at least it preserves
+/// the visible link text and does not silently point to the wrong file).
+///
+/// This test pins that fallback so any future change that accidentally
+/// guesses a module or omits the link entirely will fail loudly.
+#[test]
+fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
+    // Two modules each declare a trait named `Shared` — genuine ambiguity.
+    let shared_alpha = ItemDoc::Trait {
+        name: "Shared".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        members: vec![],
+    };
+    let shared_beta = ItemDoc::Trait {
+        name: "Shared".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        members: vec![],
+    };
+    // Conformer lives in alpha; its cross-ref target name "Shared" is
+    // ambiguous because alpha::Shared and beta::Shared both exist.
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![
+            ModuleDoc {
+                path: "alpha".into(),
+                items: vec![shared_alpha, bolt],
+                ..Default::default()
+            },
+            ModuleDoc {
+                path: "beta".into(),
+                items: vec![shared_beta],
+                ..Default::default()
+            },
+        ],
+    };
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .trait_to_conformers
+        .insert("Shared".into(), vec!["Bolt".into()]);
+
+    let files = match render_markdown(&model, Some(&xrefs), &MarkdownOptions { split: true }) {
+        MarkdownOutput::Split(v) => v,
+        MarkdownOutput::Single(_) => panic!("expected Split output"),
+    };
+
+    let bolt_body = &files
+        .iter()
+        .find(|(n, _)| n == "alpha/structure-Bolt.md")
+        .expect("alpha/structure-Bolt.md missing")
+        .1;
+
+    // The cross-ref section is present (the link text is preserved).
+    assert!(
+        bolt_body.contains("### Conforms to"),
+        "Bolt must have Conforms-to section even on ambiguous cross-ref, got:\n{bolt_body}"
+    );
+
+    // Known limitation: ambiguous name falls back to fragment `#Shared`.
+    // This is intentional — see the `unique_resolve` doc comment in
+    // fmt_markdown.rs and the design decision in plan.json.
+    assert!(
+        bolt_body.contains("- [`Shared`](#Shared)"),
+        "Ambiguous cross-ref must fall back to fragment #Shared, got:\n{bolt_body}"
+    );
+
+    // Must NOT emit a module-qualified path — that would silently mislead
+    // the reader by picking one module arbitrarily.
+    assert!(
+        !bolt_body.contains("](alpha/trait-Shared.md)"),
+        "Must NOT guess alpha module for ambiguous Shared, got:\n{bolt_body}"
+    );
+    assert!(
+        !bolt_body.contains("](beta/trait-Shared.md)"),
+        "Must NOT guess beta module for ambiguous Shared, got:\n{bolt_body}"
     );
 }
