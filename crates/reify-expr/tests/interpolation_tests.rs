@@ -82,3 +82,81 @@ fn linear_1d_out_of_range_clamps_to_endpoint() {
     let r_above = interpolate_1d(InterpolationMethod::Linear, &grid, &values, 99.0);
     assert!(approx_eq(r_above.value, 30.0, TOL), "above got {}", r_above.value);
 }
+
+// ---------------------------------------------------------------------------
+// 1D NearestNeighbor
+// ---------------------------------------------------------------------------
+
+/// Knot-exact: querying at every grid point reproduces the corresponding
+/// sample value exactly.
+#[test]
+fn nearest_1d_knot_exact_reproduction() {
+    let grid = [0.0f64, 1.0, 2.5, 4.0];
+    let values = [3.0f64, 7.0, 11.0, 13.0];
+    for (i, &x) in grid.iter().enumerate() {
+        let r = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, x);
+        assert!(
+            approx_eq(r.value, values[i], TOL),
+            "knot {} got {}",
+            i,
+            r.value
+        );
+        assert!(r.diagnostics.is_empty());
+    }
+}
+
+/// Cell-midpoint exact tie is broken by `round_ties_even` — choose the
+/// endpoint with the even index.
+///
+/// Grid `[0.0, 1.0, 2.0]` values `[10.0, 20.0, 30.0]`:
+/// - query `0.5` is exactly between indices 0 and 1 → even index wins → 0 → `10.0`.
+/// - query `1.5` is exactly between indices 1 and 2 → even index wins → 2 → `30.0`.
+#[test]
+fn nearest_1d_midpoint_tie_breaks_even() {
+    let grid = [0.0f64, 1.0, 2.0];
+    let values = [10.0f64, 20.0, 30.0];
+
+    let r_low = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 0.5);
+    assert!(approx_eq(r_low.value, 10.0, TOL), "0.5 → {}", r_low.value);
+
+    let r_high = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 1.5);
+    assert!(approx_eq(r_high.value, 30.0, TOL), "1.5 → {}", r_high.value);
+}
+
+/// Sub-midpoint queries snap to the closer sample.
+#[test]
+fn nearest_1d_sub_midpoint_picks_closer() {
+    let grid = [0.0f64, 1.0, 2.0];
+    let values = [10.0f64, 20.0, 30.0];
+
+    // 0.4 is closer to 0.0 than to 1.0 → 10.0
+    let r1 = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 0.4);
+    assert!(approx_eq(r1.value, 10.0, TOL), "0.4 → {}", r1.value);
+
+    // 0.6 is closer to 1.0 than to 0.0 → 20.0
+    let r2 = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 0.6);
+    assert!(approx_eq(r2.value, 20.0, TOL), "0.6 → {}", r2.value);
+
+    // 1.4 is closer to 1.0 than to 2.0 → 20.0
+    let r3 = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 1.4);
+    assert!(approx_eq(r3.value, 20.0, TOL), "1.4 → {}", r3.value);
+
+    // 1.7 is closer to 2.0 than to 1.0 → 30.0
+    let r4 = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 1.7);
+    assert!(approx_eq(r4.value, 30.0, TOL), "1.7 → {}", r4.value);
+}
+
+/// Out-of-range queries clamp to the nearest endpoint sample.
+#[test]
+fn nearest_1d_out_of_range_clamps_to_endpoint() {
+    let grid = [0.0f64, 1.0, 2.0];
+    let values = [10.0f64, 20.0, 30.0];
+
+    let r_below =
+        interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, -10.0);
+    assert!(approx_eq(r_below.value, 10.0, TOL));
+
+    let r_above =
+        interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 99.0);
+    assert!(approx_eq(r_above.value, 30.0, TOL));
+}
