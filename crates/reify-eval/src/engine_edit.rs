@@ -240,31 +240,6 @@ fn old_guard_for<'a>(eval_state: Option<&'a EvaluationState>, gc: &ValueCellId) 
     eval_state.and_then(|s| s.snapshot.values.get(gc)).map(|(v, _)| v)
 }
 
-/// Look up the current guard value for `guard_cell` from the per-group Phase 3
-/// value map. Returns `None` when the guard cell is absent.
-///
-/// Called immediately after `group_needs_phase3` signals that a guarded group
-/// requires re-elaboration. Both `edit_param` Phase 3 (~line 1005) and
-/// `edit_source` Phase 3 (~line 2095) call this helper via
-/// `let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else { continue; };`
-/// — the identical pattern at both sites makes the shared lookup-or-skip
-/// contract visible and eliminates the prior asymmetry where `edit_param`
-/// used `.expect()` (panic) while `edit_source` used `let-Some-else-continue`
-/// (defensive skip).
-///
-/// **Defensive-skip rationale** (task 2229): `group_needs_phase3` returns
-/// `true` in its absent-guard arm (`old_guard_val.is_some()` when the guard
-/// cell is missing from `values`). In current `edit_param`/`edit_source` flow
-/// this arm is unreachable in principle — Phase 1 seeds every guard cell in
-/// `structure_controlling` into `values`, so an old-snapshot guard cell is
-/// always present. However, a future refactor that narrows `structure_controlling`
-/// could leave a guard cell unevaluated. Callers skip those groups rather than
-/// panic, mirroring the rationale already established in `edit_source` Phase 3
-/// (engine_edit.rs ~line 2087-2094, tasks 2140/2146).
-fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
-    values.get(guard_cell).cloned()
-}
-
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
@@ -1030,7 +1005,14 @@ impl Engine {
                     // those defensively rather than panic; the old snapshot's guard value
                     // will be used for the downstream diff in subsequent edits. Symmetric
                     // with edit_source Phase 3 (task 2229).
-                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
+                    let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
+                        debug_assert!(
+                            false,
+                            "guard cell {:?} absent from `values` after group_needs_phase3 \
+                             returned true — unreachable in current flow but possible after a \
+                             future refactor that narrows structure_controlling (task 2229)",
+                            group.guard_cell
+                        );
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
@@ -2120,7 +2102,14 @@ impl Engine {
                     // than panic; the old snapshot's guard value will be used for
                     // the downstream diff in subsequent edits. Symmetric with
                     // edit_param Phase 3 (task 2229).
-                    let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell) else {
+                    let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
+                        debug_assert!(
+                            false,
+                            "guard cell {:?} absent from `values` after group_needs_phase3 \
+                             returned true — unreachable in current flow but possible after a \
+                             future refactor that narrows structure_controlling (task 2229)",
+                            group.guard_cell
+                        );
                         continue;
                     };
                     self.last_guard_phase_group_evals += 1;
@@ -2399,7 +2388,7 @@ mod tests {
 
     use super::{
         deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged,
-        phase3_take_guard_val, reelaborate_guarded_group,
+        reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
@@ -3309,86 +3298,4 @@ mod tests {
         assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
     }
 
-    /// When guard_cell IS present in `values`, `phase3_take_guard_val` returns
-    /// `Some` with the stored value.
-    ///
-    /// This is the normal Phase 3 path: the guard cell was evaluated and lives
-    /// in the local value map; Phase 3 proceeds with the retrieved guard value.
-    #[test]
-    fn phase3_take_guard_val_returns_some_when_guard_cell_present() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-
-        let result = phase3_take_guard_val(&values, &guard_cell);
-        assert_eq!(result, Some(Value::Bool(true)));
-    }
-
-    /// When guard_cell is ABSENT from `values`, `phase3_take_guard_val` returns
-    /// `None`.
-    ///
-    /// This is the defensive-skip path (task 2229): `group_needs_phase3` can
-    /// return `true` via its absent-guard arm (`old_guard_val.is_some()` when
-    /// the guard cell is missing from `values`). Callers wrap
-    /// `phase3_take_guard_val` in `let Some(guard_val) = ... else { continue; }`
-    /// to skip the group defensively rather than panic, matching the behaviour
-    /// already established in `edit_source` Phase 3.
-    #[test]
-    fn phase3_take_guard_val_returns_none_when_guard_cell_absent() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let values = ValueMap::default(); // guard_cell absent
-
-        let result = phase3_take_guard_val(&values, &guard_cell);
-        assert_eq!(result, None);
-    }
-
-    /// Regression guard for task 2229: pins the co-variation contract between
-    /// `group_needs_phase3` and `phase3_take_guard_val` on the absent-guard
-    /// arm.
-    ///
-    /// Contract being locked:
-    /// - When the guard cell is absent from `values` but WAS present in the
-    ///   old snapshot (`old_guard_val = Some(...)`), `group_needs_phase3`
-    ///   returns `true` (structural change — re-elaboration needed).
-    /// - In the same scenario, `phase3_take_guard_val` returns `None` (the
-    ///   guard cell is not in the local value map).
-    ///
-    /// The post-fix Phase 3 sites (`edit_param` ~line 1005, `edit_source`
-    /// ~line 2095) handle this co-variation via:
-    /// ```
-    /// let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell)
-    ///     else { continue; };
-    /// ```
-    /// i.e. they skip the group defensively when the lookup yields `None`.
-    ///
-    /// A future change that (a) drops the absent arm from `group_needs_phase3`
-    /// or (b) re-introduces `.expect()` inside `phase3_take_guard_val` would
-    /// break one half of this invariant and should be caught here.
-    #[test]
-    fn phase3_predicate_and_lookup_co_vary_in_absent_guard_arm() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let values = ValueMap::default(); // guard_cell absent
-        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
-
-        // Predicate: absent guard + prior value → re-elaboration needed.
-        let needs = group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
-        assert!(
-            needs,
-            "group_needs_phase3: absent guard + prior value → true (structural change)"
-        );
-
-        // Lookup: absent guard → None → caller must skip via let-Some-else-continue.
-        let val = phase3_take_guard_val(&values, &group.guard_cell);
-        assert_eq!(
-            val, None,
-            "phase3_take_guard_val: absent guard → None → defensive skip"
-        );
-    }
 }
