@@ -1594,17 +1594,26 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
     });
 }
 
+// Shared box-construction helper for test fixtures.
+// Centralises the 0.01 m size constant and the IsDone() check used by all three
+// box-based fixtures (malformed solid, compsolid, closed shell).
+// Returns TopoDS_Solid directly (via BRepPrimAPI_MakeBox::Solid()) to make the
+// type-flow explicit and avoid runtime TopoDS::Solid() downcasts at call sites.
+static TopoDS_Solid make_unit_test_box(const char* fixture_name) {
+    BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
+    box_maker.Build();
+    if (!box_maker.IsDone()) {
+        throw std::runtime_error(std::string(fixture_name) + ": box construction failed");
+    }
+    return box_maker.Solid();
+}
+
 std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
     // Build a 10×10×10 mm box, extract 5 of its 6 faces into a shell,
     // wrap the open shell in a solid. The 4 edges that connected to the
     // removed face are now free → BRepCheck_Analyzer::IsValid() returns false.
     return wrap_occt_call("make_malformed_solid", [&]() {
-        BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
-        box_maker.Build();
-        if (!box_maker.IsDone()) {
-            throw std::runtime_error("make_malformed_solid: box construction failed");
-        }
-        TopoDS_Shape box = box_maker.Shape();
+        TopoDS_Solid box = make_unit_test_box("make_malformed_solid");
 
         BRep_Builder builder;
         TopoDS_Shell shell;
@@ -1614,15 +1623,25 @@ std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
             builder.Add(shell, ex.Current());
         }
 
-        // Defensive structural self-check: the open shell must have at least one
-        // free edge (an edge with exactly 1 parent face), left behind by the missing
-        // 6th box face. If the shell construction changes, this test could silently pass.
+        // Wrap the open shell in a solid (TopAbs_SOLID type, passes shape-type
+        // guard, but IsValid() fails because the shell is not closed)
+        TopoDS_Solid solid;
+        builder.MakeSolid(solid);
+        builder.Add(solid, shell);
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = solid;
+
+        // Defensive structural self-check: the wrapping solid must have at least
+        // one free edge (an edge with exactly 1 parent face), left behind by the
+        // missing 6th box face. Uses result->edge_face_map() — the same cached
+        // accessor that is_manifold uses — for consistency with the nonmanifold
+        // compound check above.
         {
-            TopTools_IndexedDataMapOfShapeListOfShape shell_efm;
-            TopExp::MapShapesAndAncestors(shell, TopAbs_EDGE, TopAbs_FACE, shell_efm);
+            const auto& efm = result->edge_face_map();
             bool found_free_edge = false;
-            for (Standard_Integer i = 1; i <= shell_efm.Extent(); ++i) {
-                if (shell_efm.FindFromIndex(i).Extent() == 1) {
+            for (Standard_Integer i = 1; i <= efm.Extent(); ++i) {
+                if (efm.FindFromIndex(i).Extent() == 1) {
                     found_free_edge = true;
                     break;
                 }
@@ -1634,14 +1653,6 @@ std::unique_ptr<OcctShape> make_malformed_solid_for_test() {
             }
         }
 
-        // Wrap the open shell in a solid (TopAbs_SOLID type, passes shape-type
-        // guard, but IsValid() fails because the shell is not closed)
-        TopoDS_Solid solid;
-        builder.MakeSolid(solid);
-        builder.Add(solid, shell);
-
-        auto result = std::make_unique<OcctShape>();
-        result->shape = solid;
         return result;
     });
 }
@@ -1734,17 +1745,12 @@ std::unique_ptr<OcctShape> make_compsolid_for_test() {
     // may or may not be considered valid depending on OCCT's interpretation
     // of the CompSolid semantics). See the integration test comment for policy.
     return wrap_occt_call("make_compsolid", [&]() {
-        BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
-        box_maker.Build();
-        if (!box_maker.IsDone()) {
-            throw std::runtime_error("make_compsolid: box construction failed");
-        }
-        TopoDS_Shape box = box_maker.Shape();
+        TopoDS_Solid box = make_unit_test_box("make_compsolid");
 
         TopoDS_CompSolid cs;
         BRep_Builder b;
         b.MakeCompSolid(cs);
-        b.Add(cs, TopoDS::Solid(box));
+        b.Add(cs, box);
 
         auto result = std::make_unique<OcctShape>();
         result->shape = cs;
@@ -1792,12 +1798,7 @@ std::unique_ptr<OcctShape> make_closed_shell_for_test() {
     // a stand-alone TopAbs_SHELL that exercises the SHELL guard arm in
     // is_watertight without having to re-derive the correctness from primitives.
     return wrap_occt_call("make_closed_shell", [&]() {
-        BRepPrimAPI_MakeBox box_maker(0.01, 0.01, 0.01);
-        box_maker.Build();
-        if (!box_maker.IsDone()) {
-            throw std::runtime_error("make_closed_shell: box construction failed");
-        }
-        TopoDS_Shape box = box_maker.Shape();
+        TopoDS_Solid box = make_unit_test_box("make_closed_shell");
 
         TopExp_Explorer ex(box, TopAbs_SHELL);
         if (!ex.More()) {
