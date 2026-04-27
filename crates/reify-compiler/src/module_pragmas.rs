@@ -609,8 +609,22 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             [PragmaArg::Bare(PragmaValue::Ident(name))] if name == "occt" => {
                 module.kernel_pragma = Some(name.clone());
             }
+            // Non-occt ident: PRD §4 — error-level (not warning) so the v0.1
+            // limitation is discoverable. Storage still mirrors the user's
+            // verbatim ident, mirroring `apply_version_pragma`'s policy of
+            // writing `module.declared_version` even when emitting an error
+            // for a too-new version.
+            [PragmaArg::Bare(PragmaValue::Ident(name))] => {
+                module.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "kernel '{name}' is deferred to v0.2; v0.1 supports only #kernel(occt)"
+                    ))
+                    .with_label(DiagnosticLabel::new(pragma.span, "deferred to v0.2")),
+                );
+                module.kernel_pragma = Some(name.clone());
+            }
             _ => {
-                // Malformed / non-occt arms handled in later steps.
+                // Other malformed arms handled in later steps.
             }
         }
     }
