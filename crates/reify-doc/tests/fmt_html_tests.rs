@@ -546,6 +546,66 @@ fn ports_table_omitted_when_empty() {
     assert!(!out.contains("<h3>Ports</h3>"));
 }
 
+/// Constraints section: `<h3>Constraints</h3>` plus a `<ul>` of `<li>`s.
+/// Each entry has the form `[label: ]<code>{escaped-expr}</code>[ <em>(line N)</em>]`.
+#[test]
+fn constraints_section_renders() {
+    let item = structure_with_constraints(
+        "Bolt",
+        vec![
+            ConstraintDoc {
+                label: None,
+                expr_repr: "length >= diameter".into(),
+                annotations: vec![],
+                line: Some(42),
+            },
+            ConstraintDoc {
+                label: Some("safe_v".into()),
+                expr_repr: "v <= 5.5 V".into(),
+                annotations: vec![],
+                line: None,
+            },
+        ],
+    );
+    let out = render_one_item(item);
+
+    // Section header and <ul> wrapper.
+    assert!(
+        out.contains("<h3>Constraints</h3>"),
+        "missing <h3>Constraints</h3>; got:\n{out}"
+    );
+    assert!(out.contains("<ul>"), "missing <ul>; got:\n{out}");
+    // First entry: labelless, escaped `>=`, line annotation.
+    assert!(
+        out.contains("<code>length &gt;= diameter</code>"),
+        "expected labelless expr in <code> with `>=` escaped to `&gt;=`; got:\n{out}"
+    );
+    assert!(
+        out.contains("<em>(line 42)</em>"),
+        "expected `<em>(line 42)</em>` suffix on first entry; got:\n{out}"
+    );
+    // Second entry: labelled, escaped `<=`, no line suffix.
+    assert!(
+        out.contains("safe_v: <code>v &lt;= 5.5 V</code>"),
+        "expected `safe_v: <code>v &lt;= 5.5 V</code>` for labelled entry; got:\n{out}"
+    );
+    // Confirm only ONE `(line ` substring exists (the labelless entry's),
+    // proving the `None`-line entry has no line suffix.
+    assert_eq!(
+        out.matches("(line ").count(),
+        1,
+        "expected exactly one `(line ` substring (only the first entry has Some(42)); got:\n{out}"
+    );
+}
+
+/// Empty constraints list must produce no `<h3>Constraints</h3>`.
+#[test]
+fn constraints_section_omitted_when_empty() {
+    let item = structure_with_constraints("Bolt", vec![]);
+    let out = render_one_item(item);
+    assert!(!out.contains("<h3>Constraints</h3>"));
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
