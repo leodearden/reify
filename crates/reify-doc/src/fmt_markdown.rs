@@ -662,9 +662,7 @@ fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
             out.push_str(label);
             out.push_str(": ");
         }
-        out.push('`');
-        out.push_str(&c.expr_repr);
-        out.push('`');
+        out.push_str(&md_inline_code(&c.expr_repr));
         if let Some(line) = c.line {
             out.push_str(" *(line ");
             out.push_str(&line.to_string());
