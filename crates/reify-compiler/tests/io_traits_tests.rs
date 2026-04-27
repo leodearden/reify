@@ -19,6 +19,69 @@ fn io_module() -> &'static reify_compiler::CompiledModule {
         .expect("std.io module should be present in the stdlib")
 }
 
+// ─── step-5: enums ───────────────────────────────────────────────────────────
+
+/// DiscardReason, DisposalMethod, and OutputFormat are present with the exact
+/// variant sets from docs/reify-stdlib-reference.md §9.
+#[test]
+fn io_enums_present_with_expected_variants() {
+    let module = io_module();
+
+    struct EnumSpec {
+        name: &'static str,
+        variants: &'static [&'static str],
+    }
+
+    let specs = [
+        EnumSpec {
+            name: "DiscardReason",
+            variants: &["Offcut", "Scrap", "FailedInspection", "Waste"],
+        },
+        EnumSpec {
+            name: "DisposalMethod",
+            variants: &["Recycle", "Landfill", "Reprocess"],
+        },
+        EnumSpec {
+            name: "OutputFormat",
+            variants: &["STEP", "STL", "ThreeMF", "Display"],
+        },
+    ];
+
+    for spec in &specs {
+        let enum_def = module
+            .enum_defs
+            .iter()
+            .find(|e| e.name == spec.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "std.io should contain enum '{}'; found: {:?}",
+                    spec.name,
+                    module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+                )
+            });
+
+        assert_eq!(
+            enum_def.variants.len(),
+            spec.variants.len(),
+            "enum '{}' should have {} variants, got {}: {:?}",
+            spec.name,
+            spec.variants.len(),
+            enum_def.variants.len(),
+            enum_def.variants
+        );
+
+        for variant in spec.variants {
+            assert!(
+                enum_def.variants.contains(&variant.to_string()),
+                "enum '{}' should contain variant '{}', found: {:?}",
+                spec.name,
+                variant,
+                enum_def.variants
+            );
+        }
+    }
+}
+
 // ─── step-3: marker traits ───────────────────────────────────────────────────
 
 /// Source and Sink are pure marker traits: no refinements, no required members,
