@@ -344,3 +344,75 @@ structure def S : TraitA + TraitB { param mass : Mass = 1kg }
             .collect::<Vec<_>>()
     );
 }
+
+/// Imported names do NOT form a parent scope (spec §8.11).
+///
+/// In the source below, both `import std.math.sqrt` and `let sqrt = 1.0` exist
+/// at module/structure level, and a lambda `|sqrt|` rebinds it. Only ONE
+/// shadow is permissible: the lambda's `sqrt` shadows the structure's
+/// `let sqrt`. The IMPORT itself MUST NOT enter any frame, so the
+/// structure's `let sqrt` MUST NOT be flagged as shadowing the import.
+///
+/// We assert the lint emits exactly ONE Shadowing warning (the lambda
+/// shadow), and that the warning's child-site span is at the lambda's `|sqrt|`
+/// — NOT at the structure's `let sqrt` (which would indicate the import
+/// erroneously entered a parent scope).
+///
+/// Compiles WITHOUT `compile_source_with_stdlib` because the parse-only path
+/// is sufficient: an unresolved import still produces a `Declaration::Import`
+/// AST node, which the lint must explicitly skip per spec §8.11. Any
+/// import-resolution diagnostics produced are unrelated to the Shadowing
+/// invariant under test.
+#[test]
+fn imported_name_does_not_form_parent_scope() {
+    let source = r#"
+import std.math.sqrt
+structure def S {
+    let sqrt = 1.0
+    let f = |sqrt| sqrt + 1.0
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    // Exactly ONE Shadowing warning is permissible: the lambda's `sqrt`
+    // shadows the structure's `let sqrt`. If the import erroneously formed a
+    // parent scope, we'd see TWO (the let shadowing the import + the lambda
+    // shadowing the let).
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda |sqrt| vs structure \
+         let sqrt) — imports must not form a parent scope per §8.11; got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    // Verify the single warning's child site is the lambda's `|sqrt|`, not
+    // the structure's `let sqrt`. The lambda appears AFTER the let in the
+    // source, so the child-site span must come after the `let sqrt` byte.
+    let warning = shadow_warnings[0];
+    assert_eq!(warning.labels.len(), 2);
+    let let_sqrt = source
+        .find("let sqrt")
+        .expect("source must contain `let sqrt`");
+    let lambda_sqrt = source
+        .find("|sqrt|")
+        .expect("source must contain `|sqrt|`");
+    let child_label = &warning.labels[0];
+    assert!(
+        (child_label.span.start as usize) >= lambda_sqrt,
+        "child-site span must point at the lambda's `|sqrt|` (>= byte {}), \
+         not at the structure's `let sqrt` (byte {}); got {:?}",
+        lambda_sqrt,
+        let_sqrt,
+        child_label.span
+    );
+}
