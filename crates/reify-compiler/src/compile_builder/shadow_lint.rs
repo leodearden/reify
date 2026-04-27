@@ -507,6 +507,21 @@ fn lookup_in_stack(frames: &[&Frame], name: &str) -> Option<SourceSpan> {
 
 /// Push a single Shadowing warning with the canonical message, code, and
 /// two labels (child site + original decl site).
+///
+/// # Wording pin
+///
+/// The three message strings emitted here are pinned by
+/// `shadow_diagnostic_message_format_is_pinned` in
+/// `crates/reify-compiler/tests/shadowing_warning_tests.rs`. They are also
+/// documented on the `DiagnosticCode::Shadowing` variant in
+/// `crates/reify-types/src/diagnostics.rs` and in the PRD
+/// (`docs/prds/shadowing-warning.md`). Any drift between the literals below
+/// and the test's literal expectations will surface as a test failure — do
+/// not change one without updating the other.
+///
+/// - Diagnostic message: `"declaration of '<name>' shadows enclosing declaration"`
+/// - Child-site label: `"shadows the enclosing declaration"`
+/// - Original-decl label: `"originally declared here"`
 fn push_shadow_diagnostic(
     diagnostics: &mut Vec<Diagnostic>,
     name: &str,
