@@ -30,6 +30,10 @@ enum OcctRequest {
         query: GeometryQuery,
         reply: oneshot::Sender<Result<Value, QueryError>>,
     },
+    QueryMany {
+        queries: Vec<GeometryQuery>,
+        reply: oneshot::Sender<Result<Vec<Value>, QueryError>>,
+    },
     Export {
         handle: GeometryHandleId,
         format: ExportFormat,
@@ -129,6 +133,35 @@ impl OcctKernelHandle {
         self.tx
             .blocking_send(OcctRequest::Query {
                 query: query.clone(),
+                reply: reply_tx,
+            })
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
+    /// Run a batch of queries in a single channel round-trip and return
+    /// the results in order.
+    ///
+    /// Sends one `QueryMany` request to the kernel thread; the kernel
+    /// thread fail-fast collects per-query results (stopping at the
+    /// first `QueryError`) and replies with a `Result<Vec<Value>,
+    /// QueryError>`. This collapses the actor-channel send/recv to a
+    /// single round-trip, eliminating the N+1 latency that per-element
+    /// `query` incurs in tight selector loops.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn query_many(
+        &self,
+        queries: &[GeometryQuery],
+    ) -> Result<Vec<Value>, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::QueryMany {
+                queries: queries.to_vec(),
                 reply: reply_tx,
             })
             .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
@@ -237,6 +270,14 @@ impl OcctKernelHandle {
                     }
                     OcctRequest::Query { query, reply } => {
                         let result = kernel.query(&query);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::QueryMany { queries, reply } => {
+                        // Fail-fast collect: Result<Vec<_>, _>'s FromIterator
+                        // short-circuits on the first Err, so we stop issuing
+                        // FFI calls once any query fails.
+                        let result: Result<Vec<Value>, QueryError> =
+                            queries.iter().map(|q| kernel.query(q)).collect();
                         let _ = reply.send(result);
                     }
                     OcctRequest::Export {
@@ -545,6 +586,13 @@ impl GeometryKernel for OcctKernelHandle {
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         OcctKernelHandle::query(self, query)
+    }
+
+    /// Override the trait default with a real channel-routed batched
+    /// implementation. Delegates to the inherent `query_many` (which
+    /// only needs `&self`).
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        OcctKernelHandle::query_many(self, queries)
     }
 
     fn export(
