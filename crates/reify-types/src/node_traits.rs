@@ -325,6 +325,22 @@ mod tests {
     }
 
     #[test]
+    fn all_mask_equals_or_of_flag_constants() {
+        // ALL_MASK must always equal the bitwise OR of every declared flag constant.
+        // This pins the derivation contract: if a new flag is added to NodeTraits, it
+        // must also appear in the ALL_MASK derivation (or, once that derivation is
+        // in place, the constant automatically includes the new flag). If anyone
+        // accidentally reverts ALL_MASK to a hand-written literal and that literal
+        // drifts from the set of flag constants, this test will fail immediately —
+        // before a silent bug in the `Not` impl reaches users.
+        let expected = NodeTraits::IMMEDIATE.0
+            | NodeTraits::WARM_STARTABLE.0
+            | NodeTraits::PROGRESSIVE.0
+            | NodeTraits::COMMITTABLE.0;
+        assert_eq!(NodeTraits::ALL_MASK, expected);
+    }
+
+    #[test]
     fn union_equals_bitor() {
         assert_eq!(
             NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
