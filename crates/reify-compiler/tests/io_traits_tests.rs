@@ -68,10 +68,12 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
     };
 
     // Input : Source — source: String, provenance: StructureRef("Provenance")
-    assert_eq!(
-        find_trait("Input").refinements,
-        vec!["Source"],
-        "Input should refine Source"
+    let refinements = &find_trait("Input").refinements;
+    assert_eq!(refinements.len(), 1, "Input should refine exactly 1 trait, got: {:?}", refinements);
+    assert!(
+        refinements.contains(&"Source".to_string()),
+        "Input should refine Source, got: {:?}",
+        refinements
     );
     assert_eq!(param_type("Input", "source"), Type::String);
     assert_eq!(
@@ -80,10 +82,12 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
     );
 
     // Buy : Source — supplier, part_number: String; unit_cost: Money; lead_time: Time
-    assert_eq!(
-        find_trait("Buy").refinements,
-        vec!["Source"],
-        "Buy should refine Source"
+    let refinements = &find_trait("Buy").refinements;
+    assert_eq!(refinements.len(), 1, "Buy should refine exactly 1 trait, got: {:?}", refinements);
+    assert!(
+        refinements.contains(&"Source".to_string()),
+        "Buy should refine Source, got: {:?}",
+        refinements
     );
     assert_eq!(param_type("Buy", "supplier"), Type::String);
     assert_eq!(param_type("Buy", "part_number"), Type::String);
@@ -100,10 +104,12 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
     );
 
     // Output : Sink — format: Enum("OutputFormat")
-    assert_eq!(
-        find_trait("Output").refinements,
-        vec!["Sink"],
-        "Output should refine Sink"
+    let refinements = &find_trait("Output").refinements;
+    assert_eq!(refinements.len(), 1, "Output should refine exactly 1 trait, got: {:?}", refinements);
+    assert!(
+        refinements.contains(&"Sink".to_string()),
+        "Output should refine Sink, got: {:?}",
+        refinements
     );
     assert_eq!(
         param_type("Output", "format"),
@@ -111,10 +117,12 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
     );
 
     // Discard : Sink — reason: Enum("DiscardReason"), disposal_method: Enum("DisposalMethod")
-    assert_eq!(
-        find_trait("Discard").refinements,
-        vec!["Sink"],
-        "Discard should refine Sink"
+    let refinements = &find_trait("Discard").refinements;
+    assert_eq!(refinements.len(), 1, "Discard should refine exactly 1 trait, got: {:?}", refinements);
+    assert!(
+        refinements.contains(&"Sink".to_string()),
+        "Discard should refine Sink, got: {:?}",
+        refinements
     );
     assert_eq!(
         param_type("Discard", "reason"),
