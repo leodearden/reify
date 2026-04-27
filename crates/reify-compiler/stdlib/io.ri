@@ -30,8 +30,16 @@ enum OutputFormat { STEP, STL, ThreeMF, Display }
 
 // Records where a design element originated.
 // ISO 8601 string for timestamp; no Date type exists in v0.1.
-// tolerance_guarantee is left without a default because no `undef` keyword
-// exists — see header comment.  Consumers must supply all four fields.
+//
+// tolerance_guarantee (Length) — the precision guarantee made by the source
+//   tool for the imported geometry (e.g. STEP/OCCT kernel tolerance).  This is
+//   an attribute of the *import event itself*: it lets downstream conformance
+//   checks verify that incoming geometry was produced within a stated tolerance
+//   bound.  Faithful transcription of §9 spec field
+//   `tolerance_guarantee : Length = undef`.
+//
+// No defaults are provided because no `undef` keyword exists — see header
+// comment deviation 2.  Consumers must supply all four fields.
 structure def Provenance {
     param source_tool : String
     param source_version : String
