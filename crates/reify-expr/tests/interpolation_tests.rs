@@ -5,7 +5,9 @@
 //! references on regular grids. RBF and Kriging are deferred and exercised via
 //! their fall-back-with-warning path.
 
-use reify_expr::interp::{InterpolationMethod, InterpolationResult, interpolate_1d};
+use reify_expr::interp::{
+    InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d,
+};
 
 const TOL: f64 = 1e-12;
 
@@ -255,5 +257,178 @@ fn cubic_1d_two_point_grid_matches_linear() {
             cubic.value,
             linear.value
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2D Linear (bilinear)
+// ---------------------------------------------------------------------------
+
+/// Build a row-major 2D values vector with shape `(nx, ny)` from a closure.
+fn build_2d(grid_x: &[f64], grid_y: &[f64], f: impl Fn(f64, f64) -> f64) -> Vec<f64> {
+    let mut v = Vec::with_capacity(grid_x.len() * grid_y.len());
+    for &x in grid_x {
+        for &y in grid_y {
+            v.push(f(x, y));
+        }
+    }
+    v
+}
+
+/// Corners of a 2x2 grid reproduce their sample values exactly.
+#[test]
+fn linear_2d_corners_reproduce_samples() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let values = vec![10.0, 20.0, 30.0, 40.0]; // (0,0)=10 (0,1)=20 (1,0)=30 (1,1)=40
+
+    for (i, &x) in gx.iter().enumerate() {
+        for (j, &y) in gy.iter().enumerate() {
+            let r = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (x, y));
+            let expected = values[i * gy.len() + j];
+            assert!(
+                approx_eq(r.value, expected, TOL),
+                "corner ({},{}) got {}, expected {}",
+                i,
+                j,
+                r.value,
+                expected
+            );
+            assert!(r.diagnostics.is_empty());
+        }
+    }
+}
+
+/// Center of the unit cell `(0.5, 0.5)` is the arithmetic mean of the four
+/// corner values.
+#[test]
+fn linear_2d_unit_cell_center_is_mean() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let values = vec![10.0, 20.0, 30.0, 40.0];
+    let r = interpolate_2d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &values,
+        (0.5, 0.5),
+    );
+    let expected = (10.0 + 20.0 + 30.0 + 40.0) / 4.0;
+    assert!(approx_eq(r.value, expected, TOL), "got {}", r.value);
+}
+
+/// Separability: bilinear at fixed `y` reduces to 1D linear in `x` over the
+/// row interpolated to that `y`.
+#[test]
+fn linear_2d_separable_against_1d_linear() {
+    let gx = vec![0.0f64, 1.0, 3.0, 6.0];
+    let gy = vec![0.0f64, 2.0, 5.0];
+    let f = |x: f64, y: f64| 1.0 + 2.0 * x - 0.5 * y + 0.3 * x * y;
+    let values = build_2d(&gx, &gy, f);
+
+    let xs = [0.4, 1.7, 4.0];
+    let ys = [0.5, 3.0];
+    for &qy in &ys {
+        // Build a 1D row by interpolating each grid_x's column at qy.
+        let row: Vec<f64> = (0..gx.len())
+            .map(|i| {
+                let col: Vec<f64> = (0..gy.len()).map(|j| values[i * gy.len() + j]).collect();
+                interpolate_1d(InterpolationMethod::Linear, &gy, &col, qy).value
+            })
+            .collect();
+
+        for &qx in &xs {
+            let r2 = interpolate_2d(
+                InterpolationMethod::Linear,
+                &gx,
+                &gy,
+                &values,
+                (qx, qy),
+            );
+            let r1 = interpolate_1d(InterpolationMethod::Linear, &gx, &row, qx).value;
+            assert!(
+                approx_eq(r2.value, r1, 1e-9),
+                "({},{}): 2D={} vs 1D={}",
+                qx,
+                qy,
+                r2.value,
+                r1
+            );
+        }
+    }
+}
+
+/// Out-of-range queries clamp each axis independently.
+#[test]
+fn linear_2d_out_of_range_clamps_each_axis() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let values = vec![10.0, 20.0, 30.0, 40.0]; // (0,0) (0,1) (1,0) (1,1)
+
+    // Below-left corner: clamps to (0,0)
+    let r1 = interpolate_2d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &values,
+        (-5.0, -2.0),
+    );
+    assert!(approx_eq(r1.value, 10.0, TOL), "got {}", r1.value);
+
+    // Above-right corner: clamps to (1,1)
+    let r2 = interpolate_2d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &values,
+        (10.0, 12.0),
+    );
+    assert!(approx_eq(r2.value, 40.0, TOL), "got {}", r2.value);
+
+    // Mixed: x in range, y above → clamp y to last; lerp in x
+    let r3 = interpolate_2d(
+        InterpolationMethod::Linear,
+        &gx,
+        &gy,
+        &values,
+        (0.5, 10.0),
+    );
+    let expected = 0.5 * (20.0 + 40.0); // y=1 row: (0,1)=20, (1,1)=40
+    assert!(approx_eq(r3.value, expected, TOL), "got {}", r3.value);
+}
+
+/// Larger 4x4 monotone grid: the midpoint of any cell equals the mean of its
+/// four corner values.
+#[test]
+fn linear_2d_4x4_cell_midpoint_is_corner_mean() {
+    let gx = vec![0.0f64, 1.0, 2.0, 3.0];
+    let gy = vec![0.0f64, 1.0, 2.0, 3.0];
+    let f = |x: f64, y: f64| x + 2.0 * y + 0.1 * x * y;
+    let values = build_2d(&gx, &gy, f);
+    for i in 0..gx.len() - 1 {
+        for j in 0..gy.len() - 1 {
+            let qx = 0.5 * (gx[i] + gx[i + 1]);
+            let qy = 0.5 * (gy[j] + gy[j + 1]);
+            let v00 = values[i * gy.len() + j];
+            let v01 = values[i * gy.len() + (j + 1)];
+            let v10 = values[(i + 1) * gy.len() + j];
+            let v11 = values[(i + 1) * gy.len() + (j + 1)];
+            let expected = 0.25 * (v00 + v01 + v10 + v11);
+            let r = interpolate_2d(
+                InterpolationMethod::Linear,
+                &gx,
+                &gy,
+                &values,
+                (qx, qy),
+            );
+            assert!(
+                approx_eq(r.value, expected, TOL),
+                "cell ({},{}) got {}, expected {}",
+                i,
+                j,
+                r.value,
+                expected
+            );
+        }
     }
 }
