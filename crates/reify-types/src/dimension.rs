@@ -277,6 +277,8 @@ impl DimensionVector {
             (si_value * 1e6, "mm\u{00B2}")
         } else if *self == DimensionVector::VOLUME {
             (si_value * 1e9, "mm\u{00B3}")
+        } else if *self == DimensionVector::MONEY {
+            (si_value, "USD")
         } else if self.is_dimensionless() {
             (si_value, "")
         } else {
