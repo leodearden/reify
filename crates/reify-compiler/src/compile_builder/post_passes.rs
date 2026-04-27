@@ -105,48 +105,42 @@ pub(crate) fn phase_field_composition(ctx: &mut CompilationCtx) {
 /// identical and any future field-related post-pass can reuse the
 /// pattern.
 pub(crate) fn phase_augment_composed_captures(ctx: &mut CompilationCtx) {
-    // First, collect all field names so we can build a per-iteration
-    // registry that excludes the outer field. We snapshot the names into
-    // owned Strings to avoid borrowing `ctx.fields` while we mutate it.
-    let field_names: Vec<String> = ctx.fields.iter().map(|f| f.name.clone()).collect();
-
-    // Snapshot read-only field references keyed by name, used to rebuild a
-    // registry for each composed field with the outer name omitted. Stored
-    // as `(name, Box::leak-style)` is unnecessary — we re-collect against
-    // `&ctx.fields` after the mutating loop completes for each field, but
-    // because we mutate `ctx.fields[i].source.expr.kind.captures` and not
-    // structural fields, we can hold a parallel index of (i, deps) computed
-    // before the mutation. Simpler: pre-compute `(field_idx, deps_to_add)`
-    // pairs in a read-only pass, then merge them in a separate mutating
-    // pass. This avoids any aliased borrow.
+    // Two-pass borrow split: a read-only pass walks each composed field's
+    // body to compute the deps to inject, then a separate mutating pass
+    // merges them into the lambda's captures. The split avoids holding
+    // `&ctx.fields` (immutable, via the registry) and `&mut ctx.fields`
+    // simultaneously.
+    //
+    // The registry is built once over all fields. For each composed field
+    // we temporarily remove its own entry to suppress self-capture (a body
+    // like `composed { |p| f3(p) }` inside f3 would otherwise add
+    // `__field.f3` as a self-dep), then reinsert it after the helper
+    // returns. This preserves `collect_composed_field_dependencies`'s
+    // single-arg shape while keeping the registry build O(n) total.
+    let mut registry: HashMap<&str, &CompiledField> =
+        ctx.fields.iter().map(|f| (f.name.as_str(), f)).collect();
     let mut deps_to_add: Vec<(usize, Vec<reify_types::ValueCellId>)> = Vec::new();
 
     for (idx, field) in ctx.fields.iter().enumerate() {
         if let CompiledFieldSource::Composed { expr } = &field.source {
-            // Build a registry mapping every *other* field's name → field ref.
-            // Excluding the outer field ensures recursive composed fields
-            // (e.g. `composed { |p| f3(...) }` inside f3) do not produce a
-            // self-capture entry.
-            let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
-            for other in &ctx.fields {
-                if other.name != field.name {
-                    registry.insert(other.name.as_str(), other);
-                }
-            }
+            // Suppress self-reference: pop self from the registry, run the
+            // walk, then restore. The helper only consults `contains_key`,
+            // so removing the self entry is sufficient.
+            let saved = registry.remove(field.name.as_str());
             // The body lives inside a Lambda; walking the outer expr is fine
             // because `walk` recurses into Lambda bodies and will surface
             // FunctionCall nodes referencing fields. This matches the
             // traversal `check_field_composition_types` already performs.
             let deps = collect_composed_field_dependencies(expr, &registry);
+            if let Some(s) = saved {
+                registry.insert(field.name.as_str(), s);
+            }
             deps_to_add.push((idx, deps));
         }
     }
 
-    // Suppress dead_code warning: `field_names` is reserved for a future
-    // diagnostic-emission path and is not currently consumed.
-    let _ = field_names;
-
     // Mutating pass: merge deps into each composed field's lambda captures.
+    drop(registry);
     for (idx, new_caps) in deps_to_add {
         let field = &mut ctx.fields[idx];
         if let CompiledFieldSource::Composed { expr } = &mut field.source
