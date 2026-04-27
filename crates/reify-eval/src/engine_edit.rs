@@ -555,7 +555,7 @@ pub(crate) fn diff_realizations(
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
 struct PendingWarmSeedsGuard<'a> {
-    map: HashMap<NodeId, reify_types::OpaqueState>,
+    map: HashMap<NodeId, (reify_types::OpaqueState, std::time::Instant)>,
     pool: &'a mut WarmStatePool,
 }
 
@@ -568,27 +568,41 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         }
     }
 
-    /// Insert a checked-out entry into the staging map.
-    fn insert(&mut self, nid: NodeId, state: reify_types::OpaqueState) {
-        self.map.insert(nid, state);
+    /// Insert a checked-out entry into the staging map together with its
+    /// original `last_accessed` timestamp.
+    ///
+    /// The `last_accessed` value should be the stamp returned by
+    /// [`WarmStatePool::checkout_with_lru_stamp`] so that the guard can
+    /// later pass it to [`WarmStatePool::donate_preserving_lru`] on the
+    /// cache-miss path, preserving the entry's LRU position through the
+    /// (4c)→(14b) round-trip (arch §4.3).
+    fn insert(
+        &mut self,
+        nid: NodeId,
+        state: reify_types::OpaqueState,
+        last_accessed: std::time::Instant,
+    ) {
+        self.map.insert(nid, (state, last_accessed));
     }
 
     /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
-    /// the guard is live (e.g. step (9)'s `donate_removed_warm_state`).
+    /// the guard is live (e.g. step (9)'s `donate_warm_state_and_invalidate`).
     fn pool_mut(&mut self) -> &mut WarmStatePool {
         self.pool
     }
 
     /// Drain the staging map: route each entry to `cache.donate_warm_state`
-    /// when the cache holds a matching entry, else re-donate to `self.pool`.
+    /// when the cache holds a matching entry, else re-donate to `self.pool`
+    /// **preserving the original `last_accessed` stamp**.
     ///
-    /// Mirrors the existing (14b) drain loop body 1:1:
     /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
-    ///   cache's warm-state slot for the upcoming evaluation round).
-    /// - **cache miss** → `pool.donate(nid, state)` (re-donates the entry so
-    ///   it remains recoverable on a subsequent topology event; re-donation
-    ///   refreshes the entry's LRU access time, matching the pre-refactor
-    ///   semantics of the (14b) loop).
+    ///   cache's warm-state slot for the upcoming evaluation round).  The
+    ///   `last_accessed` stamp is discarded on this path because the entry
+    ///   leaves the pool; its LRU position no longer matters.
+    /// - **cache miss** → `pool.donate_preserving_lru(nid, state, stamp)`
+    ///   (re-donates the entry so it remains recoverable on a subsequent
+    ///   topology event, preserving the original LRU ordering instead of
+    ///   refreshing the stamp to `Instant::now()`).
     ///
     /// After this method returns, `self.map` is empty, so the natural `Drop`
     /// is a no-op (no double-donation).  On any early-return / panic between
@@ -597,38 +611,46 @@ impl<'a> PendingWarmSeedsGuard<'a> {
     /// is enforced by the guard's [`Drop`] impl.
     ///
     /// Cross-reference: see the block comment at step (14b) in `edit_source`
-    /// for the full rationale for re-donation on the cache-miss path.
+    /// for the full rationale for LRU-stamp preservation on the cache-miss path.
     fn drain_into_cache_or_repool(&mut self, cache: &mut CacheStore) {
-        for (nid, state) in self.map.drain() {
+        for (nid, (state, stamp)) in self.map.drain() {
             if cache.get(&nid).is_some() {
                 cache.donate_warm_state(&nid, state);
             } else {
-                self.pool.donate(nid, state);
+                self.pool.donate_preserving_lru(nid, state, stamp);
             }
         }
     }
 }
 
 impl Drop for PendingWarmSeedsGuard<'_> {
-    /// Re-donate all remaining staged entries back to the pool.
+    /// Re-donate all remaining staged entries back to the pool, preserving
+    /// each entry's original `last_accessed` stamp via
+    /// [`WarmStatePool::donate_preserving_lru`].
     ///
     /// This is the panic safety net: if `drain_into_cache_or_repool` was already
     /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
     /// every surviving entry is re-donated so the pool can recover it on the next
     /// `edit_source` call.
     ///
+    /// Using `donate_preserving_lru` (rather than `donate`) ensures that an entry
+    /// which panics out between steps (4c) and (14b) does not unfairly reset its
+    /// LRU clock — the entry returns to the pool with the same age it had when it
+    /// was originally checked out.
+    ///
     /// # Double-panic note
     ///
-    /// `pool.donate` routes through an internal `push_event` → `debug_assert!`
-    /// (events-buffer capacity check).  In debug builds, if this `Drop` fires
-    /// during stack-unwinding from another panic **and** the events buffer happens
-    /// to be at its cap (65 536 entries), the `debug_assert!` itself panics,
-    /// triggering an unconditional `std::process::abort`.  In practice this is
-    /// essentially impossible — the buffer would need to be saturated before the
-    /// first panic — but is documented here for completeness.
+    /// `pool.donate_preserving_lru` routes through `insert_entry` →
+    /// `push_event` → `debug_assert!` (events-buffer capacity check).  In debug
+    /// builds, if this `Drop` fires during stack-unwinding from another panic
+    /// **and** the events buffer happens to be at its cap (65 536 entries), the
+    /// `debug_assert!` itself panics, triggering an unconditional
+    /// `std::process::abort`.  In practice this is essentially impossible — the
+    /// buffer would need to be saturated before the first panic — but is
+    /// documented here for completeness.
     fn drop(&mut self) {
-        for (nid, state) in self.map.drain() {
-            self.pool.donate(nid, state);
+        for (nid, (state, stamp)) in self.map.drain() {
+            self.pool.donate_preserving_lru(nid, state, stamp);
         }
     }
 }
@@ -660,8 +682,8 @@ fn checkout_added_warm_seeds<'a, I, T, F>(
 {
     for id in ids {
         let nid = wrap(id.clone());
-        if let Some(state) = pending.pool_mut().checkout(&nid) {
-            pending.insert(nid, state);
+        if let Some((state, last_accessed)) = pending.pool_mut().checkout_with_lru_stamp(&nid) {
+            pending.insert(nid, state, last_accessed);
         }
     }
 }
@@ -2702,12 +2724,13 @@ impl Engine {
         //       variants gain edit-time cache entries the donate-back
         //       path simply stops triggering.
         //
-        //       Note that re-donation refreshes the entry's LRU access
-        //       time. This is acceptable for the current Constraint /
-        //       Realization paths because they're rare and bounded; if a
-        //       future variant routinely round-trips without a cache
-        //       consumer, switch this branch to a `donate_preserving_lru`
-        //       variant or push a "lru-stamp restore" through the pool API.
+        //       The cache-miss re-donation now calls `donate_preserving_lru`
+        //       (via `PendingWarmSeedsGuard::drain_into_cache_or_repool`),
+        //       preserving the entry's original `last_accessed` stamp from
+        //       step (4c).  This prevents a round-tripping entry from
+        //       appearing "recently accessed" relative to entries that were
+        //       never checked out, which would unfairly shield it from LRU
+        //       eviction (reviewer suggestion S1, task 2516).
         //
         //       Early-return preservation: `pending_warm_seeds` is a
         //       `PendingWarmSeedsGuard` whose `Drop` impl re-donates any
@@ -3910,7 +3933,7 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(node_id.clone(), OpaqueState::new(0xDEADBEEFu32, 16));
+            pending.insert(node_id.clone(), OpaqueState::new(0xDEADBEEFu32, 16), std::time::Instant::now());
             // Guard goes out of scope here, triggering Drop — no drain called
         }
 
@@ -3952,8 +3975,8 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(val_nid.clone(), OpaqueState::new(0xAAu8, 100));
-            pending.insert(con_nid.clone(), OpaqueState::new(0xBBu8, 50));
+            pending.insert(val_nid.clone(), OpaqueState::new(0xAAu8, 100), std::time::Instant::now());
+            pending.insert(con_nid.clone(), OpaqueState::new(0xBBu8, 50), std::time::Instant::now());
             // Neither node has a cache entry → drain MUST re-donate both to pool.
             pending.drain_into_cache_or_repool(&mut cache);
             // Guard drops here with an empty map → Drop is a no-op.
@@ -4001,9 +4024,9 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(val_nid.clone(), OpaqueState::new(0xDEADu32, 8));
-            pending.insert(con_nid.clone(), OpaqueState::new(0xBEEFu32, 16));
-            pending.insert(rea_nid.clone(), OpaqueState::new(0xFEEDu32, 24));
+            pending.insert(val_nid.clone(), OpaqueState::new(0xDEADu32, 8), std::time::Instant::now());
+            pending.insert(con_nid.clone(), OpaqueState::new(0xBEEFu32, 16), std::time::Instant::now());
+            pending.insert(rea_nid.clone(), OpaqueState::new(0xFEEDu32, 24), std::time::Instant::now());
             // No drain — Drop fires with all three entries
         }
 
@@ -4075,11 +4098,11 @@ mod tests {
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
                 let pool_ref = unsafe { &mut *pool_ptr };
                 let mut guard = PendingWarmSeedsGuard::new(pool_ref);
-                let state = guard
+                let (state, stamp) = guard
                     .pool_mut()
-                    .checkout(&nid)
+                    .checkout_with_lru_stamp(&nid)
                     .expect("state should be in pool before panic");
-                guard.insert(nid.clone(), state);
+                guard.insert(nid.clone(), state, stamp);
                 // Simulate a panic inside edit_source between steps (4c) and (14b).
                 panic!("simulated mid-edit panic");
             }));
