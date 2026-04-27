@@ -195,16 +195,22 @@ fn donation_reuse_remove_then_reappear_seeds_cache_warm_state() {
     );
 }
 
-// ── Step-9: eviction fallback — checkout None ⇒ no seed ⇒ cold-eval parity ─
+// ── Step-9: eviction fallback — checkout None ⇒ no seed ────────────────────
 
 /// When the `WarmStatePool` LRU-evicts a previously-donated entry under
 /// memory pressure, a subsequent `edit_source` that re-adds the same
 /// `NodeId` must produce a cache entry whose `warm_state` slot is `None`
-/// (no seed) AND whose evaluated value matches a from-scratch cold eval
-/// (no warm state ever injected). This pins the
-/// "checkout None ⇒ compute_cold transparency" contract per arch §4.3
-/// lines 539-540: the engine treats an evicted node identically to one
-/// that was never donated.
+/// (no seed — the checkout returned None, so nothing was seeded). This pins
+/// the "checkout None ⇒ no seed" half of the eviction contract per arch §4.3
+/// lines 539-540.
+///
+/// The cold-eval parity half (`post_evict_value == cold_value`) is
+/// intentionally deferred: no producer in the codebase consumes
+/// `cache.warm_state` to alter its output today, so an
+/// `assert_eq!(post_evict_value, &cold_value)` would be trivially satisfied
+/// regardless of whether the seed pipeline is broken. That assertion becomes
+/// load-bearing only after a real warm-state consumer lands; track as a
+/// follow-up at that point.
 ///
 /// Eviction mechanics: a 50-byte budget pool. Donating a 32-byte entry
 /// for `volume` fills 32/50. A subsequent 100-byte unrelated donation
@@ -213,25 +219,11 @@ fn donation_reuse_remove_then_reappear_seeds_cache_warm_state() {
 /// new entry — a single item exceeding the entire budget is allowed by
 /// design (see `WarmStatePool::donate_with_cost` doc).
 #[test]
-fn eviction_fallback_evicted_state_returns_none_and_eval_matches_cold() {
+fn eviction_fallback_evicted_state_seeds_no_warm_state() {
     let volume_id = ValueCellId::new("Bracket", "volume");
     let volume_node = NodeId::Value(volume_id.clone());
 
-    // (1) Cold baseline — fresh engine, no warm-state shenanigans, just eval.
-    //     Captures the from-scratch value of `volume` to compare against the
-    //     post-eviction re-eval below.
-    let cold_value = {
-        let mut baseline = fresh_engine();
-        let module = parse_and_compile(bracket_with_volume_let());
-        let result = baseline.eval(&module);
-        result
-            .values
-            .get(&volume_id)
-            .cloned()
-            .expect("baseline eval must produce a value for `volume`")
-    };
-
-    // (2) Eviction scenario: a separate engine with a tiny-budget pool.
+    // (1) Eviction scenario: engine with a tiny-budget pool.
     let mut engine = fresh_engine();
     *engine.warm_pool_mut() = WarmStatePool::new(50);
 
@@ -273,13 +265,13 @@ fn eviction_fallback_evicted_state_returns_none_and_eval_matches_cold() {
         engine.warm_pool().used_bytes()
     );
 
-    // (3) edit_source #2: re-add `volume`. The checkout-and-seed path
+    // (2) edit_source #2: re-add `volume`. The checkout-and-seed path
     //     (step-8) calls `warm_pool.checkout(volume_node)` — returns None
     //     because the entry was evicted — so `pending_warm_seeds` gets no
     //     entry for `volume`, and the cache entry's `warm_state` slot
     //     remains `None`.
     let module_c = parse_and_compile(bracket_with_volume_let());
-    let result = engine
+    engine
         .edit_source(&module_c)
         .expect("second edit_source must succeed");
 
@@ -290,19 +282,6 @@ fn eviction_fallback_evicted_state_returns_none_and_eval_matches_cold() {
     assert!(
         entry.warm_state.is_none(),
         "cache.warm_state for `volume` must be None when pool checkout returned None (LRU-evicted)"
-    );
-
-    // (b) The post-eviction re-eval value matches the cold baseline —
-    //     observable transparency of the evicted-state path against a
-    //     from-scratch cold-only run.
-    let post_evict_value = result
-        .values
-        .get(&volume_id)
-        .expect("post-edit eval must produce a value for `volume`");
-    assert_eq!(
-        post_evict_value, &cold_value,
-        "post-eviction re-eval value must equal the cold baseline (no warm-state seed); \
-         this pins the checkout-None ⇒ compute_cold transparency contract"
     );
 }
 
