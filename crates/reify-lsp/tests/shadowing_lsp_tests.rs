@@ -4,7 +4,7 @@
 //! case and asserts the published diagnostic carries `code = NumberOrString::String("Shadowing")`,
 //! severity Warning, a non-zero range covering the lambda's `|x|` line, and
 //! `related_information` whose single entry locates the shadowed `param x` declaration with
-//! the literal label `"originally declared here"`.
+//! a non-empty label string (literal label content pinned by the compiler-side test).
 //!
 //! PRD reference: docs/prds/shadowing-warning.md §8.5.
 //! Compiler-side coverage: crates/reify-compiler/tests/shadowing_warning_tests.rs.
@@ -111,9 +111,11 @@ async fn lsp_publish_diagnostics_surfaces_w_shadow_warning_for_lambda_param_shad
         ri.location.uri, uri,
         "related_information location must reference the same document"
     );
-    assert_eq!(
-        ri.message, "originally declared here",
-        "related_information message must be 'originally declared here'"
+    assert!(
+        !ri.message.is_empty(),
+        "related_information message must be a non-empty string \
+         (literal label content is pinned by the compiler-side test \
+         in crates/reify-compiler/tests/shadowing_warning_tests.rs)"
     );
     assert_eq!(
         ri.location.range.start.line, 1,
