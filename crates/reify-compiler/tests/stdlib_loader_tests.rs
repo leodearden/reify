@@ -287,6 +287,68 @@ fn bootstrap_module_missing_no_prelude_pragma_panics() {
     assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
 }
 
+/// Multi-violation fixture: when TWO non-bootstrap modules both carry
+/// `#no_prelude`, the bidirectional invariant helper must name BOTH offending
+/// paths in its panic message.
+///
+/// This is a red test for the "collect-all" refactor of the inverse-direction
+/// loop. Before the refactor, the helper panics on the first offender only
+/// (`std/materials/thermal`) and never reports `std/geometry/traits`. After
+/// the refactor, a single aggregated panic message lists every violator so
+/// developers don't have to iterate fix-and-rerun.
+#[test]
+fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
+    let no_prelude = Pragma {
+        name: "no_prelude".to_string(),
+        args: vec![],
+        span: SourceSpan::new(0, 0),
+    };
+
+    // std/units: bootstrap target, pragma is legitimately present.
+    let mut units_module =
+        CompiledModuleBuilder::new(ModulePath::from_dotted("std.units").unwrap()).build();
+    units_module.pragmas.push(no_prelude.clone());
+
+    // std/materials/thermal: non-bootstrap violation #1.
+    let mut thermal_module = CompiledModuleBuilder::new(
+        ModulePath::from_dotted("std.materials.thermal").unwrap(),
+    )
+    .build();
+    thermal_module.pragmas.push(no_prelude.clone());
+
+    // std/geometry/traits: non-bootstrap violation #2.
+    let mut geom_module = CompiledModuleBuilder::new(
+        ModulePath::from_dotted("std.geometry.traits").unwrap(),
+    )
+    .build();
+    geom_module.pragmas.push(no_prelude);
+
+    let modules = vec![units_module, thermal_module, geom_module];
+    let targets = ["std/units"];
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
+    }));
+
+    let err = result.expect_err("expected panic naming all offending paths");
+    let msg: &str = if let Some(s) = err.downcast_ref::<String>() {
+        s.as_str()
+    } else if let Some(s) = err.downcast_ref::<&'static str>() {
+        s
+    } else {
+        panic!("panic payload was neither String nor &'static str");
+    };
+
+    assert!(
+        msg.contains("std/materials/thermal"),
+        "panic message should name 'std/materials/thermal', got:\n{msg}"
+    );
+    assert!(
+        msg.contains("std/geometry/traits"),
+        "panic message should name 'std/geometry/traits', got:\n{msg}"
+    );
+}
+
 // ─── step-2322 / step-2492: bidirectional #no_prelude invariant ─────
 
 /// Assert the `#no_prelude` pragma invariant in both directions:
