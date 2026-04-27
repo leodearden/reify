@@ -54,32 +54,171 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 
 /// Recurse through every expression-bearing position of a top-level declaration.
 ///
-/// Step 4 covers the `Structure`/`Occurrence`/`Trait`/`Purpose` member-list
-/// positions for `MemberDecl::Let.value`. Step 16 expands this to every
-/// `MemberDecl` variant and every other `Declaration` variant carrying an
-/// expression.
+/// Visits:
+///   * `Structure`/`Occurrence`/`Trait`/`Purpose`: `members` (delegates to
+///     [`walk_members`]).
+///   * `Function`: `body.let_bindings[*].value` + `body.result_expr`.
+///   * `Field`: `source` (Analytical/Composed `expr`, Sampled config values).
+///   * `Constraint` (named def): `params[*].default` + `predicates[*]`.
+///   * `Unit`: `conversion` + `offset`.
+///   * `Enum`/`Import`/`TypeAlias`: no expressions, no-op.
 fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diagnostic>) {
-    use reify_syntax::Declaration;
+    use reify_syntax::{Declaration, FieldSource};
     match decl {
-        Declaration::Structure(s) => walk_members(&s.members, diagnostics),
-        Declaration::Occurrence(o) => walk_members(&o.members, diagnostics),
-        Declaration::Trait(t) => walk_members(&t.members, diagnostics),
-        Declaration::Purpose(p) => walk_members(&p.members, diagnostics),
-        // Function/Field/Constraint/Unit/Enum/Import/TypeAlias visited in step 16.
-        _ => {}
+        Declaration::Structure(s) => walk_members(&s.members, diagnostics, 0),
+        Declaration::Occurrence(o) => walk_members(&o.members, diagnostics, 0),
+        Declaration::Trait(t) => walk_members(&t.members, diagnostics, 0),
+        Declaration::Purpose(p) => walk_members(&p.members, diagnostics, 0),
+        Declaration::Function(f) => {
+            for binding in &f.body.let_bindings {
+                walk_expr(&binding.value, diagnostics);
+                if let Some(wc) = &binding.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            walk_expr(&f.body.result_expr, diagnostics);
+        }
+        Declaration::Field(f) => match &f.source {
+            FieldSource::Analytical { expr } | FieldSource::Composed { expr } => {
+                walk_expr(expr, diagnostics);
+            }
+            FieldSource::Sampled { config } => {
+                for (_, expr) in config {
+                    walk_expr(expr, diagnostics);
+                }
+            }
+            FieldSource::Imported { .. } => {}
+        },
+        Declaration::Constraint(c) => {
+            for p in &c.params {
+                if let Some(default) = &p.default {
+                    walk_expr(default, diagnostics);
+                }
+                if let Some(wc) = &p.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            for predicate in &c.predicates {
+                walk_expr(predicate, diagnostics);
+            }
+        }
+        Declaration::Unit(u) => {
+            if let Some(conv) = &u.conversion {
+                walk_expr(conv, diagnostics);
+            }
+            if let Some(off) = &u.offset {
+                walk_expr(off, diagnostics);
+            }
+        }
+        // Declarations with no embedded expressions.
+        Declaration::Enum(_) | Declaration::Import(_) | Declaration::TypeAlias(_) => {}
     }
 }
 
-/// Recurse through a member list. Step 4 handles `Let.value`; step 16 expands
-/// to every `MemberDecl` variant and recurses into nested `GuardedGroup`/`Port`
-/// member lists.
-fn walk_members(members: &[reify_syntax::MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
+/// Recurse through a member list, walking every expression-bearing position
+/// of every `MemberDecl` variant.
+///
+/// Visits:
+///   * `Param`: `default` + `where_clause.condition`.
+///   * `Let`: `value` + `where_clause.condition`.
+///   * `Constraint` (bare-expression form): `expr` + `where_clause.condition`.
+///   * `ConstraintInst`: `args[*].1` + `where_clause.condition`.
+///   * `Sub`: `args[*].1` + `where_clause.condition`.
+///   * `Minimize`/`Maximize`: `expr` + `where_clause.condition`.
+///   * `GuardedGroup`: `condition` + nested `members`/`else_members` (recursive).
+///   * `Port`: `frame_expr` + nested `members` (recursive).
+///   * `Connect`: `left.expr`, `right.expr`, `params[*].1`.
+///   * `Chain`: each `elements[*]`.
+///   * `AssociatedType`/`MetaBlock`: no expressions, no-op.
+///
+/// Recursion into nested `GuardedGroup`/`Port` member lists is bounded by
+/// [`reify_syntax::MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on
+/// pathological input — mirrors `find_named_member_span_depth` in
+/// `reify-syntax`.
+fn walk_members(
+    members: &[reify_syntax::MemberDecl],
+    diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
+) {
     use reify_syntax::MemberDecl;
+    if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
+        return;
+    }
     for member in members {
         match member {
-            MemberDecl::Let(l) => walk_expr(&l.value, diagnostics),
-            // Other variants visited in step 16.
-            _ => {}
+            MemberDecl::Param(p) => {
+                if let Some(default) = &p.default {
+                    walk_expr(default, diagnostics);
+                }
+                if let Some(wc) = &p.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::Let(l) => {
+                walk_expr(&l.value, diagnostics);
+                if let Some(wc) = &l.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::Constraint(c) => {
+                walk_expr(&c.expr, diagnostics);
+                if let Some(wc) = &c.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::ConstraintInst(c) => {
+                for (_, expr) in &c.args {
+                    walk_expr(expr, diagnostics);
+                }
+                if let Some(wc) = &c.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::Sub(s) => {
+                for (_, expr) in &s.args {
+                    walk_expr(expr, diagnostics);
+                }
+                if let Some(wc) = &s.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::Minimize(m) => {
+                walk_expr(&m.expr, diagnostics);
+                if let Some(wc) = &m.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::Maximize(m) => {
+                walk_expr(&m.expr, diagnostics);
+                if let Some(wc) = &m.where_clause {
+                    walk_expr(&wc.condition, diagnostics);
+                }
+            }
+            MemberDecl::GuardedGroup(g) => {
+                walk_expr(&g.condition, diagnostics);
+                walk_members(&g.members, diagnostics, depth + 1);
+                walk_members(&g.else_members, diagnostics, depth + 1);
+            }
+            MemberDecl::Port(p) => {
+                if let Some(frame) = &p.frame_expr {
+                    walk_expr(frame, diagnostics);
+                }
+                walk_members(&p.members, diagnostics, depth + 1);
+            }
+            MemberDecl::Connect(c) => {
+                walk_expr(&c.left.expr, diagnostics);
+                walk_expr(&c.right.expr, diagnostics);
+                for (_, expr) in &c.params {
+                    walk_expr(expr, diagnostics);
+                }
+            }
+            MemberDecl::Chain(c) => {
+                for elem in &c.elements {
+                    walk_expr(elem, diagnostics);
+                }
+            }
+            // Members with no embedded expressions.
+            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
         }
     }
 }
