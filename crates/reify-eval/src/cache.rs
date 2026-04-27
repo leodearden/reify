@@ -2032,6 +2032,34 @@ mod tests {
     }
 
     #[test]
+    fn insert_synthetic_realization_entry_creates_donatable_entry() {
+        let mut store = CacheStore::new();
+        let rid = RealizationNodeId::new("Bracket", 0);
+        let node = NodeId::Realization(rid.clone());
+
+        // Helper doesn't exist yet — this test is the TDD red phase.
+        store.insert_synthetic_realization_entry(&rid);
+
+        // (a) Entry must exist under NodeId::Realization(rid) with a
+        //     CachedResult::GeometryHandle(_) placeholder payload.
+        let entry = store
+            .get(&node)
+            .expect("insert_synthetic_realization_entry must create a cache entry");
+        assert!(
+            matches!(entry.result, CachedResult::GeometryHandle(_)),
+            "synthetic entry result must be CachedResult::GeometryHandle (placeholder)"
+        );
+
+        // (b) The entry must accept warm state donation (entry exists → donate returns true).
+        let donated =
+            store.donate_warm_state(&node, reify_types::OpaqueState::new(0xBEEFu32, 8));
+        assert!(
+            donated,
+            "donate_warm_state must return true for the synthetic realization entry"
+        );
+    }
+
+    #[test]
     fn record_evaluation_clears_warm_state() {
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "x"));
