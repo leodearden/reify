@@ -39,7 +39,7 @@ fn money_per_mass_keeps_only_slots_one_and_nine() {
 /// 10-slot exponent-buffer bug that bled into ANY adjacent slot would be
 /// caught, not only a bleed into Angle.
 #[test]
-fn money_compound_with_force_keeps_angle_slot_zero() {
+fn money_compound_with_force_pins_all_slots() {
     let result = DimensionVector::MONEY.mul(&DimensionVector::FORCE);
     assert_eq!(result.0[0], Rational::ONE, "slot 0 (Length) should be ONE for MONEY × FORCE");
     assert_eq!(result.0[1], Rational::ONE, "slot 1 (Mass) should be ONE for MONEY × FORCE");
