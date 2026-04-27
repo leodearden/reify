@@ -91,6 +91,19 @@ impl<'a> NameIndex<'a> {
             None
         }
     }
+
+    /// Returns `Some((kind_slug, module_path))` for the specific entry in
+    /// `module`.  Used by the per-module index-rooted resolver in multi-module
+    /// split mode, where each module's TOC section is rendered with a closure
+    /// that captures the current module path.
+    fn resolve_in_module(
+        &self,
+        name: &str,
+        module: &str,
+    ) -> Option<(&'static str, &'a str)> {
+        let entries = self.by_name.get(name)?;
+        entries.iter().find(|(_, m)| *m == module).copied()
+    }
 }
 
 /// Knobs controlling how the formatter emits Markdown.
@@ -857,29 +870,52 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
     // look up unique file targets without re-scanning the model each call.
     let name_index = NameIndex::new(model);
 
-    // Build the index body first: per-module H1 (and doc) followed by the TOC
-    // of all (non-test) items declared in that module.  Tests are linked from
-    // the per-item files only, mirroring the single-mode "## Tests" trailer.
+    // Build the index body first.
+    //
+    // Single-module: emit `# {module}` H1 + optional doc + `render_toc` (which
+    // wraps with `## Contents`).  This keeps the pre-task shape for the common
+    // case.
+    //
+    // Multi-module: emit `## {module}` H2 per module + optional doc + the
+    // kind-grouped bullet lists directly (via `render_toc_groups`, no
+    // `## Contents` wrapper).  The per-module resolver uses the current module
+    // path to construct module-prefixed links (`{module}/{kind}-{name}.md`),
+    // so same-named items in different modules resolve to distinct files.
     let mut index_body = String::new();
     for module in &model.modules {
-        index_body.push_str("# ");
-        index_body.push_str(&module.path);
-        index_body.push_str("\n\n");
-        if let Some(doc) = module.doc.as_deref() {
-            emit_paragraphs(&mut index_body, doc);
-        }
         let items_for_toc: Vec<&ItemDoc> = module
             .items
             .iter()
             .filter(|i| find_annotation(item_annotations(i), "test").is_none())
             .collect();
-        // Index-rooted resolver: single-module → `{kind}-{name}.md` sibling;
-        // multi-module → fragment fallback for now (step 6 restructures this).
         if multi_module {
-            render_toc(&mut index_body, &items_for_toc, &|name: &str| {
-                format!("#{name}")
+            // H2 per module — reader sees the module path as the section
+            // heading and kind H3s nest underneath.
+            index_body.push_str("## ");
+            index_body.push_str(&module.path);
+            index_body.push_str("\n\n");
+            if let Some(doc) = module.doc.as_deref() {
+                emit_paragraphs(&mut index_body, doc);
+            }
+            // Per-module index-rooted resolver: look up the item in
+            // *this* module to get its kind, then prefix with the module
+            // path.  Falls back to `#{name}` for any item not found (should
+            // not happen in practice since we're iterating module.items).
+            let current_module = module.path.as_str();
+            render_toc_groups(&mut index_body, &items_for_toc, &|name: &str| {
+                match name_index.resolve_in_module(name, current_module) {
+                    Some((kind, mod_path)) => format!("{mod_path}/{kind}-{name}.md"),
+                    None => format!("#{name}"),
+                }
             });
         } else {
+            // Single-module: keep the existing H1 + `## Contents` shape.
+            index_body.push_str("# ");
+            index_body.push_str(&module.path);
+            index_body.push_str("\n\n");
+            if let Some(doc) = module.doc.as_deref() {
+                emit_paragraphs(&mut index_body, doc);
+            }
             render_toc(&mut index_body, &items_for_toc, &|name: &str| {
                 match name_index.unique_resolve(name) {
                     Some((kind, _)) => format!("{kind}-{name}.md"),
