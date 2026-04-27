@@ -525,9 +525,12 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 }
 
 /// Process the first well-formed module-level
-/// `#solver(<back-end-ident>, [key=value, ...])` pragma: store the back-end
-/// name + options on `module.solver_pragma`. Subsequent `#solver` pragmas
-/// emit a "subsequent pragma ignored; first one wins" warning. See
+/// `#solver(<back-end-ident>, [key=value, ...])` pragma to actually populate
+/// `module.solver_pragma`. Malformed first pragmas (zero args, non-Ident bare
+/// first arg, KeyValue-first, etc.) emit a form-hint warning and do NOT consume
+/// the first-wins slot, so a following well-formed `#solver` is still
+/// recognised. Subsequent well-formed pragmas after the slot is consumed emit a
+/// "subsequent pragma ignored; first one wins" warning. See
 /// `docs/prds/pragmas.md` §3.
 ///
 /// Per design decision, `solver_pragma` reflects the user-declared back-end
@@ -641,11 +644,11 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
-            // Catch-all for any remaining shape (e.g. multi-bare-arg lists
-            // like `#solver(libslvs, argmin)` whose first arg isn't an
-            // Ident — actually unreachable today because the first arm
-            // handles `[Bare(Ident(_)), ..]`, but leave the catch-all as a
-            // future-proofing safety net).
+            // Catch-all: live handler for multi-element shapes whose first
+            // element is a non-Ident bare value, e.g. `#solver(42, threads=4)`
+            // (length-2, leading bare-Number + trailing KeyValue). Such shapes
+            // are not matched by the `[Bare(_)]` arm (length-1 only) nor by
+            // `[Bare(Ident(_)), ..]` (requires an Ident as first element).
             _ => {
                 module.diagnostics.push(
                     Diagnostic::warning(
