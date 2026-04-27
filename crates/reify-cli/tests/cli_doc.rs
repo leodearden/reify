@@ -446,8 +446,8 @@ fn doc_format_without_value_exits_two() {
 
 #[test]
 fn doc_format_with_invalid_value_exits_two() {
-    // Characterization test: pins the unknown-`--format` value path handled by
-    // `Format::from_str_or_usage_err` (and its inline successor after cleanup).
+    // Pins the unknown-`--format` value path: must exit 2 with a usage-error on
+    // stderr naming the bad value and the valid choices.
     // The input positional is required because cmd_doc's missing-input check
     // runs *before* format resolution, so omitting it would test the wrong branch.
     let path = common::fixture_path("bracket.ri");

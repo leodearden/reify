@@ -461,6 +461,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
 
     // `--split` requires `-o <dir>` so we know where to write the per-item
     // files.  Hoisted above `parse_and_compile` so usage errors don't pay for parsing.
+    // Reachable only when format == Markdown thanks to the guard above.
     if split && output.is_none() {
         eprintln!("Error: --split requires -o <directory>");
         eprintln!("{}", DOC_USAGE);
