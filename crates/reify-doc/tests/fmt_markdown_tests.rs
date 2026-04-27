@@ -753,6 +753,67 @@ fn optimized_annotation_emits_italic_note() {
     );
 }
 
+/// `@test`-annotated items are excluded from the main item flow and instead
+/// emitted under a `## Tests` H2 subsection at the bottom of the module.
+#[test]
+fn test_annotated_items_grouped_under_tests_section() {
+    let foo = ItemDoc::Structure {
+        name: "Foo".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let bar = ItemDoc::Structure {
+        name: "Bar".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![AnnotationDoc { name: "test".into(), args: vec![] }],
+        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![foo, bar],
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+
+    assert!(out.contains("## Tests"), "Tests H2 missing:\n{out}");
+    let foo_idx = out.find("Foo").expect("Foo present");
+    let tests_idx = out.find("## Tests").expect("Tests H2 present");
+    let bar_idx = out.find("Bar").expect("Bar present");
+    assert!(
+        foo_idx < tests_idx && tests_idx < bar_idx,
+        "ordering wrong: foo@{foo_idx} tests@{tests_idx} bar@{bar_idx}\n{out}"
+    );
+}
+
+/// When no item carries `@test`, the `## Tests` header is omitted entirely.
+#[test]
+fn no_tests_no_tests_header() {
+    let only = ItemDoc::Structure {
+        name: "Only".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![], meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![only],
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+    assert!(!out.contains("## Tests"), "Tests H2 should be absent:\n{out}");
+}
+
 /// `@solver_hint(discrete_set(standard_bolt_lengths))` on a parameter appends
 /// `*hint: discrete_set(standard_bolt_lengths)*` to that param's Description
 /// cell, after the doc-comment text.
