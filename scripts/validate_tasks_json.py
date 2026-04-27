@@ -187,9 +187,15 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
                     f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
             elif dep not in known_ids:
-                errors.append(
-                    f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
-                )
+                # Also accept dotted subtask references (format "NNN.M") where
+                # the parent task id "NNN" is a known top-level id.  The task
+                # management system emits these when a parent task is made to
+                # depend on its own subtasks (e.g. "2324.1", "2324.2").
+                m = re.fullmatch(r"(\d+)\.\d+", dep)
+                if not (m and m.group(1) in known_ids):
+                    errors.append(
+                        f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
+                    )
 
     return known_ids
 
