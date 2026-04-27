@@ -746,6 +746,65 @@ fn multiple_module_level_precision_pragmas_first_wins() {
     );
 }
 
+/// Malformed first `#precision` does not consume the "first wins" slot:
+/// `#precision(0.001s)` (wrong dimension — Time, not Length) emits exactly one
+/// warning mentioning "Length", but leaves the slot open so the following
+/// `#precision(0.001m)` is still recognised and stored.
+///
+/// Regression test for the bug where `first_seen = true` fired before the
+/// inner arg validation, causing the second well-formed pragma to be treated as
+/// a duplicate ("subsequent #precision pragma ignored; first one wins").
+#[test]
+fn malformed_then_valid_precision_pragmas_recover() {
+    let module = compile_source(
+        "#precision(0.001s)\n#precision(0.001m)\nstructure S { param x : Real }",
+    );
+
+    // (a) The well-formed second pragma must be stored.
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.001),
+        "expected default_tolerance Some(0.001) from the well-formed second #precision, \
+         got {:?}",
+        module.default_tolerance
+    );
+
+    // (b) Exactly one warning mentioning "Length" — from the malformed first
+    // pragma's dimension mismatch.
+    let length_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.to_lowercase().contains("length"))
+        .collect();
+    assert_eq!(
+        length_warns.len(),
+        1,
+        "expected exactly 1 'Length' warning for #precision(0.001s), got {}: {:?}",
+        length_warns.len(),
+        warnings_only(&module)
+    );
+
+    // (c) Zero warnings whose message contains "subsequent" — the valid second
+    // pragma must NOT be flagged as a duplicate.
+    let subsequent_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("subsequent"))
+        .collect();
+    assert!(
+        subsequent_warns.is_empty(),
+        "expected zero 'subsequent' warnings (second well-formed #precision must not be \
+         treated as duplicate), got {}: {:?}",
+        subsequent_warns.len(),
+        subsequent_warns
+    );
+
+    // No errors.
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+}
+
 /// `#precision(0.001s)` (a Time quantity, not a Length) emits a warning that
 /// mentions "Length" and does not set `default_tolerance`. Crucially the
 /// warning must NOT be the generic "unknown pragma" warning (which is reserved
@@ -1249,6 +1308,200 @@ fn precision_pragma_above_cap_warns_and_does_not_set_tolerance() {
     );
 }
 
+/// `#precision` with a negative, NaN, or infinite SI value emits an **error**
+/// (not a warning) and leaves `default_tolerance` as `None`.
+///
+/// The grammar's `\d+(\.\d+)?` regex only produces non-negative finite f64
+/// values from source, so these branches cannot be reached via
+/// `compile_source`. The test constructs a `ParsedModule` directly (injection)
+/// with `value: -0.001` / `value: f64::NAN` / `value: f64::INFINITY` /
+/// `value: f64::NEG_INFINITY` to exercise the full not-finite domain.
+///
+/// Regression guard: the existing `precision_pragma_with_zero_tolerance_warns_and_does_not_set_tolerance`
+/// and `precision_pragma_above_cap_warns_and_does_not_set_tolerance` tests (for
+/// `0m` and `1000m`) must still produce **warnings** after Fix 2 — their
+/// severity must NOT have been upgraded to error (the split is < 0 → error,
+/// == 0 → warning, > cap → warning).
+#[test]
+fn precision_pragma_with_negative_or_nan_quantity_emits_error_via_injection() {
+    // Helper: build a ParsedModule with a single #precision pragma whose
+    // PragmaValue::Quantity has a custom value (bypassing the parser).
+    fn injected_precision_module(value: f64) -> reify_compiler::CompiledModule {
+        let pragma = reify_syntax::Pragma {
+            name: "precision".to_string(),
+            args: vec![reify_syntax::PragmaArg::Bare(
+                reify_syntax::PragmaValue::Quantity {
+                    value,
+                    unit: "m".to_string(),
+                },
+            )],
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let parsed = reify_syntax::ParsedModule {
+            path: reify_types::ModulePath::single("test-injection"),
+            declarations: vec![],
+            errors: vec![],
+            content_hash: reify_types::ContentHash(0),
+            pragmas: vec![pragma],
+        };
+        reify_compiler::compile(&parsed)
+    }
+
+    // ── negative value ────────────────────────────────────────────────────────
+    {
+        let module = injected_precision_module(-0.001);
+
+        assert!(
+            module.default_tolerance.is_none(),
+            "expected default_tolerance None for #precision(-0.001m), got {:?}",
+            module.default_tolerance
+        );
+
+        let neg_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("#precision")
+                    && d.message.contains("must be positive")
+            })
+            .collect();
+        assert_eq!(
+            neg_errors.len(),
+            1,
+            "expected exactly 1 error mentioning '#precision' + 'must be positive' for \
+             #precision(-0.001m), got {}: {:?}",
+            neg_errors.len(),
+            module.diagnostics
+        );
+    }
+
+    // ── NaN value ─────────────────────────────────────────────────────────────
+    {
+        let module = injected_precision_module(f64::NAN);
+
+        assert!(
+            module.default_tolerance.is_none(),
+            "expected default_tolerance None for #precision(NaN m), got {:?}",
+            module.default_tolerance
+        );
+
+        let nan_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("#precision")
+                    && d.message.contains("not finite")
+            })
+            .collect();
+        assert_eq!(
+            nan_errors.len(),
+            1,
+            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
+             #precision(NaN m), got {}: {:?}",
+            nan_errors.len(),
+            module.diagnostics
+        );
+    }
+
+    // ── INFINITY value — also triggers !is_finite() ───────────────────────────
+    {
+        let module = injected_precision_module(f64::INFINITY);
+
+        assert!(
+            module.default_tolerance.is_none(),
+            "expected default_tolerance None for #precision(INFINITY m), got {:?}",
+            module.default_tolerance
+        );
+
+        let inf_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("#precision")
+                    && d.message.contains("not finite")
+            })
+            .collect();
+        assert_eq!(
+            inf_errors.len(),
+            1,
+            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
+             #precision(INFINITY m), got {}: {:?}",
+            inf_errors.len(),
+            module.diagnostics
+        );
+    }
+
+    // ── NEG_INFINITY value — also triggers !is_finite() ──────────────────────
+    {
+        let module = injected_precision_module(f64::NEG_INFINITY);
+
+        assert!(
+            module.default_tolerance.is_none(),
+            "expected default_tolerance None for #precision(NEG_INFINITY m), got {:?}",
+            module.default_tolerance
+        );
+
+        let neg_inf_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("#precision")
+                    && d.message.contains("not finite")
+            })
+            .collect();
+        assert_eq!(
+            neg_inf_errors.len(),
+            1,
+            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
+             #precision(NEG_INFINITY m), got {}: {:?}",
+            neg_inf_errors.len(),
+            module.diagnostics
+        );
+    }
+
+    // ── regression guard: zero and above-cap still produce WARNINGS ───────────
+    {
+        let zero_module = compile_source("#precision(0m)\nstructure S { param x : Real }");
+        assert!(
+            errors_only(&zero_module).is_empty(),
+            "regression: #precision(0m) must still produce a warning (not an error), \
+             got errors: {:?}",
+            errors_only(&zero_module)
+        );
+        let zero_warns = pragma_warnings(&zero_module, "must be positive");
+        assert_eq!(
+            zero_warns.len(),
+            1,
+            "regression: expected exactly 1 'must be positive' warning for #precision(0m), \
+             got {}: {:?}",
+            zero_warns.len(),
+            zero_warns
+        );
+    }
+    {
+        let cap_module = compile_source("#precision(1000m)\nstructure S { param x : Real }");
+        assert!(
+            errors_only(&cap_module).is_empty(),
+            "regression: #precision(1000m) must still produce a warning (not an error), \
+             got errors: {:?}",
+            errors_only(&cap_module)
+        );
+        let cap_warns = pragma_warnings(&cap_module, "exceeds the v0.1 cap");
+        assert_eq!(
+            cap_warns.len(),
+            1,
+            "regression: expected exactly 1 'exceeds the v0.1 cap' warning for #precision(1000m), \
+             got {}: {:?}",
+            cap_warns.len(),
+            cap_warns
+        );
+    }
+}
+
 /// `#precision(1m)` — exactly at the v0.1 cap — is accepted (the bound is
 /// inclusive on the upper end).
 #[test]
@@ -1467,6 +1720,77 @@ fn multiple_version_pragmas_emit_error_at_most_one() {
     );
 }
 
+/// Malformed first `#version` does not consume the "first wins" slot:
+/// `#version("foo")` (unparseable string) emits exactly one "MAJOR.MINOR"
+/// warning, but leaves the slot open so the following `#version(1.2)`
+/// (too-new but well-formed) is still recognised and stored.
+///
+/// Regression test for the bug where `first_seen = true` fired before the
+/// arg parse, causing the second well-formed pragma to be treated as a
+/// duplicate ("at most one #version declaration per module" error).
+#[test]
+fn malformed_then_valid_version_pragmas_recover() {
+    let module = compile_source(
+        "#version(\"foo\")\n#version(1.2)\nstructure S { param x : Real }",
+    );
+
+    // (a) The well-formed second pragma's tuple must be stored.
+    assert_eq!(
+        module.declared_version,
+        Some((1, 2)),
+        "expected declared_version Some((1, 2)) from the well-formed second #version, \
+         got {:?}",
+        module.declared_version
+    );
+
+    // (b) Exactly one warning mentioning "version" + "MAJOR.MINOR" — from the
+    // malformed first pragma's bad string "foo".
+    let form_hint_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("version") && d.message.contains("MAJOR.MINOR"))
+        .collect();
+    assert_eq!(
+        form_hint_warns.len(),
+        1,
+        "expected exactly 1 warning mentioning 'version' + 'MAJOR.MINOR' for #version(\"foo\"), \
+         got {}: {:?}",
+        form_hint_warns.len(),
+        warnings_only(&module)
+    );
+
+    // (c) Exactly one error containing "module declares version 1.2" and
+    // "this compiler supports up to 0.1" — the too-new error for the valid
+    // second pragma being recognised.
+    let too_new_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("module declares version 1.2")
+                && d.message.contains("this compiler supports up to 0.1")
+        })
+        .collect();
+    assert_eq!(
+        too_new_errors.len(),
+        1,
+        "expected exactly 1 too-new error for #version(1.2), got {}: {:?}",
+        too_new_errors.len(),
+        errors_only(&module)
+    );
+
+    // (d) Zero errors containing "at most one #version declaration per module" —
+    // the valid second pragma must NOT be flagged as a duplicate.
+    let at_most_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("at most one #version declaration per module"))
+        .collect();
+    assert!(
+        at_most_errs.is_empty(),
+        "expected zero 'at most one' errors (second well-formed #version must not be \
+         treated as duplicate), got {}: {:?}",
+        at_most_errs.len(),
+        at_most_errs
+    );
+}
+
 /// Malformed `#version` arg shapes emit exactly one warning mentioning
 /// "version" + "expected" + the form hint "MAJOR.MINOR", produce zero
 /// errors, and leave `module.declared_version` as None. Covers representative
@@ -1646,6 +1970,15 @@ fn solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none() {
             "#solver(method=\"gradient\")\nstructure S { param x : Real }",
             "key-value-first",
         ),
+        // Multi-element shape whose first element is a non-ident bare value
+        // (bare Number + KeyValue). Length > 1, leading element is not an
+        // Ident, so the `[Bare(Ident(_)), ..]` arm doesn't match and the
+        // single-element `[Bare(_)]` arm doesn't match either — reaches the
+        // catch-all `_ =>` arm. Locks in the catch-all's live-handler role.
+        (
+            "#solver(42, threads=4)\nstructure S { param x : Real }",
+            "multi-bare-with-keyvalue",
+        ),
     ];
 
     for (source, label) in cases {
@@ -1718,6 +2051,73 @@ fn multiple_module_level_solver_pragmas_first_wins() {
         "expected exactly 1 warning for subsequent #solver, got {}: {:?}",
         warns.len(),
         warns
+    );
+}
+
+/// Malformed first `#solver` does not consume the "first wins" slot:
+/// `#solver(42)` (bare Number, not a back-end Ident) emits exactly one
+/// form-hint warning, but leaves the slot open so the following
+/// `#solver(libslvs)` is still recognised and stored.
+///
+/// Regression test for the bug where `first_seen = true` fired before the
+/// args match, causing the second well-formed pragma to be treated as a
+/// duplicate ("subsequent #solver pragma ignored; first one wins").
+#[test]
+fn malformed_then_valid_solver_pragmas_recover() {
+    let module = compile_source(
+        "#solver(42)\n#solver(libslvs)\nstructure S { param x : Real }",
+    );
+
+    // (a) The well-formed second pragma must be stored.
+    let solver_pragma = module
+        .solver_pragma
+        .as_ref()
+        .expect("expected solver_pragma Some(_) from the well-formed second #solver(libslvs)");
+    assert_eq!(
+        solver_pragma.name, "libslvs",
+        "expected solver_pragma.name == \"libslvs\" from the well-formed second pragma, \
+         got {:?}",
+        solver_pragma.name
+    );
+
+    // (b) Exactly one warning mentioning "#solver" + "expected" + "ident" —
+    // from the malformed first pragma's bare-Number form.
+    let form_hint_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("#solver")
+                && d.message.contains("expected")
+                && d.message.contains("ident")
+        })
+        .collect();
+    assert_eq!(
+        form_hint_warns.len(),
+        1,
+        "expected exactly 1 '#solver' + 'expected' + 'ident' warning for #solver(42), \
+         got {}: {:?}",
+        form_hint_warns.len(),
+        warnings_only(&module)
+    );
+
+    // (c) Zero warnings containing "subsequent" — the valid second pragma must
+    // NOT be flagged as a duplicate.
+    let subsequent_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("subsequent"))
+        .collect();
+    assert!(
+        subsequent_warns.is_empty(),
+        "expected zero 'subsequent' warnings (second well-formed #solver must not be \
+         treated as duplicate), got {}: {:?}",
+        subsequent_warns.len(),
+        subsequent_warns
+    );
+
+    // No errors.
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
     );
 }
 

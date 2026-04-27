@@ -214,12 +214,17 @@ const MAX_PRECISION_TOLERANCE_M: f64 = 1.0;
 /// `docs/prds/pragmas.md` §2.
 ///
 /// **Range bounds (v0.1).** The accepted SI-metres value must be finite,
-/// strictly positive, and ≤ [`MAX_PRECISION_TOLERANCE_M`]. Values outside this
-/// range emit a warning and leave `default_tolerance` unset (so the engine
-/// falls back to its built-in default). The grammar's `number_literal` regex
-/// (`\d+(\.\d+)?`) currently produces only non-negative finite f64 values, so
-/// the non-finite / negative branches are unreachable from source today; they
-/// remain as defence-in-depth against a future grammar relaxation.
+/// strictly positive, and ≤ [`MAX_PRECISION_TOLERANCE_M`]. Out-of-range values
+/// leave `default_tolerance` unset (so the engine falls back to its built-in
+/// default). Non-finite and negative branches emit **errors** (internal
+/// invariant violations — unreachable from source today because the grammar's
+/// `number_literal` regex `\d+(\.\d+)?` only produces non-negative finite
+/// f64s); zero and above-cap emit **warnings** (plausible user mistakes).
+///
+/// The first-wins slot is consumed only when `default_tolerance` is actually
+/// stored — malformed first pragmas (wrong dimension, unrecognised unit, bare
+/// number, out-of-range value, etc.) do not consume the slot, so a following
+/// well-formed `#precision` is still recognised.
 fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -234,7 +239,10 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             );
             continue;
         }
-        first_seen = true;
+
+        // NOTE: first_seen is set only once a tolerance is actually stored —
+        // malformed first pragmas (wrong dimension, bad unit, bare number, etc.)
+        // do not consume the first-wins slot.
 
         // First-seen pragma: interpret its args.
         match pragma.args.as_slice() {
@@ -244,21 +252,31 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         if dimension == DimensionVector::LENGTH =>
                     {
                         // Range gate: tolerance must be finite, > 0, and within
-                        // a sane upper bound. Out-of-range values warn and leave
+                        // a sane upper bound. Out-of-range values leave
                         // default_tolerance unset so the engine falls back to
                         // Engine::DEFAULT_TESSELLATION_TOLERANCE.
                         //
-                        // Negative / non-finite cases are currently unreachable
-                        // from source (see fn-level docstring) but the check
-                        // stays as a safety net.
+                        // Non-finite / negative cases are unreachable from source
+                        // (see fn-level docstring) but are defended with ERROR
+                        // severity so they surface in release builds. Zero (`0m`)
+                        // and above-cap stay as warnings — those are plausible
+                        // user mistakes rather than internal invariant violations.
                         if !si_value.is_finite() {
                             module.diagnostics.push(
-                                Diagnostic::warning(
+                                Diagnostic::error(
                                     "#precision: tolerance is not finite; ignored",
                                 )
                                 .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                             );
-                        } else if si_value <= 0.0 {
+                        } else if si_value < 0.0 {
+                            module.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "#precision: tolerance must be positive (got {si_value}m; \
+                                     internal invariant violated); ignored"
+                                ))
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        } else if si_value == 0.0 {
                             module.diagnostics.push(
                                 Diagnostic::warning(format!(
                                     "#precision: tolerance must be positive (got {si_value}m); \
@@ -276,6 +294,7 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                             );
                         } else {
                             module.default_tolerance = Some(si_value);
+                            first_seen = true;
                         }
                     }
                     Some(_) => {
@@ -351,6 +370,11 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 /// regardless of validation outcome (too-new error, too-old warning, or
 /// in-range silent), so downstream tooling can render the user's intent
 /// verbatim. Only malformed args and duplicates leave it `None`.
+///
+/// The first-wins slot is consumed only when a `#version` pragma is
+/// successfully parsed into a `(MAJOR, MINOR)` tuple — malformed first pragmas
+/// (bad string, wrong arg shape) do not consume the slot, so a following
+/// well-formed `#version` is still recognised.
 fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -369,7 +393,10 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             );
             continue;
         }
-        first_seen = true;
+
+        // NOTE: first_seen is set only when the arg is successfully parsed into
+        // a (MAJOR, MINOR) tuple — malformed first pragmas (bad string, wrong
+        // arg shape) do not consume the first-wins slot.
 
         // First-seen pragma: interpret its args.
         let parsed_version: Option<(u16, u16)> = match pragma.args.as_slice() {
@@ -468,6 +495,11 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         };
 
         if let Some((maj, min)) = parsed_version {
+            // A successfully parsed (maj, min) consumes the first-wins slot
+            // regardless of whether the version is in-range, too-new, or
+            // too-old — all three are well-formed parses.
+            first_seen = true;
+
             // Storage reflects the user-declared tuple regardless of
             // validation outcome (see task design decision).
             module.declared_version = Some((maj, min));
@@ -498,9 +530,12 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 }
 
 /// Process the first well-formed module-level
-/// `#solver(<back-end-ident>, [key=value, ...])` pragma: store the back-end
-/// name + options on `module.solver_pragma`. Subsequent `#solver` pragmas
-/// emit a "subsequent pragma ignored; first one wins" warning. See
+/// `#solver(<back-end-ident>, [key=value, ...])` pragma to actually populate
+/// `module.solver_pragma`. Malformed first pragmas (zero args, non-Ident bare
+/// first arg, KeyValue-first, etc.) emit a form-hint warning and do NOT consume
+/// the first-wins slot, so a following well-formed `#solver` is still
+/// recognised. Subsequent well-formed pragmas after the slot is consumed emit a
+/// "subsequent pragma ignored; first one wins" warning. See
 /// `docs/prds/pragmas.md` §3.
 ///
 /// Per design decision, `solver_pragma` reflects the user-declared back-end
@@ -521,9 +556,12 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             );
             continue;
         }
-        first_seen = true;
-
-        // First-seen pragma: interpret its args. The well-formed shape is
+        // NOTE: first_seen is set only once a well-formed pragma is stored —
+        // malformed first pragmas (zero args, bare-non-ident, KeyValue-first,
+        // multi-element non-ident-leading) do not consume the first-wins slot,
+        // so a following well-formed #solver is still recognised.
+        //
+        // Interpret the args. The well-formed shape is
         // `[Bare(Ident(name)), KeyValue*]`. The single bare-ident case is a
         // degenerate of that shape (empty tail). Every other shape leaves
         // `solver_pragma` as `None` and emits a single "expected #solver(...)"
@@ -578,6 +616,8 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     name: name.clone(),
                     options,
                 });
+                // Consume the first-wins slot only on success.
+                first_seen = true;
             }
             // Zero args: `#solver` with no arg list.
             [] => {
@@ -609,11 +649,11 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
-            // Catch-all for any remaining shape (e.g. multi-bare-arg lists
-            // like `#solver(libslvs, argmin)` whose first arg isn't an
-            // Ident — actually unreachable today because the first arm
-            // handles `[Bare(Ident(_)), ..]`, but leave the catch-all as a
-            // future-proofing safety net).
+            // Catch-all: live handler for multi-element shapes whose first
+            // element is a non-Ident bare value, e.g. `#solver(42, threads=4)`
+            // (length-2, leading bare-Number + trailing KeyValue). Such shapes
+            // are not matched by the `[Bare(_)]` arm (length-1 only) nor by
+            // `[Bare(Ident(_)), ..]` (requires an Ident as first element).
             _ => {
                 module.diagnostics.push(
                     Diagnostic::warning(
