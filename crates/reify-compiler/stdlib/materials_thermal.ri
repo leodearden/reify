@@ -24,7 +24,14 @@
 //   thermal_expansion     — 1/K (coefficient of linear thermal expansion)
 //   melting_point         — K
 //   max_service_temperature — K (upper operating limit)
-//   glass_transition      — K (0.0 for non-glass materials)
+//   glass_transition      — K (Tg).  Pass 0.0 for crystalline / non-glass materials
+//                            (e.g. metals, ceramics) where Tg is physically undefined.
+//                            Convention: 0.0 is a sentinel meaning "not applicable";
+//                            no constraint references glass_transition, so the sentinel
+//                            value is inert in constraint checking.
+//                            Future work: a Glassy sub-trait may carry this param so
+//                            that only amorphous / glassy materials are required to
+//                            supply a meaningful Tg value.
 trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : Real
     param specific_heat : Real

@@ -28,6 +28,78 @@ fn load_stdlib_module() -> &'static CompiledModule {
         .expect("stdlib should contain std/materials/electrical module")
 }
 
+/// Assert that `trait_def` has a `DefaultKind::Constraint` whose expression is
+/// `BinOp { op: expected_op, left: Ident(expected_member), right: NumberLiteral(rhs) }`
+/// where `|rhs - expected_rhs| <= rhs_epsilon`.
+///
+/// This tightens the constraint-present check: a regression that flips the
+/// operator (`<` → `>`) or changes the bound (e.g. `0.0` instead of `1.0e-4`)
+/// will now fail here, not just at the eval-level check test.
+#[track_caller]
+fn assert_trait_constraint_binop(
+    trait_def: &CompiledTrait,
+    trait_name: &str,
+    expected_member: &str,
+    expected_op: &str,
+    expected_rhs: f64,
+    rhs_epsilon: f64,
+) {
+    use reify_syntax::ExprKind;
+
+    let constraint_default = trait_def
+        .defaults
+        .iter()
+        .find(|d| {
+            if let DefaultKind::Constraint(decl) = &d.kind {
+                matches!(&decl.expr.kind, ExprKind::BinOp { left, .. }
+                    if matches!(&left.kind, ExprKind::Ident(n) if n == expected_member))
+            } else {
+                false
+            }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{} must have a constraint default on '{}', got defaults: {:?}",
+                trait_name,
+                expected_member,
+                trait_def
+                    .defaults
+                    .iter()
+                    .map(|d| format!("{:?}", d.kind))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    if let DefaultKind::Constraint(decl) = &constraint_default.kind {
+        if let ExprKind::BinOp { op, left: _, right } = &decl.expr.kind {
+            assert_eq!(
+                op.as_str(),
+                expected_op,
+                "{} constraint op for '{}' should be '{}', got '{}'",
+                trait_name,
+                expected_member,
+                expected_op,
+                op
+            );
+            match &right.kind {
+                ExprKind::NumberLiteral(v) => assert!(
+                    (*v - expected_rhs).abs() <= rhs_epsilon,
+                    "{} constraint RHS for '{}' should be {} (±{}), got {}",
+                    trait_name,
+                    expected_member,
+                    expected_rhs,
+                    rhs_epsilon,
+                    v
+                ),
+                other => panic!(
+                    "{} constraint RHS for '{}' should be NumberLiteral, got {:?}",
+                    trait_name, expected_member, other
+                ),
+            }
+        }
+    }
+}
+
 // ─── (a) module loads with three trait defs and zero errors ──────────────────
 
 /// The std/materials/electrical module must load with zero error-severity
@@ -131,8 +203,10 @@ fn electrically_characterized_refines_material_spec_with_four_real_members() {
 
 // ─── (c) Conductive refines ElectricallyCharacterized with resistivity < 1e-4 ─
 
-/// Conductive must refine ElectricallyCharacterized and carry at least one
-/// DefaultKind::Constraint (the `resistivity < 1.0e-4` guard).
+/// Conductive must refine ElectricallyCharacterized and carry a constraint
+/// `resistivity < 1.0e-4` — verified at the BinOp expression level so that
+/// a regression flipping the op or changing the bound is caught here, not just
+/// at the eval-level satisfaction check.
 #[test]
 fn conductive_refines_electrically_characterized_with_constraint() {
     let module = load_stdlib_module();
@@ -151,21 +225,14 @@ fn conductive_refines_electrically_characterized_with_constraint() {
         conductive.refinements
     );
 
-    let constraint_defaults: Vec<_> = conductive
-        .defaults
-        .iter()
-        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
-        .collect();
-    assert!(
-        !constraint_defaults.is_empty(),
-        "Conductive must have at least one DefaultKind::Constraint (resistivity < 1.0e-4)"
-    );
+    // BinOp-level check: op="<", LHS=resistivity, RHS≈1.0e-4
+    assert_trait_constraint_binop(conductive, "Conductive", "resistivity", "<", 1.0e-4, 1.0e-16);
 }
 
 // ─── (d) Insulating refines ElectricallyCharacterized with resistivity > 1e6 ─
 
-/// Insulating must refine ElectricallyCharacterized and carry at least one
-/// DefaultKind::Constraint (the `resistivity > 1.0e6` guard).
+/// Insulating must refine ElectricallyCharacterized and carry a constraint
+/// `resistivity > 1.0e6` — verified at the BinOp expression level.
 /// Note: the spec's `determined(dielectric_strength)` predicate is dropped —
 /// see header comment in materials_electrical.ri for rationale.
 #[test]
@@ -186,15 +253,8 @@ fn insulating_refines_electrically_characterized_with_constraint() {
         insulating.refinements
     );
 
-    let constraint_defaults: Vec<_> = insulating
-        .defaults
-        .iter()
-        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
-        .collect();
-    assert!(
-        !constraint_defaults.is_empty(),
-        "Insulating must have at least one DefaultKind::Constraint (resistivity > 1.0e6)"
-    );
+    // BinOp-level check: op=">", LHS=resistivity, RHS≈1.0e6
+    assert_trait_constraint_binop(insulating, "Insulating", "resistivity", ">", 1.0e6, 1.0);
 }
 
 // ─── (e) Copper : Conductive conformance test with inherited constraint ────────

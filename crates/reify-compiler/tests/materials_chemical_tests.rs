@@ -234,6 +234,58 @@ fn biocompatible_refines_material_spec_with_enum_param() {
     }
 }
 
+// ─── (f-guard) Inline enum re-declarations match stdlib definitions ───────────
+
+/// The inline enum re-declarations used in the TitaniumImplant conformance test
+/// (and in `examples/drivebelt_trait_bounds.ri`) must stay byte-identical to the
+/// stdlib definitions in `materials_chemical.ri`.  This test compares variant
+/// sets so that future additions or renames to the stdlib enums show up here
+/// rather than silently diverging from the inline copies.
+///
+/// Pattern:  compile a source with ONLY the inline enum decls, then compare the
+/// resulting enum_defs against `load_stdlib_module().enum_defs`.
+#[test]
+fn inline_enum_redeclarations_match_stdlib_definitions() {
+    let inline_source = r#"
+enum CorrosionClass { C1, C2, C3, C4, C5 }
+enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
+"#;
+
+    let compiled = compile_source_with_stdlib(inline_source);
+    let stdlib = load_stdlib_module();
+
+    // Verify every inline enum matches the corresponding stdlib enum variant-for-variant.
+    for inline_enum in &compiled.enum_defs {
+        let stdlib_enum = stdlib
+            .enum_defs
+            .iter()
+            .find(|e| e.name == inline_enum.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "inline enum '{}' not found in stdlib; stdlib enums: {:?}",
+                    inline_enum.name,
+                    stdlib.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+                )
+            });
+
+        let mut inline_variants: Vec<&str> =
+            inline_enum.variants.iter().map(String::as_str).collect();
+        let mut stdlib_variants: Vec<&str> =
+            stdlib_enum.variants.iter().map(String::as_str).collect();
+        inline_variants.sort_unstable();
+        stdlib_variants.sort_unstable();
+
+        assert_eq!(
+            inline_variants,
+            stdlib_variants,
+            "inline enum '{}' variants diverge from stdlib: inline={:?}, stdlib={:?}",
+            inline_enum.name,
+            inline_variants,
+            stdlib_variants
+        );
+    }
+}
+
 // ─── (f) TitaniumImplant : Biocompatible + CorrosionResistant conformance ─────
 
 /// A structure conforming to Biocompatible + CorrosionResistant must compile

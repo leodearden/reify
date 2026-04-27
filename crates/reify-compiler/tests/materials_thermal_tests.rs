@@ -28,6 +28,78 @@ fn load_stdlib_module() -> &'static CompiledModule {
         .expect("stdlib should contain std/materials/thermal module")
 }
 
+/// Assert that `trait_def` has a `DefaultKind::Constraint` whose expression is
+/// `BinOp { op: expected_op, left: Ident(expected_member), right: NumberLiteral(rhs) }`
+/// where `|rhs - expected_rhs| <= rhs_epsilon`.
+///
+/// This tightens the constraint-present check: a regression that flips the
+/// operator (`>=` → `>`) or changes the bound (e.g. `0.0` instead of `1500.0`)
+/// will now fail here.
+#[track_caller]
+fn assert_trait_constraint_binop(
+    trait_def: &CompiledTrait,
+    trait_name: &str,
+    expected_member: &str,
+    expected_op: &str,
+    expected_rhs: f64,
+    rhs_epsilon: f64,
+) {
+    use reify_syntax::ExprKind;
+
+    let constraint_default = trait_def
+        .defaults
+        .iter()
+        .find(|d| {
+            if let DefaultKind::Constraint(decl) = &d.kind {
+                matches!(&decl.expr.kind, ExprKind::BinOp { left, .. }
+                    if matches!(&left.kind, ExprKind::Ident(n) if n == expected_member))
+            } else {
+                false
+            }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{} must have a constraint default on '{}', got defaults: {:?}",
+                trait_name,
+                expected_member,
+                trait_def
+                    .defaults
+                    .iter()
+                    .map(|d| format!("{:?}", d.kind))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    if let DefaultKind::Constraint(decl) = &constraint_default.kind {
+        if let ExprKind::BinOp { op, left: _, right } = &decl.expr.kind {
+            assert_eq!(
+                op.as_str(),
+                expected_op,
+                "{} constraint op for '{}' should be '{}', got '{}'",
+                trait_name,
+                expected_member,
+                expected_op,
+                op
+            );
+            match &right.kind {
+                ExprKind::NumberLiteral(v) => assert!(
+                    (*v - expected_rhs).abs() <= rhs_epsilon,
+                    "{} constraint RHS for '{}' should be {} (±{}), got {}",
+                    trait_name,
+                    expected_member,
+                    expected_rhs,
+                    rhs_epsilon,
+                    v
+                ),
+                other => panic!(
+                    "{} constraint RHS for '{}' should be NumberLiteral, got {:?}",
+                    trait_name, expected_member, other
+                ),
+            }
+        }
+    }
+}
+
 // ─── (a) module loads with zero error diagnostics and non-empty trait_defs ───
 
 /// The std/materials/thermal module must load with zero error-severity
@@ -128,8 +200,10 @@ fn thermally_characterized_refines_material_spec_with_six_real_members() {
 
 // ─── (c) Refractory refines ThermallyCharacterized with a constraint default ──
 
-/// Refractory must refine ThermallyCharacterized and carry at least one
-/// DefaultKind::Constraint (the `max_service_temperature >= 1500.0` guard).
+/// Refractory must refine ThermallyCharacterized and carry a constraint
+/// `max_service_temperature >= 1500.0` — verified at the BinOp expression level
+/// so that a regression flipping the op (e.g. `>` instead of `>=`) or changing
+/// the bound (e.g. `0.0`) is caught here.
 #[test]
 fn refractory_refines_thermally_characterized_with_constraint() {
     let module = load_stdlib_module();
@@ -148,14 +222,14 @@ fn refractory_refines_thermally_characterized_with_constraint() {
         refractory.refinements
     );
 
-    let constraint_defaults: Vec<_> = refractory
-        .defaults
-        .iter()
-        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
-        .collect();
-    assert!(
-        !constraint_defaults.is_empty(),
-        "Refractory must have at least one DefaultKind::Constraint (max_service_temperature >= 1500.0)"
+    // BinOp-level check: op=">=", LHS=max_service_temperature, RHS≈1500.0
+    assert_trait_constraint_binop(
+        refractory,
+        "Refractory",
+        "max_service_temperature",
+        ">=",
+        1500.0,
+        1e-6,
     );
 }
 
