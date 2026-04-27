@@ -305,12 +305,9 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         )
     })?;
     let faces = kernel.extract_faces(handle)?;
-    let queries: Vec<GeometryQuery> = faces
-        .iter()
-        .map(|id| GeometryQuery::FaceNormal(*id))
-        .collect();
-    let values = kernel.query_many(&queries)?;
-    check_query_many_len("faces_by_normal", queries.len(), values.len())?;
+    let values = query_per_subshape(kernel, &faces, "faces_by_normal", |id| {
+        GeometryQuery::FaceNormal(id)
+    })?;
     let mut out = Vec::with_capacity(faces.len());
     for (id, normal_value) in faces.iter().zip(values) {
         let raw = parse_xyz_value(&normal_value, "FaceNormal")?;
