@@ -301,6 +301,82 @@ structure S {
     );
 }
 
+/// §9.2.6 truth-table matrix: 4 spec-rows × {List, Set} = 8 assertions.
+/// Pins Kleene semantics of `exists` for both container kinds, including an
+/// adversarial element ordering that catches premature-false and premature-undef
+/// short-circuit bugs (§9.2.6 warning: must scan past undef if no true seen yet).
+#[test]
+fn exists_kleene_truth_table_over_list_and_set() {
+    #[derive(Debug, Clone, Copy)]
+    enum CollKind {
+        List,
+        Set,
+    }
+
+    // Rows: (name, elements as Option<i64>, expected result)
+    // Some(i) => Value::Int(i); predicate x > 0 yields Bool(i > 0)
+    // None    => Value::Undef; predicate x > 0 on Undef yields Undef
+    let rows: Vec<(&str, Vec<Option<i64>>, Value)> = vec![
+        // Row 1: adversarial ordering — false then undef then true; must NOT
+        // short-circuit early on false or undef before seeing the true element.
+        (
+            "any_true_after_false_and_undef",
+            vec![Some(-1), None, Some(2)],
+            Value::Bool(true),
+        ),
+        // Row 2: all predicate results false → Bool(false)
+        ("all_false", vec![Some(-1), Some(-2)], Value::Bool(false)),
+        // Row 3: no true result, undef present → Undef
+        ("no_true_some_undef", vec![Some(-1), None], Value::Undef),
+        // Row 4: empty collection → vacuous falsity → Bool(false)
+        ("empty", vec![], Value::Bool(false)),
+    ];
+
+    for kind in [CollKind::List, CollKind::Set] {
+        for (name, elements, expected) in &rows {
+            let x_id = ValueCellId::new("$quant0.S", "x");
+
+            // Build element expressions: Some(i) → Int literal, None → Undef literal
+            let elem_exprs: Vec<CompiledExpr> = elements
+                .iter()
+                .map(|opt| match opt {
+                    Some(i) => CompiledExpr::literal(Value::Int(*i), Type::Int),
+                    None => CompiledExpr::literal(Value::Undef, Type::Int),
+                })
+                .collect();
+
+            // Build collection for the current container kind
+            let collection = match kind {
+                CollKind::List => {
+                    CompiledExpr::list_literal(elem_exprs, Type::List(Box::new(Type::Int)))
+                }
+                CollKind::Set => {
+                    CompiledExpr::set_literal(elem_exprs, Type::Set(Box::new(Type::Int)))
+                }
+            };
+
+            // Predicate: x > 0
+            let predicate = CompiledExpr::binop(
+                BinOp::Gt,
+                CompiledExpr::value_ref(x_id.clone(), Type::Int),
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+                Type::Bool,
+            );
+
+            let expr =
+                make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
+
+            let values = ValueMap::new();
+            let result = eval_expr(&expr, &EvalContext::simple(&values));
+            assert_eq!(
+                result,
+                *expected,
+                "exists({kind:?}, row={name}): expected {expected:?}",
+            );
+        }
+    }
+}
+
 /// step-11: Integration test for exists — parse + compile + eval with a false result
 #[test]
 fn integration_exists_constraint_parse_compile_eval() {
