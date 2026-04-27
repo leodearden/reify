@@ -959,4 +959,80 @@ mod tests {
             other => panic!("expected QueryFailed, got {:?}", other),
         }
     }
+
+    #[test]
+    fn query_per_subshape_returns_values_aligned_with_ids_via_single_query_many() {
+        // Three edge ids staged with distinct Real values. The helper must
+        // return those values in input-id order, using a single query_many
+        // call and zero per-element query calls.
+        let edge_ids = vec![
+            GeometryHandleId(801),
+            GeometryHandleId(802),
+            GeometryHandleId(803),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.001))
+            .with_response(edge_ids[1], Value::Real(0.002))
+            .with_response(edge_ids[2], Value::Real(0.003));
+
+        let values = query_per_subshape(
+            &mut kernel,
+            &edge_ids,
+            "test_label",
+            |id| GeometryQuery::EdgeLength(id),
+        )
+        .expect("query_per_subshape should succeed");
+
+        assert_eq!(
+            values,
+            vec![Value::Real(0.001), Value::Real(0.002), Value::Real(0.003)],
+            "returned values must be aligned with input ids in order"
+        );
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "query_per_subshape must call query_many exactly once"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "query_per_subshape must not call per-element query"
+        );
+    }
+
+    #[test]
+    fn query_per_subshape_surfaces_query_many_length_invariant_violation() {
+        // Three edge ids, but the kernel returns only two values. The helper
+        // must surface QueryError::QueryFailed naming "my_selector" and
+        // "length invariant" rather than silently truncating via zip.
+        let edge_ids = vec![
+            GeometryHandleId(901),
+            GeometryHandleId(902),
+            GeometryHandleId(903),
+        ];
+        let mut kernel = FixedReplyQueryManyKernel {
+            edges: edge_ids.clone(),
+            canned_reply: vec![Value::Real(0.001), Value::Real(0.002)],
+        };
+
+        let err = query_per_subshape(
+            &mut kernel,
+            &edge_ids,
+            "my_selector",
+            |id| GeometryQuery::EdgeLength(id),
+        )
+        .expect_err("query_per_subshape must reject length-mismatched query_many output");
+
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("my_selector") && msg.contains("length invariant"),
+                    "expected selector name + length invariant in error, got {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+    }
 }
