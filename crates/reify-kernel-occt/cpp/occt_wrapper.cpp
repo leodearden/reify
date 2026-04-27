@@ -650,7 +650,7 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 // --- Wire helpers ---
 
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
-    try {
+    return wrap_occt_call("make_circle_wire", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_circle_wire: radius must be finite and positive");
         }
@@ -669,17 +669,11 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
         auto result = std::make_unique<OcctShape>();
         result->shape = wire;
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_wire: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_wire: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_circle_wire: unknown C++ exception");
-    }
+    });
 }
 
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
-    try {
+    return wrap_occt_call("make_circle_face", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
             throw std::runtime_error("make_circle_face: radius must be finite and positive");
         }
@@ -702,13 +696,7 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
         return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_face: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_face: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT make_circle_face: unknown C++ exception");
-    }
+    });
 }
 
 // --- OcctShapeVec ---
