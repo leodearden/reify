@@ -5,7 +5,9 @@
 //! `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_html::render_html;
-use reify_doc::model::{DocModel, ItemDoc, ModuleDoc};
+use reify_doc::model::{
+    AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc,
+};
 
 /// `render_html` on the default (empty) `DocModel` must produce a structurally
 /// well-formed HTML5 document that is *self-contained*: no `<link>` / `<script>` /
@@ -378,6 +380,116 @@ fn toc_nav_renders_grouped_kinds_with_anchors() {
     let first_section = out.find("<section id=").expect("section");
     assert!(h1_pos < nav_pos, "<h1> must precede <nav>");
     assert!(nav_pos < first_section, "<nav> must precede first <section>");
+}
+
+/// Helper: build a Structure containing a single `params` list.
+fn structure_with_params(name: &str, params: Vec<ParamDoc>) -> ItemDoc {
+    ItemDoc::Structure {
+        name: name.into(), doc: None, is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        params, ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    }
+}
+
+/// Helper: build a Structure with the given ports list.
+fn structure_with_ports(name: &str, ports: Vec<PortDoc>) -> ItemDoc {
+    ItemDoc::Structure {
+        name: name.into(), doc: None, is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        params: vec![], ports, constraints: vec![],
+        sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    }
+}
+
+/// Helper: build a Structure with the given constraints list.
+fn structure_with_constraints(name: &str, constraints: Vec<ConstraintDoc>) -> ItemDoc {
+    ItemDoc::Structure {
+        name: name.into(), doc: None, is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        params: vec![], ports: vec![], constraints,
+        sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    }
+}
+
+/// Helper: build a Structure with the given meta list.
+fn structure_with_meta(name: &str, meta: Vec<(String, String)>) -> ItemDoc {
+    ItemDoc::Structure {
+        name: name.into(), doc: None, is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        params: vec![], ports: vec![], constraints: vec![],
+        sub_components: vec![], realizations: vec![],
+        meta,
+    }
+}
+
+/// Parameters table renders with a 5-column header and one row per param.
+/// Default cell uses an em-dash placeholder when `default_repr.is_none()`;
+/// `solver_hint` annotation appends `<em>hint: …</em>` to the description.
+#[test]
+fn parameters_table_renders() {
+    let item = structure_with_params(
+        "Bolt",
+        vec![
+            ParamDoc {
+                name: "length".into(),
+                doc: Some("Bolt length.".into()),
+                type_repr: "Length".into(),
+                default_repr: Some("100 mm".into()),
+                annotations: vec![],
+            },
+            ParamDoc {
+                name: "diameter".into(),
+                doc: None,
+                type_repr: "Length".into(),
+                default_repr: None,
+                annotations: vec![AnnotationDoc {
+                    name: "solver_hint".into(),
+                    args: vec!["\"discrete\"".into()],
+                }],
+            },
+        ],
+    );
+    let out = render_one_item(item);
+
+    // Section header.
+    assert!(out.contains("<h3>Parameters</h3>"), "missing <h3>Parameters</h3>; got:\n{out}");
+    // Table header: 5 columns.
+    assert!(out.contains("<table>"), "missing <table>; got:\n{out}");
+    assert!(out.contains("<thead>"), "missing <thead>");
+    assert!(out.contains("<th>Name</th>"));
+    assert!(out.contains("<th>Type</th>"));
+    assert!(out.contains("<th>Dimension</th>"));
+    assert!(out.contains("<th>Default</th>"));
+    assert!(out.contains("<th>Description</th>"));
+    // Rows: name and type wrapped in <code>, dim placeholder, default Some/None handling.
+    assert!(out.contains("<td><code>length</code></td>"),
+        "expected length name in <code>; got:\n{out}");
+    assert!(out.contains("<td><code>Length</code></td>"),
+        "expected Length type in <code>; got:\n{out}");
+    assert!(out.contains("<td><code>100 mm</code></td>"),
+        "expected default for length; got:\n{out}");
+    // diameter has no default — em-dash.
+    let em = "—";
+    assert!(out.contains(em), "expected em-dash placeholder; got:\n{out}");
+    // solver_hint suffix on the diameter row.
+    assert!(out.contains("<em>hint: discrete</em>"),
+        "expected solver_hint suffix; got:\n{out}");
+    // Description for length contains its doc text.
+    assert!(out.contains("Bolt length."),
+        "expected length doc in description cell; got:\n{out}");
+}
+
+/// Empty params list must produce no `<h3>Parameters</h3>` and no `<table>`.
+#[test]
+fn parameters_table_omitted_when_empty() {
+    let item = structure_with_params("Bolt", vec![]);
+    let out = render_one_item(item);
+    assert!(!out.contains("<h3>Parameters</h3>"));
+    assert!(!out.contains("<table>"));
 }
 
 /// Empty module (no items) must produce no `<nav>` at all.
