@@ -1266,6 +1266,35 @@ double query_edge_length(const OcctShape& shape) {
     });
 }
 
+Point3 query_edge_tangent(const OcctShape& shape) {
+    return wrap_occt_call("query_edge_tangent", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error(
+                "query_edge_tangent: shape is not an edge"
+            );
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("query_edge_tangent: edge is null");
+        }
+        BRepAdaptor_Curve curve(edge);
+        // Sample the tangent at the midpoint of the curve's parameter range.
+        // For straight edges this is the same as any other point; for curved
+        // edges it's a deterministic representative direction.
+        double u_mid = 0.5 * (curve.FirstParameter() + curve.LastParameter());
+        gp_Pnt p;
+        gp_Vec v;
+        curve.D1(u_mid, p, v);
+        double mag = v.Magnitude();
+        if (mag < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error(
+                "query_edge_tangent: degenerate curve (zero tangent)"
+            );
+        }
+        return Point3{ v.X() / mag, v.Y() / mag, v.Z() / mag };
+    });
+}
+
 Point3 query_face_normal(const OcctShape& shape) {
     return wrap_occt_call("query_face_normal", [&]() {
         // 1. Coerce shape to TopoDS_Face. TopoDS::Face throws Standard_Failure
