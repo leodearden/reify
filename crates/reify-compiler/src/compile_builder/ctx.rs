@@ -165,6 +165,8 @@ impl CompilationCtx {
             declared_version: None,
             // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
             solver_pragma: None,
+            // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
+            kernel_pragma: None,
             diagnostics: self.diagnostics,
             content_hash,
         }

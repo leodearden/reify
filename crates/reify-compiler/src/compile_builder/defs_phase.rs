@@ -292,6 +292,7 @@ mod tests {
             default_tolerance: None,
             declared_version: None,
             solver_pragma: None,
+            kernel_pragma: None,
             diagnostics: vec![],
             content_hash: ContentHash::of_str(""),
         }

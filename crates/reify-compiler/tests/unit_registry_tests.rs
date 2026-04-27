@@ -1983,6 +1983,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         default_tolerance: None,
         declared_version: None,
         solver_pragma: None,
+        kernel_pragma: None,
         diagnostics: vec![],
         content_hash: ContentHash::of_str(""),
     };

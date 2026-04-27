@@ -201,6 +201,20 @@ pub struct CompiledModule {
     /// validation outcome would force them to re-derive it from
     /// `module.pragmas`.
     pub solver_pragma: Option<SolverPragma>,
+    /// Module-level `#kernel` value (the user-declared kernel ident), or None
+    /// when absent / when the pragma was malformed.
+    ///
+    /// Populated by `module_pragmas::apply_module_pragmas` from the first
+    /// well-formed `#kernel(<ident>)` module-level pragma. Storage reflects
+    /// the user-declared name regardless of validation outcome (per PRD §4 —
+    /// round-trip + doc-tool consumption), mirroring the policy used by
+    /// `declared_version` and `solver_pragma`. v0.1 dispatch always uses OCCT
+    /// regardless of the stored value: a non-`occt` ident produces an
+    /// error-level diagnostic, but the user-declared name is still stored so
+    /// downstream tooling (doc generator, future kernel-registry lookup) sees
+    /// the verbatim intent. Only malformed shapes (zero args, key=value-first,
+    /// non-Ident bare values) leave the field as None.
+    pub kernel_pragma: Option<String>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }

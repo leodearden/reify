@@ -138,6 +138,7 @@ impl CompiledModuleBuilder {
             default_tolerance: None,
             declared_version: None,
             solver_pragma: None,
+            kernel_pragma: None,
             diagnostics: self.diagnostics,
             content_hash,
         }
