@@ -292,6 +292,7 @@ pub enum DiagnosticCode {
 ///     candidates: vec![],
 /// };
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: Severity,
