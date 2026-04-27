@@ -161,7 +161,7 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
     out.push_str("<head>\n");
     out.push_str("<meta charset=\"utf-8\">\n");
     out.push_str("<title>");
-    out.push_str(&html_escape(title));
+    escape_into(&mut out, title);
     out.push_str("</title>\n");
     out.push_str("<style>\n");
     out.push_str(EMBEDDED_STYLESHEET);
@@ -171,7 +171,7 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
 
     for module in &model.modules {
         out.push_str("<h1>");
-        out.push_str(&html_escape(&module.path));
+        escape_into(&mut out, &module.path);
         out.push_str("</h1>\n");
         if let Some(doc) = module.doc.as_deref() {
             emit_paragraphs(&mut out, doc);
@@ -210,7 +210,8 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
 /// dangling empty paragraphs.
 ///
 /// Escape the five HTML metacharacters (`<`, `>`, `&`, `"`, `'`) to their
-/// named or numeric entity references.
+/// named or numeric entity references, pushing the result directly into
+/// `out`.
 ///
 /// HTML5 only requires escaping `<`/`>`/`&` outside attributes and `"`/`'`
 /// inside attributes, but uniform 5-char escaping is simpler, still
@@ -218,8 +219,15 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
 /// emission site.  All user-supplied strings (names, types, expressions, doc
 /// text, member strings, default representations, …) pass through this helper
 /// before insertion so no raw user content reaches the output stream.
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+///
+/// This is the preferred form for the formatter's `(&mut String) -> ()`
+/// emission convention: it avoids allocating a temporary `String` for every
+/// escape — most user-supplied strings contain no escape-worthy characters,
+/// so a per-call allocation is wasted.  Callers that genuinely need an owned
+/// `String` (e.g. when the same escaped value is emitted twice in a row)
+/// can use [`html_escape`] instead.
+fn escape_into(out: &mut String, s: &str) {
+    out.reserve(s.len());
     for ch in s.chars() {
         match ch {
             '<' => out.push_str("&lt;"),
@@ -230,6 +238,16 @@ fn html_escape(s: &str) -> String {
             c => out.push(c),
         }
     }
+}
+
+/// Convenience wrapper around [`escape_into`] that returns the escaped
+/// string as a fresh `String`.  Use this only when the same escaped value is
+/// needed in multiple places (e.g. a TOC link `<a href="#x">x</a>` reuses
+/// the escaped name in both the `href` and the link text); single-use sites
+/// should prefer `escape_into` to skip the allocation.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    escape_into(&mut out, s);
     out
 }
 
@@ -305,13 +323,13 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     let vis = if item_is_pub(item) { "pub " } else { "" };
 
     out.push_str("<section id=\"");
-    out.push_str(&html_escape(name));
+    escape_into(out, name);
     out.push_str("\">\n");
     out.push_str("<h2>");
     out.push_str(vis);
     out.push_str(kw);
     out.push(' ');
-    out.push_str(&html_escape(name));
+    escape_into(out, name);
     out.push_str("</h2>\n");
 
     // Annotation-driven prefix sections, emitted BETWEEN the heading and the
@@ -323,14 +341,14 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         out.push_str("<aside class=\"deprecated\"><strong>Deprecated:</strong>");
         if !msg.is_empty() {
             out.push(' ');
-            out.push_str(&html_escape(msg));
+            escape_into(out, msg);
         }
         out.push_str("</aside>\n");
     }
     if let Some(opt) = find_annotation(anns, "optimized") {
         let target = opt.args.first().map(|s| unquote(s)).unwrap_or("");
         out.push_str("<p class=\"optimized\"><em>Optimized: <code>");
-        out.push_str(&html_escape(target));
+        escape_into(out, target);
         out.push_str("</code></em></p>\n");
     }
 
@@ -472,11 +490,11 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         out.push_str("<tr>");
         // Name
         out.push_str("<td><code>");
-        out.push_str(&html_escape(&p.name));
+        escape_into(out, &p.name);
         out.push_str("</code></td>");
         // Type
         out.push_str("<td><code>");
-        out.push_str(&html_escape(&p.type_repr));
+        escape_into(out, &p.type_repr);
         out.push_str("</code></td>");
         // Dimension placeholder (em-dash).
         out.push_str("<td>—</td>");
@@ -484,7 +502,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         match p.default_repr.as_deref() {
             Some(d) => {
                 out.push_str("<td><code>");
-                out.push_str(&html_escape(d));
+                escape_into(out, d);
                 out.push_str("</code></td>");
             }
             None => out.push_str("<td>—</td>"),
@@ -493,7 +511,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         out.push_str("<td>");
         let doc_text = p.doc.as_deref().unwrap_or("").trim();
         if !doc_text.is_empty() {
-            out.push_str(&html_escape(doc_text));
+            escape_into(out, doc_text);
         }
         if let Some(hint) = find_annotation(&p.annotations, "solver_hint") {
             let hint_arg = hint.args.first().map(|s| unquote(s)).unwrap_or("");
@@ -501,7 +519,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
                 out.push(' ');
             }
             out.push_str("<em>hint: ");
-            out.push_str(&html_escape(hint_arg));
+            escape_into(out, hint_arg);
             out.push_str("</em>");
         }
         out.push_str("</td>");
@@ -530,21 +548,21 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     for p in ports {
         out.push_str("<tr>");
         out.push_str("<td><code>");
-        out.push_str(&html_escape(&p.name));
+        escape_into(out, &p.name);
         out.push_str("</code></td>");
         out.push_str("<td>—</td>");
         out.push_str("<td>");
-        out.push_str(&html_escape(&p.direction));
+        escape_into(out, &p.direction);
         out.push_str("</td>");
         out.push_str("<td><code>");
-        out.push_str(&html_escape(&p.type_name));
+        escape_into(out, &p.type_name);
         out.push_str("</code></td>");
         out.push_str("<td>");
         if p.members.is_empty() {
             out.push('—');
         } else {
             let joined = p.members.join(", ");
-            out.push_str(&html_escape(&joined));
+            escape_into(out, &joined);
         }
         out.push_str("</td>");
         out.push_str("</tr>\n");
@@ -565,7 +583,7 @@ fn render_trait_members(out: &mut String, members: &[String]) {
     out.push_str("<ul>\n");
     for m in members {
         out.push_str("<li>");
-        out.push_str(&html_escape(m));
+        escape_into(out, m);
         out.push_str("</li>\n");
     }
     out.push_str("</ul>\n");
@@ -582,7 +600,7 @@ fn render_enum_variants(out: &mut String, variants: &[String]) {
     out.push_str("<ul>\n");
     for v in variants {
         out.push_str("<li>");
-        out.push_str(&html_escape(v));
+        escape_into(out, v);
         out.push_str("</li>\n");
     }
     out.push_str("</ul>\n");
@@ -590,13 +608,13 @@ fn render_enum_variants(out: &mut String, variants: &[String]) {
 
 /// Render a function signature inside `<pre><code>…</code></pre>`.
 ///
-/// The signature passes through `html_escape` so embedded `<` / `>` / `&`
+/// The signature passes through `escape_into` so embedded `<` / `>` / `&`
 /// characters (notably the `>` in `->`) survive as their entity references.
 /// Per PRD §HTML there is no syntax highlighting in v0.1, so no class hint
 /// is set on `<code>`.
 fn render_function_signature(out: &mut String, signature: &str) {
     out.push_str("<pre><code>");
-    out.push_str(&html_escape(signature));
+    escape_into(out, signature);
     out.push_str("</code></pre>\n");
 }
 
@@ -608,11 +626,11 @@ fn render_function_signature(out: &mut String, signature: &str) {
 fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&str>) {
     out.push_str("<dl>\n");
     out.push_str("<dt>Type</dt><dd><code>");
-    out.push_str(&html_escape(type_repr));
+    escape_into(out, type_repr);
     out.push_str("</code></dd>\n");
     if let Some(d) = default_repr {
         out.push_str("<dt>Default</dt><dd><code>");
-        out.push_str(&html_escape(d));
+        escape_into(out, d);
         out.push_str("</code></dd>\n");
     }
     out.push_str("</dl>\n");
@@ -625,10 +643,10 @@ fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&st
 fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
     out.push_str("<dl>\n");
     out.push_str("<dt>Direction</dt><dd>");
-    out.push_str(&html_escape(direction));
+    escape_into(out, direction);
     out.push_str("</dd>\n");
     out.push_str("<dt>Expression</dt><dd><code>");
-    out.push_str(&html_escape(expr_repr));
+    escape_into(out, expr_repr);
     out.push_str("</code></dd>\n");
     out.push_str("</dl>\n");
 }
@@ -639,10 +657,10 @@ fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
 fn render_unit_body(out: &mut String, base_unit: &str, scale: &str) {
     out.push_str("<dl>\n");
     out.push_str("<dt>Base</dt><dd><code>");
-    out.push_str(&html_escape(base_unit));
+    escape_into(out, base_unit);
     out.push_str("</code></dd>\n");
     out.push_str("<dt>Scale</dt><dd><code>");
-    out.push_str(&html_escape(scale));
+    escape_into(out, scale);
     out.push_str("</code></dd>\n");
     out.push_str("</dl>\n");
 }
@@ -650,14 +668,14 @@ fn render_unit_body(out: &mut String, base_unit: &str, scale: &str) {
 /// Render the `= <code>{type}</code>` line for a `TypeAlias`.
 fn render_type_alias_body(out: &mut String, type_repr: &str) {
     out.push_str("<p>= <code>");
-    out.push_str(&html_escape(type_repr));
+    escape_into(out, type_repr);
     out.push_str("</code></p>\n");
 }
 
 /// Render the `<code>{expr}</code>` line for a `ConstraintDef`.
 fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
     out.push_str("<p><code>");
-    out.push_str(&html_escape(expr_repr));
+    escape_into(out, expr_repr);
     out.push_str("</code></p>\n");
 }
 
@@ -678,9 +696,9 @@ fn render_meta(out: &mut String, meta: &[(String, String)]) {
     out.push_str("<dl>\n");
     for (k, v) in sorted {
         out.push_str("<dt>");
-        out.push_str(&html_escape(k));
+        escape_into(out, k);
         out.push_str("</dt><dd>");
-        out.push_str(&html_escape(v));
+        escape_into(out, v);
         out.push_str("</dd>\n");
     }
     out.push_str("</dl>\n");
@@ -702,11 +720,11 @@ fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
     for c in cs {
         out.push_str("<li>");
         if let Some(label) = c.label.as_deref() {
-            out.push_str(&html_escape(label));
+            escape_into(out, label);
             out.push_str(": ");
         }
         out.push_str("<code>");
-        out.push_str(&html_escape(&c.expr_repr));
+        escape_into(out, &c.expr_repr);
         out.push_str("</code>");
         if let Some(line) = c.line {
             out.push_str(" <em>(line ");
@@ -772,7 +790,6 @@ fn item_is_pub(item: &ItemDoc) -> bool {
 }
 
 /// Lookup the optional doc-comment of any `ItemDoc` variant.
-#[allow(dead_code)]
 fn item_doc(item: &ItemDoc) -> Option<&str> {
     match item {
         ItemDoc::Structure { doc, .. }
@@ -789,7 +806,6 @@ fn item_doc(item: &ItemDoc) -> Option<&str> {
 }
 
 /// Lookup the annotations attached to any `ItemDoc` variant.
-#[allow(dead_code)]
 fn item_annotations(item: &ItemDoc) -> &[AnnotationDoc] {
     match item {
         ItemDoc::Structure { annotations, .. }
@@ -813,7 +829,7 @@ fn emit_paragraphs(out: &mut String, doc: &str) {
             continue;
         }
         out.push_str("<p>");
-        out.push_str(&html_escape(p));
+        escape_into(out, p);
         out.push_str("</p>\n");
     }
 }
