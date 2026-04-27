@@ -19,8 +19,18 @@ use crate::units::unit_to_scalar;
 /// mutating typed fields and pushing diagnostics in place.
 pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledModule) {
     apply_precision_pragma(parsed, module);
+    apply_version_pragma(parsed, module);
     warn_block_level_precision(module);
 }
+
+/// The maximum target language version this compiler can compile.
+///
+/// **Bumping ritual.** When this constant changes (e.g. to `(0, 2)`), update
+/// the verbatim version string in the too-new diagnostic produced by
+/// `apply_version_pragma` ("this compiler supports up to 0.1") and the
+/// "treating as 0.1" wording in the too-old diagnostic. Both are hard-coded
+/// per `docs/prds/pragmas.md` §5 to give users a single canonical phrasing.
+const COMPILER_SUPPORTED_VERSION: (u16, u16) = (0, 1);
 
 /// Append the spans of every `#precision` pragma in `pragmas` to `out`.
 fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
@@ -226,6 +236,51 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     )
                     .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
+            }
+        }
+    }
+}
+
+/// Process the first well-formed module-level `#version(MAJOR.MINOR)` pragma:
+/// store its (MAJOR, MINOR) tuple on `module.declared_version` and validate
+/// against [`COMPILER_SUPPORTED_VERSION`]. See `docs/prds/pragmas.md` §5.
+///
+/// Per design decision, `declared_version` reflects what the user wrote
+/// regardless of validation outcome (too-new error, too-old warning, or
+/// in-range silent), so downstream tooling can render the user's intent
+/// verbatim. Only malformed args and duplicates leave it `None`.
+fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    let mut first_seen = false;
+    for pragma in &parsed.pragmas {
+        if pragma.name != "version" {
+            continue;
+        }
+
+        if first_seen {
+            // step-10 will turn this into a "duplicate" error.
+            continue;
+        }
+        first_seen = true;
+
+        // First-seen pragma: interpret its args.
+        match pragma.args.as_slice() {
+            [PragmaArg::Bare(PragmaValue::Number(n))] => {
+                // Render via Display (shortest round-tripping repr) and split
+                // on '.' to extract MAJOR / MINOR. See task design decision:
+                // `0.10` lexes to the same f64 as `0.1` (printed as "0.1");
+                // users who need MINOR=10 must use the string form.
+                let rendered = format!("{n}");
+                if let Some((maj_s, min_s)) = rendered.split_once('.')
+                    && let (Ok(maj), Ok(min)) = (maj_s.parse::<u16>(), min_s.parse::<u16>())
+                {
+                    module.declared_version = Some((maj, min));
+                }
+                // Malformed Number-form parses fall through silently for now;
+                // step-12 will add the warning.
+            }
+            _ => {
+                // Other shapes are handled in later steps (string form in
+                // step-4, malformed catch-all in step-12).
             }
         }
     }
