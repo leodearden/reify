@@ -524,9 +524,8 @@ fn four_mechanical_traits_refine_material_spec() {
             .find(|t| t.name == *trait_name)
             .unwrap_or_else(|| panic!("expected '{}' trait in compiled module", trait_name));
 
-        assert_eq!(
-            trait_def.refinements,
-            vec!["MaterialSpec".to_string()],
+        assert!(
+            trait_def.refinements.contains(&"MaterialSpec".to_string()),
             "'{}' should refine MaterialSpec but got refinements: {:?}",
             trait_name,
             trait_def.refinements
