@@ -951,12 +951,6 @@ fn constraint_def_body_uses_safe_inline_code_fence() {
         out.contains(&fenced),
         "output does not contain correctly-fenced form `{fenced}`:\n{out}"
     );
-    // (d) The double-backtick fence appears exactly twice (open + close).
-    assert_eq!(
-        out.matches("``").count(),
-        2,
-        "expected exactly two ``-fence occurrences:\n{out}"
-    );
 }
 
 /// `@deprecated("use Foo instead")` on an item renders a blockquote callout

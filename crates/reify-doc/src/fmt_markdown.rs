@@ -597,12 +597,7 @@ fn md_cell_escape(s: &str) -> String {
 /// Pipes / newlines inside `s` are escaped via [`md_cell_escape`] for the same
 /// reason as plain-text cells.
 fn md_inline_code_cell(s: &str) -> String {
-    let escaped = md_cell_escape(s);
-    let fence_len = max_consecutive_backticks(&escaped) + 1;
-    let fence: String = "`".repeat(fence_len);
-    let needs_pad = escaped.starts_with('`') || escaped.ends_with('`');
-    let space = if needs_pad { " " } else { "" };
-    format!("{fence}{space}{escaped}{space}{fence}")
+    md_inline_code(&md_cell_escape(s))
 }
 
 /// Render the `### Parameters` GFM table.  No-op when `params` is empty.
