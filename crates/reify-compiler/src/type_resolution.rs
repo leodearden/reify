@@ -408,6 +408,9 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "SolidAngle" => Some(Type::Scalar {
             dimension: DimensionVector::SOLID_ANGLE,
         }),
+        "Money" => Some(Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        }),
         // Geometric derived dimensions
         "Area" => Some(Type::Scalar {
             dimension: DimensionVector::AREA,
