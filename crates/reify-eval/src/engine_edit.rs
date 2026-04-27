@@ -798,6 +798,54 @@ impl Engine {
             self.cache.restore_final(node_id);
         }
 
+        // ── Composed-field re-elaboration (task 2343 step-8) ───────────
+        // Composed fields can capture other field cells via the augmented
+        // `Lambda { captures, .. }` injected by the compiler post-pass
+        // `phase_augment_composed_captures`. Those captures are sealed at
+        // initial elaboration time, so a downstream change in the values
+        // map (e.g. an upstream cell modified by this edit) would otherwise
+        // leave the cached `Value::Lambda` with stale captures — breaking
+        // the cache invariant. Iterate the snapshot of compiled fields and,
+        // for any composed field whose NodeId is in the dirty cone, rebuild
+        // its `Value::Field` against the post-eval-loop `values` map. The
+        // rebuilt lambda has fresh captures sourced from the current values,
+        // restoring the invariant. Mirrors the cold-start path in
+        // `engine_eval.rs::Engine::eval` via the shared `elaborate_field`
+        // helper. Sampled / Imported fields are skipped: their source has
+        // no callable lambda and therefore no captures to refresh.
+        let compiled_fields = Arc::clone(&self.compiled_fields);
+        for field in compiled_fields.iter() {
+            if !matches!(
+                field.source,
+                reify_compiler::CompiledFieldSource::Composed { .. }
+            ) {
+                continue;
+            }
+            let field_cell = ValueCellId::new(reify_types::FIELD_ENTITY_PREFIX, &field.name);
+            let field_node = NodeId::Value(field_cell.clone());
+            if !dirty_cone.contains(&field_node) {
+                continue;
+            }
+            let new_field_value =
+                crate::engine_eval::elaborate_field(field, &values, &functions, &self.meta_map);
+            values.insert(field_cell.clone(), new_field_value.clone());
+            new_snapshot.values.insert(
+                field_cell,
+                (new_field_value.clone(), DeterminacyState::Determined),
+            );
+            // Refresh the cache entry so a subsequent demand-driven fetch
+            // picks up the rebuilt lambda rather than the stale one. We
+            // record_evaluation rather than mark_pending — the field is
+            // freshly computed at this point and downstream consumers can
+            // treat it as Final.
+            self.cache.record_evaluation(
+                field_node,
+                CachedResult::Value(new_field_value, DeterminacyState::Determined),
+                VersionId(version_id),
+                DependencyTrace::default(),
+            );
+        }
+
         // ── Guard re-elaboration phase ────────────────────────────────
         // If any structure_controlling cell changed, re-evaluate guarded groups
         // to flip which branch is active/inactive, and recompute fingerprint.
@@ -1684,6 +1732,11 @@ impl Engine {
         //      stale tables (see eval() for the same refresh rationale).
         self.functions = merge_functions(module, &self.prelude_functions);
         self.compiled_purposes = module.compiled_purposes.clone();
+        // Snapshot the field declarations so `Engine::edit_param` can
+        // re-elaborate composed fields incrementally when their tracked
+        // dependencies change (task 2343 step-8). Mirrors the same
+        // assignment in `Engine::eval`.
+        self.compiled_fields = Arc::new(module.fields.clone());
         self.meta_map = build_meta_map(module);
         self.objectives.clear();
         for template in &module.templates {

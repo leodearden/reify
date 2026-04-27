@@ -149,6 +149,7 @@ impl Engine {
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
+            compiled_fields: Arc::new(Vec::new()),
             meta_map: Arc::new(HashMap::new()),
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,

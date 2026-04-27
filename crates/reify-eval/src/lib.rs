@@ -346,6 +346,15 @@ pub struct Engine {
     /// Populated during eval() so that edit_param() can look up the objective
     /// by scope_name without needing access to the original templates.
     objectives: HashMap<String, OptimizationObjective>,
+    /// Compiled field declarations from the last eval() / edit_source() call.
+    ///
+    /// Stored so that incremental paths — primarily `Engine::edit_param`
+    /// (task 2343) — can re-elaborate composed fields when their tracked
+    /// dependencies land in the dirty cone. Populated by both `Engine::eval`
+    /// and `Engine::edit_source` from `module.fields`. Wrapped in `Arc` so
+    /// the per-call clone in `edit_param` is an O(1) refcount bump rather
+    /// than a deep copy of the field tree.
+    compiled_fields: Arc<Vec<reify_compiler::CompiledField>>,
     /// Maximum depth for recursive sub-component unfolding.
     /// Prevents runaway recursion when guard expressions don't terminate.
     /// Default: 64.

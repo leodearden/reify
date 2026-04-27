@@ -559,6 +559,59 @@ fn eval_guarded_group_param_cell(
     );
 }
 
+/// Elaborate a single compiled field into its `Value::Field` runtime
+/// representation against the supplied `values`/`functions`/`meta_map`.
+///
+/// Used by both the cold-start field-elaboration loop in `Engine::eval` and
+/// the incremental composed-field re-elaboration in `Engine::edit_param`.
+/// Centralising the build keeps the two call sites bit-identical: the
+/// `Value::Field { lambda, source, domain_type, codomain_type }` produced
+/// at edit time is exactly what the cold path would have produced for the
+/// same `field` and `values`.
+///
+/// Both `Analytical` and `Composed` sources evaluate the lambda expression
+/// once against the current eval context, producing a `Value::Lambda` whose
+/// captures are taken from the supplied `values` map. `Sampled` and
+/// `Imported` fields produce a placeholder `Value::Undef` lambda — neither
+/// kind has a callable lambda body to evaluate at this point.
+pub(crate) fn elaborate_field(
+    field: &reify_compiler::CompiledField,
+    values: &ValueMap,
+    functions: &Arc<Vec<CompiledFunction>>,
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) -> Value {
+    let lambda_value = match &field.source {
+        reify_compiler::CompiledFieldSource::Analytical { expr }
+        | reify_compiler::CompiledFieldSource::Composed { expr } => {
+            let ctx = eval_ctx_with_meta(values, functions, meta_map);
+            let val = reify_expr::eval_expr(expr, &ctx);
+            Arc::new(val)
+        }
+        reify_compiler::CompiledFieldSource::Sampled { .. }
+        | reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
+    };
+
+    let source_kind = match &field.source {
+        reify_compiler::CompiledFieldSource::Analytical { .. } => {
+            reify_types::FieldSourceKind::Analytical
+        }
+        reify_compiler::CompiledFieldSource::Sampled { .. } => {
+            reify_types::FieldSourceKind::Sampled
+        }
+        reify_compiler::CompiledFieldSource::Composed { .. } => {
+            reify_types::FieldSourceKind::Composed
+        }
+        reify_compiler::CompiledFieldSource::Imported => reify_types::FieldSourceKind::Imported,
+    };
+
+    Value::Field {
+        domain_type: field.domain_type.clone(),
+        codomain_type: field.codomain_type.clone(),
+        source: source_kind,
+        lambda: lambda_value,
+    }
+}
+
 impl Engine {
     /// Evaluate a compiled module, returning computed values.
     ///
@@ -571,6 +624,10 @@ impl Engine {
         // See `merge_functions` in lib.rs for the full contract.
         self.functions = merge_functions(module, &self.prelude_functions);
         self.compiled_purposes = module.compiled_purposes.clone();
+        // Snapshot the field declarations so `Engine::edit_param` can
+        // re-elaborate composed fields incrementally when their tracked
+        // dependencies change (task 2343 step-8).
+        self.compiled_fields = Arc::new(module.fields.clone());
         // Clear stale purpose state from previous eval() calls — the fresh
         // snapshot discards all purpose-injected constraints/objectives.
         self.active_purposes.clear();
@@ -651,41 +708,11 @@ impl Engine {
         // Evaluate field declarations first: they must be available in the
         // values map before templates are evaluated, because structure
         // expressions may reference fields (e.g., `sample(my_field, point)`).
+        // The same `elaborate_field` helper is reused by `Engine::edit_param`
+        // to refresh composed fields when their tracked dependencies change
+        // — see `engine_edit.rs` for the incremental call site.
         for field in &module.fields {
-            // Both variants carry a callable lambda expr; evaluation is identical.
-            let lambda_value = match &field.source {
-                reify_compiler::CompiledFieldSource::Analytical { expr }
-                | reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx = eval_ctx_with_meta(&values, &functions, &self.meta_map);
-                    let val = reify_expr::eval_expr(expr, &ctx);
-                    Arc::new(val)
-                }
-                reify_compiler::CompiledFieldSource::Sampled { .. }
-                | reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
-            };
-
-            let source_kind = match &field.source {
-                reify_compiler::CompiledFieldSource::Analytical { .. } => {
-                    reify_types::FieldSourceKind::Analytical
-                }
-                reify_compiler::CompiledFieldSource::Sampled { .. } => {
-                    reify_types::FieldSourceKind::Sampled
-                }
-                reify_compiler::CompiledFieldSource::Composed { .. } => {
-                    reify_types::FieldSourceKind::Composed
-                }
-                reify_compiler::CompiledFieldSource::Imported => {
-                    reify_types::FieldSourceKind::Imported
-                }
-            };
-
-            let field_value = Value::Field {
-                domain_type: field.domain_type.clone(),
-                codomain_type: field.codomain_type.clone(),
-                source: source_kind,
-                lambda: lambda_value,
-            };
-
+            let field_value = elaborate_field(field, &values, &functions, &self.meta_map);
             let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
             values.insert(field_id.clone(), field_value.clone());
             snapshot
