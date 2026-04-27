@@ -8,17 +8,19 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, QueryError, ReprKind, Value};
+use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, ReprKind, Value};
 
 /// Helper: build a kernel containing one box of the given mm dimensions
-/// and return the kernel + its handle id.
+/// (converted to SI metres at the kernel boundary so geometric queries
+/// like `SurfaceArea`/`EdgeLength` return values in m² / m) and return
+/// the kernel + its handle id.
 fn box_kernel(width_mm: f64, height_mm: f64, depth_mm: f64) -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(width_mm),
-            height: Value::Real(height_mm),
-            depth: Value::Real(depth_mm),
+            width: Value::Real(width_mm * 1e-3),
+            height: Value::Real(height_mm * 1e-3),
+            depth: Value::Real(depth_mm * 1e-3),
         })
         .expect("Box creation should succeed");
     (kernel, h.id)
@@ -120,6 +122,43 @@ fn extract_faces_box_returns_six_distinct_face_handles() {
             "extracted face handle {:?} should have ReprKind::Face, got {:?}",
             id,
             repr
+        );
+    }
+}
+
+#[test]
+fn extract_faces_face_handles_have_correct_surface_area() {
+    // 10x20x30 mm box → 6 faces in 3 axis-aligned pairs:
+    //   - 2 × (10mm × 20mm) = 2 × 200e-6 m²
+    //   - 2 × (10mm × 30mm) = 2 × 300e-6 m²
+    //   - 2 × (20mm × 30mm) = 2 × 600e-6 m²
+    let (mut kernel, box_id) = box_kernel(10.0, 20.0, 30.0);
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces on a valid box should succeed");
+
+    let mut areas: Vec<f64> = faces
+        .iter()
+        .map(|id| match kernel.query(&GeometryQuery::SurfaceArea(*id)) {
+            Ok(Value::Real(a)) => a,
+            other => panic!("SurfaceArea({:?}) returned unexpected value: {:?}", id, other),
+        })
+        .collect();
+    areas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let expected = [
+        200e-6, 200e-6, // 10 × 20
+        300e-6, 300e-6, // 10 × 30
+        600e-6, 600e-6, // 20 × 30
+    ];
+    let tol = 1e-9;
+    assert_eq!(areas.len(), expected.len());
+    for (got, want) in areas.iter().zip(expected.iter()) {
+        assert!(
+            (got - want).abs() < tol,
+            "extracted-face area mismatch: got {got}, want {want} (tol={tol}). \
+             full sorted areas: {:?}",
+            areas
         );
     }
 }
