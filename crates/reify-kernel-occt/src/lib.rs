@@ -1161,6 +1161,31 @@ impl OcctKernel {
     }
 }
 
+/// Test fixture helpers: exposed as `pub` (not gated on `cfg(test)`) so that
+/// integration tests in `tests/` can call them.  These are named with a
+/// `_for_test` suffix to signal their intended scope.
+///
+/// Integration tests are compiled as a separate crate that depends on this
+/// library in its normal (non-test) build mode, so `#[cfg(test)]`-gated items
+/// in this crate are NOT visible to integration tests.  Gating on `has_occt`
+/// only (no `test` cfg) keeps these helpers out of stub builds while keeping
+/// them available to all test binaries that link this crate.
+#[cfg(has_occt)]
+impl OcctKernel {
+    /// Create a circle face at the given z-height via the OCCT FFI and store
+    /// it in the kernel, returning its `GeometryHandleId`.
+    ///
+    /// Exposed for integration tests that need a `TopAbs_FACE` fixture without
+    /// going through the production `GeometryOp` API, which has no standalone
+    /// face constructor.
+    pub fn store_circle_face_for_test(&mut self, radius: f64, z: f64) -> GeometryHandleId {
+        let shape = ffi::ffi::make_circle_face(radius, z)
+            .expect("make_circle_face should succeed in test fixture");
+        let h = self.store(shape);
+        h.id
+    }
+}
+
 #[cfg(all(test, has_occt))]
 mod tests {
     use super::*;
