@@ -2,7 +2,9 @@
 //!
 //! Tests for compiling `#name` and `#name(args)` pragmas at module and block level.
 
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
+use reify_test_support::{
+    compile_source, compile_source_with_stdlib, errors_only, steel_elastic_source, warnings_only,
+};
 use reify_types::Severity;
 
 /// Helper: filter warnings whose message contains the given substring.
@@ -109,6 +111,41 @@ fn without_no_prelude_stdlib_units_resolve() {
         errs.is_empty(),
         "expected no errors when using stdlib unit `km` without #no_prelude, got: {:?}",
         errs
+    );
+}
+
+/// Without #no_prelude, stdlib traits (e.g. `Elastic`) should resolve cleanly.
+///
+/// Positive regression test: pins that the prelude IS merged into user modules
+/// when `#no_prelude` is absent. Stronger than `without_no_prelude_stdlib_units_resolve`
+/// (unit resolution) — trait visibility is the most direct signal that the full
+/// prelude is applied. Mirrors `compile_with_prelude_makes_traits_visible` in
+/// stdlib_loader_tests.rs but exercises the higher-level `compile_source_with_stdlib`
+/// entry-point path that real users hit.
+#[test]
+fn without_no_prelude_stdlib_traits_resolve() {
+    let source = steel_elastic_source();
+    let module = compile_source_with_stdlib(source);
+
+    // (a) No compile errors — Elastic trait resolved from prelude.
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors when compiling Elastic-conforming Steel without #no_prelude, \
+         got: {:?}",
+        errs
+    );
+
+    // (b) Trait bound is recorded — Elastic is visible during compilation.
+    let template = module
+        .templates
+        .first()
+        .expect("expected at least 1 template (Steel)");
+    assert!(
+        template.trait_bounds.contains(&"Elastic".to_string()),
+        "Steel should have 'Elastic' in trait_bounds (proving prelude trait resolution), \
+         got: {:?}",
+        template.trait_bounds
     );
 }
 
