@@ -1189,4 +1189,110 @@ mod tests {
         drop(handle);
         // No panic means success
     }
+
+    // --- Topology extraction through the handle channel (step-21) ---
+
+    /// Helper: build a box on a fresh handle and return both.
+    fn handle_with_box(w: f64, h: f64, d: f64) -> (super::OcctKernelHandle, GeometryHandleId) {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(w),
+                height: Value::Real(h),
+                depth: Value::Real(d),
+            })
+            .expect("Box execute should succeed");
+        (handle, gh.id)
+    }
+
+    /// Assert all ids in `ids` are pairwise distinct, none are
+    /// `GeometryHandleId::INVALID`, and none equal `excluded`.
+    fn assert_distinct_valid(ids: &[GeometryHandleId], excluded: GeometryHandleId) {
+        for id in ids {
+            assert_ne!(*id, GeometryHandleId::INVALID, "id should not be INVALID");
+            assert_ne!(*id, excluded, "extracted id should not equal source handle");
+        }
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(seen.insert(*id), "duplicate id in extracted vec: {id:?}");
+        }
+    }
+
+    #[test]
+    fn extract_edges_through_handle_channel_returns_twelve_handles() {
+        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
+        let edges = handle
+            .extract_edges(box_id)
+            .expect("extract_edges through channel should succeed");
+        assert_eq!(
+            edges.len(),
+            12,
+            "a box should have 12 edges, got {}",
+            edges.len()
+        );
+        assert_distinct_valid(&edges, box_id);
+    }
+
+    #[tokio::test]
+    async fn extract_edges_async_through_handle_channel_returns_twelve_handles() {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute_async(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .await
+            .unwrap();
+        let edges = handle
+            .extract_edges_async(gh.id)
+            .await
+            .expect("extract_edges_async through channel should succeed");
+        assert_eq!(
+            edges.len(),
+            12,
+            "a box should have 12 edges, got {}",
+            edges.len()
+        );
+        assert_distinct_valid(&edges, gh.id);
+    }
+
+    #[test]
+    fn extract_faces_through_handle_channel_returns_six_handles() {
+        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
+        let faces = handle
+            .extract_faces(box_id)
+            .expect("extract_faces through channel should succeed");
+        assert_eq!(
+            faces.len(),
+            6,
+            "a box should have 6 faces, got {}",
+            faces.len()
+        );
+        assert_distinct_valid(&faces, box_id);
+    }
+
+    #[tokio::test]
+    async fn extract_faces_async_through_handle_channel_returns_six_handles() {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute_async(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .await
+            .unwrap();
+        let faces = handle
+            .extract_faces_async(gh.id)
+            .await
+            .expect("extract_faces_async through channel should succeed");
+        assert_eq!(
+            faces.len(),
+            6,
+            "a box should have 6 faces, got {}",
+            faces.len()
+        );
+        assert_distinct_valid(&faces, gh.id);
+    }
 }
