@@ -756,3 +756,27 @@ purpose my_purpose(subject: Structure) {
         "Declaration::Purpose.annotations[*].args",
     );
 }
+
+/// Position 27: `Declaration::Constraint.annotations[*].args` — deep chain
+/// inside an annotation arg on a constraint definition.
+///
+/// The constraint-def body (`param x: Real`) has no default expression, no
+/// predicates, and therefore no embedded chain. The asserted count of 1
+/// isolates the warning to the annotation-arg position. If `walk_declaration`'s
+/// Constraint arm dropped its `walk_annotations` call (dot_chain_lint.rs:129),
+/// the count would be 0 and this test would fail — which is the regression
+/// this test guards against.
+#[test]
+fn walker_visits_constraint_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+constraint def MyConstraint {
+    param x: Real
+}
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Constraint.annotations[*].args",
+    );
+}
