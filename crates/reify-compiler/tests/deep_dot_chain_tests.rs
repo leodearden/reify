@@ -526,3 +526,49 @@ structure S {
         "Declaration::Structure.annotations[*].args",
     );
 }
+
+/// Position 16: `MemberDecl::Param.annotations[*].args` — deep chain inside a
+/// member-level annotation arg on a `param`.
+///
+/// The param body (default = 0) deliberately contains NO deep chain so the
+/// asserted count of 1 isolates the warning to the annotation-arg position.
+/// If `walk_members` silently skips Param annotations (the coverage hole
+/// for this arm), the count is 0 and this test FAILS — expected pre-impl.
+#[test]
+fn walker_visits_param_member_annotation_arg() {
+    let source = r#"
+structure S {
+    @solver_hint(a.b.c.d.e)
+    param x: Real = 0
+}
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "MemberDecl::Param.annotations[*].args",
+    );
+}
+
+/// Position 17: `MemberDecl::Let.annotations[*].args` — deep chain inside a
+/// member-level annotation arg on a `let`.
+///
+/// Tested separately from Param because the two are independent `match` arms
+/// in `walk_members`; a regression that wires `walk_annotations` into only
+/// one of them would silently lose coverage on the other.
+///
+/// The let value (= 0) deliberately contains NO deep chain so the asserted
+/// count of 1 isolates the warning to the annotation-arg position.
+#[test]
+fn walker_visits_let_member_annotation_arg() {
+    let source = r#"
+structure S {
+    @solver_hint(a.b.c.d.e)
+    let v = 0
+}
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "MemberDecl::Let.annotations[*].args",
+    );
+}
