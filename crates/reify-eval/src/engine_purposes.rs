@@ -537,43 +537,30 @@ mod tests {
         );
     }
 
-    /// Guard: when a `ResolvedSchemaQuery` references a cell that is absent
-    /// from `value_cells`, the missing-cell branch must emit exactly one WARN
-    /// event scoped to `reify_eval::engine_purposes` (graph-vs-resolved-query
-    /// wiring inconsistency signal).
+    /// Shared fixture for the missing-cell branch tests.
     ///
-    /// The test wraps the call in `catch_unwind` so it runs identically in
-    /// both debug builds (where `debug_assert!(false)` panics) and release
-    /// builds (where it does not). The WARN fires *before* the
-    /// `debug_assert!`, so the counter increments regardless of build mode.
-    ///
-    /// **Dual-mode coverage:** the release-only structural assertions below
-    /// (the `#[cfg(not(debug_assertions))]` block) are exercised in CI by
-    /// `orchestrator.yaml:28`'s `cargo test -p reify-eval --release` pass
-    /// (the second cargo-test call in the two-pass pattern documented at
-    /// `orchestrator.yaml:19`). The *debug-mode posture* (panic + no expr
-    /// mutation) is pinned by the sibling test
-    /// `expand_missing_cell_debug_mode_halts_via_debug_assert`, which runs
-    /// automatically under default `cargo test -p reify-eval` in debug builds.
-    #[test]
-    fn expand_signals_when_resolved_query_cell_missing_from_value_cells() {
-        use std::panic::AssertUnwindSafe;
-        use std::sync::atomic::Ordering;
-        use reify_test_support::CountingSubscriberBuilder;
-
+    /// Returns `(entity, queries, value_cells, expr)` where `queries` references
+    /// both a `"present"` and an `"absent"` cell, `value_cells` contains only
+    /// the former (to trigger the missing-cell branch in
+    /// `expand_purpose_reflective_placeholders`), and `expr` is a
+    /// `PurposeReflectiveAggregation` placeholder for `("subject", "params",
+    /// Type::List(Type::Real))`.
+    fn missing_cell_fixture() -> (
+        &'static str,
+        Vec<ResolvedSchemaQuery>,
+        PersistentMap<ValueCellId, ValueCellNode>,
+        CompiledExpr,
+    ) {
         let entity = "Foo";
         let cell_present = ValueCellId::new(entity, "present");
         let cell_absent = ValueCellId::new(entity, "absent");
 
-        // Query references both "present" and "absent" cells.
         let queries = vec![ResolvedSchemaQuery {
             param_name: "subject".to_string(),
             query_kind: "params".to_string(),
             resolved_ids: vec![cell_present.clone(), cell_absent.clone()],
         }];
 
-        // value_cells contains ONLY the "present" cell — "absent" is
-        // deliberately missing to trigger the new missing-cell branch.
         let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
             PersistentMap::default();
         value_cells.insert(
@@ -587,17 +574,46 @@ mod tests {
             },
         );
 
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        (entity, queries, value_cells, expr)
+    }
+
+    /// Guard: when a `ResolvedSchemaQuery` references a cell that is absent
+    /// from `value_cells`, the missing-cell branch must emit exactly one WARN
+    /// event scoped to `reify_eval::engine_purposes` (graph-vs-resolved-query
+    /// wiring inconsistency signal).
+    ///
+    /// The test wraps the call in `catch_unwind` so it runs identically in
+    /// both debug builds (where `debug_assert!(false)` panics) and release
+    /// builds (where it does not). The WARN fires *before* the
+    /// `debug_assert!`, so the counter increments regardless of build mode.
+    ///
+    /// **Dual-mode coverage:** the release-only structural assertions below
+    /// (the `#[cfg(not(debug_assertions))]` block) are exercised in CI by
+    /// the `cargo test -p reify-eval --release` pass in `orchestrator.yaml`'s
+    /// `test_command` (second invocation in the two-pass debug+release pattern).
+    /// The *debug-mode posture* (panic + no expr mutation) is pinned by the
+    /// sibling test `expand_missing_cell_debug_mode_halts_via_debug_assert`,
+    /// which runs automatically under default `cargo test -p reify-eval` in
+    /// debug builds.
+    #[test]
+    fn expand_signals_when_resolved_query_cell_missing_from_value_cells() {
+        use std::panic::AssertUnwindSafe;
+        use std::sync::atomic::Ordering;
+        use reify_test_support::CountingSubscriberBuilder;
+
+        let (entity, queries, value_cells, mut expr) = missing_cell_fixture();
+
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
             .target_prefix("reify_eval::engine_purposes")
             .build();
         let warn_arc = counters[&tracing::Level::WARN].clone();
-
-        let mut expr = CompiledExpr::purpose_reflective_aggregation(
-            "subject".to_string(),
-            "params".to_string(),
-            Type::List(Box::new(Type::Real)),
-        );
 
         // Wrap in catch_unwind so debug builds (debug_assert! panics) and
         // release builds both complete and let us read the warn counter.
@@ -621,21 +637,22 @@ mod tests {
         );
 
         // S2 (amendment): pin the release-mode anti-cascade contract. In
-        // debug builds the debug_assert! panics during .collect(), so *expr
-        // is never reassigned and stays as PurposeReflectiveAggregation —
-        // there is no post-call expanded state to assert on. In release builds
-        // the expand call completes: verify that both cells (the present one
-        // and the absent-fallback one) produce ValueRef elements typed as
-        // Type::Real, and that the ListLiteral has exactly 2 elements.
+        // debug builds the `debug_assert!(false)` inside
+        // `expand_purpose_reflective_placeholders`'s missing-cell arm panics
+        // during .collect(), so *expr is never reassigned and stays as
+        // PurposeReflectiveAggregation — there is no post-call expanded state
+        // to assert on. In release builds the expand call completes: verify
+        // that both cells (the present one and the absent-fallback one) produce
+        // ValueRef elements typed as Type::Real, and that the ListLiteral has
+        // exactly 2 elements.
         //
         // CI dependency: this block executes only in release builds; it is
-        // exercised by `orchestrator.yaml:28`'s `cargo test -p reify-eval
-        // --release` invocation (the second cargo-test call in the two-pass
-        // pattern documented at `orchestrator.yaml:19`). The *debug-mode
-        // posture* (panic + no expr mutation + warn fires first) is pinned by
-        // the sibling test `expand_missing_cell_debug_mode_halts_via_debug_assert`,
-        // which runs automatically under default `cargo test -p reify-eval` in
-        // debug builds.
+        // exercised by the `cargo test -p reify-eval --release` pass in
+        // `orchestrator.yaml`'s `test_command` (second invocation in the
+        // two-pass debug+release pattern). The *debug-mode posture* (panic +
+        // no expr mutation + warn fires first) is pinned by the sibling test
+        // `expand_missing_cell_debug_mode_halts_via_debug_assert`, which runs
+        // automatically under default `cargo test -p reify-eval` in debug builds.
         #[cfg(not(debug_assertions))]
         {
             let elements = match &expr.kind {
@@ -673,16 +690,18 @@ mod tests {
     ///
     /// That sibling test asserts the WARN counter unconditionally and gates its
     /// structural (anti-cascade) assertions behind `#[cfg(not(debug_assertions))]`
-    /// — those run in CI via `orchestrator.yaml:28`'s
-    /// `cargo test -p reify-eval --release` invocation (the second cargo-test
-    /// call in the two-pass pattern documented at `orchestrator.yaml:19`).
+    /// — those run in CI via the `cargo test -p reify-eval --release` pass in
+    /// `orchestrator.yaml`'s `test_command` (second invocation in the two-pass
+    /// debug+release pattern).
     ///
     /// This test pins the *debug-mode posture* explicitly:
-    /// - `catch_unwind` must return `Err(_)` (the `debug_assert!(false, …)` at
-    ///   `engine_purposes.rs:346` fires and unwinds the thread).
+    /// - `catch_unwind` must return `Err(_)` (the `debug_assert!(false, …)` inside
+    ///   `expand_purpose_reflective_placeholders`'s missing-cell arm fires and
+    ///   unwinds the thread).
     /// - The WARN counter must equal 1 — `tracing::warn!` fires *before* the
     ///   `debug_assert!`, matching the "warn first, debug_assert second, fallback
-    ///   third" order documented in the contract preamble at lines 240–255.
+    ///   third" order documented in the contract preamble in
+    ///   `expand_purpose_reflective_placeholders`.
     /// - `expr.kind` must remain `PurposeReflectiveAggregation` — the panic
     ///   occurs mid-`.collect()`, so `*expr = CompiledExpr::list_literal(…)`
     ///   never runs, and the expression retains its pre-call shape.
@@ -691,15 +710,10 @@ mod tests {
     /// `debug_assert!(false)` is a no-op and `catch_unwind` would return `Ok`,
     /// causing the `result.is_err()` assertion to fail.
     ///
-    /// Stderr panic-noise suppression: the test swaps the global panic hook for
-    /// a no-op around the controlled `debug_assert!(false)` panic, then restores
-    /// the original hook before the assertions execute. This keeps default
-    /// `cargo test` output clean without requiring `#[ignore]`. The swap is
-    /// sound here because `orchestrator.yaml:28` enforces `-- --test-threads=1`
-    /// for `cargo test -p reify-eval` (both debug and release passes), so no
-    /// concurrent test thread observes the no-op hook; and restoring *before*
-    /// the assertions ensures a failing assertion still surfaces through the
-    /// original libtest hook.
+    /// Note: `catch_unwind` on the `debug_assert!(false)` panic may emit a panic
+    /// stacktrace to stderr in default `cargo test` runs (the libtest panic hook
+    /// fires before `catch_unwind` suppresses the unwind). This matches the
+    /// sibling test's accepted behavior; correctness is unaffected.
     #[test]
     #[cfg(debug_assertions)]
     fn expand_missing_cell_debug_mode_halts_via_debug_assert() {
@@ -707,52 +721,13 @@ mod tests {
         use std::sync::atomic::Ordering;
         use reify_test_support::CountingSubscriberBuilder;
 
-        let entity = "Foo";
-        let cell_present = ValueCellId::new(entity, "present");
-        let cell_absent = ValueCellId::new(entity, "absent");
-
-        // Query references both "present" and "absent" cells.
-        let queries = vec![ResolvedSchemaQuery {
-            param_name: "subject".to_string(),
-            query_kind: "params".to_string(),
-            resolved_ids: vec![cell_present.clone(), cell_absent.clone()],
-        }];
-
-        // value_cells contains ONLY the "present" cell — "absent" is
-        // deliberately missing to trigger the missing-cell branch.
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
-            PersistentMap::default();
-        value_cells.insert(
-            cell_present.clone(),
-            ValueCellNode {
-                id: cell_present.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("present"),
-            },
-        );
+        let (entity, queries, value_cells, mut expr) = missing_cell_fixture();
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
             .target_prefix("reify_eval::engine_purposes")
             .build();
         let warn_arc = counters[&tracing::Level::WARN].clone();
-
-        let mut expr = CompiledExpr::purpose_reflective_aggregation(
-            "subject".to_string(),
-            "params".to_string(),
-            Type::List(Box::new(Type::Real)),
-        );
-
-        // Silence libtest's default panic hook for the duration of the controlled
-        // debug_assert!(false) panic so this test runs cleanly under default
-        // `cargo test` output. Safe because orchestrator.yaml:28 enforces
-        // `-- --test-threads=1` for reify-eval, so no concurrent test thread
-        // observes the no-op hook. Restored *before* the assertions below so any
-        // assertion-failure panic still surfaces through the original hook.
-        let prev_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
@@ -765,20 +740,20 @@ mod tests {
             });
         }));
 
-        std::panic::set_hook(prev_hook);
-
         assert!(
             result.is_err(),
-            "debug-mode posture: expected a panic from debug_assert!(false, …) \
-             at engine_purposes.rs:~346 when a resolved-query cell is absent from \
-             value_cells, but catch_unwind returned Ok(_)"
+            "debug-mode posture: expected a panic from the debug_assert!(false, …) \
+             inside expand_purpose_reflective_placeholders's missing-cell arm when \
+             a resolved-query cell is absent from value_cells, but catch_unwind \
+             returned Ok(_)"
         );
 
         assert_eq!(
             warn_arc.load(Ordering::Acquire),
             1,
             "debug-mode posture: WARN must fire before the debug_assert! \
-             (\"warn first, debug_assert second\" contract from preamble lines 240–255); \
+             (\"warn first, debug_assert second\" contract from the preamble in \
+             expand_purpose_reflective_placeholders); \
              expected counter == 1 regardless of build mode"
         );
 
