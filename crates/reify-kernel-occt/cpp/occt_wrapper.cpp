@@ -1508,32 +1508,10 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
 }
 
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
+    // Compute volume properties (may throw Standard_Failure / std::exception from OCCT).
+    GProp_GProps props;
     try {
-        GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
-        gp_Mat m = props.MatrixOfInertia();
-        // OCCT's MatrixOfInertia() is mathematically symmetric by construction:
-        // m(i,j) and m(j,i) are computed from the same volume integral and may
-        // only differ by floating-point noise.  That noise scales with the
-        // magnitude of the entries, so an absolute symmetry threshold spuriously
-        // fires for large/dense shapes (entries ~1e9+) while being meaningless for
-        // sub-millimetre shapes (entries ~1e-6).  Average each symmetric pair to
-        // (a) suppress noise, (b) guarantee the returned tensor has m(i,j) == m(j,i)
-        // bit-exactly, and (c) eliminate any threshold-tuning hazard.
-        const double m12 = (m.Value(1, 2) + m.Value(2, 1)) * 0.5;
-        const double m13 = (m.Value(1, 3) + m.Value(3, 1)) * 0.5;
-        const double m23 = (m.Value(2, 3) + m.Value(3, 2)) * 0.5;
-        return InertiaTensor3x3{
-            m.Value(1, 1) * density,
-            m12 * density,
-            m13 * density,
-            m12 * density,
-            m.Value(2, 2) * density,
-            m23 * density,
-            m13 * density,
-            m23 * density,
-            m.Value(3, 3) * density,
-        };
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT query_inertia_tensor: ") + e.GetMessageString());
     } catch (std::exception const& e) {
@@ -1541,6 +1519,47 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     } catch (...) {
         throw std::runtime_error("OCCT query_inertia_tensor: unknown C++ exception");
     }
+    gp_Mat m = props.MatrixOfInertia();
+    // OCCT's MatrixOfInertia() is mathematically symmetric by construction:
+    // m(i,j) and m(j,i) are computed from the same volume integral and may
+    // only differ by floating-point noise.  That noise scales with the
+    // magnitude of the entries, so an absolute symmetry threshold spuriously
+    // fires for large/dense shapes (entries ~1e9+) while being meaningless for
+    // sub-millimetre shapes (entries ~1e-6).  Average each symmetric pair to
+    // (a) suppress noise, (b) guarantee the returned tensor has m(i,j) == m(j,i)
+    // bit-exactly, and (c) eliminate any threshold-tuning hazard.
+    //
+    // Defensive relative-tolerance check: if m(i,j) and m(j,i) ever differ by more
+    // than 1 part in 1e9 (plus a 1e-12 absolute floor for near-zero entries), that
+    // exceeds any plausible FP noise from OCCT's integration and signals a gross
+    // asymmetry — e.g. a future OCCT regression or a corrupted shape.  This check
+    // is scale-correct and cannot fire spuriously on any well-formed geometry.
+    auto check_sym = [](double a, double b, const char* label) {
+        const double diff = std::abs(a - b);
+        const double scale = std::max(std::abs(a), std::abs(b));
+        if (diff > 1e-9 * scale + 1e-12) {
+            throw std::runtime_error(
+                std::string("OCCT query_inertia_tensor: MatrixOfInertia is not "
+                            "symmetric (") + label + ")");
+        }
+    };
+    check_sym(m.Value(1, 2), m.Value(2, 1), "m12/m21");
+    check_sym(m.Value(1, 3), m.Value(3, 1), "m13/m31");
+    check_sym(m.Value(2, 3), m.Value(3, 2), "m23/m32");
+    const double m12 = (m.Value(1, 2) + m.Value(2, 1)) * 0.5;
+    const double m13 = (m.Value(1, 3) + m.Value(3, 1)) * 0.5;
+    const double m23 = (m.Value(2, 3) + m.Value(3, 2)) * 0.5;
+    return InertiaTensor3x3{
+        m.Value(1, 1) * density,
+        m12 * density,
+        m13 * density,
+        m12 * density,
+        m.Value(2, 2) * density,
+        m23 * density,
+        m13 * density,
+        m23 * density,
+        m.Value(3, 3) * density,
+    };
 }
 
 // --- Conformance queries ---

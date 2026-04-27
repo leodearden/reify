@@ -247,7 +247,9 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
 /// scaled by `density` to yield mass-weighted moments (kg·m²).
 /// Uses BRepGProp::VolumeProperties + GProp_GProps::MatrixOfInertia().
 /// Off-diagonal pairs `(i,j)` and `(j,i)` are averaged so the returned
-/// tensor is bit-exactly symmetric (`I_ij == I_ji`).
+/// tensor is bit-exactly symmetric (`I_ij == I_ji`).  A relative-tolerance
+/// check (1e-9 relative + 1e-12 absolute floor) guards against gross asymmetry
+/// from a future OCCT regression or a corrupted shape.
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density);
 
 /// Return the number of times each topology-map cache slot has been built for

@@ -5125,8 +5125,11 @@ mod tests {
     fn inertia_tensor_large_shape_returns_symmetric_tensor() {
         let mut kernel = OcctKernel::new();
         // 1000×1000×1000 cube, density 1.0.
-        // Diagonal inertia: m·L²/6 = (1e9)·1e6/6 ≈ 1.67e14 — well above 1e6, the
-        // regime where floating-point noise can exceed the old 1e-6 absolute threshold.
+        // Diagonal inertia: m·L²/6 = (1e9)·1e6/6 ≈ 1.67e14 — well above 1e6.
+        // A cube is isotropic: off-diagonal products of inertia are analytically zero at
+        // centroid.  This test therefore verifies (a) the function does not throw for a
+        // large shape and (b) the symmetry *contract* holds (bit-exact symmetric pairs),
+        // which is guaranteed by the averaging implementation in query_inertia_tensor.
         let box_h = kernel
             .execute(&GeometryOp::Box {
                 width: Value::Real(1000.0),
@@ -5178,6 +5181,119 @@ mod tests {
             );
         }
         // Off-diagonal symmetric pairs must be bit-exactly equal after the averaging fix.
+        assert_eq!(
+            entries[0][1], entries[1][0],
+            "m12 vs m21 must be bit-equal after averaging fix"
+        );
+        assert_eq!(
+            entries[0][2], entries[2][0],
+            "m13 vs m31 must be bit-equal after averaging fix"
+        );
+        assert_eq!(
+            entries[1][2], entries[2][1],
+            "m23 vs m32 must be bit-equal after averaging fix"
+        );
+    }
+
+    /// Test that off-diagonal products of inertia are bit-exactly symmetric for a shape
+    /// that has *large, non-zero* off-diagonals — the regime the averaging fix targets.
+    ///
+    /// An axis-aligned cube has analytically zero off-diagonals at the centroid, so it is
+    /// not a useful regression shape for this property.  A non-cubic box (1000×2000×500)
+    /// rotated 30° about the Z-axis has I_xy ≈ 1.08e14 by the rotation-of-axes formula:
+    ///   I_xy_world = (I_xx_local - I_yy_local) · sin(30°) · cos(30°)
+    /// This is orders of magnitude above any noise threshold and conclusively exercises the
+    /// regime where the old 1e-6 absolute threshold was unsound.  The bit-equality
+    /// assertions pin the averaging behaviour: they would fail if query_inertia_tensor
+    /// returned m(i,j) and m(j,i) from two independent m.Value(…) reads (pre-fix) and
+    /// OCCT's two reads happened to disagree at the ULP level.
+    #[test]
+    fn inertia_tensor_rotated_non_cubic_box_offdiagonals_symmetric() {
+        let mut kernel = OcctKernel::new();
+        // Non-cubic box: width=1000, height=2000, depth=500, density=1.
+        // Volume = 1e9, mass m = 1e9.
+        // Centroidal moments in local frame (box axes):
+        //   I_xx_local = m/12·(h²+d²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
+        //   I_yy_local = m/12·(w²+d²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
+        // After 30° rotation around Z:
+        //   I_xy_world = (I_xx_local - I_yy_local)·sin30°·cos30° ≈ 1.08e14
+        // (I_xz and I_yz remain zero because Z-rotation doesn't mix Z cross-products.)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(1000.0),
+                height: Value::Real(2000.0),
+                depth: Value::Real(500.0),
+            })
+            .expect("Box creation must succeed");
+        // Rotate 30° around Z-axis (PI/6 radians).
+        let rotated_h = kernel
+            .execute(&GeometryOp::Rotate {
+                target: box_h.id,
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::PI / 6.0,
+            })
+            .expect("Rotate must succeed");
+        let result = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: rotated_h.id,
+                density: 1.0,
+            })
+            .expect("query_inertia_tensor must not fail on a rotated non-cubic box");
+        // Extract entries.
+        let rows = match result {
+            Value::List(rows) => {
+                assert_eq!(rows.len(), 3, "expected 3 rows");
+                rows
+            }
+            other => panic!("expected Value::List(rows), got {:?}", other),
+        };
+        let mut entries = [[0.0f64; 3]; 3];
+        for (i, row) in rows.iter().enumerate() {
+            let cols = match row {
+                Value::List(cols) => {
+                    assert_eq!(cols.len(), 3);
+                    cols
+                }
+                other => panic!("row {i} expected Value::List, got {:?}", other),
+            };
+            for (j, col) in cols.iter().enumerate() {
+                entries[i][j] = match col {
+                    Value::Real(v) => *v,
+                    other => panic!("entry [{i}][{j}] expected Value::Real, got {:?}", other),
+                };
+            }
+        }
+        // Diagonal entries must be positive and finite.
+        for i in 0..3 {
+            assert!(
+                entries[i][i].is_finite() && entries[i][i] > 0.0,
+                "diagonal [{i}][{i}] must be positive and finite, got {}",
+                entries[i][i]
+            );
+        }
+        // I_xy_world must be non-trivially non-zero — this is the key property that
+        // distinguishes this shape from a cube and places it in the regime the fix targets.
+        // Expected |I_xy| ≈ 1.08e14; require > 1e12 as a conservative lower bound.
+        assert!(
+            entries[0][1].abs() > 1e12,
+            "I_xy must be large (> 1e12) for rotated non-cubic box, got {}",
+            entries[0][1]
+        );
+        // I_xz and I_yz must remain near zero (Z-rotation does not mix Z products).
+        assert!(
+            entries[0][2].abs() < 1e6,
+            "I_xz must be near zero for Z-rotation, got {}",
+            entries[0][2]
+        );
+        assert!(
+            entries[1][2].abs() < 1e6,
+            "I_yz must be near zero for Z-rotation, got {}",
+            entries[1][2]
+        );
+        // Bit-exact symmetry: guaranteed by the averaging implementation.
+        // These assertions would fail with the old code if OCCT's two independent reads
+        // of m.Value(i,j) and m.Value(j,i) differed at the ULP level (possible when
+        // entries are ~1e14 and FP noise is ~ULP(1e14) ≈ 10).
         assert_eq!(
             entries[0][1], entries[1][0],
             "m12 vs m21 must be bit-equal after averaging fix"

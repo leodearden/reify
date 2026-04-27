@@ -294,7 +294,9 @@ pub mod ffi {
         /// with mass m = density·volume, the diagonal entries are the principal
         /// moments; off-diagonals are products of inertia (zero for axis-aligned
         /// shapes). Off-diagonal pairs are averaged so `m_ij == m_ji` is guaranteed
-        /// bit-exactly in the returned struct.
+        /// bit-exactly in the returned struct.  A relative-tolerance check (1e-9
+        /// relative + 1e-12 absolute floor) is applied before averaging to guard
+        /// against gross asymmetry from a future OCCT regression or corrupted shape.
         fn query_inertia_tensor(shape: &OcctShape, density: f64) -> Result<InertiaTensor3x3>;
 
         /// Return cache build counts for all three topology-map slots of `shape`.
