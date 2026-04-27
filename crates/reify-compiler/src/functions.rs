@@ -290,6 +290,16 @@ pub(crate) fn compile_field(
                     (key.clone(), compiled)
                 })
                 .collect();
+            diagnostics.push(
+                Diagnostic::error(
+                    "sampled field sources are deferred to v0.2; v0.1 supports analytical and composed only",
+                )
+                .with_code(DiagnosticCode::FieldSampledV02)
+                .with_label(DiagnosticLabel::new(
+                    field_def.span,
+                    "sampled field source is deferred to v0.2",
+                )),
+            );
             CompiledFieldSource::Sampled {
                 config: compiled_config,
             }
@@ -303,7 +313,7 @@ pub(crate) fn compile_field(
         reify_syntax::FieldSource::Imported { .. } => {
             diagnostics.push(
                 Diagnostic::error(
-                    "imported field sources are deferred to v0.2; v0.1 supports analytical, sampled, and composed only",
+                    "imported field sources are deferred to v0.2; v0.1 supports analytical and composed only",
                 )
                 .with_code(DiagnosticCode::FieldImportedV02)
                 .with_label(DiagnosticLabel::new(
