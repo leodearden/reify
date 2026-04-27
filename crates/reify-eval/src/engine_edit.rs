@@ -602,10 +602,10 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 }
 
 /// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap` and
-/// attempt to checkout warm state from `pool`. On `Some(state)`, insert into
-/// `sink`; on `None` (absent or LRU-evicted), the node falls through with
-/// no seed — observable equivalence to a cold-only run, per arch §4.3
-/// lines 539-540.
+/// attempt to checkout warm state from `pending.pool_mut()`. On `Some(state)`,
+/// insert into `pending`; on `None` (absent or LRU-evicted), the node falls
+/// through with no seed — observable equivalence to a cold-only run, per arch
+/// §4.3 lines 539-540.
 ///
 /// Used by `edit_source` step (4c) to drive the checkout half of the
 /// WarmStatePool round-trip uniformly across the `added` /
@@ -613,11 +613,14 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
 /// once a `diff_resolutions` exists, or `ComputeNode` once it becomes a
 /// variant) drops in as a single additional call.
+///
+/// The `pending` guard owns the pool borrow, so callers do not need to pass
+/// both a `&mut WarmStatePool` and a separate sink map — both are accessed
+/// through the guard, which also ensures re-donation on early-return / panic.
 fn checkout_added_warm_seeds<'a, I, T, F>(
-    pool: &mut WarmStatePool,
+    pending: &mut PendingWarmSeedsGuard<'_>,
     ids: I,
     wrap: F,
-    sink: &mut HashMap<NodeId, reify_types::OpaqueState>,
 ) where
     I: IntoIterator<Item = &'a T>,
     T: Clone + 'a,
@@ -625,8 +628,8 @@ fn checkout_added_warm_seeds<'a, I, T, F>(
 {
     for id in ids {
         let nid = wrap(id.clone());
-        if let Some(state) = pool.checkout(&nid) {
-            sink.insert(nid, state);
+        if let Some(state) = pending.pool_mut().checkout(&nid) {
+            pending.insert(nid, state);
         }
     }
 }
@@ -1620,24 +1623,17 @@ impl Engine {
         //      above); ComputeNode is not yet a NodeId variant. The pool API
         //      itself is variant-agnostic, so any future variant slots in
         //      as a single additional call to the helper.
-        let mut pending_warm_seeds: HashMap<NodeId, reify_types::OpaqueState> = HashMap::new();
+        let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
+        checkout_added_warm_seeds(&mut pending_warm_seeds, &added, NodeId::Value);
         checkout_added_warm_seeds(
-            &mut self.warm_pool,
-            &added,
-            NodeId::Value,
             &mut pending_warm_seeds,
-        );
-        checkout_added_warm_seeds(
-            &mut self.warm_pool,
             &added_constraints,
             NodeId::Constraint,
-            &mut pending_warm_seeds,
         );
         checkout_added_warm_seeds(
-            &mut self.warm_pool,
+            &mut pending_warm_seeds,
             &added_realizations,
             NodeId::Realization,
-            &mut pending_warm_seeds,
         );
 
         // (5) Compute the dirty cone over changed ∪ added using the NEW
@@ -1810,7 +1806,7 @@ impl Engine {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
         donate_removed_warm_state(
-            &mut self.warm_pool,
+            pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed,
             NodeId::Value,
@@ -1819,7 +1815,7 @@ impl Engine {
             self.cache.invalidate(&NodeId::Constraint(cid.clone()));
         }
         donate_removed_warm_state(
-            &mut self.warm_pool,
+            pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed_constraints,
             NodeId::Constraint,
@@ -1828,7 +1824,7 @@ impl Engine {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
         donate_removed_warm_state(
-            &mut self.warm_pool,
+            pending_warm_seeds.pool_mut(),
             &mut self.cache,
             &removed_realizations,
             NodeId::Realization,
@@ -2062,11 +2058,26 @@ impl Engine {
             // value; memoize so detect_role_flip is called at most once per edit.
             // Correctness pinned by task-2084 locks. Counter tracked via
             // `self.last_role_flip_probes` for the perf-lock test (task 2094).
-            // `probe_role_flip` centralises the detect_role_flip call and counter
-            // increment (task 2094 amendment — eliminates duplicate call sites).
+            //
+            // Note: `pending_warm_seeds` holds `&mut self.warm_pool` for the
+            // entire edit_source call, so we cannot call `self.probe_role_flip`
+            // (which takes `&mut self`) here — that would be a whole-self borrow
+            // conflict. Instead we inline the two-line body of `probe_role_flip`
+            // via disjoint field accesses (`self.eval_state` and
+            // `self.last_role_flip_probes` are distinct from `self.warm_pool`).
             let mut role_flip_memo: Option<bool> = None;
             let has_dirty_guards = sc_dirty || has_added_guard_member || {
-                let result = self.probe_role_flip(&graph.guarded_groups);
+                let result = detect_role_flip(
+                    &self
+                        .eval_state
+                        .as_ref()
+                        .unwrap()
+                        .snapshot
+                        .graph
+                        .guarded_groups,
+                    &graph.guarded_groups,
+                );
+                self.last_role_flip_probes += 1;
                 role_flip_memo = Some(result);
                 result
             };
@@ -2120,12 +2131,24 @@ impl Engine {
                     {
                         // Lazy role-flip check (task 2094): populate role_flip_memo
                         // on first query, reuse on subsequent groups.
-                        // probe_role_flip centralises the counter increment and
-                        // the detect_role_flip call (task 2094 amendment).
+                        // Inlined from probe_role_flip for the same reason as
+                        // the first call site above — pending_warm_seeds holds
+                        // &mut self.warm_pool, so &mut self method calls are
+                        // not allowed here; disjoint field accesses are.
                         let flipped = match role_flip_memo {
                             Some(v) => v,
                             None => {
-                                let result = self.probe_role_flip(&graph.guarded_groups);
+                                let result = detect_role_flip(
+                                    &self
+                                        .eval_state
+                                        .as_ref()
+                                        .unwrap()
+                                        .snapshot
+                                        .graph
+                                        .guarded_groups,
+                                    &graph.guarded_groups,
+                                );
+                                self.last_role_flip_probes += 1;
                                 role_flip_memo = Some(result);
                                 result
                             }
@@ -2686,13 +2709,16 @@ impl Engine {
         //       future variant routinely round-trips without a cache
         //       consumer, switch this branch to a `donate_preserving_lru`
         //       variant or push a "lru-stamp restore" through the pool API.
-        for (nid, state) in pending_warm_seeds.drain() {
-            if self.cache.get(&nid).is_some() {
-                self.cache.donate_warm_state(&nid, state);
-            } else {
-                self.warm_pool.donate(nid, state);
-            }
-        }
+        //
+        //       Early-return preservation: `pending_warm_seeds` is a
+        //       `PendingWarmSeedsGuard` whose `Drop` impl re-donates any
+        //       un-drained entries back to the pool. On the success path
+        //       `drain_into_cache_or_repool` empties the map so the
+        //       natural `Drop` at function-end is a no-op. On any `?`,
+        //       `return Err(...)`, or panic between (4c) and here, `Drop`
+        //       fires with a non-empty map and re-donates all surviving
+        //       entries, making them recoverable on the next `edit_source`.
+        pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
