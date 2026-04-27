@@ -1350,7 +1350,7 @@ mod tests {
             }) + needle.len();
             let rest = &s[start..];
             let end = rest.find([',', '}']).unwrap_or(rest.len());
-            rest[..end].parse::<f64>().unwrap_or_else(|e| {
+            rest[..end].trim().parse::<f64>().unwrap_or_else(|e| {
                 panic!("failed to parse {field} in centroid JSON: {s:?}: {e}")
             })
         };
@@ -5164,8 +5164,10 @@ mod tests {
     /// The kernel's `CenterOfMass` query ignores the `density` field (bound to `_`
     /// in the dispatch arm at lib.rs:957) because the centre of mass of a uniform-density
     /// body equals its geometric centroid regardless of density.  This test locks in that
-    /// invariant for three edge values: `density=1.0` (baseline), `density=0.0` (zero),
-    /// and `density=-2.0` (negative) — the two cases the task description called out.
+    /// invariant for four density values: `density=1.0` (baseline), `density=0.0` (zero),
+    /// `density=-2.0` (negative) — the two cases the task description called out — and
+    /// `density=100.0` (large positive), confirming the invariant extends beyond just the
+    /// edge values.
     ///
     /// **This pins current observable behavior.**  A future kernel change MAY reject
     /// ρ ≤ 0 with a typed error — update this test if so.
@@ -5192,14 +5194,42 @@ mod tests {
                     })
             })
             .collect();
-        // All four results must be identical (bit-equal strings) — CenterOfMass is density-
-        // independent for uniform-density bodies.
-        for (i, r) in results.iter().enumerate().skip(1) {
-            assert_eq!(
-                &results[0], r,
-                "CenterOfMass with density={} must equal result with density={} \
-                 (density-independent for uniform bodies); got {:?} vs {:?}",
-                densities[i], densities[0], r, &results[0]
+        // Parse each result into (x, y, z) coordinates and assert all four are within a
+        // tiny absolute tolerance of the baseline — CenterOfMass is density-independent
+        // for uniform-density bodies.  Using a coordinate comparison rather than bit-equal
+        // string equality gives cleaner failure messages (shows which coordinate drifted
+        // and by how much) if the kernel is ever refactored to change the output format.
+        let abs_tol = 1e-12_f64;
+        let parsed: Vec<(f64, f64, f64)> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| match r {
+                Value::String(s) => parse_centroid_json(s),
+                other => panic!(
+                    "CenterOfMass with density={} must return Value::String, got {:?}",
+                    densities[i], other
+                ),
+            })
+            .collect();
+        let (x0, y0, z0) = parsed[0];
+        for (i, &(x, y, z)) in parsed.iter().enumerate().skip(1) {
+            assert!(
+                (x - x0).abs() <= abs_tol,
+                "CenterOfMass density-independence: x differs between density={} and \
+                 density={}: {} vs {}",
+                densities[i], densities[0], x, x0
+            );
+            assert!(
+                (y - y0).abs() <= abs_tol,
+                "CenterOfMass density-independence: y differs between density={} and \
+                 density={}: {} vs {}",
+                densities[i], densities[0], y, y0
+            );
+            assert!(
+                (z - z0).abs() <= abs_tol,
+                "CenterOfMass density-independence: z differs between density={} and \
+                 density={}: {} vs {}",
+                densities[i], densities[0], z, z0
             );
         }
     }
