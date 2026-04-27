@@ -427,6 +427,40 @@ mod tests {
         assert_eq!(a, b); // PartialEq + Eq
         assert_eq!(format!("{:?}", a), "DeepDotChain");
     }
+
+    // --- DimensionMismatch tests (step-3) ---
+
+    /// `DiagnosticCode::DimensionMismatch` constructs and supports
+    /// `Copy + Clone + PartialEq + Eq + Hash + Debug` (mirrors `diagnostic_code_derives`).
+    #[test]
+    fn diagnostic_code_dimension_mismatch_derives() {
+        use std::collections::HashSet;
+        let a = DiagnosticCode::DimensionMismatch;
+        let b: DiagnosticCode = a; // Copy
+        let c = a; // Copy again — `a` still usable below
+        assert_eq!(a, b); // PartialEq
+        assert_eq!(a, c); // PartialEq
+        let _: DiagnosticCode = Clone::clone(&a); // Clone (explicit to bypass clippy::clone_on_copy)
+        let mut set: HashSet<DiagnosticCode> = HashSet::new();
+        assert!(set.insert(a)); // Hash + Eq
+        assert!(!set.insert(b)); // dedup on Eq
+        let _ = format!("{:?}", a); // Debug
+    }
+
+    /// `Debug` formatting of `DiagnosticCode::DimensionMismatch` produces `"DimensionMismatch"`.
+    #[test]
+    fn diagnostic_code_dimension_mismatch_debug_format() {
+        assert_eq!(format!("{:?}", DiagnosticCode::DimensionMismatch), "DimensionMismatch");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::DimensionMismatch` serializes as
+    /// `"DimensionMismatch"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_dimension_mismatch_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DimensionMismatch).unwrap();
+        assert_eq!(s, "\"DimensionMismatch\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
