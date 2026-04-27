@@ -217,6 +217,52 @@ impl DimensionVector {
         DimensionVector(v)
     }
 
+    /// Return the canonical user-facing name for this dimension, if it matches
+    /// exactly one of the named singleton constants.
+    ///
+    /// Returns `Some("Money")`, `Some("Force")`, etc. for each named singleton
+    /// defined on `DimensionVector` (mirroring the names accepted by
+    /// `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs`).
+    ///
+    /// Returns `None` for:
+    /// - `DIMENSIONLESS` — already self-explanatory; callers handle it specially.
+    /// - Composite/derived dimensions that are not in the named set (e.g. `MONEY/MASS`).
+    pub fn canonical_name(&self) -> Option<&'static str> {
+        match *self {
+            DimensionVector::LENGTH => Some("Length"),
+            DimensionVector::MASS => Some("Mass"),
+            DimensionVector::TIME => Some("Time"),
+            DimensionVector::CURRENT => Some("Current"),
+            DimensionVector::TEMPERATURE => Some("Temperature"),
+            DimensionVector::AMOUNT_OF_SUBSTANCE => Some("AmountOfSubstance"),
+            DimensionVector::LUMINOUS_INTENSITY => Some("LuminousIntensity"),
+            DimensionVector::ANGLE => Some("Angle"),
+            DimensionVector::SOLID_ANGLE => Some("SolidAngle"),
+            DimensionVector::MONEY => Some("Money"),
+            DimensionVector::AREA => Some("Area"),
+            DimensionVector::VOLUME => Some("Volume"),
+            DimensionVector::FREQUENCY => Some("Frequency"),
+            DimensionVector::FORCE => Some("Force"),
+            DimensionVector::ENERGY => Some("Energy"),
+            DimensionVector::POWER => Some("Power"),
+            DimensionVector::PRESSURE => Some("Pressure"),
+            DimensionVector::VOLTAGE => Some("Voltage"),
+            DimensionVector::CHARGE => Some("Charge"),
+            DimensionVector::CAPACITANCE => Some("Capacitance"),
+            DimensionVector::RESISTANCE => Some("Resistance"),
+            DimensionVector::CONDUCTANCE => Some("Conductance"),
+            DimensionVector::INDUCTANCE => Some("Inductance"),
+            DimensionVector::MAGNETIC_FLUX => Some("MagneticFlux"),
+            DimensionVector::MAGNETIC_FLUX_DENSITY => Some("MagneticFluxDensity"),
+            DimensionVector::LUMINOUS_FLUX => Some("LuminousFlux"),
+            DimensionVector::ILLUMINANCE => Some("Illuminance"),
+            DimensionVector::ABSORBED_DOSE => Some("AbsorbedDose"),
+            DimensionVector::ANGULAR_VELOCITY => Some("AngularVelocity"),
+            DimensionVector::DYNAMIC_VISCOSITY => Some("DynamicViscosity"),
+            _ => None,
+        }
+    }
+
     pub fn is_dimensionless(&self) -> bool {
         self.0.iter().all(|r| r.is_zero())
     }
