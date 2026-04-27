@@ -275,3 +275,159 @@ structure S {
         "content_hash should be non-zero"
     );
 }
+
+// ── step-9 regression tests ───────────────────────────────────────────────────
+
+/// step-9a: Expression-form `forall` inside `constraint` must NOT become a
+/// `MemberDecl::ForallConstraint`; it must remain `MemberDecl::Constraint`
+/// with an inner `ExprKind::Quantifier`.  Pins acceptance criteria 3-4:
+/// disambiguation is driven by the token after `:`.
+#[test]
+fn parse_expression_form_unchanged() {
+    let source = r#"
+structure S {
+    let items = [1, 2, 3]
+    constraint forall x in items: x > 0
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 2, "expected exactly two members");
+
+    // members[1] must be a plain Constraint, NOT a ForallConstraint.
+    let constraint = match &members[1] {
+        MemberDecl::Constraint(c) => c,
+        MemberDecl::ForallConstraint(_) => {
+            panic!("expression-form forall was incorrectly lowered as ForallConstraint")
+        }
+        other => panic!("expected Constraint, got {:?}", other),
+    };
+
+    // The expression is ExprKind::Quantifier(ForAll).
+    match &constraint.expr.kind {
+        ExprKind::Quantifier {
+            kind,
+            variable,
+            collection,
+            predicate: _,
+        } => {
+            assert_eq!(*kind, QuantifierKind::ForAll);
+            assert_eq!(variable, "x");
+            assert!(
+                matches!(&collection.kind, ExprKind::Ident(n) if n == "items"),
+                "expected collection Ident(items), got {:?}",
+                collection.kind
+            );
+        }
+        other => panic!("expected ExprKind::Quantifier, got {:?}", other),
+    }
+}
+
+/// step-9b: `forall_statement` nested inside a guarded block must be emitted
+/// as `MemberDecl::ForallConnect`, not silently dropped.  Pins that
+/// `lower_member` is correctly dispatched from within `lower_members` which is
+/// called by `lower_guarded_block`.
+#[test]
+fn parse_forall_inside_guarded_block() {
+    let source = r#"
+structure S {
+    param needs : Bool
+    where needs {
+        forall v in vents: connect v.inlet -> housing.air_channel
+    }
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 2, "expected param + guarded_group");
+
+    let group = match &members[1] {
+        MemberDecl::GuardedGroup(g) => g,
+        other => panic!("expected GuardedGroup, got {:?}", other),
+    };
+
+    assert_eq!(group.members.len(), 1, "guarded group should have one member");
+
+    match &group.members[0] {
+        MemberDecl::ForallConnect(d) => {
+            assert_eq!(d.variable, "v");
+            assert!(
+                matches!(&d.collection.kind, ExprKind::Ident(n) if n == "vents"),
+                "expected collection Ident(vents)"
+            );
+        }
+        other => panic!("expected ForallConnect inside guarded block, got {:?}", other),
+    }
+}
+
+/// step-9c: A `forall_statement` whose collection is itself a parenthesized
+/// quantifier expression must lower correctly, producing `ForallConnect` with
+/// `collection.kind == ExprKind::Quantifier`.  Pins the GLR-resolution corpus
+/// pin from task 2362 (nested-quantifier-collection scenario).
+#[test]
+fn parse_forall_with_nested_quantifier_collection() {
+    let source = r#"
+structure S {
+    forall v in (forall x in xs: x > 0): connect v.a -> v.b
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 1, "expected exactly one member");
+
+    let decl = match &members[0] {
+        MemberDecl::ForallConnect(d) => d,
+        other => panic!("expected ForallConnect, got {:?}", other),
+    };
+
+    assert_eq!(decl.variable, "v");
+
+    // The collection should be the inner quantifier (parentheses are transparent).
+    match &decl.collection.kind {
+        ExprKind::Quantifier {
+            kind,
+            variable,
+            collection,
+            predicate: _,
+        } => {
+            assert_eq!(*kind, QuantifierKind::ForAll);
+            assert_eq!(variable, "x");
+            assert!(
+                matches!(&collection.kind, ExprKind::Ident(n) if n == "xs"),
+                "expected inner collection Ident(xs), got {:?}",
+                collection.kind
+            );
+        }
+        other => panic!(
+            "expected collection to be ExprKind::Quantifier, got {:?}",
+            other
+        ),
+    }
+
+    // Body: connect v.a -> v.b
+    match &decl.body {
+        ForallConnectBody::Connect(c) => {
+            match &c.left.expr.kind {
+                ExprKind::MemberAccess { object, member } => {
+                    assert!(
+                        matches!(object.kind, ExprKind::Ident(ref n) if n == "v"),
+                        "expected left object Ident(v)"
+                    );
+                    assert_eq!(member, "a");
+                }
+                other => panic!("expected MemberAccess for left, got {:?}", other),
+            }
+            match &c.right.expr.kind {
+                ExprKind::MemberAccess { object, member } => {
+                    assert!(
+                        matches!(object.kind, ExprKind::Ident(ref n) if n == "v"),
+                        "expected right object Ident(v)"
+                    );
+                    assert_eq!(member, "b");
+                }
+                other => panic!("expected MemberAccess for right, got {:?}", other),
+            }
+        }
+        other => panic!("expected ForallConnectBody::Connect, got {:?}", other),
+    }
+}
