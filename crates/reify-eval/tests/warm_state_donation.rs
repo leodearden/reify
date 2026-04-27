@@ -34,6 +34,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::cache::NodeId;
+use reify_eval::warm_pool::WarmStatePool;
 use reify_eval::Engine;
 use reify_test_support::parse_and_compile;
 use reify_types::{OpaqueState, ValueCellId};
@@ -191,5 +192,116 @@ fn donation_reuse_remove_then_reappear_seeds_cache_warm_state() {
         warm.downcast_ref::<u32>().copied(),
         Some(0xDEADBEEFu32),
         "seeded warm_state must downcast to the originally-injected u32 payload"
+    );
+}
+
+// ── Step-9: eviction fallback — checkout None ⇒ no seed ⇒ cold-eval parity ─
+
+/// When the `WarmStatePool` LRU-evicts a previously-donated entry under
+/// memory pressure, a subsequent `edit_source` that re-adds the same
+/// `NodeId` must produce a cache entry whose `warm_state` slot is `None`
+/// (no seed) AND whose evaluated value matches a from-scratch cold eval
+/// (no warm state ever injected). This pins the
+/// "checkout None ⇒ compute_cold transparency" contract per arch §4.3
+/// lines 539-540: the engine treats an evicted node identically to one
+/// that was never donated.
+///
+/// Eviction mechanics: a 50-byte budget pool. Donating a 32-byte entry
+/// for `volume` fills 32/50. A subsequent 100-byte unrelated donation
+/// triggers the LRU loop in `donate_with_cost`, which evicts every
+/// existing entry (including `volume`) before inserting the over-budget
+/// new entry — a single item exceeding the entire budget is allowed by
+/// design (see `WarmStatePool::donate_with_cost` doc).
+#[test]
+fn eviction_fallback_evicted_state_returns_none_and_eval_matches_cold() {
+    let volume_id = ValueCellId::new("Bracket", "volume");
+    let volume_node = NodeId::Value(volume_id.clone());
+
+    // (1) Cold baseline — fresh engine, no warm-state shenanigans, just eval.
+    //     Captures the from-scratch value of `volume` to compare against the
+    //     post-eviction re-eval below.
+    let cold_value = {
+        let mut baseline = fresh_engine();
+        let module = parse_and_compile(bracket_with_volume_let());
+        let result = baseline.eval(&module);
+        result
+            .values
+            .get(&volume_id)
+            .cloned()
+            .expect("baseline eval must produce a value for `volume`")
+    };
+
+    // (2) Eviction scenario: a separate engine with a tiny-budget pool.
+    let mut engine = fresh_engine();
+    *engine.warm_pool_mut() = WarmStatePool::new(50);
+
+    let module_a = parse_and_compile(bracket_with_volume_let());
+    engine.eval(&module_a);
+
+    // Inject 32-byte warm state for `volume` (fits the 50-byte budget).
+    let donated = engine
+        .cache_store_mut()
+        .donate_warm_state(&volume_node, OpaqueState::new(0xCAFEu32, 32));
+    assert!(donated, "donate_warm_state on cached `volume` must succeed");
+
+    // edit_source #1: drop `volume`. Donation hook (step-6) fires: the
+    // 32-byte state is moved from the cache into the pool.
+    let module_b = parse_and_compile(bracket_without_volume_let());
+    engine
+        .edit_source(&module_b)
+        .expect("first edit_source must succeed");
+    assert!(
+        engine.warm_pool().used_bytes() >= 32,
+        "post-removal pool must hold the 32-byte donated state; got {} bytes",
+        engine.warm_pool().used_bytes()
+    );
+
+    // Force LRU eviction: directly donate an unrelated 100-byte entry. The
+    // pool's eviction loop (`donate_with_cost`) drains every existing entry
+    // (just `volume` here) before inserting the over-budget new entry.
+    let evictor_id = ValueCellId::new("Bracket", "evictor_filler_for_lru_test");
+    let evictor_node = NodeId::Value(evictor_id);
+    engine
+        .warm_pool_mut()
+        .donate(evictor_node.clone(), OpaqueState::new(0u8, 100));
+
+    // Sanity: the original `volume` entry is now evicted; a probe checkout
+    // for it would return None.
+    assert!(
+        engine.warm_pool().used_bytes() == 100,
+        "post-eviction pool must hold only the 100-byte evictor entry; got {} bytes",
+        engine.warm_pool().used_bytes()
+    );
+
+    // (3) edit_source #2: re-add `volume`. The checkout-and-seed path
+    //     (step-8) calls `warm_pool.checkout(volume_node)` — returns None
+    //     because the entry was evicted — so `pending_warm_seeds` gets no
+    //     entry for `volume`, and the cache entry's `warm_state` slot
+    //     remains `None`.
+    let module_c = parse_and_compile(bracket_with_volume_let());
+    let result = engine
+        .edit_source(&module_c)
+        .expect("second edit_source must succeed");
+
+    // (a) cache.warm_state for `volume` is None (pool returned None ⇒ no seed).
+    let entry = engine.cache_store().get(&volume_node).expect(
+        "after edit_source re-adds `volume`, its cache entry must exist (eval populated it)",
+    );
+    assert!(
+        entry.warm_state.is_none(),
+        "cache.warm_state for `volume` must be None when pool checkout returned None (LRU-evicted)"
+    );
+
+    // (b) The post-eviction re-eval value matches the cold baseline —
+    //     observable transparency of the evicted-state path against a
+    //     from-scratch cold-only run.
+    let post_evict_value = result
+        .values
+        .get(&volume_id)
+        .expect("post-edit eval must produce a value for `volume`");
+    assert_eq!(
+        post_evict_value, &cold_value,
+        "post-eviction re-eval value must equal the cold baseline (no warm-state seed); \
+         this pins the checkout-None ⇒ compute_cold transparency contract"
     );
 }
