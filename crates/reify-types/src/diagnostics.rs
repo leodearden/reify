@@ -193,6 +193,22 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
     /// Reserved for the conformance-checker producer that emits "type does not conform to trait …".
     TypeNotConformingToTrait,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (call-site Bounded check
+    /// at trait-typed parameters of `Type::Geometry` arguments — task 2312).
+    /// Canonical message form:
+    /// `"geometry argument '<name>' is not Bounded; required by trait parameter"`.
+    ///
+    /// Emitted when a parameter has a trait-object type whose required trait is
+    /// `Bounded` (the compile-inferred geometry trait declared in
+    /// `crates/reify-compiler/stdlib/geometry_traits.ri`) and the argument's
+    /// inferred [`InferredTraits`](../../reify_compiler/geometry_traits_inference/struct.InferredTraits.html)
+    /// set lacks `bounded`. The PRD-prose mnemonic is `E_GEOMETRY_UNBOUNDED`
+    /// (see `docs/prds/geometry-traits.md` §"Architectural decisions" point 2).
+    ///
+    /// Reserved for the Bounded case only. `Connected` and `Convex` violations
+    /// at the same call-site shape reuse [`TypeNotConformingToTrait`] per the
+    /// task's design decision §2.
+    GeometryUnbounded,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
