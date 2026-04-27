@@ -176,7 +176,7 @@ structure def CeramicLiner : Refractory {
     param name : String = "alumina"
     param thermal_conductivity : Real = 30.0
     param specific_heat : Real = 880.0
-    param thermal_expansion : Real = 8.1e-6
+    param thermal_expansion : Real = 0.0000081
     param melting_point : Real = 2345.0
     param max_service_temperature : Real = 2050.0
     param glass_transition : Real = 0.0

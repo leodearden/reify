@@ -1,0 +1,45 @@
+// Stdlib: Thermal Material Traits
+// Provides thermal characterization trait definitions for engineering materials.
+// All dimensioned quantities use Real (dimensionless) pending Temperature /
+// ThermalConductivity / SpecificHeat type system extensions (see PRD
+// docs/prds/stdlib-trait-breadth.md §"out of scope" and audit doc §(g)).
+//
+// Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
+// Audit reference: docs/notes/stdlib-trait-audit.md §6.3 (all traits marked MISSING).
+//
+// Note on parent trait name: the spec text says `: Material` but `Material` was
+// renamed to `MaterialSpec` in task 1876 (see BREAKING CHANGE block in
+// materials_mechanical.ri). These traits use `: MaterialSpec` so the parent edge
+// resolves correctly under the current implementation; the mechanical analogy is
+// established by the four §6.2 traits in materials_mechanical.ri (FatigueRated,
+// FractureTough, ImpactResistant, Damping all refine MaterialSpec).
+
+// ── ThermallyCharacterized ───────────────────────────────────────────────────
+
+// Root thermal-material trait. Every thermally characterised material must
+// supply the six scalar thermal properties below (all Real pending dimensional
+// type wiring):
+//   thermal_conductivity  — W/(m·K)
+//   specific_heat         — J/(kg·K)
+//   thermal_expansion     — 1/K (coefficient of linear thermal expansion)
+//   melting_point         — K
+//   max_service_temperature — K (upper operating limit)
+//   glass_transition      — K (0.0 for non-glass materials)
+trait ThermallyCharacterized : MaterialSpec {
+    param thermal_conductivity : Real
+    param specific_heat : Real
+    param thermal_expansion : Real
+    param melting_point : Real
+    param max_service_temperature : Real
+    param glass_transition : Real
+}
+
+// ── Refractory ───────────────────────────────────────────────────────────────
+
+// A refractory material is a ThermallyCharacterized material whose
+// max_service_temperature is at least 1500.0 (K-equivalent Real). The
+// constraint guards the contract that a refractory material retains
+// engineering utility at high-temperature operating conditions.
+trait Refractory : ThermallyCharacterized {
+    constraint max_service_temperature >= 1500.0
+}
