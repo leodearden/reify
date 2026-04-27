@@ -11,7 +11,7 @@
 //! subsection for `@test`-annotated items.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{AnnotationDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
+use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
 
 /// Render a [`DocModel`] as one self-contained HTML5 document.
 ///
@@ -177,11 +177,12 @@ fn render_item(out: &mut String, item: &ItemDoc) {
 
     // Kind-specific body. Container variants get parameter / port / constraint
     // / meta sections; the simpler variants will be wired up in later steps.
-    if let ItemDoc::Structure { params, ports, .. }
-        | ItemDoc::Occurrence { params, ports, .. } = item
+    if let ItemDoc::Structure { params, ports, constraints, .. }
+        | ItemDoc::Occurrence { params, ports, constraints, .. } = item
     {
         render_params_table(out, params);
         render_ports_table(out, ports);
+        render_constraints(out, constraints);
     }
 
     out.push_str("</section>\n");
@@ -309,6 +310,38 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     }
     out.push_str("</tbody>\n");
     out.push_str("</table>\n");
+}
+
+/// Render the `<h3>Constraints</h3>` bullet list.  No-op when `cs` is empty.
+///
+/// Mirrors the markdown formatter's three entry shapes:
+/// - `<li><code>{escaped-expr}</code></li>` — labelless, no line
+/// - `<li>{escaped-label}: <code>{escaped-expr}</code></li>` — labelled
+/// - either of the above with a trailing ` <em>(line N)</em>` when
+///   `line.is_some()`.
+fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
+    if cs.is_empty() {
+        return;
+    }
+    out.push_str("<h3>Constraints</h3>\n");
+    out.push_str("<ul>\n");
+    for c in cs {
+        out.push_str("<li>");
+        if let Some(label) = c.label.as_deref() {
+            out.push_str(&html_escape(label));
+            out.push_str(": ");
+        }
+        out.push_str("<code>");
+        out.push_str(&html_escape(&c.expr_repr));
+        out.push_str("</code>");
+        if let Some(line) = c.line {
+            out.push_str(" <em>(line ");
+            out.push_str(&line.to_string());
+            out.push_str(")</em>");
+        }
+        out.push_str("</li>\n");
+    }
+    out.push_str("</ul>\n");
 }
 
 /// Reify-source keyword displayed in the H2 heading for each `ItemDoc` variant.
