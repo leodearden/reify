@@ -318,6 +318,31 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
     );
 }
 
+/// EdgeTangent contract requires Value::String. A Value::Real payload must
+/// produce QueryFailed — pins the non-string fall-through arm of
+/// `parse_xyz_value` (topology_selectors.rs line 159-163) for EdgeTangent.
+#[test]
+fn edges_parallel_to_returns_query_failed_when_tangent_is_real() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_tangent_result(e, Value::Real(1.0)); // intentionally wrong type
+
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-string value"),
+                "error message should mention 'non-string value', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed), got {:?}", other),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // edges_at_height
 // ─────────────────────────────────────────────────────────────────────────────
