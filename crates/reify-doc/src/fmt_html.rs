@@ -43,7 +43,37 @@ pub fn render_html(model: &DocModel, _cross_refs: Option<&CrossRefs>) -> String 
     out.push_str("</style>\n");
     out.push_str("</head>\n");
     out.push_str("<body>\n");
+
+    for module in &model.modules {
+        out.push_str("<h1>");
+        out.push_str(&module.path);
+        out.push_str("</h1>\n");
+        if let Some(doc) = module.doc.as_deref() {
+            emit_paragraphs(&mut out, doc);
+        }
+    }
+
     out.push_str("</body>\n");
     out.push_str("</html>\n");
     out
+}
+
+/// Emit a doc-comment string as one or more `<p>...</p>` blocks.
+///
+/// Splits the input on blank lines (one or more `\n\n` sequences) and writes
+/// each non-empty paragraph as `<p>{trimmed}</p>` followed by a newline.
+/// All-whitespace segments leave the buffer untouched so we don't produce
+/// dangling empty paragraphs.
+///
+/// Mirrors the iteration logic of [`crate::fmt_markdown::emit_paragraphs`].
+fn emit_paragraphs(out: &mut String, doc: &str) {
+    for paragraph in doc.split("\n\n") {
+        let p = paragraph.trim();
+        if p.is_empty() {
+            continue;
+        }
+        out.push_str("<p>");
+        out.push_str(p);
+        out.push_str("</p>\n");
+    }
 }
