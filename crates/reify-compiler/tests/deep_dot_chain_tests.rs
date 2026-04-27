@@ -708,3 +708,26 @@ occurrence def Op {
         "Declaration::Occurrence.annotations[*].args",
     );
 }
+
+/// Position 25: `Declaration::Trait.annotations[*].args` — deep chain inside
+/// an annotation arg on a trait declaration.
+///
+/// The trait body (`param p: Real`) has no default expression and therefore no
+/// embedded chain, so the asserted count of 1 isolates the warning to the
+/// annotation-arg position. If `walk_declaration`'s Trait arm dropped its
+/// `walk_annotations` call (dot_chain_lint.rs:97), the count would be 0 and
+/// this test would fail — which is the regression this test guards against.
+#[test]
+fn walker_visits_trait_decl_annotation_arg() {
+    let source = r#"
+@deprecated(a.b.c.d.e)
+trait MyTrait {
+    param p: Real
+}
+"#;
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Trait.annotations[*].args",
+    );
+}
