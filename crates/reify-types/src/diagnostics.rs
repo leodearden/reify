@@ -400,6 +400,32 @@ mod tests {
         assert_eq!(d.code, Some(DiagnosticCode::TraitNotImplemented));
     }
 
+    /// `Diagnostic::error` defaults `candidates` to empty — opt-in via `with_candidates` only.
+    #[test]
+    fn diagnostic_default_candidates_is_empty() {
+        let d = Diagnostic::error("x");
+        assert_eq!(d.candidates, Vec::<String>::new());
+    }
+
+    /// `with_candidates` attaches the supplied candidate list and is fluent (returns `Self`).
+    /// Verify that it chains with other builder methods.
+    #[test]
+    fn diagnostic_with_candidates_attaches_candidates() {
+        let d = Diagnostic::error("x")
+            .with_candidates(vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(d.candidates, vec!["A".to_string(), "B".to_string()]);
+        // Fluency check: with_candidates composes with with_code and with_label
+        use super::DiagnosticLabel;
+        use super::SourceSpan;
+        let d2 = Diagnostic::error("y")
+            .with_code(DiagnosticCode::TraitNotImplemented)
+            .with_candidates(vec!["X".to_string()])
+            .with_label(DiagnosticLabel::new(SourceSpan::prelude(), "lbl"));
+        assert_eq!(d2.candidates, vec!["X".to_string()]);
+        assert_eq!(d2.code, Some(DiagnosticCode::TraitNotImplemented));
+        assert_eq!(d2.labels.len(), 1);
+    }
+
     /// `DiagnosticCode` is `Copy + Clone + PartialEq + Eq + Hash + Debug`.
     /// (Compile-tested by exercising each of those bounds in the body.)
     #[test]
