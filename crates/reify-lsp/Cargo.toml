@@ -23,3 +23,7 @@ test-support = []
 [dev-dependencies]
 reify-test-support.workspace = true
 tokio = { workspace = true, features = ["time"] }
+# Enable test-instrumentation so #[cfg(test)] blocks can call cache_store()
+# (now gated behind #[cfg(any(test, feature = "test-instrumentation"))]).
+# Mirrors the self-dev-dep pattern in crates/reify-eval/Cargo.toml.
+reify-eval = { workspace = true, features = ["test-instrumentation"] }

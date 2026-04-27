@@ -375,7 +375,14 @@ impl Engine {
         self.lookup_solver_for_module(module)
     }
 
-    /// Access the cache store (for testing/inspection).
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Immutable access to the cache store, used by integration tests that need
+    /// to inspect cache state after evaluation.  Mirrors the gating on the
+    /// mutable [`cache_store_mut`](Self::cache_store_mut) accessor.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn cache_store(&self) -> &CacheStore {
         &self.cache
     }

@@ -22,3 +22,7 @@ reify-test-support.workspace = true
 reify-constraints.workspace = true
 # time feature intentionally dev-only: tests need sleep/timeout, production code should not
 tokio = { workspace = true, features = ["time"] }
+# Enable test-instrumentation so concurrent_eval.rs can call cache_store()
+# (now gated behind #[cfg(any(test, feature = "test-instrumentation"))]).
+# Mirrors the self-dev-dep pattern in crates/reify-eval/Cargo.toml.
+reify-eval = { workspace = true, features = ["test-instrumentation"] }
