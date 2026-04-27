@@ -1529,13 +1529,18 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
         // exceeds any plausible FP noise from OCCT's integration and signals a gross
         // asymmetry — e.g. a future OCCT regression or a corrupted shape.  This check
         // is scale-correct and cannot fire spuriously on any well-formed geometry.
+        //
+        // NOTE: this branch is best-effort defensive; it cannot be exercised in CI
+        // without access to OCCT internals to construct a synthetic asymmetric gp_Mat.
+        // The message is intentionally unprefixed here — the enclosing catch
+        // (std::exception const&) adds the "OCCT query_inertia_tensor: unexpected: "
+        // prefix, yielding a clean single-prefixed diagnostic at the Rust/cxx layer.
         auto check_sym = [](double a, double b, const char* label) {
             const double diff = std::abs(a - b);
             const double scale = std::max(std::abs(a), std::abs(b));
             if (diff > 1e-9 * scale + 1e-12) {
                 throw std::runtime_error(
-                    std::string("OCCT query_inertia_tensor: MatrixOfInertia is not "
-                                "symmetric (") + label + ")");
+                    std::string("MatrixOfInertia is not symmetric (") + label + ")");
             }
         };
         check_sym(m.Value(1, 2), m.Value(2, 1), "m12/m21");
