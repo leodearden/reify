@@ -229,6 +229,31 @@ fn group_needs_phase3(
     }
 }
 
+/// Shared guard-cell lookup used by the Phase 3 loop in both `edit_param`
+/// (engine_edit.rs:1008) and `edit_source` (engine_edit.rs:2105).
+///
+/// Returns `Some(v.clone())` when `values.get(guard_cell)` is present.
+/// On `None`: emits `tracing::warn!` (observable by the counting-subscriber
+/// test), fires `debug_assert!(false, ...)` (halts in debug builds), then
+/// returns `None` so the caller's `let-else` can `continue`.
+///
+/// The absent-guard arm is unreachable in current flow because Phase 1 always
+/// seeds every guard cell into `values` (engine_edit.rs:738), but a future
+/// refactor that narrows `structure_controlling` (so Phase 1 doesn't fire /
+/// doesn't seed every guard) would expose it.  This helper captures the entire
+/// absent-guard skip logic in one place, making the contract testable and
+/// enforcing edit_param/edit_source symmetry by construction — both call sites
+/// use the same helper, so any future asymmetric change to one will fail the
+/// helper's tests.
+///
+/// **Warn-before-assert ordering is load-bearing**: the WARN event must fire
+/// before the `debug_assert!` so that a `CountingSubscriber` (used in the
+/// dual-mode test) can observe the counter increment even when the
+/// `debug_assert!` subsequently unwinds the thread.
+fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
+    values.get(guard_cell).cloned()
+}
+
 /// Look up the pre-edit snapshot guard value for `gc` from the engine's
 /// `eval_state`, returning a borrowed `&Value` (lifetime tied to `eval_state`).
 ///
