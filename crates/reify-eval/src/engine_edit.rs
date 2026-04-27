@@ -3763,4 +3763,48 @@ mod tests {
              when the guard cell is absent"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // PendingWarmSeedsGuard unit tests
+    // (steps 1, 3, 5 — guard Drop contract, drain no-op, payload integrity)
+    // -----------------------------------------------------------------------
+
+    /// Drop with non-empty map re-donates remaining entries to the pool.
+    ///
+    /// Pins the primary guard contract: any entry that was checked out into the
+    /// guard's staging map and NOT consumed by `drain_into_cache_or_repool` on
+    /// the success path is re-donated to `pool` by `Drop`, preserving recoverability
+    /// across early-return / panic / `?` between steps (4c) and (14b).
+    #[test]
+    fn pending_warm_seeds_guard_redonates_remaining_entries_on_drop() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+
+        let mut pool = WarmStatePool::new(1024);
+        assert_eq!(pool.used_bytes(), 0);
+
+        let node_id = NodeId::Value(ValueCellId::new("T", "x"));
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(node_id.clone(), OpaqueState::new(0xDEADBEEFu32, 16));
+            // Guard goes out of scope here, triggering Drop — no drain called
+        }
+
+        // After Drop, the entry must have been re-donated to pool
+        assert!(
+            pool.used_bytes() >= 16,
+            "Drop must re-donate entries to pool; used_bytes was {}",
+            pool.used_bytes()
+        );
+        let recovered = pool
+            .checkout(&node_id)
+            .expect("entry must be recoverable from pool after guard Drop");
+        assert_eq!(
+            recovered.downcast::<u32>(),
+            Some(0xDEADBEEF),
+            "payload must be preserved through the drop re-donation"
+        );
+    }
 }
