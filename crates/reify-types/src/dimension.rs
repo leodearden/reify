@@ -917,4 +917,32 @@ mod tests {
         assert_ne!(DimensionVector::MONEY, DimensionVector::DIMENSIONLESS);
         assert_ne!(DimensionVector::MONEY, DimensionVector::SOLID_ANGLE);
     }
+
+    /// Verify `NAMED_DIMENSIONS` is a complete, self-consistent table.
+    ///
+    /// (a) The table must have exactly 30 entries — one per named singleton.
+    /// (b) For every `(dim, name)` entry the round-trip `dim.canonical_name() == Some(name)` holds.
+    /// (c) `DIMENSIONLESS.canonical_name()` is still `None` (intentionally excluded from the table).
+    #[test]
+    fn named_dimensions_table_round_trips_canonical_name() {
+        assert_eq!(
+            super::NAMED_DIMENSIONS.len(),
+            30,
+            "NAMED_DIMENSIONS must contain exactly 30 entries"
+        );
+        for &(dim, expected_name) in super::NAMED_DIMENSIONS {
+            assert_eq!(
+                dim.canonical_name(),
+                Some(expected_name),
+                "round-trip failed for {:?}: canonical_name() should return {:?}",
+                dim,
+                expected_name,
+            );
+        }
+        assert_eq!(
+            DimensionVector::DIMENSIONLESS.canonical_name(),
+            None,
+            "DIMENSIONLESS must remain absent from NAMED_DIMENSIONS (canonical_name returns None)"
+        );
+    }
 }
