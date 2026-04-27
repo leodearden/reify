@@ -838,11 +838,13 @@ mod tests {
         );
     }
 
-    /// Helper used by the recursion regression-pin tests below. Returns `true`
-    /// if any node anywhere in `expr`'s tree is a
+    /// Returns `true` if any node anywhere in `expr`'s tree is a
     /// `PurposeReflectiveAggregation` node. Uses the canonical
     /// `CompiledExpr::walk` traversal so the check automatically follows new
     /// variants when the walker is updated.
+    ///
+    /// Note: this is an exhaustive walk (no short-circuit); trees exercised
+    /// here are tiny so the cost is irrelevant in practice.
     fn tree_contains_placeholder(expr: &CompiledExpr) -> bool {
         let mut found = false;
         expr.walk(&mut |e: &CompiledExpr| {
@@ -851,6 +853,84 @@ mod tests {
             }
         });
         found
+    }
+
+    /// Returns `true` if the tree rooted at `expr` contains a `ValueRef` for
+    /// `entity/member`. Used to confirm that expansion produced the correct
+    /// resolved node and not just some opaque substitution.
+    fn tree_contains_value_ref_for(expr: &CompiledExpr, entity: &str, member: &str) -> bool {
+        let mut found = false;
+        expr.walk(&mut |e: &CompiledExpr| {
+            if let CompiledExprKind::ValueRef(id) = &e.kind {
+                if id.entity == entity && id.member == member {
+                    found = true;
+                }
+            }
+        });
+        found
+    }
+
+    type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
+
+    /// Shared runner for the recursion regression-pin sweep.
+    ///
+    /// Builds the standard single-cell fixture (`entity = "Foo"`, resolved
+    /// query `("subject", "params")` → `ValueCellId("Foo", "x")`), then for
+    /// every `(label, wrap)` in `wrappers`:
+    ///
+    /// 1. Builds `wrap(placeholder)` where placeholder is a fresh
+    ///    `PurposeReflectiveAggregation("subject", "params", List<Real>)`.
+    /// 2. Calls `expand_purpose_reflective_placeholders`.
+    /// 3. Asserts no `PurposeReflectiveAggregation` node remains anywhere in
+    ///    the tree (recursion happened).
+    /// 4. Asserts a `ValueRef("Foo", "x")` node is present (the expansion
+    ///    produced the correct resolved node, not just some substitution).
+    ///
+    /// All failures are collected so every wrapper is exercised on a single
+    /// run — a panic on the first failure would mask later regressions.
+    fn assert_recursive_arms(wrappers: Vec<(&'static str, WrapFn)>) {
+        let entity = "Foo";
+        let cell_x = ValueCellId::new(entity, "x");
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_x.clone()],
+        }];
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        value_cells.insert(
+            cell_x.clone(),
+            ValueCellNode {
+                id: cell_x.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("x"),
+            },
+        );
+        let make_placeholder = || {
+            CompiledExpr::purpose_reflective_aggregation(
+                "subject".to_string(),
+                "params".to_string(),
+                Type::List(Box::new(Type::Real)),
+            )
+        };
+
+        let mut failures: Vec<String> = Vec::new();
+        for (label, wrap) in &wrappers {
+            let mut wrapped = wrap(make_placeholder());
+            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
+            if tree_contains_placeholder(&wrapped) {
+                failures.push(format!("{label}: placeholder not rewritten"));
+            }
+            if !tree_contains_value_ref_for(&wrapped, entity, "x") {
+                failures.push(format!("{label}: expected ValueRef(Foo/x) in expanded tree"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "recursion regression failures:\n{}",
+            failures.join("\n")
+        );
     }
 
     /// Regression pin: `expand_purpose_reflective_placeholders` must recurse
@@ -866,37 +946,10 @@ mod tests {
         use reify_test_support::conditional_expr;
         use reify_types::{CompiledMatchArm, Value};
 
-        let entity = "Foo";
-        let cell_x = ValueCellId::new(entity, "x");
-        let queries = vec![ResolvedSchemaQuery {
-            param_name: "subject".to_string(),
-            query_kind: "params".to_string(),
-            resolved_ids: vec![cell_x.clone()],
-        }];
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
-        value_cells.insert(
-            cell_x.clone(),
-            ValueCellNode {
-                id: cell_x.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("x"),
-            },
-        );
-        let make_placeholder = || {
-            CompiledExpr::purpose_reflective_aggregation(
-                "subject".to_string(),
-                "params".to_string(),
-                Type::List(Box::new(Type::Real)),
-            )
-        };
-
-        type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
-        let wrappers: Vec<(&str, WrapFn)> = vec![
+        let wrappers: Vec<(&'static str, WrapFn)> = vec![
             (
                 "Conditional condition",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     conditional_expr(
                         ph,
                         CompiledExpr::literal(Value::Bool(true), Type::Bool),
@@ -906,7 +959,7 @@ mod tests {
             ),
             (
                 "Conditional then_branch",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     conditional_expr(
                         CompiledExpr::literal(Value::Bool(true), Type::Bool),
                         ph,
@@ -916,7 +969,7 @@ mod tests {
             ),
             (
                 "Conditional else_branch",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     conditional_expr(
                         CompiledExpr::literal(Value::Bool(true), Type::Bool),
                         CompiledExpr::literal(Value::Bool(true), Type::Bool),
@@ -926,7 +979,7 @@ mod tests {
             ),
             (
                 "Match discriminant",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::match_expr(
                         ph,
                         vec![CompiledMatchArm {
@@ -939,7 +992,7 @@ mod tests {
             ),
             (
                 "Match arm body",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::match_expr(
                         CompiledExpr::literal(Value::Int(0), Type::Int),
                         vec![CompiledMatchArm {
@@ -951,20 +1004,7 @@ mod tests {
                 }),
             ),
         ];
-
-        let mut failures: Vec<&str> = Vec::new();
-        for (label, wrap) in &wrappers {
-            let mut wrapped = wrap(make_placeholder());
-            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
-            if tree_contains_placeholder(&wrapped) {
-                failures.push(label);
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "placeholder not rewritten under: {:?}",
-            failures
-        );
+        assert_recursive_arms(wrappers);
     }
 
     /// Regression pin: `expand_purpose_reflective_placeholders` must recurse
@@ -977,40 +1017,13 @@ mod tests {
     fn expand_recurses_through_quantifier_components() {
         use reify_types::{QuantifierKind, Value};
 
-        let entity = "Foo";
-        let cell_x = ValueCellId::new(entity, "x");
-        let queries = vec![ResolvedSchemaQuery {
-            param_name: "subject".to_string(),
-            query_kind: "params".to_string(),
-            resolved_ids: vec![cell_x.clone()],
-        }];
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
-        value_cells.insert(
-            cell_x.clone(),
-            ValueCellNode {
-                id: cell_x.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("x"),
-            },
-        );
-        let make_placeholder = || {
-            CompiledExpr::purpose_reflective_aggregation(
-                "subject".to_string(),
-                "params".to_string(),
-                Type::List(Box::new(Type::Real)),
-            )
-        };
         let variable_id = ValueCellId::new("Q", "i");
-
-        type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
-        let wrappers: Vec<(&str, WrapFn)> = vec![
+        let wrappers: Vec<(&'static str, WrapFn)> = vec![
             (
                 "Quantifier collection",
                 Box::new({
                     let variable_id = variable_id.clone();
-                    move |ph| {
+                    move |ph: CompiledExpr| {
                         CompiledExpr::quantifier(
                             QuantifierKind::ForAll,
                             "i".to_string(),
@@ -1025,7 +1038,7 @@ mod tests {
                 "Quantifier predicate",
                 Box::new({
                     let variable_id = variable_id.clone();
-                    move |ph| {
+                    move |ph: CompiledExpr| {
                         CompiledExpr::quantifier(
                             QuantifierKind::ForAll,
                             "i".to_string(),
@@ -1037,71 +1050,62 @@ mod tests {
                 }),
             ),
         ];
-
-        let mut failures: Vec<&str> = Vec::new();
-        for (label, wrap) in &wrappers {
-            let mut wrapped = wrap(make_placeholder());
-            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
-            if tree_contains_placeholder(&wrapped) {
-                failures.push(label);
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "placeholder not rewritten under: {:?}",
-            failures
-        );
+        assert_recursive_arms(wrappers);
     }
 
     /// Regression pin: `expand_purpose_reflective_placeholders` must recurse
-    /// into every child slot of compound wrapper nodes — `UserFunctionCall`,
-    /// `Lambda`, `MapLiteral` (key and value), `IndexAccess` (object and
-    /// index), `MethodCall` (object and args), `OptionSome`, and
-    /// `RangeConstructor` (lower and upper bounds).
+    /// into every child slot of compound wrapper nodes — `BinOp` (left,
+    /// right), `UnOp` (operand), `UserFunctionCall` (args), `Lambda` (body),
+    /// `ListLiteral` (element), `SetLiteral` (element), `MapLiteral` (key,
+    /// value), `IndexAccess` (object, index), `MethodCall` (object, args),
+    /// `OptionSome` (inner), `RangeConstructor` (lower, upper), and
+    /// `AdHocSelector` (base, args).
     ///
-    /// These round out the description's parenthetical list beyond the
-    /// Conditional / Quantifier / Match pins in the sibling tests.
+    /// Note: `FunctionCall` and `UserFunctionCall` share the exact same
+    /// expansion arm (`FunctionCall { args, .. } | UserFunctionCall { args, .. }`),
+    /// so the `UserFunctionCall arg` case exercises both code paths.
     #[test]
     fn expand_recurses_through_compound_wrappers() {
-        use reify_types::Value;
+        use reify_types::{BinOp, SelectorKind, UnOp, Value};
 
-        let entity = "Foo";
-        let cell_x = ValueCellId::new(entity, "x");
-        let queries = vec![ResolvedSchemaQuery {
-            param_name: "subject".to_string(),
-            query_kind: "params".to_string(),
-            resolved_ids: vec![cell_x.clone()],
-        }];
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
-        value_cells.insert(
-            cell_x.clone(),
-            ValueCellNode {
-                id: cell_x.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("x"),
-            },
-        );
-        let make_placeholder = || {
-            CompiledExpr::purpose_reflective_aggregation(
-                "subject".to_string(),
-                "params".to_string(),
-                Type::List(Box::new(Type::Real)),
-            )
-        };
-
-        type WrapFn = Box<dyn Fn(CompiledExpr) -> CompiledExpr>;
-        let wrappers: Vec<(&str, WrapFn)> = vec![
+        let wrappers: Vec<(&'static str, WrapFn)> = vec![
+            (
+                "BinOp left",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::binop(
+                        BinOp::Add,
+                        ph,
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        Type::Int,
+                    )
+                }),
+            ),
+            (
+                "BinOp right",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::binop(
+                        BinOp::Add,
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        ph,
+                        Type::Int,
+                    )
+                }),
+            ),
+            (
+                "UnOp operand",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::unop(UnOp::Neg, ph, Type::List(Box::new(Type::Real)))
+                }),
+            ),
             (
                 "UserFunctionCall arg",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::user_function_call("f".to_string(), vec![ph], Type::Bool)
                 }),
             ),
             (
                 "Lambda body",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::lambda(
                         vec![("x".to_string(), Some(Type::Real))],
                         vec![ValueCellId::new("L", "x")],
@@ -1112,8 +1116,26 @@ mod tests {
                 }),
             ),
             (
+                "ListLiteral element",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::list_literal(
+                        vec![ph],
+                        Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+                    )
+                }),
+            ),
+            (
+                "SetLiteral element",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::set_literal(
+                        vec![ph],
+                        Type::Set(Box::new(Type::List(Box::new(Type::Real)))),
+                    )
+                }),
+            ),
+            (
                 "MapLiteral key",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::map_literal(
                         vec![(ph, CompiledExpr::literal(Value::Int(0), Type::Int))],
                         Type::Map(
@@ -1125,7 +1147,7 @@ mod tests {
             ),
             (
                 "MapLiteral val",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::map_literal(
                         vec![(CompiledExpr::literal(Value::Int(0), Type::Int), ph)],
                         Type::Map(
@@ -1137,7 +1159,7 @@ mod tests {
             ),
             (
                 "IndexAccess object",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::index_access(
                         ph,
                         CompiledExpr::literal(Value::Int(0), Type::Int),
@@ -1147,7 +1169,7 @@ mod tests {
             ),
             (
                 "IndexAccess index",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::index_access(
                         CompiledExpr::literal(Value::Int(0), Type::Int),
                         ph,
@@ -1157,13 +1179,13 @@ mod tests {
             ),
             (
                 "MethodCall object",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::method_call(ph, "len".to_string(), vec![], Type::Int)
                 }),
             ),
             (
                 "MethodCall arg",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::method_call(
                         CompiledExpr::literal(Value::Int(0), Type::Int),
                         "to_str".to_string(),
@@ -1174,7 +1196,7 @@ mod tests {
             ),
             (
                 "OptionSome inner",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::option_some(
                         ph,
                         Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
@@ -1183,7 +1205,7 @@ mod tests {
             ),
             (
                 "RangeConstructor lower",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::range_constructor(
                         Some(ph),
                         None,
@@ -1195,7 +1217,7 @@ mod tests {
             ),
             (
                 "RangeConstructor upper",
-                Box::new(|ph| {
+                Box::new(|ph: CompiledExpr| {
                     CompiledExpr::range_constructor(
                         None,
                         Some(ph),
@@ -1205,20 +1227,23 @@ mod tests {
                     )
                 }),
             ),
+            (
+                "AdHocSelector base",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::ad_hoc_selector(ph, SelectorKind::Face, vec![])
+                }),
+            ),
+            (
+                "AdHocSelector arg",
+                Box::new(|ph: CompiledExpr| {
+                    CompiledExpr::ad_hoc_selector(
+                        CompiledExpr::literal(Value::Int(0), Type::Int),
+                        SelectorKind::Face,
+                        vec![ph],
+                    )
+                }),
+            ),
         ];
-
-        let mut failures: Vec<&str> = Vec::new();
-        for (label, wrap) in &wrappers {
-            let mut wrapped = wrap(make_placeholder());
-            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
-            if tree_contains_placeholder(&wrapped) {
-                failures.push(label);
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "placeholder not rewritten under: {:?}",
-            failures
-        );
+        assert_recursive_arms(wrappers);
     }
 }
