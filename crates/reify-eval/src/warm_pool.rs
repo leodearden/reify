@@ -953,4 +953,51 @@ mod tests {
             "MAX_BUFFERED_EVENTS must be 65_536 (64 K events ≈ 4 MiB ceiling)"
         );
     }
+
+    /// Assert the debug-build tripwire: pushing past `MAX_BUFFERED_EVENTS` panics
+    /// via `debug_assert!` in debug builds.
+    ///
+    /// # Why `#[cfg(debug_assertions)]`
+    /// In release builds, `debug_assert!` is a no-op — the panic never fires, so
+    /// `catch_unwind` would return `Ok` and the `is_err()` assertion would fail.
+    /// The complementary release-mode path is covered by
+    /// `events_buffer_auto_trims_to_keep_recent_events_when_engine_never_drains`
+    /// (step 5), which is gated `#[cfg(not(debug_assertions))]`.
+    ///
+    /// # Accepted noise
+    /// `catch_unwind` on a `debug_assert!` panic may emit a panic stacktrace to
+    /// stderr in default `cargo test` runs (the libtest panic hook fires before
+    /// `catch_unwind` suppresses the unwind).  Correctness is unaffected; this
+    /// matches the accepted behavior of `engine_purposes.rs:709` and its sibling.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn events_buffer_debug_assert_fires_on_overflow_in_debug_build() {
+        use std::panic::AssertUnwindSafe;
+
+        // Build a pool with effectively unlimited memory budget so LRU eviction
+        // never interferes.  We are testing the events-buffer tripwire, not eviction.
+        let mut pool = WarmStatePool::unlimited();
+        let template = NodeId::Value(reify_types::ValueCellId::new("T", "n"));
+
+        // Fill the buffer to exactly MAX_BUFFERED_EVENTS by donating that many
+        // distinct nodes (each donate() emits exactly one Donated event).
+        // We drain_events() once at the start to empty the buffer, then donate
+        // MAX_BUFFERED_EVENTS items without draining.
+        let _ = pool.drain_events();
+        for i in 0..WarmStatePool::MAX_BUFFERED_EVENTS {
+            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+        // Buffer is now at capacity.  One more donation must fire the debug_assert!.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            pool.donate(template, OpaqueState::new(0u8, 1));
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug-build tripwire: expected debug_assert! panic when pushing past \
+             MAX_BUFFERED_EVENTS ({}) without draining, but catch_unwind returned Ok",
+            WarmStatePool::MAX_BUFFERED_EVENTS
+        );
+    }
 }
