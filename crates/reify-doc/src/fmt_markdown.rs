@@ -553,9 +553,9 @@ fn render_unit_body(out: &mut String, base_unit: &str, scale: &str) {
 
 /// Render the `= \`{type_repr}\`` line for a `TypeAlias`.
 fn render_type_alias_body(out: &mut String, type_repr: &str) {
-    out.push_str("= `");
-    out.push_str(type_repr);
-    out.push_str("`\n\n");
+    out.push_str("= ");
+    out.push_str(&md_inline_code(type_repr));
+    out.push_str("\n\n");
 }
 
 /// Render the `\`{expr_repr}\`` line for a `ConstraintDef`.
