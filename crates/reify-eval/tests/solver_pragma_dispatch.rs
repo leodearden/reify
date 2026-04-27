@@ -71,3 +71,45 @@ fn eval_uses_named_solver_from_registry_when_solver_pragma_matches() {
         "default solver must NOT be invoked when solver_pragma routes to a registered named solver"
     );
 }
+
+/// Same dispatch policy as `eval_uses_named_solver_from_registry_when_solver_pragma_matches`,
+/// but exercising `eval_cached` (the LSP / on-keystroke path) instead of `eval`.
+/// Both invocation sites must route through the same lookup helper so the
+/// resolution policy is byte-identical between the two paths.
+#[test]
+fn eval_cached_uses_named_solver_from_registry_when_solver_pragma_matches() {
+    use reify_types::VersionId;
+
+    let mut module = make_module_with_auto_param();
+    module.solver_pragma = Some(SolverPragma {
+        name: "libslvs".to_string(),
+        options: BTreeMap::new(),
+    });
+
+    let named_spy = SpyConstraintSolver::new_solved(HashMap::new());
+    let named_captured = named_spy.captured_problem();
+
+    let default_spy = SpyConstraintSolver::new_solved(HashMap::new());
+    let default_captured = default_spy.captured_problem();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(default_spy));
+    engine.register_solver("libslvs", Box::new(named_spy));
+
+    // Prime the cache via a regular eval so eval_cached has state to consult.
+    engine.eval(&module);
+    // Reset the captures so we measure only the eval_cached invocation below.
+    *named_captured.lock().unwrap() = None;
+    *default_captured.lock().unwrap() = None;
+
+    let _ = engine.eval_cached(&module, VersionId::new(0));
+
+    assert!(
+        named_captured.lock().unwrap().is_some(),
+        "expected named solver 'libslvs' to be invoked by eval_cached when solver_pragma matches"
+    );
+    assert!(
+        default_captured.lock().unwrap().is_none(),
+        "default solver must NOT be invoked by eval_cached when solver_pragma routes to a registered named solver"
+    );
+}
