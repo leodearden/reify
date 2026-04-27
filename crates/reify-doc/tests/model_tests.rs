@@ -58,7 +58,53 @@ fn build_fixture() -> DocModel {
             doc: Some(
                 "Minimal fixture pinning the build_doc_model output-shape contract.".into(),
             ),
-            items: vec![],
+            items: vec![
+                // Trait — Physical (rank 0)
+                ItemDoc::Trait {
+                    name: "Physical".into(),
+                    doc: Some("Trait for objects with a measurable mass.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    members: vec!["mass: Mass".into()],
+                },
+                // Structure — Bolt (rank 1)
+                ItemDoc::Structure {
+                    name: "Bolt".into(),
+                    doc: Some("A standard fastening bolt conforming to Physical.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+                // Enum — Grade (rank 3)
+                ItemDoc::Enum {
+                    name: "Grade".into(),
+                    doc: Some("Material grade classification.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    variants: vec![
+                        "Standard".into(),
+                        "Reinforced".into(),
+                        "Premium".into(),
+                    ],
+                },
+                // Function — safety_factor (rank 4)
+                ItemDoc::Function {
+                    name: "safety_factor".into(),
+                    doc: Some("Safety factor for real-valued loads.".into()),
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    signature: "fn safety_factor(load: Real) -> Real".into(),
+                },
+            ],
             annotations: vec![],
             pragmas: vec![],
             cross_refs: ModuleCrossRefs::default(),
