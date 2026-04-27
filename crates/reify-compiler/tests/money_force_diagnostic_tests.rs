@@ -30,7 +30,11 @@ fn has_money_and_force_label(errors: &[&reify_types::Diagnostic]) -> bool {
 /// `25USD + 5N` should produce a DimensionMismatch error with "Money" and "Force" in labels.
 #[test]
 fn money_plus_force_has_dimension_mismatch_code() {
+    // Note: USD is declared inline here because it may not yet be in the stdlib
+    // (task 2378 adds it; once merged the inline declaration can be removed).
     let source = r#"
+pub unit USD : Money
+
 structure def S {
     param p : Money = 25USD + 5N
 }
@@ -75,6 +79,8 @@ structure def S {
 #[test]
 fn money_minus_force_has_dimension_mismatch_code() {
     let source = r#"
+pub unit USD : Money
+
 structure def S {
     param p : Money = 25USD - 5N
 }
@@ -97,6 +103,8 @@ structure def S {
 #[test]
 fn force_plus_money_has_dimension_mismatch_code() {
     let source = r#"
+pub unit USD : Money
+
 structure def S {
     param p : Force = 5N + 25USD
 }
