@@ -6,13 +6,13 @@ Dimensions are part of the type. Units are part of literal syntax. Two quantitie
 
 ## Dimension Representation
 
-A vector of rational exponents over 9 base dimensions (7 SI + Angle + Money):
+A vector of rational exponents over 10 base dimensions (7 SI + Angle + SolidAngle + Money):
 ```
-[Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, Money]
+[Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, SolidAngle, Money]
 
-Length       = [1, 0, 0, 0, 0, 0, 0, 0, 0]
-Force        = [1, 1, -2, 0, 0, 0, 0, 0, 0]   // M*L*T^-2
-Pressure     = [-1, 1, -2, 0, 0, 0, 0, 0, 0]  // M*L^-1*T^-2
+Length       = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+Force        = [1, 1, -2, 0, 0, 0, 0, 0, 0, 0]   // M*L*T^-2
+Pressure     = [-1, 1, -2, 0, 0, 0, 0, 0, 0, 0]  // M*L^-1*T^-2
 ```
 
 Multiplication adds exponent vectors. Division subtracts. Checked at compile time.

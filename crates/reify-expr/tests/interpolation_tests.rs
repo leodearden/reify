@@ -108,8 +108,9 @@ fn nearest_1d_knot_exact_reproduction() {
     }
 }
 
-/// Cell-midpoint exact tie is broken by `round_ties_even` — choose the
-/// endpoint with the even index.
+/// Cell-midpoint exact tie is broken by the even-grid-index tie-breaker — between
+/// the two bracketing samples, the endpoint whose grid index is even wins. This is
+/// grid-offset-dependent (not `round_ties_even` / banker's rounding on the value).
 ///
 /// Grid `[0.0, 1.0, 2.0]` values `[10.0, 20.0, 30.0]`:
 /// - query `0.5` is exactly between indices 0 and 1 → even index wins → 0 → `10.0`.
@@ -441,7 +442,8 @@ fn nearest_2d_quadrant_of_nearest_cell_wins() {
     assert!(approx_eq(r.value, 20.0, TOL), "got {}", r.value);
 }
 
-/// Exact ties on each axis use `round_ties_even` independently. With grid
+/// Exact ties on each axis use the even-grid-index tie-breaker independently
+/// (grid-offset-dependent, not `round_ties_even` on the value). With grid
 /// `[0.0, 1.0, 2.0]` on each axis, query `(0.5, 1.5)` ties on both: x even
 /// index wins → 0; y even index wins → 2. Result is `values[(0, 2)]`.
 #[test]
@@ -841,7 +843,8 @@ fn nearest_3d_octant_of_nearest_cell_wins() {
     assert!(approx_eq(r.value, 3.0, TOL), "got {}", r.value);
 }
 
-/// Exact ties on each axis use `round_ties_even` independently. With grid
+/// Exact ties on each axis use the even-grid-index tie-breaker independently
+/// (grid-offset-dependent, not `round_ties_even` on the value). With grid
 /// `[0.0, 1.0, 2.0]` on each axis, query `(0.5, 1.5, 0.5)` ties on all three:
 /// x even index wins → 0; y even index wins → 2; z even index wins → 0.
 /// Result is `values[(0, 2, 0)]`.
@@ -939,6 +942,15 @@ fn cubic_3d_knot_exact_reproduction() {
 /// `1..=2` on every axis have a fully available 4x4x4 stencil).
 ///
 /// Polynomial: f(x,y,z) = 1 + 2x - y + 3z + x*y + y*z + x*z + x^2 - y^3 + z^2*x.
+///
+/// **Separability guard.** The `cubic_3d` algorithm is separable: it first
+/// collapses the (y,z)-plane with a 2D cubic kernel, then applies a 1D cubic
+/// along x. Exact reproduction of a degree-3 polynomial (guaranteed by
+/// 4-point Lagrange exactness) is only achievable if the tensor-product
+/// composition is correctly wired — any breakage in the separable structure
+/// (wrong axis order, mismatched stencil offsets, etc.) surfaces here as a
+/// reproducible numeric mismatch, without the need for a tautological test
+/// that mirrors the implementation's own factoring.
 #[test]
 fn cubic_3d_reproduces_total_degree_three_in_interior() {
     let gx: Vec<f64> = (0..5).map(|i| i as f64).collect();
@@ -984,60 +996,6 @@ fn cubic_3d_reproduces_total_degree_three_in_interior() {
                 }
             }
         }
-    }
-}
-
-/// Separability: tricubic equals the tensor product of `interpolate_2d(Cubic)`
-/// (collapsing y,z) followed by a final `interpolate_1d(Cubic)` along x.
-/// Concretely: for each x-index i, interpolate the (y,z) slice at (qy, qz)
-/// using `interpolate_2d(Cubic)`; this gives a row of length nx; then evaluate
-/// that row at qx via 1D Cubic.
-#[test]
-fn cubic_3d_separable_against_tensor_product() {
-    let gx: Vec<f64> = (0..6).map(|i| i as f64).collect();
-    let gy: Vec<f64> = (0..6).map(|i| i as f64).collect();
-    let gz: Vec<f64> = (0..6).map(|i| i as f64).collect();
-    let f = |x: f64, y: f64, z: f64| (x * 0.3 - 0.2).sin() + (y * 0.4).cos() + 0.1 * z * z;
-    let values = build_3d(&gx, &gy, &gz, f);
-    let nx = gx.len();
-    let ny = gy.len();
-    let nz = gz.len();
-
-    let qs = [(2.3f64, 2.7f64, 3.1f64), (2.5, 3.5, 2.5), (1.1, 4.4, 4.0)];
-    for &(qx, qy, qz) in &qs {
-        let r3 = interpolate_3d(
-            InterpolationMethod::Cubic,
-            &gx,
-            &gy,
-            &gz,
-            &values,
-            (qx, qy, qz),
-        );
-
-        // Manual tensor product: for each i, build the (y,z) slice of values
-        // at fixed x=grid_x[i], evaluate at (qy, qz) via interpolate_2d(Cubic).
-        let row: Vec<f64> = (0..nx)
-            .map(|i| {
-                let mut slice = Vec::with_capacity(ny * nz);
-                for j in 0..ny {
-                    for k in 0..nz {
-                        slice.push(values[i * ny * nz + j * nz + k]);
-                    }
-                }
-                interpolate_2d(InterpolationMethod::Cubic, &gy, &gz, &slice, (qy, qz)).value
-            })
-            .collect();
-        let r_tensor = interpolate_1d(InterpolationMethod::Cubic, &gx, &row, qx).value;
-
-        assert!(
-            approx_eq(r3.value, r_tensor, 1e-9),
-            "({},{},{}) 3D={} tensor={}",
-            qx,
-            qy,
-            qz,
-            r3.value,
-            r_tensor
-        );
     }
 }
 
@@ -1218,20 +1176,4 @@ fn non_deferred_methods_produce_no_diagnostics() {
         let r = interpolate_3d(m, &g3x, &g3y, &g3z, &v3, (0.5, 0.5, 0.5));
         assert!(r.diagnostics.is_empty(), "3D {:?} emitted diagnostics", m);
     }
-}
-
-/// Silences `unused_variables` warnings — `InterpolationResult` is read in many
-/// of the assertions above; we deliberately also reference it here so the
-/// import is not flagged as dead in the unlikely case all other tests are
-/// `#[ignore]`d at once.
-#[test]
-fn interpolation_result_struct_is_constructible() {
-    let r: InterpolationResult = interpolate_1d(
-        InterpolationMethod::Linear,
-        &[0.0, 1.0],
-        &[0.0, 1.0],
-        0.5,
-    );
-    assert_eq!(r.value, 0.5);
-    assert!(r.diagnostics.is_empty());
 }

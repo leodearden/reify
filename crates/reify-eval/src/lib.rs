@@ -87,8 +87,7 @@ impl std::fmt::Display for EngineError {
             } => {
                 write!(
                     f,
-                    "dimension mismatch for {cell}: expected {:?}, got {:?}",
-                    expected, got
+                    "dimension mismatch for {cell}: expected {expected}, got {got}"
                 )
             }
             EngineError::TypeKindMismatch {
@@ -1332,6 +1331,27 @@ structure S {
             Arc::strong_count(&engine.functions) >= 2,
             "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
             Arc::strong_count(&engine.functions)
+        );
+    }
+
+    // ── EngineError::DimensionMismatch Display regression (task-2442) ────────
+
+    /// Regression lock (task-2442): `EngineError::DimensionMismatch` must render
+    /// its `expected` and `got` `DimensionVector` fields using `Display` (unit
+    /// notation like `"m"`, `"kg"`) rather than `Debug` (raw `Rational`-tuple dump).
+    /// A reversion to `{:?}` would produce output like
+    /// `"DimensionVector([Rational { num: 1, den: 1 }, ...])"` which is not
+    /// user-facing friendly; this exact-equality assertion catches that immediately.
+    #[test]
+    fn engine_error_dimension_mismatch_display_uses_dimension_vector_display() {
+        let err = EngineError::DimensionMismatch {
+            cell: ValueCellId::new("Assembly", "height"),
+            expected: Box::new(reify_types::DimensionVector::LENGTH),
+            got: Box::new(reify_types::DimensionVector::MASS),
+        };
+        assert_eq!(
+            err.to_string(),
+            "dimension mismatch for Assembly.height: expected m, got kg"
         );
     }
 

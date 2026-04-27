@@ -221,23 +221,25 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Core model:** Dimensions are part of the type. Units are part of the literal syntax and value representation. Two quantities with the same dimension and different units are the SAME type. The type checker operates on dimensions; unit conversion is automatic.
 
-**Dimension representation:** A vector of rational exponents over 9 base dimensions (7 SI + Angle + Money):
+**Dimension representation:** A vector of rational exponents over 10 base dimensions (7 SI + Angle + SolidAngle + Money):
 
 ```
-[Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, Money]
+[Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, SolidAngle, Money]
 
-Length       = [1, 0, 0, 0, 0, 0, 0, 0, 0]
-Force        = [1, 1, -2, 0, 0, 0, 0, 0, 0]   // M*L*T^-2
-Pressure     = [-1, 1, -2, 0, 0, 0, 0, 0, 0]  // M*L^-1*T^-2
-Torque       = [1, 1, -2, 0, 0, 0, 0, -1, 0]  // M*L*T^-2*Angle^-1 (distinct from Energy)
-CostPerMass  = [0, -1, 0, 0, 0, 0, 0, 0, 1]   // Money*Mass^-1
+Length       = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+Force        = [1, 1, -2, 0, 0, 0, 0, 0, 0, 0]   // M*L*T^-2
+Pressure     = [-1, 1, -2, 0, 0, 0, 0, 0, 0, 0]  // M*L^-1*T^-2
+Torque       = [1, 1, -2, 0, 0, 0, 0, -1, 0, 0]  // M*L*T^-2*Angle^-1 (distinct from Energy)
+CostPerMass  = [0, -1, 0, 0, 0, 0, 0, 0, 0, 1]   // Money*Mass^-1
 ```
 
 Multiplication adds exponent vectors. Division subtracts. Checked at compile time with zero runtime cost.
 
 **Angle as 8th base dimension:** Angles are dimensionless in SI (radians = m/m), but treating them as dimensionless is a known error source. Torque/energy confusion (both `N*m`) is the canonical example. Adding Angle as a base dimension catches `torque + energy` as a type error. Cost: trig functions need explicit typing (`sin : Angle -> Dimensionless`).
 
-**Money as 9th base dimension:** Monetary units (`USD`, `GBP`, `EUR`, etc.) are declared with the `unit` keyword. All monetary values within a project use constant conversion factors. Time-varying exchange rates are out of scope. Enables expressions like `25USD/kg` for cost estimation. Money composes with physical dimensions via multiplication/division like any other dimension.
+**SolidAngle as 9th base dimension:** Solid angles are dimensionless in SI (steradians = m²/m²), but tracking them separately prevents confusion between planar-angle and solid-angle quantities. Enables correct typing of luminous intensity (`cd = lm/sr`), beam-pattern calculations, and radiation-pattern integrals. Cost: spherical functions need explicit typing (`steradians -> Dimensionless`).
+
+**Money as 10th base dimension:** Monetary units (`USD`, `GBP`, `EUR`, etc.) are declared with the `unit` keyword. All monetary values within a project use constant conversion factors. Time-varying exchange rates are out of scope. Enables expressions like `25USD/kg` for cost estimation. Money composes with physical dimensions via multiplication/division like any other dimension.
 
 **Named dimension aliases:** Type aliases, not new types -- `Force` and `Mass * Length / Time^2` are the same type.
 
@@ -2199,7 +2201,7 @@ v0.1 is a **draft specification**. No backwards compatibility guarantees are mad
 
 The following are expected to be stable across the 0.x series:
 - Core syntax shape (curly-brace declarations, `param`/`port`/`sub`/`let`/`constraint` member kinds)
-- Dimensional analysis model (9 base dimensions, quantity literals with units)
+- Dimensional analysis model (10 base dimensions, quantity literals with units)
 - Determinacy spectrum (`undef`/constrained/`auto`/determined)
 - Module system structure (one file = one module, `pub`/private visibility)
 

@@ -267,11 +267,12 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
         // unactionable diagnostic.
         debug_assert!(
             false,
-            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {}; \
+            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
              dot-chain lint coverage truncated at this subtree — likely \
              upstream parser bug or fuzzer input producing pathologically \
              deep AST",
-            MAX_EXPR_DEPTH
+            MAX_EXPR_DEPTH,
+            depth
         );
         return;
     }
@@ -450,14 +451,23 @@ mod tests {
     /// failing arm surfaces as a named `ArmKind` in the test output rather than a
     /// generic "walked silently" failure.
     ///
-    /// `MemberAccess` is excluded: its iterative `while let` chain walk does NOT
-    /// increment `depth` per layer (one frame regardless of N segments). Its only
-    /// depth-incrementing call is the trailing `walk_expr_depth(cursor, ..., next)`
-    /// on the leaf root — a different shape than the structural-recursion arms here.
+    /// `MemberAccess` chain walk: the iterative `while let` loop in the
+    /// `MemberAccess` arm does NOT increment `depth` per chain segment (one Rust
+    /// frame regardless of chain length). However, the trailing
+    /// `walk_expr_depth(cursor, …, next)` call on the leaf root IS a
+    /// depth-forwarding site and IS covered here by `ArmKind::MemberAccessLeafRoot`.
+    /// Each wrap layer interleaves a non-MA `UnOp` wrapper so the chain walk
+    /// terminates at every layer, forcing the trailing recursion to run once per
+    /// layer. See `depth_per_layer` for the per-arm depth-increment accounting.
     ///
-    /// Depth arithmetic: outermost wrapper at depth 0, innermost at depth
-    /// `MAX_EXPR_DEPTH`, leaf `NumberLiteral` called at `MAX_EXPR_DEPTH + 1` (= 257)
-    /// — satisfies `depth > MAX_EXPR_DEPTH` and fires the `debug_assert!`.
+    /// Depth arithmetic: most arms contribute 1 to depth per layer, so
+    /// `MAX_EXPR_DEPTH + 1` (= 257) wraps suffice to trip the guard.
+    /// `MemberAccessLeafRoot` contributes 2 per layer (one from the MA trailing
+    /// recursion, one from the interleaved UnOp), so `MAX_EXPR_DEPTH / 2 + 1`
+    /// (= 129) wraps suffice. The `depth_per_layer` helper is the source of
+    /// truth; the wrap-count formula `MAX_EXPR_DEPTH / depth_per_layer(arm) + 1`
+    /// derives from it directly so adding a new arm with a different regime stays
+    /// consistent.
     #[test]
     #[cfg(debug_assertions)]
     fn walk_expr_depth_panics_for_every_recursion_arm() {
@@ -498,7 +508,46 @@ mod tests {
             MapLiteralSecondValue,
             AdHocSelectorSecondArg,
             MatchSecondArmBody,
+            // Covers the trailing `walk_expr_depth(cursor, …, next)` at the
+            // leaf-root recursion after the iterative MemberAccess chain walk.
+            MemberAccessLeafRoot,
         }
+
+        const ALL_ARMS: &[ArmKind] = &[
+            ArmKind::UnOp,
+            ArmKind::BinOpLeft,
+            ArmKind::BinOpRight,
+            ArmKind::FunctionCallFirstArg,
+            ArmKind::ConditionalCondition,
+            ArmKind::ConditionalThen,
+            ArmKind::ConditionalElse,
+            ArmKind::ListLiteralFirst,
+            ArmKind::SetLiteralFirst,
+            ArmKind::MapLiteralFirstKey,
+            ArmKind::MapLiteralFirstValue,
+            ArmKind::IndexAccessObject,
+            ArmKind::IndexAccessIndex,
+            ArmKind::MatchScrutinee,
+            ArmKind::MatchFirstArmBody,
+            ArmKind::LambdaBody,
+            ArmKind::QuantifierCollection,
+            ArmKind::QuantifierPredicate,
+            ArmKind::AdHocSelectorBase,
+            ArmKind::AdHocSelectorFirstArg,
+            ArmKind::QualifiedAccessQualifier,
+            ArmKind::InstanceQualifiedAccessObject,
+            ArmKind::InstanceQualifiedAccessQualified,
+            ArmKind::RangeLower,
+            ArmKind::RangeUpper,
+            ArmKind::FunctionCallSecondArg,
+            ArmKind::ListLiteralSecond,
+            ArmKind::SetLiteralSecond,
+            ArmKind::MapLiteralSecondKey,
+            ArmKind::MapLiteralSecondValue,
+            ArmKind::AdHocSelectorSecondArg,
+            ArmKind::MatchSecondArmBody,
+            ArmKind::MemberAccessLeafRoot,
+        ];
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
             Expr {
@@ -663,46 +712,75 @@ mod tests {
                         },
                     ],
                 },
+                // The UnOp interleave acts as a chain-walk terminator: the
+                // iterative `while let MemberAccess` loop ends at the UnOp,
+                // forcing the trailing `walk_expr_depth(cursor, …, next)` to
+                // run once per layer (not once per homogeneous MA chain).
+                ArmKind::MemberAccessLeafRoot => ExprKind::MemberAccess {
+                    object: Box::new(Expr {
+                        kind: ExprKind::UnOp {
+                            op: "-".to_string(),
+                            operand: Box::new(leaf),
+                        },
+                        span,
+                    }),
+                    member: "f".to_string(),
+                },
             };
             Expr { kind, span }
         }
 
+        // Returns how many levels of depth each wrap layer contributes.
+        // Used to compute the minimum wrap count needed to trip MAX_EXPR_DEPTH.
+        //
+        // The match is intentionally exhaustive (no wildcard): the compiler
+        // rejects a new ArmKind variant until it is listed here, preventing
+        // the wrap-count formula from silently inheriting the wrong depth.
+        // After updating this match, also add the new variant to ALL_ARMS.
+        fn depth_per_layer(arm: ArmKind) -> usize {
+            match arm {
+                // Each MemberAccessLeafRoot layer contributes 2: one from the
+                // trailing `walk_expr_depth(cursor, …, next)` after the chain
+                // walk, and one from the interleaved UnOp's own recursion.
+                ArmKind::MemberAccessLeafRoot => 2,
+                // All other arms produce exactly one depth-increment per layer.
+                ArmKind::UnOp
+                | ArmKind::BinOpLeft
+                | ArmKind::BinOpRight
+                | ArmKind::FunctionCallFirstArg
+                | ArmKind::ConditionalCondition
+                | ArmKind::ConditionalThen
+                | ArmKind::ConditionalElse
+                | ArmKind::ListLiteralFirst
+                | ArmKind::SetLiteralFirst
+                | ArmKind::MapLiteralFirstKey
+                | ArmKind::MapLiteralFirstValue
+                | ArmKind::IndexAccessObject
+                | ArmKind::IndexAccessIndex
+                | ArmKind::MatchScrutinee
+                | ArmKind::MatchFirstArmBody
+                | ArmKind::LambdaBody
+                | ArmKind::QuantifierCollection
+                | ArmKind::QuantifierPredicate
+                | ArmKind::AdHocSelectorBase
+                | ArmKind::AdHocSelectorFirstArg
+                | ArmKind::QualifiedAccessQualifier
+                | ArmKind::InstanceQualifiedAccessObject
+                | ArmKind::InstanceQualifiedAccessQualified
+                | ArmKind::RangeLower
+                | ArmKind::RangeUpper
+                | ArmKind::FunctionCallSecondArg
+                | ArmKind::ListLiteralSecond
+                | ArmKind::SetLiteralSecond
+                | ArmKind::MapLiteralSecondKey
+                | ArmKind::MapLiteralSecondValue
+                | ArmKind::AdHocSelectorSecondArg
+                | ArmKind::MatchSecondArmBody => 1,
+            }
+        }
+
         let span = SourceSpan::empty(0);
-        let arms = [
-            ArmKind::UnOp,
-            ArmKind::BinOpLeft,
-            ArmKind::BinOpRight,
-            ArmKind::FunctionCallFirstArg,
-            ArmKind::ConditionalCondition,
-            ArmKind::ConditionalThen,
-            ArmKind::ConditionalElse,
-            ArmKind::ListLiteralFirst,
-            ArmKind::SetLiteralFirst,
-            ArmKind::MapLiteralFirstKey,
-            ArmKind::MapLiteralFirstValue,
-            ArmKind::IndexAccessObject,
-            ArmKind::IndexAccessIndex,
-            ArmKind::MatchScrutinee,
-            ArmKind::MatchFirstArmBody,
-            ArmKind::LambdaBody,
-            ArmKind::QuantifierCollection,
-            ArmKind::QuantifierPredicate,
-            ArmKind::AdHocSelectorBase,
-            ArmKind::AdHocSelectorFirstArg,
-            ArmKind::QualifiedAccessQualifier,
-            ArmKind::InstanceQualifiedAccessObject,
-            ArmKind::InstanceQualifiedAccessQualified,
-            ArmKind::RangeLower,
-            ArmKind::RangeUpper,
-            ArmKind::FunctionCallSecondArg,
-            ArmKind::ListLiteralSecond,
-            ArmKind::SetLiteralSecond,
-            ArmKind::MapLiteralSecondKey,
-            ArmKind::MapLiteralSecondValue,
-            ArmKind::AdHocSelectorSecondArg,
-            ArmKind::MatchSecondArmBody,
-        ];
-        for arm in arms {
+        for arm in ALL_ARMS.iter().copied() {
             // Sanity pass: a single-layer wrap must NOT panic. Guards against
             // `wrap_in_arm` silently constructing a broken or depth-saturated
             // AST, which would make the depth-saturation assertion below
@@ -724,7 +802,7 @@ mod tests {
                 kind: ExprKind::NumberLiteral(0.0),
                 span,
             };
-            for _ in 0..(MAX_EXPR_DEPTH + 1) {
+            for _ in 0..(MAX_EXPR_DEPTH / depth_per_layer(arm) + 1) {
                 expr = wrap_in_arm(arm, expr, span);
             }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -750,8 +828,45 @@ mod tests {
                         arm,
                         msg
                     );
+                    // Verify the panic fired at the expected depth boundary, not
+                    // via some unrelated pathway.  Each wrap layer contributes
+                    // `depth_per_layer(arm)` (= N) to depth; with
+                    // `MAX_EXPR_DEPTH / N + 1` wraps the first overflow call
+                    // lands at a depth in (MAX_EXPR_DEPTH, MAX_EXPR_DEPTH + N].
+                    // If `depth_per_layer` lies or the wrap shape is wrong, the
+                    // actual overflow depth would fall outside this window and
+                    // the assertion below would catch it even though the arm
+                    // 'panicked with MAX_EXPR_DEPTH' check above passed.
+                    let overflow_depth = parse_overflow_depth(&msg);
+                    assert!(
+                        overflow_depth > MAX_EXPR_DEPTH
+                            && overflow_depth <= MAX_EXPR_DEPTH + depth_per_layer(arm),
+                        "arm {:?} overflowed at depth {} — expected range ({}, {}]; \
+                         depth_per_layer or wrap shape may be inconsistent with \
+                         the walk_expr_depth implementation",
+                        arm,
+                        overflow_depth,
+                        MAX_EXPR_DEPTH,
+                        MAX_EXPR_DEPTH + depth_per_layer(arm)
+                    );
                 }
             }
         }
     }
+
+    fn parse_overflow_depth(msg: &str) -> usize {
+        msg.split("(depth = ")
+            .nth(1)
+            .and_then(|s| s.split(')').next())
+            .and_then(|s| s.parse().ok())
+            .expect("panic message must contain `(depth = N)` — format string drifted?")
+    }
+
+    #[test]
+    fn parse_overflow_depth_extracts_value_from_well_formed_panic_message() {
+        let msg = "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = 256 (depth = 257); \
+                   dot-chain lint coverage truncated at this subtree";
+        assert_eq!(parse_overflow_depth(msg), 257);
+    }
+
 }

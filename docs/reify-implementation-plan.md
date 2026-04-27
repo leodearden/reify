@@ -105,9 +105,9 @@ struct ParsedModule {
 
 **Key types:**
 ```rust
-// 9-element rational exponent vector
-struct DimensionVector([Rational; 9]);
-// Indices: Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, Money
+// 10-element rational exponent vector
+struct DimensionVector([Rational; 10]);
+// Indices: Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, SolidAngle, Money
 
 // The core value type — what ValueCells hold
 enum Value {
