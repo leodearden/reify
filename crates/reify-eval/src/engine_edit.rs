@@ -3351,17 +3351,18 @@ mod tests {
 
     /// Dual-mode absent-guard contract: when the guard cell is absent from
     /// `values`, `phase3_get_guard_val` must emit exactly one WARN event
-    /// scoped to `reify_eval::engine_edit` and return `None`.
+    /// scoped to `reify_eval::engine_edit` and (in release builds) return `None`.
     ///
     /// The test wraps the call in `catch_unwind(AssertUnwindSafe(...))` so it
-    /// runs identically in debug builds (where `debug_assert!(false)` panics)
-    /// and release builds (where it is a no-op).  The WARN fires *before* the
-    /// `debug_assert!`, so the counter increments unconditionally regardless of
-    /// build mode.
+    /// runs in both debug and release builds:
+    /// - In debug builds, `debug_assert!(false)` panics; `catch_unwind` returns
+    ///   `Err(_)`.  The `#[cfg(debug_assertions)]` assertion below confirms this.
+    /// - In release builds, the `debug_assert!` is a no-op; the helper returns
+    ///   `None`.  The `#[cfg(not(debug_assertions))]` assertion below confirms this.
     ///
-    /// Under `#[cfg(not(debug_assertions))]` the test also asserts the helper
-    /// returned `None` (in debug builds the `debug_assert!(false)` unwinds
-    /// before `None` is returned, so there is no return value to observe).
+    /// The WARN fires *before* the `debug_assert!` (Warn-before-assert ordering
+    /// is load-bearing), so the counter increments unconditionally regardless of
+    /// build mode.  The WARN-counter assertion is therefore unconditional.
     #[test]
     fn phase3_get_guard_val_warns_and_returns_none_when_guard_absent() {
         use std::panic::AssertUnwindSafe;
@@ -3383,7 +3384,7 @@ mod tests {
         #[cfg(not(debug_assertions))]
         let result_was_none = std::sync::atomic::AtomicBool::new(false);
 
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let unwind_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let ret = tracing::subscriber::with_default(subscriber, || {
                 phase3_get_guard_val(&values, &guard_cell)
             });
@@ -3398,68 +3399,18 @@ mod tests {
              reify_eval::engine_edit when the guard cell is absent from values"
         );
 
+        #[cfg(debug_assertions)]
+        assert!(
+            unwind_result.is_err(),
+            "absent-guard arm (debug build): catch_unwind must return Err(_) because \
+             debug_assert!(false) panics when the guard cell is absent"
+        );
+
         #[cfg(not(debug_assertions))]
         assert!(
             result_was_none.load(Ordering::Acquire),
             "absent-guard arm (release build): helper must return None \
              when the guard cell is absent"
-        );
-    }
-
-    /// Debug-mode posture: `phase3_get_guard_val` panics via `debug_assert!`
-    /// when the guard cell is absent (WARN still fires before the assert).
-    ///
-    /// Mirrors `engine_purposes.rs::expand_missing_cell_debug_mode_halts_via_debug_assert`.
-    /// `catch_unwind` captures the panic so assertions can be made after it fires.
-    /// Note: libtest's default panic-hook may emit a stacktrace to stderr for this test.
-    ///
-    /// The release-mode structural contract (helper returns `None` without panicking)
-    /// is exercised by the sibling dual-mode test on every CI run.
-    ///
-    /// Note: unlike the `engine_purposes.rs` precedent (which can assert that
-    /// `expr.kind` remained unchanged because the panic occurred mid-`.collect()`
-    /// before the `*expr =` reassignment), `phase3_get_guard_val` has no
-    /// out-parameter side-effect — the `return None` is unreachable in debug builds
-    /// because `debug_assert!(false)` fires first.  There is therefore no post-call
-    /// structural state to assert; the test is complete after confirming `Err(_)`
-    /// and WARN counter == 1.
-    #[test]
-    #[cfg(debug_assertions)]
-    fn phase3_get_guard_val_debug_mode_halts_via_debug_assert() {
-        use std::panic::AssertUnwindSafe;
-        use std::sync::atomic::Ordering;
-        use reify_test_support::CountingSubscriberBuilder;
-
-        let guard_cell = ValueCellId::new("E", "guard");
-        let values = ValueMap::default(); // guard_cell absent
-
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_eval::engine_edit")
-            .build();
-        let warn_arc = counters[&tracing::Level::WARN].clone();
-
-        // catch_unwind captures the debug_assert! panic so we can make
-        // assertions after it fires.
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            tracing::subscriber::with_default(subscriber, || {
-                phase3_get_guard_val(&values, &guard_cell)
-            })
-        }));
-
-        // (a) The panic actually fired — catch_unwind returned Err(_).
-        assert!(
-            result.is_err(),
-            "debug-mode posture: catch_unwind must return Err(_) because \
-             debug_assert!(false) panics when the guard cell is absent"
-        );
-
-        // (b) WARN still fires before the assert — counter is 1.
-        assert_eq!(
-            warn_arc.load(Ordering::Acquire),
-            1,
-            "debug-mode posture: WARN must fire before debug_assert!(false) — \
-             counter must be 1 even though the thread panicked"
         );
     }
 
