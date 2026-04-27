@@ -113,9 +113,13 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
             // `cursor` now points at the chain's leaf root (a non-MemberAccess).
             let chain_len = 1 + hops; // 1 for root + N member-hops
             if chain_len > DEEP_DOT_CHAIN_THRESHOLD {
+                let chain_text = render_chain_text(expr);
                 diagnostics.push(
-                    Diagnostic::warning("deep dot-chain")
-                        .with_code(DiagnosticCode::DeepDotChain),
+                    Diagnostic::warning(format!(
+                        "deep dot-chain (depth {chain_len}): {chain_text} \
+                         — consider intermediate let-bindings"
+                    ))
+                    .with_code(DiagnosticCode::DeepDotChain),
                 );
             }
             // Recurse into the chain's leaf root for nested chains.
@@ -190,4 +194,54 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
         | ExprKind::EnumAccess { .. }
         | ExprKind::Auto { .. } => {}
     }
+}
+
+/// Render a chain text (e.g. `"a.b.c.d.e"`) from an outermost `MemberAccess`.
+///
+/// Walks `outermost` from the outermost `MemberAccess` down to its leaf root,
+/// collecting member names in reverse order (outermost-first), then formats
+/// `"<root_repr>.<m_innermost>.....<m_outermost>"`.
+///
+/// Root rendering:
+///   * `Ident(name)` → `name`
+///   * `EnumAccess { type_name, variant }` → `"{type_name}.{variant}"`
+///   * Anything else (IndexAccess, FunctionCall, BinOp, …) → `"<expr>"`
+///
+/// The `<expr>` placeholder is a deliberate v0.1 simplification — the
+/// diagnostic span ALREADY covers the entire chain in source so editor
+/// renderings (LSP/MCP) display the user's literal text via the squiggle.
+///
+/// # Panics
+///
+/// Panics in debug builds if `outermost.kind` is not `ExprKind::MemberAccess`,
+/// since the caller (`walk_expr`) only invokes this from the MemberAccess arm.
+fn render_chain_text(outermost: &Expr) -> String {
+    let mut members_outer_to_inner: Vec<&str> = Vec::new();
+    let mut cursor: &Expr = outermost;
+    loop {
+        match &cursor.kind {
+            ExprKind::MemberAccess { object, member } => {
+                members_outer_to_inner.push(member.as_str());
+                cursor = object;
+            }
+            _ => break,
+        }
+    }
+    debug_assert!(
+        !members_outer_to_inner.is_empty(),
+        "render_chain_text: outermost expression must be MemberAccess"
+    );
+
+    let root_repr: String = match &cursor.kind {
+        ExprKind::Ident(name) => name.clone(),
+        ExprKind::EnumAccess { type_name, variant } => format!("{type_name}.{variant}"),
+        _ => "<expr>".to_string(),
+    };
+
+    let mut out = root_repr;
+    for member in members_outer_to_inner.iter().rev() {
+        out.push('.');
+        out.push_str(member);
+    }
+    out
 }
