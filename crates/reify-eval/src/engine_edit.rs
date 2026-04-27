@@ -229,8 +229,8 @@ fn group_needs_phase3(
     }
 }
 
-/// Shared guard-cell lookup used by the Phase 3 loop in both `edit_param`
-/// (engine_edit.rs:1008) and `edit_source` (engine_edit.rs:2105).
+/// Shared guard-cell lookup used by the Phase 3 loop in both
+/// `Engine::edit_param` Phase 3 and `Engine::edit_source` Phase 3.
 ///
 /// Returns `Some(v.clone())` when `values.get(guard_cell)` is present.
 /// On `None`: emits `tracing::warn!` (observable by the counting-subscriber
@@ -238,13 +238,14 @@ fn group_needs_phase3(
 /// returns `None` so the caller's `let-else` can `continue`.
 ///
 /// The absent-guard arm is unreachable in current flow because Phase 1 always
-/// seeds every guard cell into `values` (engine_edit.rs:738), but a future
-/// refactor that narrows `structure_controlling` (so Phase 1 doesn't fire /
-/// doesn't seed every guard) would expose it.  This helper captures the entire
-/// absent-guard skip logic in one place, making the contract testable and
-/// enforcing edit_param/edit_source symmetry by construction — both call sites
-/// use the same helper, so any future asymmetric change to one will fail the
-/// helper's tests.
+/// seeds every guard cell into `values` (Phase 1, the
+/// `structure_controlling` guard-seeding pass), but a future refactor that
+/// narrows `structure_controlling` (so Phase 1 doesn't fire / doesn't seed
+/// every guard) would expose it.  This helper captures the entire absent-guard
+/// skip logic in one place, making the contract testable and enforcing
+/// `Engine::edit_param`/`Engine::edit_source` symmetry by construction — both
+/// call sites use the same helper, so any future asymmetric change to one will
+/// fail the helper's tests.
 ///
 /// **Warn-before-assert ordering is load-bearing**: the WARN event must fire
 /// before the `debug_assert!` so that a `CountingSubscriber` (used in the
@@ -254,14 +255,7 @@ fn phase3_take_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<
     match values.get(guard_cell) {
         Some(v) => Some(v.clone()),
         None => {
-            // Canonical three-step posture: warn first (observable by counting
-            // subscribers in both debug and release), debug_assert second (halts
-            // in debug builds so the invariant violation is caught early), return
-            // None third (safe fallback so release builds skip the group without
-            // cascading).  The warn-before-assert ordering is load-bearing: the
-            // WARN event must fire before the debug_assert! unwinds the thread
-            // so the dual-mode test's CountingSubscriber can observe the
-            // increment regardless of build mode.
+            // Warn first (observable to CountingSubscriber), debug_assert! second, return None third — ordering is load-bearing; see fn doc.
             tracing::warn!(
                 target: "reify_eval::engine_edit",
                 guard_cell = %guard_cell,
@@ -3416,9 +3410,8 @@ mod tests {
     /// when the guard cell is absent (WARN still fires before the assert).
     ///
     /// Mirrors `engine_purposes.rs::expand_missing_cell_debug_mode_halts_via_debug_assert`.
-    /// Annotated `#[ignore]` because `catch_unwind` captures the panic but does
-    /// NOT suppress libtest's default panic-hook stacktrace on stderr — opt in
-    /// via `cargo test -- --ignored`.
+    /// `catch_unwind` captures the panic so assertions can be made after it fires.
+    /// Note: libtest's default panic-hook may emit a stacktrace to stderr for this test.
     ///
     /// The release-mode structural contract (helper returns `None` without panicking)
     /// is exercised by the sibling dual-mode test on every CI run.
@@ -3432,10 +3425,6 @@ mod tests {
     /// and WARN counter == 1.
     #[test]
     #[cfg(debug_assertions)]
-    #[ignore = "verifies debug-mode panic posture for phase3_take_guard_val absent-guard arm; \
-                emits panic stacktrace to stderr — opt in via `cargo test -- --ignored`. \
-                Release-mode contract is in the sibling test, exercised by orchestrator.yaml's \
-                `cargo test -p reify-eval --release` pass."]
     fn phase3_take_guard_val_debug_mode_halts_via_debug_assert() {
         use std::panic::AssertUnwindSafe;
         use std::sync::atomic::Ordering;
