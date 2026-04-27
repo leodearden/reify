@@ -5,7 +5,7 @@
 //! sibling `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::{DocModel, ItemDoc, ModuleDoc};
+use reify_doc::model::{DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc};
 
 /// Helper: build a single-module model with one item and return the rendered
 /// single-file output.
@@ -254,4 +254,120 @@ fn item_h2_headings_per_variant() {
             "variant={kind}: H2 missing anchor: {header_line}"
         );
     }
+}
+
+/// A Structure with two parameters renders a GFM `### Parameters` table with
+/// the standard 5-column header (Name | Type | Dimension | Default | Description).
+#[test]
+fn parameters_table_renders() {
+    let item = ItemDoc::Structure {
+        name: "Bolt".into(), doc: None, is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        params: vec![
+            ParamDoc {
+                name: "length".into(),
+                doc: Some("Bolt length.".into()),
+                type_repr: "Length".into(),
+                default_repr: Some("100 mm".into()),
+                annotations: vec![],
+            },
+            ParamDoc {
+                name: "diameter".into(),
+                doc: None,
+                type_repr: "Length".into(),
+                default_repr: None,
+                annotations: vec![],
+            },
+        ],
+        ports: vec![], constraints: vec![], sub_components: vec![],
+        realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("### Parameters"), "section H3 missing:\n{out}");
+    assert!(
+        out.contains("| Name | Type | Dimension | Default | Description |"),
+        "header row missing:\n{out}"
+    );
+    assert!(
+        out.contains("| --- | --- | --- | --- | --- |"),
+        "alignment row missing:\n{out}"
+    );
+    assert!(
+        out.contains("`length`") && out.contains("`Length`"),
+        "name+type cells missing:\n{out}"
+    );
+    assert!(out.contains("`100 mm`"), "default cell missing:\n{out}");
+    // diameter row has em-dash for missing default.
+    assert!(
+        out.lines().any(|l| l.contains("`diameter`") && l.contains("—")),
+        "em-dash for empty default missing:\n{out}"
+    );
+}
+
+/// A Structure with no params omits the `### Parameters` section entirely.
+#[test]
+fn parameters_table_omitted_when_empty() {
+    let item = ItemDoc::Structure {
+        name: "Empty".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![],
+        ports: vec![], constraints: vec![], sub_components: vec![],
+        realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("### Parameters"), "should omit section, got:\n{out}");
+    assert!(!out.contains("| Name | Type"), "should omit header, got:\n{out}");
+}
+
+/// A Structure with two ports renders a GFM `### Ports` table with the
+/// standard 5-column header (Name | Kind | Role | Type | Description).
+#[test]
+fn ports_table_renders() {
+    let item = ItemDoc::Structure {
+        name: "Board".into(), doc: None, is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![],
+        ports: vec![
+            PortDoc {
+                name: "pwr_in".into(),
+                direction: "in".into(),
+                type_name: "Power".into(),
+                members: vec!["voltage".into(), "current".into()],
+            },
+            PortDoc {
+                name: "data_out".into(),
+                direction: "out".into(),
+                type_name: "Signal".into(),
+                members: vec![],
+            },
+        ],
+        constraints: vec![], sub_components: vec![],
+        realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(out.contains("### Ports"), "section H3 missing:\n{out}");
+    assert!(
+        out.contains("| Name | Kind | Role | Type | Description |"),
+        "header row missing:\n{out}"
+    );
+    assert!(
+        out.contains("| --- | --- | --- | --- | --- |"),
+        "alignment row missing:\n{out}"
+    );
+    assert!(
+        out.contains("`pwr_in`") && out.contains("`Power`"),
+        "name+type cells missing:\n{out}"
+    );
+    // direction maps to Role column.
+    assert!(out.contains("in") && out.contains("out"), "roles missing:\n{out}");
+}
+
+#[test]
+fn ports_table_omitted_when_empty() {
+    let item = ItemDoc::Structure {
+        name: "NoP".into(), doc: None, is_pub: false,
+        annotations: vec![], pragmas: vec![], params: vec![],
+        ports: vec![], constraints: vec![], sub_components: vec![],
+        realizations: vec![], meta: vec![],
+    };
+    let out = render_one_item(item);
+    assert!(!out.contains("### Ports"), "should omit ports section, got:\n{out}");
 }
