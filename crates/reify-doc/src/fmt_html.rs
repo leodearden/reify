@@ -91,10 +91,24 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
         if let Some(doc) = module.doc.as_deref() {
             emit_paragraphs(&mut out, doc);
         }
-        let non_tests: Vec<&ItemDoc> = module.items.iter().collect();
+        // Partition items: `@test`-annotated items are deferred to a
+        // `<h2>Tests</h2>` subsection at the bottom of the module so the main
+        // flow stays focused on the public API surface.  Mirrors
+        // `fmt_markdown::render_single`'s partition step.
+        let (non_tests, tests): (Vec<&ItemDoc>, Vec<&ItemDoc>) = module
+            .items
+            .iter()
+            .partition(|i| find_annotation(item_annotations(i), "test").is_none());
+        // Table of contents covers non-tests only.
         render_toc(&mut out, &non_tests);
-        for item in &module.items {
+        for item in &non_tests {
             render_item(&mut out, item, xref_index.as_ref());
+        }
+        if !tests.is_empty() {
+            out.push_str("<h2>Tests</h2>\n");
+            for item in &tests {
+                render_item(&mut out, item, xref_index.as_ref());
+            }
         }
     }
 
