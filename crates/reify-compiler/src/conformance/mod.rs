@@ -310,6 +310,36 @@ pub(crate) fn emit_geometry_unbounded(
     );
 }
 
+/// Emit a "does not conform to trait" geometry diagnostic for the `Connected`/`Convex`
+/// cases — the symmetric sibling of [`emit_geometry_unbounded`] for the `Bounded` case.
+///
+/// Pushes exactly one `Diagnostic::error(...)` with code
+/// [`DiagnosticCode::TypeNotConformingToTrait`] and a single label at `span`. The PRD
+/// only allocates `E_GEOMETRY_UNBOUNDED` for missing `Bounded`; `Connected`/`Convex`
+/// reuse `TypeNotConformingToTrait`.
+///
+/// The message intentionally does **not** include a separate param-name slot. Under
+/// reify's keyword-arg convention the arg name and param name are identical in practice,
+/// so appending `required by param '{}'` a second time is redundant and was dropped.
+pub(crate) fn emit_geometry_trait_violation(
+    arg_name: &str,
+    required_trait: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "geometry argument '{}' does not conform to trait '{}'",
+            arg_name, required_trait
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!("geometry argument '{}' is not {}", arg_name, required_trait),
+        )),
+    );
+}
+
 /// Shared leaf helper: emit a "does not conform to trait" diagnostic if `arg_type`
 /// does not satisfy `required_trait`.
 ///
@@ -522,20 +552,7 @@ fn check_leaf_trait_conformance(
                 if matches!(trait_kind, GeometryTrait::Bounded) {
                     emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
                 } else {
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "geometry argument '{}' does not conform to trait '{}' required by param '{}'",
-                            ctx.arg_name, required_trait, ctx.arg_name
-                        ))
-                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                        .with_label(DiagnosticLabel::new(
-                            ctx.span,
-                            format!(
-                                "geometry argument '{}' is not {}",
-                                ctx.arg_name, required_trait
-                            ),
-                        )),
-                    );
+                    emit_geometry_trait_violation(ctx.arg_name, required_trait, ctx.span, ctx.diagnostics);
                 }
             }
             return;
@@ -3695,6 +3712,42 @@ mod tests {
             d.message.contains("'g'"),
             "message should mention the arg name 'g', got: {}",
             d.message
+        );
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly one label attached at the supplied span"
+        );
+        assert_eq!(d.labels[0].span, span);
+    }
+
+    /// `emit_geometry_trait_violation` pushes exactly one `Diagnostic` with severity
+    /// `Error`, code `Some(DiagnosticCode::TypeNotConformingToTrait)`, the exact message
+    /// `"geometry argument 'g' does not conform to trait 'Connected'"`, and a
+    /// `DiagnosticLabel` at the supplied span. This is the symmetric sibling of
+    /// `emit_geometry_unbounded` for the `Connected`/`Convex` cases.
+    ///
+    /// The full `assert_eq!` on `d.message` is the wording contract: it simultaneously
+    /// confirms the arg name and trait name are present and that there is no redundant
+    /// `"required by param"` suffix (the old inline branch repeated the arg name there).
+    #[test]
+    fn emit_geometry_trait_violation_helper_produces_error_with_code_and_label() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = SourceSpan::new(7, 19);
+        emit_geometry_trait_violation("g", "Connected", span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "emit_geometry_trait_violation should push exactly one diagnostic"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeNotConformingToTrait));
+        assert_eq!(
+            d.message,
+            "geometry argument 'g' does not conform to trait 'Connected'",
+            "message wording contract: arg name + trait name, no 'required by param' suffix"
         );
         assert_eq!(
             d.labels.len(),
