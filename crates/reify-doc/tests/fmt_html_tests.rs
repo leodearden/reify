@@ -1078,7 +1078,7 @@ fn embedded_stylesheet_meets_constraints() {
     let lh_tail = &style[lh_idx + "line-height:".len()..];
     let lh_val: f64 = lh_tail
         .trim_start()
-        .split(|c: char| c == ';' || c == '\n' || c == '}')
+        .split([';', '\n', '}'])
         .next()
         .unwrap()
         .trim()

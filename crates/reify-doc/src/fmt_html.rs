@@ -541,7 +541,7 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
         out.push_str("</code></td>");
         out.push_str("<td>");
         if p.members.is_empty() {
-            out.push_str("—");
+            out.push('—');
         } else {
             let joined = p.members.join(", ");
             out.push_str(&html_escape(&joined));
