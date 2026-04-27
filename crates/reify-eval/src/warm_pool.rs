@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use reify_eval::cache::NodeId;
+use crate::cache::NodeId;
 use reify_types::OpaqueState;
 
 /// Environment variable that overrides the warm-state pool memory budget.
@@ -231,11 +231,13 @@ impl WarmStatePool {
         }
     }
 
-    /// Retrieve and remove warm-start state for a node (take semantics).
+    /// Check out warm-start state for a node (take semantics).
     ///
-    /// Returns the `OpaqueState` if present, removing it from the pool.
-    /// A second call for the same node returns `None`.
-    pub fn retrieve(&mut self, node_id: &NodeId) -> Option<OpaqueState> {
+    /// Architecturally-named per arch §4.3 line 539. Returns
+    /// `Some(OpaqueState)` when the entry is present (and removes it from
+    /// the pool); returns `None` when the entry is absent OR has been
+    /// LRU-evicted. A second call for the same node returns `None`.
+    pub fn checkout(&mut self, node_id: &NodeId) -> Option<OpaqueState> {
         let entry = self.pool.remove(node_id)?;
         self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         Some(entry.state)
@@ -310,27 +312,27 @@ mod tests {
     use reify_types::ValueCellId;
 
     #[test]
-    fn donate_and_retrieve_roundtrip() {
+    fn donate_and_checkout_roundtrip() {
         let mut pool = WarmStatePool::new(1024);
         let node = NodeId::Value(ValueCellId::new("T", "x"));
         let state = OpaqueState::new(42i32, 4);
 
         pool.donate(node.clone(), state);
-        let retrieved = pool.retrieve(&node);
+        let retrieved = pool.checkout(&node);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(42));
     }
 
     #[test]
-    fn retrieve_removes_entry() {
+    fn checkout_removes_entry() {
         let mut pool = WarmStatePool::new(1024);
         let node = NodeId::Value(ValueCellId::new("T", "x"));
         pool.donate(node.clone(), OpaqueState::new(42i32, 4));
 
-        let first = pool.retrieve(&node);
+        let first = pool.checkout(&node);
         assert!(first.is_some());
 
-        let second = pool.retrieve(&node);
+        let second = pool.checkout(&node);
         assert!(second.is_none());
     }
 
@@ -348,10 +350,10 @@ mod tests {
         pool.donate(node_b.clone(), OpaqueState::new(2i32, 200));
         assert_eq!(pool.used_bytes(), 300);
 
-        pool.retrieve(&node_a);
+        pool.checkout(&node_a);
         assert_eq!(pool.used_bytes(), 200);
 
-        pool.retrieve(&node_b);
+        pool.checkout(&node_b);
         assert_eq!(pool.used_bytes(), 0);
     }
 
@@ -375,9 +377,9 @@ mod tests {
         assert!(pool.used_bytes() <= 300);
 
         // node_a should have been evicted
-        assert!(pool.retrieve(&node_a).is_none());
+        assert!(pool.checkout(&node_a).is_none());
         // node_d should be present
-        assert!(pool.retrieve(&node_d).is_some());
+        assert!(pool.checkout(&node_d).is_some());
     }
 
     #[test]
@@ -396,11 +398,11 @@ mod tests {
         pool.donate(node_c.clone(), OpaqueState::new(3i32, 50));
         // used = 150, budget = 250
 
-        // Note: retrieve removes the entry, so we re-donate to simulate "access"
-        // For this test, we use retrieve + re-donate to update access time.
-        let b_state = pool.retrieve(&node_b).unwrap();
+        // Note: checkout removes the entry, so we re-donate to simulate "access"
+        // For this test, we use checkout + re-donate to update access time.
+        let b_state = pool.checkout(&node_b).unwrap();
         pool.donate(node_b.clone(), b_state);
-        // used = 150 still (retrieve - 50, donate + 50)
+        // used = 150 still (checkout - 50, donate + 50)
 
         // Donate large item that pushes over budget
         pool.donate(node_d.clone(), OpaqueState::new(4i32, 200));
@@ -409,12 +411,12 @@ mod tests {
         // Evict C (50), used = 250, within budget
 
         // A should be evicted (oldest)
-        assert!(pool.retrieve(&node_a).is_none());
+        assert!(pool.checkout(&node_a).is_none());
         // C should also be evicted
-        assert!(pool.retrieve(&node_c).is_none());
+        assert!(pool.checkout(&node_c).is_none());
         // B (recently accessed) and D (just added) should remain
-        assert!(pool.retrieve(&node_b).is_some());
-        assert!(pool.retrieve(&node_d).is_some());
+        assert!(pool.checkout(&node_b).is_some());
+        assert!(pool.checkout(&node_d).is_some());
     }
 
     #[test]
@@ -424,7 +426,7 @@ mod tests {
         let node = NodeId::Value(ValueCellId::new("T", "big"));
         pool.donate(node.clone(), OpaqueState::new(42i32, 100));
 
-        let retrieved = pool.retrieve(&node);
+        let retrieved = pool.checkout(&node);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(42));
     }
@@ -442,7 +444,7 @@ mod tests {
         assert_eq!(pool.used_bytes(), 300);
 
         // Should get the new value
-        let retrieved = pool.retrieve(&node).unwrap();
+        let retrieved = pool.checkout(&node).unwrap();
         assert_eq!(retrieved.downcast::<i32>(), Some(2));
     }
 
@@ -452,7 +454,7 @@ mod tests {
         let node = NodeId::Value(ValueCellId::new("T", "x"));
         pool.donate(node.clone(), OpaqueState::new(42i32, 100));
 
-        let retrieved = pool.retrieve(&node);
+        let retrieved = pool.checkout(&node);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(42));
     }
@@ -474,7 +476,7 @@ mod tests {
         assert_eq!(pool.len(), 0);
         assert_eq!(pool.used_bytes(), 0);
         assert!(pool.is_empty());
-        assert!(pool.retrieve(&node_a).is_none());
+        assert!(pool.checkout(&node_a).is_none());
     }
 
     #[test]
@@ -488,7 +490,7 @@ mod tests {
         assert_eq!(pool.len(), 1);
         assert!(!pool.is_empty());
 
-        pool.retrieve(&node);
+        pool.checkout(&node);
         assert_eq!(pool.len(), 0);
         assert!(pool.is_empty());
     }
@@ -510,8 +512,8 @@ mod tests {
         assert_eq!(pool.len(), 1, "contains must not remove entries");
         assert_eq!(pool.used_bytes(), 100, "contains must not modify used_bytes");
 
-        // After retrieve (destructive): no longer present.
-        pool.retrieve(&node);
+        // After checkout (destructive): no longer present.
+        pool.checkout(&node);
         assert!(!pool.contains(&node));
 
         // After clear: no longer present.
@@ -552,7 +554,7 @@ mod tests {
         assert_eq!(pool.len(), 5);
         assert_eq!(pool.used_bytes(), 5 * gib);
 
-        // Non-destructive: `retrieve` would consume entries (see `retrieve_removes_entry`).
+        // Non-destructive: `checkout` would consume entries (see `checkout_removes_entry`).
         for node in &nodes {
             assert!(
                 pool.contains(node),
@@ -654,17 +656,17 @@ mod tests {
         pool.donate_with_cost(node_c.clone(), OpaqueState::new(3i32, 50), 5.0);
 
         // Touch B to make it newer than A and C
-        let b_state = pool.retrieve(&node_b).unwrap();
+        let b_state = pool.checkout(&node_b).unwrap();
         pool.donate_with_cost(node_b.clone(), b_state, 0.1);
 
         // Large donation forces eviction
         pool.donate_with_cost(node_d.clone(), OpaqueState::new(4i32, 200), 2.0);
 
         // Pure LRU order: A and C (oldest) must be evicted; B and D retained
-        assert!(pool.retrieve(&node_a).is_none(), "A should be LRU-evicted");
-        assert!(pool.retrieve(&node_c).is_none(), "C should be LRU-evicted");
-        assert!(pool.retrieve(&node_b).is_some(), "B should be retained (recently accessed)");
-        assert!(pool.retrieve(&node_d).is_some(), "D should be retained (just added)");
+        assert!(pool.checkout(&node_a).is_none(), "A should be LRU-evicted");
+        assert!(pool.checkout(&node_c).is_none(), "C should be LRU-evicted");
+        assert!(pool.checkout(&node_b).is_some(), "B should be retained (recently accessed)");
+        assert!(pool.checkout(&node_d).is_some(), "D should be retained (just added)");
     }
 
     #[test]
@@ -847,5 +849,68 @@ mod tests {
         assert_eq!(pool.cost_per_byte_of(&node_inf), Some(0.0), "+inf clamped to 0.0");
         assert_eq!(pool.cost_per_byte_of(&node_neg_inf), Some(0.0), "-inf clamped to 0.0");
         assert_eq!(pool.cost_per_byte_of(&node_neg), Some(0.0), "negative clamped to 0.0");
+    }
+
+    // --- Task 2345 step-1: WarmStatePool::checkout tests ---
+    //
+    // These tests pin the `checkout` API named in arch §4.3 line 539: take-semantics
+    // retrieval that returns `None` when the entry is absent OR has been LRU-evicted.
+    // (Originally introduced as an alias for `retrieve`; the duplicate `retrieve`
+    // method was removed in the amendment pass — `checkout` is the canonical name.)
+
+    #[test]
+    fn checkout_returns_none_when_absent() {
+        let mut pool = WarmStatePool::new(1024);
+        let unknown = NodeId::Value(ValueCellId::new("T", "absent"));
+        assert!(
+            pool.checkout(&unknown).is_none(),
+            "checkout on a fresh pool with no donations must return None"
+        );
+    }
+
+    #[test]
+    fn checkout_returns_state_and_removes_entry() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node.clone(), OpaqueState::new(42i32, 4));
+
+        let first = pool.checkout(&node);
+        assert!(first.is_some(), "first checkout returns Some");
+        assert_eq!(
+            first.unwrap().downcast::<i32>(),
+            Some(42),
+            "checkout returns the donated state"
+        );
+
+        let second = pool.checkout(&node);
+        assert!(
+            second.is_none(),
+            "checkout has take semantics — second call returns None"
+        );
+    }
+
+    #[test]
+    fn checkout_returns_none_after_eviction() {
+        // Tiny budget pool: donate A (50 bytes), then donate B (50 bytes), then
+        // donate C (200 bytes) which triggers LRU eviction of A and B.
+        let mut pool = WarmStatePool::new(100);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(1i32, 50));
+        pool.donate(node_b.clone(), OpaqueState::new(2i32, 50));
+        // used = 100 (at budget). Donating C (200 bytes) forces eviction of A then B.
+        pool.donate(node_c.clone(), OpaqueState::new(3i32, 200));
+
+        assert!(
+            pool.checkout(&node_a).is_none(),
+            "evicted entry checks out as None"
+        );
+        // C is the just-donated item and remains.
+        assert!(
+            pool.checkout(&node_c).is_some(),
+            "freshly donated entry remains checkable"
+        );
     }
 }

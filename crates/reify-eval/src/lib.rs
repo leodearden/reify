@@ -21,6 +21,7 @@ pub mod snapshot;
 pub mod test_runner;
 pub mod topology_selectors;
 mod unfold;
+pub mod warm_pool;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::HashMap;
@@ -367,6 +368,17 @@ pub struct Engine {
     /// looks up `module.solver_pragma.name` here; on miss it falls back to
     /// `self.solver` and emits a "named solver not registered" warning.
     solvers: HashMap<String, Box<dyn ConstraintSolver>>,
+    /// Memory-budgeted pool that holds warm-start state donated by removed
+    /// nodes between topology edits. Populated by `edit_source` when value
+    /// cells / constraints / realizations are removed (donation), drained
+    /// when topology re-adds the same `NodeId` (checkout). Per arch §4.3
+    /// lines 539-540 and §6.4 lines 654-660.
+    ///
+    /// Initialised via `WarmStatePool::from_env_or_default()` in both
+    /// `Engine::new` and `Engine::with_prelude`. Test-instrumentation accessors
+    /// `warm_pool()` / `warm_pool_mut()` (cfg-gated to test/test-instrumentation
+    /// builds) live in `engine_admin.rs`.
+    warm_pool: crate::warm_pool::WarmStatePool,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -1360,6 +1372,60 @@ structure S {
         assert_eq!(
             err.to_string(),
             "dimension mismatch for Assembly.height: expected m, got kg"
+        );
+    }
+
+    // ── Task 2345 step-3: Engine holds a WarmStatePool ───────────────────────
+    //
+    // Wires `Engine::warm_pool` per arch §4.3 / §6.4. The pool is initialised
+    // via `WarmStatePool::from_env_or_default()`, so absent the
+    // `REIFY_WARM_STATE_BUDGET_BYTES` env var the budget equals
+    // `DEFAULT_BUDGET_BYTES` (2 GiB).
+    //
+    // ── Hermeticity note (amendment) ─────────────────────────────────────
+    // The default-budget contract is verified via the `from_env_value(None)`
+    // seam, which is the same code path `Engine::new` ends up exercising
+    // when the env var is unset, but pinned without depending on the
+    // ambient process environment. Asserting on `Engine::new(...).warm_pool()`
+    // directly would be flaky if a developer or CI runner had
+    // `REIFY_WARM_STATE_BUDGET_BYTES` exported (e.g. to `unlimited` or a
+    // non-default integer) — the same flakiness the `from_env_or_default`
+    // doc-comment calls out. The companion wiring assertion still pins
+    // that `Engine::new` constructs a `WarmStatePool` without panicking
+    // and exposes it through `warm_pool()`; just the budget value is
+    // checked at the hermetic seam.
+
+    #[test]
+    fn engine_warm_pool_default_budget_is_two_gib() {
+        // Hermetic: targets the env-parsing seam directly so the assertion
+        // is independent of the ambient REIFY_WARM_STATE_BUDGET_BYTES value.
+        use crate::warm_pool::{DEFAULT_BUDGET_BYTES, WarmStatePool};
+
+        let pool = WarmStatePool::from_env_value(None);
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(DEFAULT_BUDGET_BYTES),
+            "WarmStatePool::from_env_value(None) — the seam Engine::new uses \
+             when REIFY_WARM_STATE_BUDGET_BYTES is unset — must yield the \
+             default budget"
+        );
+    }
+
+    #[test]
+    fn engine_new_exposes_warm_pool_via_accessor() {
+        // Wiring assertion: confirm Engine::new constructs and exposes the
+        // pool through the test-instrumentation accessor. Does NOT assert on
+        // the budget value (that's covered hermetically above) — keeps this
+        // test independent of ambient REIFY_WARM_STATE_BUDGET_BYTES too.
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        // budget_bytes() returns Option<usize>; the call alone proves wiring.
+        let _ = engine.warm_pool().budget_bytes();
+        assert_eq!(
+            engine.warm_pool().used_bytes(),
+            0,
+            "freshly-constructed Engine's warm_pool must start empty"
         );
     }
 }

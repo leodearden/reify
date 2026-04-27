@@ -154,6 +154,9 @@ impl Engine {
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),
             solvers: HashMap::new(),
+            // Read REIFY_WARM_STATE_BUDGET_BYTES once at construction; falls
+            // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
+            warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
         }
     }
 
@@ -533,6 +536,48 @@ impl Engine {
     /// Access the event journal (for testing/inspection).
     pub fn journal(&self) -> &EventJournal {
         &self.journal
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Immutable access to the engine's warm-state pool. Per arch §4.3 / §6.4,
+    /// the pool holds donated `OpaqueState` for removed topology nodes and
+    /// services checkouts when topology re-adds them. Tests use this accessor
+    /// to assert pool state after `edit_source` removes/adds nodes.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// The field itself is always present (struct layout is identical in test
+    /// and non-test builds); only the accessor is gated.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn warm_pool(&self) -> &crate::warm_pool::WarmStatePool {
+        &self.warm_pool
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Mutable access to the engine's warm-state pool, primarily used by
+    /// integration tests to swap in a tiny-budget pool (e.g. via
+    /// `*engine.warm_pool_mut() = WarmStatePool::new(50);`) to exercise the
+    /// LRU-eviction → None-checkout → cold-fallback path described in arch
+    /// §4.3 lines 539-540.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn warm_pool_mut(&mut self) -> &mut crate::warm_pool::WarmStatePool {
+        &mut self.warm_pool
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Mutable access to the cache store, used by integration tests that need
+    /// to inject warm state (`donate_warm_state`) on a freshly-created cache
+    /// entry to simulate a future WarmStartable producer's output. Mirrors the
+    /// existing immutable `cache_store()` accessor.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn cache_store_mut(&mut self) -> &mut CacheStore {
+        &mut self.cache
     }
 }
 

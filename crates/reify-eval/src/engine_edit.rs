@@ -35,11 +35,12 @@ use reify_types::{
     ValueCellId, ValueMap, VersionId,
 };
 
-use crate::cache::{CachedResult, EvalOutcome, NodeId};
+use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
+use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup, build_meta_map,
     eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
@@ -502,6 +503,66 @@ pub(crate) fn diff_realizations(
     diff_nodes(&old_graph.realizations, &new_graph.realizations, |n| {
         n.content_hash
     })
+}
+
+/// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap` and
+/// attempt to checkout warm state from `pool`. On `Some(state)`, insert into
+/// `sink`; on `None` (absent or LRU-evicted), the node falls through with
+/// no seed — observable equivalence to a cold-only run, per arch §4.3
+/// lines 539-540.
+///
+/// Used by `edit_source` step (4c) to drive the checkout half of the
+/// WarmStatePool round-trip uniformly across the `added` /
+/// `added_constraints` / `added_realizations` sets. The pool API itself
+/// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
+/// once a `diff_resolutions` exists, or `ComputeNode` once it becomes a
+/// variant) drops in as a single additional call.
+fn checkout_added_warm_seeds<'a, I, T, F>(
+    pool: &mut WarmStatePool,
+    ids: I,
+    wrap: F,
+    sink: &mut HashMap<NodeId, reify_types::OpaqueState>,
+) where
+    I: IntoIterator<Item = &'a T>,
+    T: Clone + 'a,
+    F: Fn(T) -> NodeId,
+{
+    for id in ids {
+        let nid = wrap(id.clone());
+        if let Some(state) = pool.checkout(&nid) {
+            sink.insert(nid, state);
+        }
+    }
+}
+
+/// For each per-variant ID in `ids`, wrap it as a [`NodeId`] via `wrap`,
+/// donate any cached warm state to `pool` (when present), then invalidate
+/// the cache entry. Donated state is keyed by `NodeId` and counts against
+/// the pool's `memory_budget_bytes`; LRU eviction inside the pool is the
+/// only memory bound (no engine-level eviction logic here), per arch §4.3
+/// lines 539-540 and §6.4 lines 654-660.
+///
+/// Used by `edit_source` step (9) to drive the donation half of the
+/// WarmStatePool round-trip uniformly across the `removed` /
+/// `removed_constraints` / `removed_realizations` sets. A future `NodeId`
+/// variant slots in as a single additional call.
+fn donate_removed_warm_state<'a, I, T, F>(
+    pool: &mut WarmStatePool,
+    cache: &mut CacheStore,
+    ids: I,
+    wrap: F,
+) where
+    I: IntoIterator<Item = &'a T>,
+    T: Clone + 'a,
+    F: Fn(T) -> NodeId,
+{
+    for id in ids {
+        let nid = wrap(id.clone());
+        if let Some(state) = cache.get_warm_state(&nid) {
+            pool.donate(nid.clone(), state);
+        }
+        cache.invalidate(&nid);
+    }
 }
 
 impl Engine {
@@ -1366,6 +1427,48 @@ impl Engine {
         let (changed_realizations, added_realizations, removed_realizations) =
             diff_realizations(&eval_state.snapshot.graph, &new_snapshot.graph);
 
+        // (4c) Checkout warm state from the pool for every node entering the
+        //      topology in this edit, keyed by `NodeId`. Per arch §4.3 lines
+        //      539-540 and §6.4 lines 654-660: a re-appearing node gets its
+        //      previously-donated warm state if the pool still holds it; a
+        //      `None` checkout means the entry was LRU-evicted and evaluation
+        //      falls through the cold path with no seeded warm state.
+        //
+        //      We collect into a local `pending_warm_seeds` map (transient,
+        //      scoped to this edit_source call) and drain it into the cache
+        //      AFTER all post-eval phases complete (see step (14b) below).
+        //      The drain MUST come after phases 1-4 because
+        //      `cache.record_evaluation` clears `warm_state` on every call —
+        //      seeding earlier would be wiped by any guard/solver
+        //      re-elaboration that re-evaluates the seeded node.
+        //
+        //      Symmetric across all three NodeId variants currently produced
+        //      by `diff_*` helpers — Value, Constraint, Realization — via
+        //      the shared `checkout_added_warm_seeds` helper. Resolution is
+        //      not yet in any `diff_*` helper (see TODO(resolution-diff)
+        //      above); ComputeNode is not yet a NodeId variant. The pool API
+        //      itself is variant-agnostic, so any future variant slots in
+        //      as a single additional call to the helper.
+        let mut pending_warm_seeds: HashMap<NodeId, reify_types::OpaqueState> = HashMap::new();
+        checkout_added_warm_seeds(
+            &mut self.warm_pool,
+            &added,
+            NodeId::Value,
+            &mut pending_warm_seeds,
+        );
+        checkout_added_warm_seeds(
+            &mut self.warm_pool,
+            &added_constraints,
+            NodeId::Constraint,
+            &mut pending_warm_seeds,
+        );
+        checkout_added_warm_seeds(
+            &mut self.warm_pool,
+            &added_realizations,
+            NodeId::Realization,
+            &mut pending_warm_seeds,
+        );
+
         // (5) Compute the dirty cone over changed ∪ added using the NEW
         //     reverse index (which reflects post-edit dependencies). The
         //     compute_dirty_cone helper excludes the roots themselves, so
@@ -1521,24 +1624,44 @@ impl Engine {
         //     path (for constraints/realizations) will populate fresh entries.
         //     Dependents of value-cell changes are refreshed (or transitioned
         //     through Pending) by the per-cell eval loop below.
+        //
+        // For REMOVED nodes, donate any per-node warm state to the engine's
+        // `WarmStatePool` BEFORE invalidating. Per arch §4.3 lines 539-540
+        // and §6.4 lines 654-660: a node leaving the topology hands its warm
+        // state to the pool keyed by `NodeId`; LRU eviction inside the pool
+        // is the only memory bound (no engine-level eviction logic). Symmetric
+        // across all three NodeId variants currently produced by `diff_*`
+        // helpers — Value, Constraint, Realization — via the shared
+        // `donate_removed_warm_state` helper. Resolution is not yet in any
+        // `diff_*` helper (see TODO(resolution-diff) above), so it does not
+        // donate today; ComputeNode is not yet a NodeId variant.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
-        for id in &removed {
-            self.cache.invalidate(&NodeId::Value(id.clone()));
-        }
+        donate_removed_warm_state(
+            &mut self.warm_pool,
+            &mut self.cache,
+            &removed,
+            NodeId::Value,
+        );
         for cid in &changed_constraints {
             self.cache.invalidate(&NodeId::Constraint(cid.clone()));
         }
-        for cid in &removed_constraints {
-            self.cache.invalidate(&NodeId::Constraint(cid.clone()));
-        }
+        donate_removed_warm_state(
+            &mut self.warm_pool,
+            &mut self.cache,
+            &removed_constraints,
+            NodeId::Constraint,
+        );
         for rid in &changed_realizations {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
-        for rid in &removed_realizations {
-            self.cache.invalidate(&NodeId::Realization(rid.clone()));
-        }
+        donate_removed_warm_state(
+            &mut self.warm_pool,
+            &mut self.cache,
+            &removed_realizations,
+            NodeId::Realization,
+        );
 
         // (10) Attach provenance: Edit with the value-cell-level changed set
         //      (constraints / realizations remain implicit in the new graph;
@@ -2350,6 +2473,48 @@ impl Engine {
                     .graph
                     .topology_fingerprint()
                     .combine(count_state_hash);
+            }
+        }
+
+        // (14b) Drain `pending_warm_seeds` into the cache, completing the
+        //       checkout-and-seed half of the WarmStatePool round-trip
+        //       (arch §4.3 lines 539-540, §6.4 lines 654-660).
+        //
+        //       Why HERE: `cache.record_evaluation` clears `warm_state` on
+        //       every call (see cache.rs:263). The drain MUST come after
+        //       steps (12)/(13)/(14) of this function — (12) per-cell value
+        //       eval, (13) guard re-elaboration / solver re-runs, (14)
+        //       collection-sub fingerprint re-eval — because each of those
+        //       paths can call `record_evaluation` on a seeded node and
+        //       wipe the slot. After (14) all such re-evaluations are done
+        //       and the cache slots are settled.
+        //
+        //       Round-trip preservation when no cache entry exists yet:
+        //       `donate_warm_state` returns `false` (and consumes the
+        //       state) for a node that is not in the cache. For Value
+        //       cells `edit_source`'s eval loop (12) creates the entry,
+        //       so the seed lands. For Constraint and Realization variants
+        //       today, no cache entry exists at edit_source time —
+        //       `engine_build.rs` and `check_constraints` populate those
+        //       on demand from `build()` / `check()`. To avoid silently
+        //       dropping state that was already taken from the pool by
+        //       (4c), we probe `cache.get` first; if the entry exists the
+        //       state is seeded, otherwise it is re-donated so it remains
+        //       recoverable on a subsequent topology event. When those
+        //       variants gain edit-time cache entries the donate-back
+        //       path simply stops triggering.
+        //
+        //       Note that re-donation refreshes the entry's LRU access
+        //       time. This is acceptable for the current Constraint /
+        //       Realization paths because they're rare and bounded; if a
+        //       future variant routinely round-trips without a cache
+        //       consumer, switch this branch to a `donate_preserving_lru`
+        //       variant or push a "lru-stamp restore" through the pool API.
+        for (nid, state) in pending_warm_seeds.drain() {
+            if self.cache.get(&nid).is_some() {
+                self.cache.donate_warm_state(&nid, state);
+            } else {
+                self.warm_pool.donate(nid, state);
             }
         }
 
