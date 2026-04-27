@@ -779,3 +779,66 @@ purpose mfg(subject : Structure) {
         l0.span
     );
 }
+
+/// Pin the human-readable wording of the Shadowing diagnostic so downstream
+/// golden-style tests don't drift. Source identical to step-3 (single-shadow
+/// case): a lambda `|x|` inside a structure declaring `param x`. Asserts:
+///
+/// - Diagnostic message: literal `"declaration of 'x' shadows enclosing
+///   declaration"` (not `contains`, full equality).
+/// - Child label message: literal `"shadows the enclosing declaration"`.
+/// - Original-decl label message: literal `"originally declared here"`.
+///
+/// The order is `[child, original]` per `walk_expr`'s Lambda arm
+/// (`with_label(child).with_label(parent)`), matching the order asserted by
+/// the other span tests in this file (e.g. `lambda_in_fn_body_shadows_fn_param`,
+/// `lambda_in_trait_default_shadows_trait_param`).
+#[test]
+fn shadow_diagnostic_message_format_is_pinned() {
+    let source = r#"
+structure S {
+    param x : Real = 1
+    let f = |x| x * 2
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert_eq!(
+        warning.message,
+        "declaration of 'x' shadows enclosing declaration",
+        "Shadowing diagnostic message must match the canonical form pinned by \
+         the PRD (docs/prds/shadowing-warning.md) and `DiagnosticCode::Shadowing`'s \
+         doc comment in crates/reify-types/src/diagnostics.rs"
+    );
+    assert_eq!(
+        warning.labels.len(),
+        2,
+        "Shadowing warning must carry two labels (child + original), got: {:?}",
+        warning.labels
+    );
+    assert_eq!(
+        warning.labels[0].message, "shadows the enclosing declaration",
+        "child-site label message must be pinned to the canonical form"
+    );
+    assert_eq!(
+        warning.labels[1].message, "originally declared here",
+        "original-decl label message must be pinned to the canonical form"
+    );
+}
