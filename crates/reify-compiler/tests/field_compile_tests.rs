@@ -224,14 +224,21 @@ fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
     // The diagnostic message should use the canonical phrasing, naming both sides.
     // Checking the full phrase rather than bare type names avoids false positives
     // from substrings like "Vector<Real>", "Scalar<Temperature>", etc.
+    //
+    // `Scalar` in the source resolves to Type::length() (type_resolution.rs:374-376),
+    // which Displays as `Scalar[m]` (ty.rs:296-302 + dimension.rs:308-327: the LENGTH
+    // basis dimension emits "m"). Pinning the exact `Scalar[m]` rendering ensures a
+    // future change to `Scalar`'s default dimension (e.g. switching to dimensionless
+    // or to a different SI base) causes this assertion to fail loudly rather than
+    // silently passing with a changed rendering.
     let mismatch_diag = module
         .diagnostics
         .iter()
         .find(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch))
         .unwrap();
     assert!(
-        mismatch_diag.message.contains("declared codomain `Scalar"),
-        "expected message to contain 'declared codomain `Scalar...`', got: {}",
+        mismatch_diag.message.contains("declared codomain `Scalar[m]`"),
+        "expected message to contain 'declared codomain `Scalar[m]`', got: {}",
         mismatch_diag.message
     );
     assert!(
