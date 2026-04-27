@@ -24,8 +24,15 @@ const EXAMPLE_PATH: &str = concat!(
 
 /// Read the example file, parse it, compile with stdlib, assert zero error
 /// diagnostics, run eval, assert no eval errors.
-/// Returns (compiled, eval_result) for per-test assertions.
-fn compile_and_eval() -> (reify_compiler::CompiledModule, reify_eval::EvalResult) {
+///
+/// Returns `(compiled, engine, eval_result)`.  The engine has already been
+/// eval'd, so callers that need `engine.check(&compiled)` can use it directly
+/// without a redundant re-eval.
+fn compile_and_eval() -> (
+    reify_compiler::CompiledModule,
+    reify_eval::Engine,
+    reify_eval::EvalResult,
+) {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .unwrap_or_else(|e| panic!("examples/drivebelt_trait_bounds.ri should exist: {}", e));
 
@@ -46,23 +53,7 @@ fn compile_and_eval() -> (reify_compiler::CompiledModule, reify_eval::EvalResult
     let eval_result = engine.eval(&compiled);
     assert_no_eval_errors(&eval_result);
 
-    (compiled, eval_result)
-}
-
-/// Look up a Real or Int value by (entity, field) and return it as f64.
-/// Panics with a clear message if not found or wrong type.
-#[track_caller]
-fn get_real(eval: &reify_eval::EvalResult, entity: &str, field: &str) -> f64 {
-    let id = ValueCellId::new(entity, field);
-    let val = eval
-        .values
-        .get(&id)
-        .unwrap_or_else(|| panic!("{}.{} not found in eval result", entity, field));
-    match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!("{}.{} should be Real/Int, got {:?}", entity, field, other),
-    }
+    (compiled, engine, eval_result)
 }
 
 // ── (a) smoke: parses, compiles, ≥5 templates ────────────────────────────────
@@ -71,7 +62,7 @@ fn get_real(eval: &reify_eval::EvalResult, entity: &str, field: &str) -> f64 {
 /// templates: DriveBelt, CeramicLiner, Copper, BorosilicateGlass, TitaniumImplant.
 #[test]
 fn drivebelt_example_compiles_and_produces_five_templates() {
-    let (compiled, _eval) = compile_and_eval();
+    let (compiled, _engine, _eval) = compile_and_eval();
 
     assert!(
         compiled.templates.len() >= 5,
@@ -100,7 +91,7 @@ fn drivebelt_example_compiles_and_produces_five_templates() {
 /// and Damping, and value cells for all eight inherited members.
 #[test]
 fn drivebelt_trait_bounds_and_value_cells() {
-    let (compiled, _eval) = compile_and_eval();
+    let (compiled, _engine, _eval) = compile_and_eval();
 
     let template = compiled
         .templates
@@ -148,58 +139,13 @@ fn drivebelt_trait_bounds_and_value_cells() {
 
 // ── (c) eval populates representative values ──────────────────────────────────
 
-/// DriveBelt.density should equal the declared elastomer-belt default (1100.0).
-#[test]
-fn drivebelt_density_is_elastomer_value() {
-    let (_compiled, eval) = compile_and_eval();
-    let density = get_real(&eval, "DriveBelt", "density");
-    assert!(
-        (density - 1100.0).abs() < 1e-9,
-        "DriveBelt.density should be 1100.0 (elastomer), got {}",
-        density
-    );
-}
-
-/// CeramicLiner.max_service_temperature = 2050.0 (above the Refractory >= 1500 guard).
-#[test]
-fn ceramic_liner_max_service_temperature() {
-    let (_compiled, eval) = compile_and_eval();
-    let temp = get_real(&eval, "CeramicLiner", "max_service_temperature");
-    assert!(
-        (temp - 2050.0).abs() < 1e-9,
-        "CeramicLiner.max_service_temperature should be 2050.0, got {}",
-        temp
-    );
-}
-
-/// Copper.resistivity = 1.7e-8 (below the Conductive < 1e-4 guard).
-#[test]
-fn copper_resistivity_is_conductive_value() {
-    let (_compiled, eval) = compile_and_eval();
-    let r = get_real(&eval, "Copper", "resistivity");
-    assert!(
-        (r - 1.7e-8).abs() < 1e-14,
-        "Copper.resistivity should be 1.7e-8, got {}",
-        r
-    );
-}
-
-/// BorosilicateGlass.refractive_index = 1.52.
-#[test]
-fn borosilicate_glass_refractive_index() {
-    let (_compiled, eval) = compile_and_eval();
-    let n = get_real(&eval, "BorosilicateGlass", "refractive_index");
-    assert!(
-        (n - 1.52).abs() < 1e-9,
-        "BorosilicateGlass.refractive_index should be 1.52, got {}",
-        n
-    );
-}
-
 /// TitaniumImplant.corrosion_class is the enum variant CorrosionClass.C5.
+/// This test specifically exercises enum-typed value propagation through the eval
+/// pipeline — distinct from the scalar literal-propagation that is already
+/// covered by the conformance tests in materials_*_tests.rs.
 #[test]
 fn titanium_implant_corrosion_class_is_c5() {
-    let (_compiled, eval) = compile_and_eval();
+    let (_compiled, _engine, eval) = compile_and_eval();
     let id = ValueCellId::new("TitaniumImplant", "corrosion_class");
     let val = eval
         .values
@@ -227,36 +173,48 @@ fn titanium_implant_corrosion_class_is_c5() {
 
 // ── (d) all constraints satisfied for every entity ───────────────────────────
 
-/// engine.check(&compiled) must produce non-empty constraint_results for each of
-/// the five entities, and every constraint must be Satisfaction::Satisfied.
+/// engine.check(&compiled) must produce Satisfied results for every constraint
+/// on every entity.  Only DriveBelt, CeramicLiner, and Copper have trait-level
+/// constraints; BorosilicateGlass (OpticallyCharacterized) and TitaniumImplant
+/// (Biocompatible + CorrosionResistant) are classification traits that inject
+/// no numeric constraints.
 ///
 /// Key constraints exercised:
 ///   - Flexible: stiffness > 0, max_deflection > 0 (DriveBelt via ED)
 ///   - ElasticallyDeformable: max_elastic_strain > 0 (DriveBelt)
-///   - Refractory: max_service_temperature >= 1500.0 (CeramicLiner.max_service_temperature = 2050.0)
+///   - Refractory: max_service_temperature >= 1500.0 (CeramicLiner = 2050.0)
 ///   - Conductive: resistivity < 1e-4 (Copper.resistivity = 1.7e-8)
 #[test]
 fn all_constraints_satisfied_for_all_entities() {
-    let (compiled, _eval) = compile_and_eval();
-    let mut engine = make_simple_engine();
-    // Re-eval to rebuild engine state for check
-    engine.eval(&compiled);
+    // Reuse the already-eval'd engine returned by compile_and_eval — no need
+    // to create a fresh engine and re-evaluate.
+    let (compiled, mut engine, _eval) = compile_and_eval();
     let check = engine.check(&compiled);
 
-    let entities = ["DriveBelt", "CeramicLiner", "Copper", "BorosilicateGlass", "TitaniumImplant"];
+    // (entity, expects_non_empty_constraint_results)
+    // Only assert non-empty for traits that inject numeric constraints.
+    let entity_expectations: &[(&str, bool)] = &[
+        ("DriveBelt", true),      // Flexible + ED constraints
+        ("CeramicLiner", true),   // Refractory: max_service_temperature >= 1500
+        ("Copper", true),         // Conductive: resistivity < 1e-4
+        ("BorosilicateGlass", false), // OpticallyCharacterized: no constraints
+        ("TitaniumImplant", false),   // Biocompatible + CorrosionResistant: no constraints
+    ];
 
-    for entity in &entities {
+    for (entity, expects_constraints) in entity_expectations {
         let entity_constraints: Vec<_> = check
             .constraint_results
             .iter()
             .filter(|r| r.id.entity == *entity)
             .collect();
 
-        assert!(
-            !entity_constraints.is_empty(),
-            "expected at least one constraint for entity '{}', check produced none",
-            entity
-        );
+        if *expects_constraints {
+            assert!(
+                !entity_constraints.is_empty(),
+                "expected at least one constraint for entity '{}', check produced none",
+                entity
+            );
+        }
 
         for entry in &entity_constraints {
             assert_eq!(

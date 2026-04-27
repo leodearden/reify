@@ -130,8 +130,8 @@ structure def Copper : Conductive {
 // BorosilicateGlass satisfies:
 //   OpticallyCharacterized : MaterialSpec
 //
-// No constraints are inherited from OpticallyCharacterized itself; a
-// structure-level sanity constraint on density is added below.
+// OpticallyCharacterized itself injects no constraints — it is a pure
+// parameter-carrying trait.
 structure def BorosilicateGlass : OpticallyCharacterized {
     // MaterialSpec
     param density : Real = 2230.0               // kg/m³ — Borosilicate 33 glass
@@ -142,10 +142,6 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     param absorption_coefficient : Real = 0.001 // 1/m — very low for optical glass
     param transmittance : Real = 0.92           // 92% at reference thickness
     param reference_thickness : Real = 0.01    // 1cm reference sample thickness
-
-    // Structure-level physical sanity constraint (also ensures engine.check
-    // produces non-empty constraint_results for this entity in eval tests).
-    constraint density > 0.0
 }
 
 // ── (2d) §6.6 gap-fill sample: TitaniumImplant : Biocompatible + CorrosionResistant
@@ -158,8 +154,8 @@ structure def BorosilicateGlass : OpticallyCharacterized {
 // The enum-typed params use the CorrosionClass and BiocompatibilityClass enums
 // declared at the top of this file (re-declared from std.materials.chemical).
 //
-// A structure-level constraint on density is added below for the same reason
-// as BorosilicateGlass (ensure engine.check produces non-empty results).
+// Neither Biocompatible nor CorrosionResistant inject numeric constraints —
+// they are classification traits, not contractual bound traits.
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     // MaterialSpec (shared via diamond merge)
     param density : Real = 4500.0               // kg/m³ — Ti-6Al-4V
@@ -170,8 +166,4 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
 
     // CorrosionResistant
     param corrosion_class : CorrosionClass = CorrosionClass.C5
-
-    // Structure-level physical sanity constraint (also ensures engine.check
-    // produces non-empty constraint_results for this entity in eval tests).
-    constraint density > 0.0
 }
