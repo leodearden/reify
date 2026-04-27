@@ -1,0 +1,3 @@
+// Stdlib: Manufacturing-stock collections (std.stock).
+// Provides standard bolt length and sheet thickness series referenced by
+// @solver_hint annotations (e.g. @solver_hint("discrete_set", standard_bolt_lengths)).

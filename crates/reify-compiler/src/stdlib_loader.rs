@@ -69,6 +69,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/geometry_traits.ri"),
             ),
             ("std.io", include_str!("../stdlib/io.ri")),
+            ("std.stock", include_str!("../stdlib/standard_stock.ri")),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
