@@ -536,9 +536,9 @@ fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
     out.push_str("**Direction:** ");
     out.push_str(direction);
     out.push_str("\n\n");
-    out.push_str("**Expression:** `");
-    out.push_str(expr_repr);
-    out.push_str("`\n\n");
+    out.push_str("**Expression:** ");
+    out.push_str(&md_inline_code(expr_repr));
+    out.push_str("\n\n");
 }
 
 /// Render the `**Base:**` and `**Scale:**` lines for a `Unit`.
