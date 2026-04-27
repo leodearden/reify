@@ -1,0 +1,1 @@
+//! Shadowing warning tests.
