@@ -468,6 +468,45 @@ impl CacheStore {
         }
     }
 
+    /// Derive the output freshness for a cached node by walking its dependency trace.
+    ///
+    /// Implements arch §7.2 (`docs/reify-implementation-architecture.md`, lines 730-749)
+    /// at the cache level: looks up each input cell in `dependency_trace.reads`, retrieves
+    /// its freshness via the existing [`CacheStore::freshness`] reader (which defaults to
+    /// `Final` for absent entries — see task #2326), then delegates to the pure
+    /// [`derive_output_freshness`] helper.
+    ///
+    /// Returns the derived freshness:
+    /// - If `still_refining`, always `Intermediate { generation }`.
+    /// - If any input is non-Final, `Intermediate { generation }`.
+    /// - Otherwise, `Final`.
+    ///
+    /// **Absent node fallback:** if `node_id` has no cache entry (no trace exists),
+    /// returns `derive_output_freshness(still_refining, empty, generation)` which yields
+    /// `Final` (no inputs ⇒ all-Final ⇒ Final) — consistent with `freshness()`'s
+    /// "default Final on absent" contract.
+    pub fn derive_output_freshness_for_node(
+        &self,
+        node_id: &NodeId,
+        still_refining: bool,
+        generation: u64,
+    ) -> Freshness {
+        let Some(entry) = self.caches.get(node_id) else {
+            // Absent node: no trace, treat as empty-input (§7.2: no inputs ⇒ Final)
+            return derive_output_freshness(still_refining, std::iter::empty(), generation);
+        };
+        // Collect freshnesses to a Vec to avoid borrow-checker conflict on &self:
+        // `self.freshness(...)` borrows `self.caches` immutably, but `entry` already
+        // borrows it — collect first, then delegate.
+        let input_freshnesses: Vec<Freshness> = entry
+            .dependency_trace
+            .reads
+            .iter()
+            .map(|read| self.freshness(&NodeId::Value(read.clone())))
+            .collect();
+        derive_output_freshness(still_refining, input_freshnesses.iter(), generation)
+    }
+
     /// Insert a synthetic cache entry for a Realization node so that tests can
     /// simulate state that `engine_build.rs` would normally create at
     /// `build()` / `check()` time.
