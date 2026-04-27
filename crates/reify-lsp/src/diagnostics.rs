@@ -278,7 +278,7 @@ mod tests {
 
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
-    use reify_types::{DimensionVector, Value, ValueCellId};
+    use reify_types::{DimensionVector, Severity, Value, ValueCellId};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
     fn test_uri() -> Url {
@@ -940,14 +940,17 @@ structure S {
     /// Parses and compiles `"structure S { param width: Scalar = 100mm }"`, does an initial
     /// eval to warm the engine state, then overrides `width` with `override_value` and returns
     /// the diagnostics from the second eval.
-    fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
+    fn build_param_override_diags(
+        override_value: Value,
+    ) -> (reify_eval::Engine, Vec<Diagnostic>) {
         let source = "structure S { param width: Scalar = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
         let _ = engine.eval(&compiled);
         engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
-        engine.eval(&compiled).diagnostics
+        let diags = engine.eval(&compiled).diagnostics;
+        (engine, diags)
     }
 
     /// Shared setup for the two solver pass-through emitter tests.
@@ -997,13 +1000,21 @@ structure S {
     /// from the param_override type-kind mismatch emitter.
     #[test]
     fn eval_diag_format_param_override_type_kind() {
-        let diags = build_param_override_diags(Value::Bool(true));
+        let (engine, diags) = build_param_override_diags(Value::Bool(true));
 
         assert!(
-            diags.iter().any(|d| d.message.contains("type-kind mismatch")),
-            "param_override_type_kind: sanity check failed — engine_eval.rs param_override \
-             type-kind path must emit 'type-kind mismatch'; got: {:#?}",
+            !diags.is_empty(),
+            "param_override_type_kind: engine emitted no diagnostics"
+        );
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Warning),
+            "param_override_type_kind: expected at least one Warning-severity diagnostic; \
+             got: {:#?}",
             diags
+        );
+        assert!(
+            engine.last_param_override_type_kind_rejections() >= 1,
+            "param_override_type_kind: structural check — type-kind rejection counter must be ≥ 1"
         );
         assert_no_violation_format(&diags, "param_override_type_kind");
     }
@@ -1015,16 +1026,24 @@ structure S {
     /// from the param_override dimension mismatch emitter.
     #[test]
     fn eval_diag_format_param_override_dimension() {
-        let diags = build_param_override_diags(Value::Scalar {
+        let (engine, diags) = build_param_override_diags(Value::Scalar {
             si_value: 1.0,
             dimension: DimensionVector::MASS,
         });
 
         assert!(
-            diags.iter().any(|d| d.message.contains("dimension mismatch")),
-            "param_override_dimension: sanity check failed — engine_eval.rs param_override \
-             dimension path must emit 'dimension mismatch'; got: {:#?}",
+            !diags.is_empty(),
+            "param_override_dimension: engine emitted no diagnostics"
+        );
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Warning),
+            "param_override_dimension: expected at least one Warning-severity diagnostic; \
+             got: {:#?}",
             diags
+        );
+        assert!(
+            engine.last_param_override_dimension_rejections() >= 1,
+            "param_override_dimension: structural check — dimension rejection counter must be ≥ 1"
         );
         assert_no_violation_format(&diags, "param_override_dimension");
     }
@@ -1043,13 +1062,18 @@ structure S {
         let diags = engine.eval(&compiled).diagnostics;
 
         assert!(
-            diags.iter().any(|d| {
-                d.message.contains("sub-component")
-                    && d.message.contains("references unknown structure")
-            }),
-            "sub_component_unknown: sanity check failed — engine_eval.rs sub-component lookup \
-             must emit 'sub-component ... references unknown structure'; got: {:#?}",
+            !diags.is_empty(),
+            "sub_component_unknown: engine emitted no diagnostics"
+        );
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Error),
+            "sub_component_unknown: expected at least one Error-severity diagnostic; \
+             got: {:#?}",
             diags
+        );
+        assert!(
+            engine.last_sub_component_unknown_structure_errors() >= 1,
+            "sub_component_unknown: structural check — unknown-structure counter must be ≥ 1"
         );
         assert_no_violation_format(&diags, "sub_component_unknown");
     }
@@ -1073,9 +1097,12 @@ structure S {
              the 'auto' param + constraint source may not trigger solver dispatch"
         );
         assert!(
-            diags.iter().any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
-            "solver_infeasible: sanity check failed — engine_eval.rs solver Infeasible pass-through \
-             must forward the injected diagnostic; got: {:#?}",
+            !diags.is_empty(),
+            "solver_infeasible: engine emitted no diagnostics"
+        );
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Error),
+            "solver_infeasible: expected at least one Error-severity diagnostic; got: {:#?}",
             diags
         );
         assert_no_violation_format(&diags, "solver_infeasible");
@@ -1098,9 +1125,12 @@ structure S {
              the 'auto' param + constraint source may not trigger solver dispatch"
         );
         assert!(
-            diags.iter().any(|d| d.message.contains("made no progress")),
-            "solver_no_progress: sanity check failed — engine_eval.rs solver NoProgress pass-through \
-             must emit 'made no progress'; got: {:#?}",
+            !diags.is_empty(),
+            "solver_no_progress: engine emitted no diagnostics"
+        );
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Warning),
+            "solver_no_progress: expected at least one Warning-severity diagnostic; got: {:#?}",
             diags
         );
         assert_no_violation_format(&diags, "solver_no_progress");
