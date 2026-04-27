@@ -524,6 +524,11 @@ fn four_mechanical_traits_refine_material_spec() {
             .find(|t| t.name == *trait_name)
             .unwrap_or_else(|| panic!("expected '{}' trait in compiled module", trait_name));
 
+        // `contains` rather than `assert_eq!`: expresses the invariant that the trait
+        // refines MaterialSpec without over-constraining the refinements list, tolerating
+        // legitimate future additions of additional parent traits.  If exact-membership
+        // becomes important (e.g. to catch accidental extra refinements), revisit and
+        // switch back to assert_eq!(trait_def.refinements, vec!["MaterialSpec"…]).
         assert!(
             trait_def.refinements.contains(&"MaterialSpec".to_string()),
             "'{}' should refine MaterialSpec but got refinements: {:?}",
@@ -571,11 +576,14 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
             "'{}': expected conformance errors for structure missing inherited density/name, but got none",
             trait_name
         );
+        // Assert on `density` specifically — it is always among the missing inherited
+        // MaterialSpec members and provides a concrete, unambiguous signal.  Checking
+        // bare "name" is avoided because that substring appears in many unrelated
+        // diagnostics ("unknown name", "name resolution failed", etc.) and could cause
+        // a false pass.
         assert!(
-            errors
-                .iter()
-                .any(|d| d.message.contains("density") || d.message.contains("name")),
-            "'{}': expected error about missing inherited density/name, got: {:?}",
+            errors.iter().any(|d| d.message.contains("density")),
+            "'{}': expected error specifically mentioning missing inherited 'density', got: {:?}",
             trait_name,
             errors
         );
