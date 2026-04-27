@@ -151,6 +151,14 @@ impl OcctKernelHandle {
     /// single round-trip, eliminating the N+1 latency that per-element
     /// `query` incurs in tight selector loops.
     ///
+    /// As a hot-path optimization, an empty `queries` slice is
+    /// short-circuited locally: the channel send/recv is skipped and
+    /// `Ok(Vec::new())` is returned immediately. This matters because
+    /// selectors built on `extract_edges` / `extract_faces` may produce
+    /// an empty handle list for shapes with no sub-shapes of the
+    /// requested kind, and forcing those calls through the actor channel
+    /// for a guaranteed-empty reply is pure overhead.
+    ///
     /// # Panics
     ///
     /// Panics if called from within a tokio async execution context.
@@ -158,6 +166,12 @@ impl OcctKernelHandle {
         &self,
         queries: &[GeometryQuery],
     ) -> Result<Vec<Value>, QueryError> {
+        // Empty-batch fast path: skip the actor channel round-trip
+        // entirely. The kernel-thread arm would itself produce
+        // `Ok(Vec::new())`, so the result is identical.
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .blocking_send(OcctRequest::QueryMany {
@@ -744,6 +758,22 @@ mod tests {
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn query_many_empty_batch_returns_ok_empty_vec() {
+        // The empty-batch fast path should return Ok(Vec::new()) without
+        // routing through the actor channel. Observable behaviour is the
+        // empty Ok result; the channel skip is documented in the doc-comment.
+        let handle = super::OcctKernelHandle::spawn();
+        let result = handle
+            .query_many(&[])
+            .expect("empty query_many should succeed");
+        assert!(
+            result.is_empty(),
+            "empty batch should return empty Vec, got {:?}",
+            result
+        );
     }
 
     #[test]
