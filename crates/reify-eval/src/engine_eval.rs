@@ -2037,14 +2037,14 @@ impl Engine {
             // Uses the freshly-computed `trace` (not the old cached trace) so derivation is
             // always keyed off the current reads.  `still_refining=false` is the only valid
             // value today — no progressive nodes exist yet (that is PRD task 4+ scope).
-            // `version_id` is the monotonic generation source per §7.1.
+            // `generation` is derived from `VersionId(version_id).0` inside the method per §7.1
+            // (single source of truth — no need to pass both `VersionId` and bare `u64`).
             let outcome = self.cache.record_evaluation_propagating_freshness(
                 node_id.clone(),
                 cached_result,
                 VersionId(version_id),
                 trace,
                 false,
-                version_id,
             );
 
             self.journal.record(EvalEvent {

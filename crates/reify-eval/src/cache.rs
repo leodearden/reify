@@ -294,7 +294,10 @@ impl CacheStore {
         if let Some(existing) = self.caches.get_mut(&node)
             && existing.result_hash == new_hash
         {
-            // Early cutoff: result unchanged, just update version and freshness
+            // Early cutoff: result unchanged, just update version, trace, and freshness.
+            // Note: any prior `Pending { last_substantive }` state is discarded here —
+            // re-evaluation completed, so Pending is no longer meaningful. Callers that
+            // need to preserve Pending state must handle it themselves before calling.
             existing.basis_version = version;
             existing.dependency_trace = trace;
             existing.freshness = freshness;
@@ -328,6 +331,10 @@ impl CacheStore {
     /// wire site and any future caller that evaluates a node with a fresh trace and
     /// wants arch §7.2 propagation atomically.
     ///
+    /// The `generation` used for `Freshness::Intermediate` is derived from `version.0`
+    /// (arch §7.1: `VersionId` is the single source of truth for the monotonic generation
+    /// counter; both `version` and `generation` are the same underlying `u64`).
+    ///
     /// Compares the new result's content hash with the existing cache entry.
     /// - If same hash: updates basis_version, dependency_trace, and freshness (early cutoff),
     ///   returns `Unchanged`.
@@ -340,8 +347,9 @@ impl CacheStore {
         version: VersionId,
         trace: DependencyTrace,
         still_refining: bool,
-        generation: u64,
     ) -> EvalOutcome {
+        // Derive generation from version per §7.1 — VersionId is the single source of truth.
+        let generation = version.0;
         // Derive freshness from the supplied trace BEFORE passing ownership of `trace`
         // into record_evaluation_with_freshness (borrow-checker: sequential immutable+mutable borrows on self).
         let freshness = self.derive_output_freshness_from_trace(&trace, still_refining, generation);
@@ -559,14 +567,13 @@ impl CacheStore {
         still_refining: bool,
         generation: u64,
     ) -> Freshness {
-        // Collect to a Vec to avoid borrow-checker conflict: `self.freshness(...)` needs
-        // `&self.caches` and `trace.reads` is already borrowed — collect first, delegate after.
-        let input_freshnesses: Vec<Freshness> = trace
-            .reads
-            .iter()
-            .map(|read| self.freshness(&NodeId::Value(read.clone())))
-            .collect();
-        derive_output_freshness(still_refining, input_freshnesses.iter(), generation)
+        // `trace` is a parameter (not part of `self`), so iterating `trace.reads` and
+        // calling `self.freshness(...)` are independent `&self` borrows — no conflict.
+        derive_output_freshness(
+            still_refining,
+            trace.reads.iter().map(|read| self.freshness(&NodeId::Value(read.clone()))),
+            generation,
+        )
     }
 
     /// Derive the output freshness for a cached node by walking its **cached** dependency trace.
@@ -603,7 +610,7 @@ impl CacheStore {
             // Absent node: no trace, treat as empty-input (§7.2: no inputs ⇒ Final)
             return derive_output_freshness(still_refining, std::iter::empty(), generation);
         };
-        self.derive_output_freshness_from_trace(&entry.dependency_trace.clone(), still_refining, generation)
+        self.derive_output_freshness_from_trace(&entry.dependency_trace, still_refining, generation)
     }
 
     /// Insert a synthetic cache entry for a Realization node so that tests can
@@ -672,9 +679,9 @@ impl CacheStore {
 /// Note: Pending and Failed both count as non-Final per §7.2 — see the
 /// `derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final`
 /// unit test for truth-table coverage across all 4 input variants.
-pub fn derive_output_freshness<'a>(
+pub fn derive_output_freshness(
     still_refining: bool,
-    input_freshnesses: impl IntoIterator<Item = &'a Freshness>,
+    input_freshnesses: impl IntoIterator<Item = Freshness>,
     generation: u64,
 ) -> Freshness {
     if still_refining {
@@ -2415,7 +2422,7 @@ mod tests {
         // Row 1: still_refining=true, all inputs Final → Intermediate
         let inputs_all_final = [Freshness::Final, Freshness::Final];
         assert_eq!(
-            derive_output_freshness(true, inputs_all_final.iter(), g),
+            derive_output_freshness(true, inputs_all_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=true, all-Final inputs → Intermediate"
         );
@@ -2426,35 +2433,35 @@ mod tests {
             Freshness::Intermediate { generation: 3 },
         ];
         assert_eq!(
-            derive_output_freshness(true, inputs_with_non_final.iter(), g),
+            derive_output_freshness(true, inputs_with_non_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=true, non-Final inputs → Intermediate"
         );
 
         // Row 3: still_refining=false, all inputs Final → Final
         assert_eq!(
-            derive_output_freshness(false, inputs_all_final.iter(), g),
+            derive_output_freshness(false, inputs_all_final.iter().cloned(), g),
             Freshness::Final,
             "still_refining=false, all-Final inputs → Final"
         );
 
         // Row 4: still_refining=false, any input non-Final → Intermediate
         assert_eq!(
-            derive_output_freshness(false, inputs_with_non_final.iter(), g),
+            derive_output_freshness(false, inputs_with_non_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=false, non-Final inputs → Intermediate"
         );
 
         // Edge case: no inputs, still_refining=false → Final
         assert_eq!(
-            derive_output_freshness(false, std::iter::empty(), g),
+            derive_output_freshness(false, std::iter::empty::<Freshness>(), g),
             Freshness::Final,
             "still_refining=false, empty inputs → Final"
         );
 
         // Edge case: no inputs, still_refining=true → Intermediate
         assert_eq!(
-            derive_output_freshness(true, std::iter::empty::<&Freshness>(), g),
+            derive_output_freshness(true, std::iter::empty::<Freshness>(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=true, empty inputs → Intermediate"
         );
@@ -2605,29 +2612,22 @@ mod tests {
         let g = 9u64;
 
         // Intermediate input → Intermediate output
-        let intermediate = Freshness::Intermediate { generation: 0 };
         assert_eq!(
-            derive_output_freshness(false, std::slice::from_ref(&intermediate).iter(), g),
+            derive_output_freshness(false, [Freshness::Intermediate { generation: 0 }].into_iter(), g),
             Freshness::Intermediate { generation: g },
             "Intermediate input must yield Intermediate output"
         );
 
         // Pending input → Intermediate output
-        let pending = Freshness::Pending {
-            last_substantive: ResultRef::none(),
-        };
         assert_eq!(
-            derive_output_freshness(false, std::slice::from_ref(&pending).iter(), g),
+            derive_output_freshness(false, [Freshness::Pending { last_substantive: ResultRef::none() }].into_iter(), g),
             Freshness::Intermediate { generation: g },
             "Pending input must yield Intermediate output (Pending is non-Final per §7.2)"
         );
 
         // Failed input → Intermediate output
-        let failed = Freshness::Failed {
-            error: ErrorRef::new("type mismatch"),
-        };
         assert_eq!(
-            derive_output_freshness(false, std::slice::from_ref(&failed).iter(), g),
+            derive_output_freshness(false, [Freshness::Failed { error: ErrorRef::new("type mismatch") }].into_iter(), g),
             Freshness::Intermediate { generation: g },
             "Failed input must yield Intermediate output (Failed is non-Final per §7.2)"
         );
@@ -2761,23 +2761,23 @@ mod tests {
             ),
         );
 
-        // Call record_evaluation_propagating_freshness with a trace that reads `a`
+        // Call record_evaluation_propagating_freshness with a trace that reads `a`.
+        // version=7 → generation derived as version.0=7 per §7.1 (single source of truth).
         let trace = DependencyTrace { reads: vec![a_id.clone()] };
         let out_node = NodeId::Value(out_id.clone());
         let outcome = store.record_evaluation_propagating_freshness(
             out_node.clone(),
             CachedResult::Value(Value::Real(10.0), DeterminacyState::Determined),
-            VersionId(1),
+            VersionId(7), // generation = version.0 = 7
             trace,
             false, // still_refining
-            7,     // generation
         );
         assert_eq!(outcome, EvalOutcome::Changed, "cold start must return Changed");
         // Freshness must be derived from `a`'s Intermediate state → Intermediate{generation: 7}
         assert_eq!(
             store.freshness(&out_node),
             Freshness::Intermediate { generation: 7 },
-            "freshness must be derived from the supplied trace's input (a=Intermediate)"
+            "freshness must be derived from the supplied trace's input (a=Intermediate); generation=version.0=7"
         );
     }
 
