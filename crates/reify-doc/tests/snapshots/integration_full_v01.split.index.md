@@ -6,30 +6,30 @@ Comprehensive v0.1 language feature integration.
 
 ### Traits
 
-- [`Physical`](#Physical)
+- [`Physical`](trait-Physical.md)
 
 ### Structures
 
-- [`Board`](#Board)
-- [`Bolt`](#Bolt)
-- [`OldThing`](#OldThing)
+- [`Board`](structure-Board.md)
+- [`Bolt`](structure-Bolt.md)
+- [`OldThing`](structure-OldThing.md)
 
 ### Occurrences
 
-- [`MCU`](#MCU)
+- [`MCU`](occurrence-MCU.md)
 
 ### Enums
 
-- [`Grade`](#Grade)
+- [`Grade`](enum-Grade.md)
 
 ### Functions
 
-- [`safety_factor`](#safety_factor)
+- [`safety_factor`](function-safety_factor.md)
 
 ### Constants
 
-- [`Positive`](#Positive)
-- [`Pressure`](#Pressure)
-- [`mil`](#mil)
-- [`minimize_area`](#minimize_area)
+- [`Positive`](constraint_def-Positive.md)
+- [`Pressure`](type_alias-Pressure.md)
+- [`mil`](unit-mil.md)
+- [`minimize_area`](purpose-minimize_area.md)
 

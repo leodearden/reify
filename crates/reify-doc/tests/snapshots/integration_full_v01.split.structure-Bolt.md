@@ -25,5 +25,5 @@ A standard fastening bolt.
 
 ### Conforms to
 
-- [`Physical`](#Physical)
+- [`Physical`](trait-Physical.md)
 

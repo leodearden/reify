@@ -8,5 +8,5 @@ Microcontroller occurrence.
 
 ### Used by
 
-- [`Board`](#Board)
+- [`Board`](structure-Board.md)
 
