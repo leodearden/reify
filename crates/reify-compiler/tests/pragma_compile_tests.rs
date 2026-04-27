@@ -2092,3 +2092,37 @@ fn kernel_pragma_malformed_args_emit_warning_and_leave_kernel_pragma_none() {
         );
     }
 }
+
+/// Multiple module-level `#kernel` pragmas: first wins, the second emits
+/// exactly one warning indicating it is ignored. Mirrors
+/// `multiple_module_level_solver_pragmas_first_wins`.
+#[test]
+fn multiple_module_level_kernel_pragmas_first_wins() {
+    let module = compile_source("#kernel(occt)\n#kernel(occt)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.kernel_pragma,
+        Some("occt".to_string()),
+        "expected kernel_pragma Some(\"occt\") for first-wins, got {:?}",
+        module.kernel_pragma
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("ignored") || m.contains("first wins") || m.contains("subsequent")
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning for subsequent #kernel, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
