@@ -759,4 +759,113 @@ mod tests {
                 "revolute translation[{}] should be 0, got {}", i, val);
         }
     }
+
+    // ── transform_at validation ──────────────────────────────────────────────
+
+    #[test]
+    fn transform_at_prismatic_with_angle_value_returns_undef() {
+        // Angle Scalar passed to a Prismatic joint
+        let joint = prismatic_x_joint();
+        assert!(
+            eval_builtin("transform_at", &[joint, Value::angle(1.0)]).is_undef(),
+            "Angle Scalar to Prismatic should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_revolute_with_length_value_returns_undef() {
+        // Length Scalar passed to a Revolute joint
+        let joint = revolute_z_joint();
+        assert!(
+            eval_builtin("transform_at", &[joint, Value::length(1.0)]).is_undef(),
+            "Length Scalar to Revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_revolute_with_mass_value_returns_undef() {
+        use reify_types::DimensionVector;
+        let joint = revolute_z_joint();
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        assert!(
+            eval_builtin("transform_at", &[joint, mass]).is_undef(),
+            "Mass Scalar to Revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_non_map_returns_undef() {
+        assert!(
+            eval_builtin("transform_at", &[Value::Real(1.0), Value::length(1.0)]).is_undef(),
+            "non-Map first arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_map_without_kind_key_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            eval_builtin("transform_at", &[Value::Map(m), Value::length(1.0)]).is_undef(),
+            "Map without kind key should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_map_with_unknown_kind_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        m.insert(Value::String("range".to_string()), length_range_0_to_1m());
+        assert!(
+            eval_builtin("transform_at", &[Value::Map(m), Value::length(1.0)]).is_undef(),
+            "Map with unknown kind should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_prismatic_nan_value_returns_undef() {
+        let joint = prismatic_x_joint();
+        assert!(
+            eval_builtin("transform_at", &[joint, Value::Real(f64::NAN)]).is_undef(),
+            "NaN value for prismatic should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_revolute_inf_value_returns_undef() {
+        let joint = revolute_z_joint();
+        assert!(
+            eval_builtin("transform_at", &[joint, Value::Real(f64::INFINITY)]).is_undef(),
+            "Inf value for revolute should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("transform_at", &[]).is_undef(),
+            "0 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_one_arg_returns_undef() {
+        let joint = prismatic_x_joint();
+        assert!(
+            eval_builtin("transform_at", &[joint]).is_undef(),
+            "1 arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_three_args_returns_undef() {
+        let joint = prismatic_x_joint();
+        assert!(
+            eval_builtin("transform_at", &[joint, Value::length(1.0), Value::Real(0.0)]).is_undef(),
+            "3 args should return Undef"
+        );
+    }
 }
