@@ -536,10 +536,24 @@ pub trait GeometryKernel: Send + Sync {
     /// Run a batch of queries in a single round-trip and return one
     /// `Value` per query, in the same order as `queries`.
     ///
+    /// # Length invariant
+    ///
+    /// On success, implementations **must** return a `Vec<Value>` whose
+    /// length equals `queries.len()`, with `result[i]` being the answer
+    /// to `queries[i]`. Callers (e.g. the topology selectors in
+    /// `reify-eval`) rely on this invariant to `zip` ids with values
+    /// without an explicit re-check; a misbehaving impl that returns a
+    /// shorter `Vec` would silently truncate consumer results. Defensive
+    /// callers may still verify `result.len() == queries.len()` and
+    /// surface `QueryError::QueryFailed` on a kernel-side contract
+    /// violation.
+    ///
     /// The default implementation simply forwards to `query` per element
     /// and collects via `Result<Vec<_>, _>`'s fail-fast `FromIterator`
     /// impl: it **returns the first `QueryError` encountered; remaining
-    /// queries are not issued.**
+    /// queries are not issued.** This default trivially preserves the
+    /// length invariant because a successful `Result<Vec<_>, _>::collect`
+    /// produces exactly one `Value` per source `Result::Ok`.
     ///
     /// Channel-routed kernels (e.g. `OcctKernelHandle`) override this to
     /// batch the actor-channel hop and the underlying FFI work into a
@@ -961,7 +975,7 @@ mod tests {
             "expected exactly 2 query calls"
         );
 
-        // (3) Empty batch: returns Ok(vec![]) with zero additional `query` calls.
+        // (2) Empty batch: returns Ok(vec![]) with zero additional `query` calls.
         let result = kernel
             .query_many(&[])
             .expect("empty query_many should succeed");
@@ -970,6 +984,92 @@ mod tests {
             kernel.query_calls.load(Ordering::SeqCst),
             2,
             "empty query_many must not call query"
+        );
+    }
+
+    #[test]
+    fn geometry_kernel_query_many_default_fails_fast_on_first_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// In-test `GeometryKernel` whose `query` returns `Ok(...)` until the
+        /// `fail_after_call` threshold (1-based) is hit, then returns
+        /// `QueryError::QueryFailed` for that call. Subsequent calls would
+        /// also error if reached, but the trait default's fail-fast collect
+        /// must short-circuit before that — the asserted call count proves it.
+        struct FailAfterKernel {
+            query_calls: AtomicUsize,
+            fail_after_call: usize,
+            ok_reply: Value,
+        }
+
+        impl GeometryKernel for FailAfterKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                unimplemented!("FailAfterKernel only supports query")
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                let call_index = self.query_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call_index >= self.fail_after_call {
+                    Err(QueryError::QueryFailed(format!(
+                        "synthetic failure on call #{}",
+                        call_index
+                    )))
+                } else {
+                    Ok(self.ok_reply.clone())
+                }
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!("FailAfterKernel only supports query")
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!("FailAfterKernel only supports query")
+            }
+        }
+
+        // Three queries; the kernel returns Ok on call #1 and Err on call #2.
+        // The default `query_many` must short-circuit at call #2 — never
+        // issuing call #3 — and return that error.
+        let kernel = FailAfterKernel {
+            query_calls: AtomicUsize::new(0),
+            fail_after_call: 2,
+            ok_reply: Value::Real(1.0),
+        };
+        let queries = vec![
+            GeometryQuery::Volume(GeometryHandleId(1)),
+            GeometryQuery::SurfaceArea(GeometryHandleId(2)),
+            GeometryQuery::EdgeLength(GeometryHandleId(3)),
+        ];
+        let err = kernel
+            .query_many(&queries)
+            .expect_err("query_many must propagate the inner error");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("call #2"),
+                    "expected fail-fast at call #2, got {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+        assert_eq!(
+            kernel.query_calls.load(Ordering::SeqCst),
+            2,
+            "fail-fast must stop after the first Err — call #3 must not be issued"
         );
     }
 
