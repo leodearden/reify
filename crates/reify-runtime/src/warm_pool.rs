@@ -579,6 +579,152 @@ mod tests {
         );
     }
 
+    // --- step-5: WarmPoolEvent emission tests (RED until step-6 adds the surface) ---
+
+    #[test]
+    fn donate_emits_donated_event() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+
+        let events = pool.drain_events();
+        assert_eq!(
+            events,
+            vec![WarmPoolEvent::Donated {
+                node_id: node_a,
+                size_bytes: 100
+            }]
+        );
+    }
+
+    #[test]
+    fn donate_with_cost_also_emits_donated_event() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        pool.donate_with_cost(node_a.clone(), OpaqueState::new(0u8, 200), 1.5);
+
+        let events = pool.drain_events();
+        assert_eq!(
+            events,
+            vec![WarmPoolEvent::Donated {
+                node_id: node_a,
+                size_bytes: 200
+            }]
+        );
+    }
+
+    #[test]
+    fn over_budget_donate_emits_evicted_then_donated() {
+        // budget=200, donate A(100) and B(100) — fills exactly.
+        // Drain intermediate events. Then donate C(100): forces eviction of A (LRU).
+        // The drain after C should have Evicted(A) then Donated(C).
+        let mut pool = WarmStatePool::new(200);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(0u8, 100));
+        // Clear intermediate events
+        let setup_events = pool.drain_events();
+        assert_eq!(setup_events.len(), 2);
+
+        // Now donate C, which forces eviction of A (LRU)
+        pool.donate(node_c.clone(), OpaqueState::new(0u8, 100));
+        let events = pool.drain_events();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            WarmPoolEvent::Evicted {
+                node_id: node_a,
+                size_bytes: 100
+            }
+        );
+        assert_eq!(
+            events[1],
+            WarmPoolEvent::Donated {
+                node_id: node_c,
+                size_bytes: 100
+            }
+        );
+    }
+
+    #[test]
+    fn single_oversized_donation_emits_one_evicted_per_victim() {
+        // budget=300, fill with three 100-byte items, then donate a 250-byte item.
+        // Expect 2 Evicted events + 1 Donated (for the big item).
+        let mut pool = WarmStatePool::new(300);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+        let node_big = NodeId::Value(ValueCellId::new("T", "big"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_c.clone(), OpaqueState::new(0u8, 100));
+        pool.drain_events(); // clear setup events
+
+        pool.donate(node_big.clone(), OpaqueState::new(0u8, 250));
+        let events = pool.drain_events();
+
+        // 2 Evicted + 1 Donated
+        let evicted_count = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Evicted { .. }))
+            .count();
+        let donated_count = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Donated { .. }))
+            .count();
+        assert_eq!(evicted_count, 2, "expected 2 evictions for the oversized donation");
+        assert_eq!(donated_count, 1, "expected 1 donated event");
+        // The last event should be Donated (evictions precede the donation)
+        assert!(
+            matches!(events.last(), Some(WarmPoolEvent::Donated { .. })),
+            "donation event must follow eviction events"
+        );
+    }
+
+    #[test]
+    fn drain_events_clears_buffer() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node, OpaqueState::new(0u8, 10));
+
+        let first_drain = pool.drain_events();
+        assert!(!first_drain.is_empty(), "first drain should have events");
+
+        let second_drain = pool.drain_events();
+        assert!(second_drain.is_empty(), "second drain should be empty after clearing");
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn unlimited_pool_still_emits_donated_but_never_evicted() {
+        // unlimited() pool: donate 3 items larger than DEFAULT_BUDGET_BYTES combined.
+        // Expect 3 Donated events and 0 Evicted events.
+        let mut pool = WarmStatePool::unlimited();
+        let gib: usize = 1 << 30; // 1 GiB > DEFAULT_BUDGET_BYTES / 3
+
+        for i in 0..3usize {
+            let node = NodeId::Value(ValueCellId::new("T", format!("n{i}")));
+            pool.donate(node, OpaqueState::new(0u8, gib));
+        }
+
+        let events = pool.drain_events();
+        let donated = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Donated { .. }))
+            .count();
+        let evicted = events
+            .iter()
+            .filter(|e| matches!(e, WarmPoolEvent::Evicted { .. }))
+            .count();
+        assert_eq!(donated, 3, "unlimited pool should emit 3 Donated events");
+        assert_eq!(evicted, 0, "unlimited pool must never emit Evicted events");
+    }
+
     #[test]
     fn donate_with_cost_clamps_non_finite_cost() {
         // NaN, ±inf, and negative costs must be clamped to 0.0 at entry so that
