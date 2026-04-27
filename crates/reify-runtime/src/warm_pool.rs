@@ -437,7 +437,7 @@ mod tests {
         let mut pool = WarmStatePool::unlimited();
         let gib: usize = 1 << 30;
         let nodes: Vec<NodeId> = (0..5)
-            .map(|i| NodeId::Value(ValueCellId::new("T", &format!("n{i}"))))
+            .map(|i| NodeId::Value(ValueCellId::new("T", format!("n{i}"))))
             .collect();
 
         for node in &nodes {

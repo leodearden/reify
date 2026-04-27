@@ -2917,20 +2917,20 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
 /// - Module B: x=1mm.
 /// - edit_source(B) Phase1→Wave2→Phase3 sequence:
 ///   (1) Phase 1 fires (guard_cell reads x; x changed in module_b → guard_cell
-///       in dirty_cone).  Evaluates guard with x=1mm, depth=8mm (stale) →
-///       (1>0)&&(8>5) = true.  old_guard_val=Bool(false) ≠ Bool(true) → Phase 1
-///       re-elaborates.  phase1_reelaborated = {guard_cell: Bool(true)}.
-///       m=99mm (members active), n=Undef (else_members deactivated).
+///   in dirty_cone).  Evaluates guard with x=1mm, depth=8mm (stale) →
+///   (1>0)&&(8>5) = true.  old_guard_val=Bool(false) ≠ Bool(true) → Phase 1
+///   re-elaborates.  phase1_reelaborated = {guard_cell: Bool(true)}.
+///   m=99mm (members active), n=Undef (else_members deactivated).
 ///   (2) Solver: constraint `depth >= x` reads x (dirty) → solver runs → depth=3mm.
 ///   (3) Wave2: guard_cell reads depth (in all_resolved_ids) → re-evaluates
-///       guard: (1>0)&&(3>5) = false.  Guard flips Bool(true) → Bool(false).
+///   guard: (1>0)&&(3>5) = false.  Guard flips Bool(true) → Bool(false).
 ///   (4) reapply_phase1_deactivations: guard_val=Bool(false) → members (m) are
-///       inactive → m re-deactivated to Undef.  else_members (n) are active →
-///       skipped (n stays Undef from Phase 1's deactivation).
+///   inactive → m re-deactivated to Undef.  else_members (n) are active →
+///   skipped (n stays Undef from Phase 1's deactivation).
 ///   (5) Phase 3 (OLD, buggy): phase1_reelaborated.contains(guard_cell) → true
-///       → continue → n stays Undef.  BUG: guard flipped after Phase 1.
+///   → continue → n stays Undef.  BUG: guard flipped after Phase 1.
 ///   (5) Phase 3 (FIXED): phase1_reelaborated.get(guard_cell) = Some(&Bool(true))
-///       ≠ current Bool(false) → falls through to full re-elaboration → n=42mm.
+///   ≠ current Bool(false) → falls through to full re-elaboration → n=42mm.
 ///
 /// Expected: m=Undef, n=42mm (Determined), matches cold eval of module_b.
 ///
