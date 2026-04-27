@@ -2361,6 +2361,61 @@ mod tests {
         );
     }
 
+    // --- record_evaluation_with_freshness tests (task #2328, step-7) ---
+
+    /// Verifies that record_evaluation_with_freshness writes the supplied freshness
+    /// (not hardcoded Final) and that early-cutoff still updates freshness in place.
+    #[test]
+    fn record_evaluation_with_freshness_writes_supplied_freshness_and_preserves_early_cutoff() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+
+        // Sub-case 1: cold start with Intermediate freshness
+        let result1 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let outcome1 = store.record_evaluation_with_freshness(
+            node.clone(),
+            result1,
+            VersionId(1),
+            DependencyTrace::default(),
+            Freshness::Intermediate { generation: 5 },
+        );
+        assert_eq!(outcome1, EvalOutcome::Changed, "cold start must return Changed");
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 5 },
+            "freshness must be the supplied Intermediate, not Final"
+        );
+
+        // Sub-case 2: early cutoff (same value, new version, different supplied freshness)
+        let result2 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let outcome2 = store.record_evaluation_with_freshness(
+            node.clone(),
+            result2,
+            VersionId(2),
+            DependencyTrace::default(),
+            Freshness::Intermediate { generation: 9 },
+        );
+        assert_eq!(
+            outcome2,
+            EvalOutcome::Unchanged,
+            "same value content hash must return Unchanged (early cutoff)"
+        );
+        // Early-cutoff path must still update freshness to the new supplied value
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 9 },
+            "early-cutoff must overwrite freshness with the newly supplied value"
+        );
+        // basis_version must be updated even on early cutoff
+        assert_eq!(
+            store.get(&node).unwrap().basis_version,
+            VersionId(2),
+            "basis_version must be updated even on early cutoff"
+        );
+    }
+
     // --- derive_output_freshness_for_node tests (task #2328, step-5) ---
 
     /// Verifies that derive_output_freshness_for_node walks the cached dependency_trace.reads
