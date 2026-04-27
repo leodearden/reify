@@ -16,9 +16,9 @@ use reify_doc::cross_refs::CrossRefs;
 ///
 /// Both index maps use [`std::collections::BTreeMap`] for deterministic key order.
 /// Internally accumulates conformer and container names into [`BTreeSet`]s, which
-/// provide structural deduplication and deterministic (alphabetical) ordering in a
-/// single pass.  The sets are materialised to `Vec<String>` at the public boundary
-/// so the [`CrossRefs`] contract is preserved.
+/// provide structural deduplication and deterministic (alphabetical) ordering
+/// without a separate post-process step.  The sets are materialised to
+/// `Vec<String>` at the public boundary so the [`CrossRefs`] contract is preserved.
 pub fn build_cross_refs(templates: &[TopologyTemplate]) -> CrossRefs {
     let mut trait_acc: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut entity_acc: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
