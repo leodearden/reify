@@ -539,6 +539,19 @@ structure def Rubber : ElasticallyDeformable {
         "Rubber should have 'ElasticallyDeformable' trait bound, got: {:?}",
         template.trait_bounds
     );
+
+    // Inherited from Flexible: `stiffness > 0` and `max_deflection > 0`.
+    assert_constraint_op(template, "stiffness", BinOp::Gt);
+    assert_constraint_op(template, "max_deflection", BinOp::Gt);
+    // ElasticallyDeformable's own constraint: `max_elastic_strain > 0`.
+    assert_constraint_op(template, "max_elastic_strain", BinOp::Gt);
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "expected exactly 3 constraints from ElasticallyDeformable+Flexible \
+         (stiffness > 0, max_deflection > 0, max_elastic_strain > 0), got {}",
+        template.constraints.len()
+    );
 }
 
 // ─── step-13: constraint injection from Physical ─────────────────────────────
