@@ -74,20 +74,28 @@ pub struct CrossRefs {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::CrossRefs;
 
+    /// Verify serde round-trips on non-empty data and that `#[serde(default)]`
+    /// allows deserializing a bare `{}` without explicit field values.
+    ///
+    /// Behavioural tests for the population function (`build_cross_refs`) live in
+    /// the `reify-doc-build` crate where the compiler dependency is acceptable.
     #[test]
-    fn cross_refs_default_has_empty_maps() {
-        let r = CrossRefs::default();
-        assert!(r.trait_to_conformers.is_empty());
-        assert!(r.entity_to_containers.is_empty());
-    }
+    fn cross_refs_serde_round_trip_with_populated_maps() {
+        let mut r = CrossRefs::default();
+        r.trait_to_conformers
+            .insert("Rigid".to_string(), vec!["Bolt".to_string(), "Spring".to_string()]);
+        r.entity_to_containers
+            .insert("Wheel".to_string(), vec!["Robot".to_string()]);
 
-    #[test]
-    fn cross_refs_default_serde_round_trip() {
-        let original = CrossRefs::default();
-        let json = serde_json::to_string(&original).expect("serialize");
+        let json = serde_json::to_string(&r).expect("serialize");
         let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(original, roundtripped);
+        assert_eq!(r, roundtripped);
+
+        // Deserializing an empty JSON object must yield CrossRefs::default(),
+        // guarding against accidental removal of #[serde(default)].
+        let from_empty: CrossRefs = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(from_empty, CrossRefs::default());
     }
 }
