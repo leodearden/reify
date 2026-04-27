@@ -498,6 +498,9 @@ mod tests {
             MapLiteralSecondValue,
             AdHocSelectorSecondArg,
             MatchSecondArmBody,
+            // Covers the trailing `walk_expr_depth(cursor, …, next)` at the
+            // leaf-root recursion after the iterative MemberAccess chain walk.
+            MemberAccessLeafRoot,
         }
 
         const ALL_ARMS: &[ArmKind] = &[
@@ -533,6 +536,7 @@ mod tests {
             ArmKind::MapLiteralSecondValue,
             ArmKind::AdHocSelectorSecondArg,
             ArmKind::MatchSecondArmBody,
+            ArmKind::MemberAccessLeafRoot,
         ];
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
@@ -698,8 +702,34 @@ mod tests {
                         },
                     ],
                 },
+                // The UnOp interleave acts as a chain-walk terminator: the
+                // iterative `while let MemberAccess` loop ends at the UnOp,
+                // forcing the trailing `walk_expr_depth(cursor, …, next)` to
+                // run once per layer (not once per homogeneous MA chain).
+                ArmKind::MemberAccessLeafRoot => ExprKind::MemberAccess {
+                    object: Box::new(Expr {
+                        kind: ExprKind::UnOp {
+                            op: "-".to_string(),
+                            operand: Box::new(leaf),
+                        },
+                        span,
+                    }),
+                    member: "f".to_string(),
+                },
             };
             Expr { kind, span }
+        }
+
+        // Returns how many levels of depth each wrap layer contributes.
+        // Used to compute the minimum wrap count needed to trip MAX_EXPR_DEPTH.
+        fn depth_per_layer(arm: ArmKind) -> usize {
+            match arm {
+                // Each MemberAccessLeafRoot layer contributes 2: one from the
+                // trailing `walk_expr_depth(cursor, …, next)` after the chain
+                // walk, and one from the interleaved UnOp's own recursion.
+                ArmKind::MemberAccessLeafRoot => 2,
+                _ => 1,
+            }
         }
 
         let span = SourceSpan::empty(0);
@@ -725,7 +755,7 @@ mod tests {
                 kind: ExprKind::NumberLiteral(0.0),
                 span,
             };
-            for _ in 0..(MAX_EXPR_DEPTH + 1) {
+            for _ in 0..(MAX_EXPR_DEPTH / depth_per_layer(arm) + 1) {
                 expr = wrap_in_arm(arm, expr, span);
             }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
