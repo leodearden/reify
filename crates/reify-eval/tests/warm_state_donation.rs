@@ -33,14 +33,11 @@
 //!   needed in the donation/checkout path).
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::cache::{CachedResult, NodeCache, NodeId};
-use reify_eval::deps::DependencyTrace;
+use reify_eval::cache::NodeId;
 use reify_eval::warm_pool::WarmStatePool;
 use reify_eval::Engine;
 use reify_test_support::{bracket_compiled_module, parse_and_compile};
-use reify_types::{
-    Freshness, GeometryHandleId, OpaqueState, RealizationNodeId, ValueCellId, VersionId,
-};
+use reify_types::{OpaqueState, RealizationNodeId, ValueCellId};
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -354,18 +351,14 @@ fn donation_hook_fires_for_realization_removal() {
 
     // (2) Manually create a cache entry for the Realization. `engine_build.rs`
     //     creates these on demand at build()/check() time — not at eval() —
-    //     so we synthesize one here for the donation hook to find. Use a
-    //     `GeometryHandle` cached result with a placeholder handle id; the
-    //     test only cares about the `warm_state` slot, not the result payload.
-    engine.cache_store_mut().put(
-        realization_node.clone(),
-        NodeCache::new(
-            CachedResult::GeometryHandle(GeometryHandleId(0)),
-            Freshness::Final,
-            DependencyTrace::default(),
-            VersionId(0),
-        ),
-    );
+    //     so we synthesize one here for the donation hook to find. The helper
+    //     `insert_synthetic_realization_entry` centralizes the schema-coupled
+    //     construction (see its docstring in cache.rs for the contract: the
+    //     entry exists under NodeId::Realization(rid) and accepts
+    //     donate_warm_state; the specific CachedResult variant is incidental).
+    engine
+        .cache_store_mut()
+        .insert_synthetic_realization_entry(&rid);
 
     // (3) Inject an 8-byte 0xBEEF warm state into the cache entry.
     let donated = engine
