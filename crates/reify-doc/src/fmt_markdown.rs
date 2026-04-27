@@ -51,6 +51,48 @@ impl<'a> CrossRefIndex<'a> {
     }
 }
 
+/// A precomputed name-to-kind-and-module index used by link resolvers in
+/// split-mode rendering.
+///
+/// `by_name` maps each item name to the list of `(kind_slug, module_path)`
+/// pairs that declare an item with that name.  A name appearing in exactly one
+/// location can be resolved unambiguously via [`NameIndex::unique_resolve`];
+/// names that appear in multiple modules (or not at all) fall back to the
+/// caller's default (typically the fragment form `#Name`).
+struct NameIndex<'a> {
+    by_name: BTreeMap<&'a str, Vec<(&'static str, &'a str)>>,
+}
+
+impl<'a> NameIndex<'a> {
+    /// Walk all modules in `model` and build the index.
+    fn new(model: &'a DocModel) -> Self {
+        let mut by_name: BTreeMap<&'a str, Vec<(&'static str, &'a str)>> = BTreeMap::new();
+        for module in &model.modules {
+            for item in &module.items {
+                let name = item_name(item);
+                let kind = item_kind_slug(item);
+                by_name
+                    .entry(name)
+                    .or_default()
+                    .push((kind, module.path.as_str()));
+            }
+        }
+        Self { by_name }
+    }
+
+    /// Returns `Some((kind_slug, module_path))` only when `name` maps to
+    /// exactly one entry (unambiguous resolution).  Returns `None` on miss or
+    /// multi-module name collision.
+    fn unique_resolve(&self, name: &str) -> Option<(&'static str, &'a str)> {
+        let entries = self.by_name.get(name)?;
+        if entries.len() == 1 {
+            Some(entries[0])
+        } else {
+            None
+        }
+    }
+}
+
 /// Knobs controlling how the formatter emits Markdown.
 ///
 /// `split == false` (the default) produces a single concatenated Markdown
@@ -117,7 +159,9 @@ fn render_single(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> String 
             .iter()
             .partition(|i| find_annotation(item_annotations(i), "test").is_none());
         // Table of contents — sits between the H1/doc and the first item H2.
-        render_toc(&mut out, &non_tests);
+        // Single-file mode: all items live in the same document so fragment
+        // links (`#Name`) are correct and stable.
+        render_toc(&mut out, &non_tests, &|name: &str| format!("#{name}"));
         for item in &non_tests {
             render_item(&mut out, item, xrefs);
         }
@@ -152,14 +196,22 @@ fn item_group(item: &ItemDoc) -> &'static str {
     }
 }
 
-/// Render the table of contents under a `## Contents` H2, with one `### {Kind}`
-/// H3 per non-empty group and a bullet list of anchor links inside.  Within a
-/// group, items sort alphabetically by name.  Empty groups are omitted.  No-op
-/// when `items` is empty.
-fn render_toc(out: &mut String, items: &[&ItemDoc]) {
-    if items.is_empty() {
-        return;
-    }
+/// Render only the `### {Kind}` groups with their bullet link lists.
+///
+/// Emits one H3 per non-empty group with alphabetically-sorted items inside.
+/// Empty groups are omitted.  Each bullet uses `resolve_link(name)` as the
+/// link target, so callers control whether that is a fragment (`#Name`), a
+/// sibling filename (`kind-Name.md`), or a module-qualified path
+/// (`module/kind-Name.md`).
+///
+/// This inner helper is called by [`render_toc`] (which wraps it with
+/// `## Contents`) and — in multi-module split mode — by `render_split`
+/// directly (which wraps it with `## {module}` instead of `## Contents`).
+fn render_toc_groups(
+    out: &mut String,
+    items: &[&ItemDoc],
+    resolve_link: &dyn Fn(&str) -> String,
+) {
     // Fixed group order matching the PRD spec.
     const GROUPS: &[&str] = &[
         "Traits",
@@ -169,8 +221,6 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
         "Functions",
         "Constants",
     ];
-
-    out.push_str("## Contents\n\n");
     for &group in GROUPS {
         let mut in_group: Vec<&&ItemDoc> =
             items.iter().filter(|i| item_group(i) == group).collect();
@@ -185,12 +235,30 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
             let n = item_name(it);
             out.push_str("- [`");
             out.push_str(n);
-            out.push_str("`](#");
-            out.push_str(n);
+            out.push_str("`](");
+            out.push_str(&resolve_link(n));
             out.push_str(")\n");
         }
         out.push('\n');
     }
+}
+
+/// Render the table of contents under a `## Contents` H2, delegating to
+/// [`render_toc_groups`] for the kind-grouped bullet lists.
+///
+/// `resolve_link` maps each item name to the link target string — use a
+/// fragment resolver (`|n| format!("#{n}")`) for single-file mode, or a
+/// filename resolver for split-mode index pages.  No-op when `items` is empty.
+fn render_toc(
+    out: &mut String,
+    items: &[&ItemDoc],
+    resolve_link: &dyn Fn(&str) -> String,
+) {
+    if items.is_empty() {
+        return;
+    }
+    out.push_str("## Contents\n\n");
+    render_toc_groups(out, items, resolve_link);
 }
 
 /// Emit a doc-comment string as one or more Markdown paragraphs.
@@ -766,6 +834,10 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
     let mut files: Vec<(String, String)> = Vec::new();
     let multi_module = model.modules.len() > 1;
 
+    // Build a name→(kind, module) index once so resolver closures below can
+    // look up unique file targets without re-scanning the model each call.
+    let name_index = NameIndex::new(model);
+
     // Build the index body first: per-module H1 (and doc) followed by the TOC
     // of all (non-test) items declared in that module.  Tests are linked from
     // the per-item files only, mirroring the single-mode "## Tests" trailer.
@@ -782,7 +854,20 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             .iter()
             .filter(|i| find_annotation(item_annotations(i), "test").is_none())
             .collect();
-        render_toc(&mut index_body, &items_for_toc);
+        // Index-rooted resolver: single-module → `{kind}-{name}.md` sibling;
+        // multi-module → fragment fallback for now (step 6 restructures this).
+        if multi_module {
+            render_toc(&mut index_body, &items_for_toc, &|name: &str| {
+                format!("#{name}")
+            });
+        } else {
+            render_toc(&mut index_body, &items_for_toc, &|name: &str| {
+                match name_index.unique_resolve(name) {
+                    Some((kind, _)) => format!("{kind}-{name}.md"),
+                    None => format!("#{name}"),
+                }
+            });
+        }
     }
     files.push(("index.md".to_string(), index_body));
 
