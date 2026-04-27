@@ -304,10 +304,18 @@ fn exists_kleene_truth_table_over_list_and_set() {
         ("empty", vec![], Value::Bool(false)),
     ];
 
+    // x_id and predicate are invariant across all (kind, row) iterations.
+    let x_id = ValueCellId::new("$quant0.S", "x");
+    // Predicate: x > 0
+    let predicate = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+
     for kind in [CollKind::List, CollKind::Set] {
         for (name, elements, expected) in &rows {
-            let x_id = ValueCellId::new("$quant0.S", "x");
-
             // Build element expressions: Some(i) → Int literal, None → Undef literal
             let elem_exprs: Vec<CompiledExpr> = elements
                 .iter()
@@ -327,16 +335,13 @@ fn exists_kleene_truth_table_over_list_and_set() {
                 }
             };
 
-            // Predicate: x > 0
-            let predicate = CompiledExpr::binop(
-                BinOp::Gt,
-                CompiledExpr::value_ref(x_id.clone(), Type::Int),
-                CompiledExpr::literal(Value::Int(0), Type::Int),
-                Type::Bool,
+            let expr = make_quantifier(
+                QuantifierKind::Exists,
+                "x",
+                x_id.clone(),
+                collection,
+                predicate.clone(),
             );
-
-            let expr =
-                make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
 
             let values = ValueMap::new();
             let result = eval_expr(&expr, &EvalContext::simple(&values));
