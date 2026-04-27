@@ -19,6 +19,8 @@
 //   where-block, determinacy predicates, forall/exists quantifiers, minimize,
 //   @test structures (sub + self + constraint defs), purpose with forall.
 
+#version(0.1)
+
 // ── Type alias ───────────────────────────────────────────────────────────────
 
 /// Pressure is Force per Area (SI unit: Pa).

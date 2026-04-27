@@ -281,7 +281,7 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 // under f64 Display, yielding `"0"` / `"1"`; treat those as
                 // MAJOR with MINOR=0 so `#version(0.0)` parses cleanly.
                 let rendered = format!("{n}");
-                match rendered.split_once('.') {
+                let result = match rendered.split_once('.') {
                     Some((maj_s, min_s)) => match (maj_s.parse::<u16>(), min_s.parse::<u16>()) {
                         (Ok(maj), Ok(min)) => Some((maj, min)),
                         _ => None,
@@ -290,28 +290,52 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         Ok(maj) => Some((maj, 0)),
                         Err(_) => None,
                     },
+                };
+                if result.is_none() {
+                    // Number that fails to parse as u16.u16 (negative,
+                    // exponent form, > 65535, etc.).
+                    module.diagnostics.push(
+                        Diagnostic::warning("#version: expected MAJOR.MINOR (e.g. 0.1); ignored")
+                            .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                    );
                 }
-                // Malformed Number-form parses fall through silently for now;
-                // step-12 will add the warning.
+                result
             }
             [PragmaArg::Bare(PragmaValue::String(s))] => {
                 // Strict MAJOR.MINOR — exactly two components, each parseable
                 // as u16. This is the form to use when the Number form would
                 // round-trip ambiguously (e.g. `0.10` vs `0.1`).
                 let parts: Vec<&str> = s.split('.').collect();
-                if parts.len() == 2 {
+                let result = if parts.len() == 2 {
                     match (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
                         (Ok(maj), Ok(min)) => Some((maj, min)),
                         _ => None,
                     }
                 } else {
                     None
+                };
+                if result.is_none() {
+                    // String that didn't split into exactly 2 u16 components
+                    // (e.g. "foo", "0.1.2", "a.b").
+                    module.diagnostics.push(
+                        Diagnostic::warning("#version: expected MAJOR.MINOR (e.g. 0.1); ignored")
+                            .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                    );
                 }
-                // Malformed String-form parses fall through silently for now;
-                // step-12 will add the warning.
+                result
             }
             _ => {
-                // Other shapes are handled in step-12 (malformed catch-all).
+                // Catch-all for zero args, multiple args, bare Bool/Ident/
+                // Quantity, and KeyValue. The wording is more explicit than
+                // the form-specific arms because the user hasn't picked a
+                // form yet.
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#version: expected MAJOR.MINOR number or string \
+                         (e.g. #version(0.1) or #version(\"0.1\")); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
                 None
             }
         };
