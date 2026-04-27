@@ -36,6 +36,17 @@ use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 /// chain `a.b.c.d` is OK; `a.b.c.d.e` (length 5) warns.
 pub(crate) const DEEP_DOT_CHAIN_THRESHOLD: usize = 4;
 
+/// Stack-safety bound on the structural recursion in [`walk_expr`].
+///
+/// The chain-counting `while let` loop in the `MemberAccess` arm is iterative
+/// and unbounded (a single chain of N segments is one frame). The exposure is
+/// the structural recursion through children of every other `ExprKind` variant
+/// — a deeply-nested `Conditional`/`BinOp`/`Lambda` tree, possibly synthesised
+/// by a fuzzer or a future parser bug, would burn one Rust frame per level.
+/// 256 is generous (typical hand-written code never exceeds ~20) and stops well
+/// short of overflowing default Rust stacks.
+const MAX_EXPR_DEPTH: usize = 256;
+
 /// Visit every expression-bearing position in `parsed` and emit a Warning for
 /// each maximal `MemberAccess` chain whose length exceeds
 /// [`DEEP_DOT_CHAIN_THRESHOLD`].
@@ -231,21 +242,40 @@ fn walk_members(
 ///
 /// For non-`MemberAccess` expressions, recurse into every `Box<Expr>` /
 /// `Vec<Expr>` child.
+///
+/// Recursion into expression children is bounded by [`MAX_EXPR_DEPTH`] for
+/// stack safety on pathological input (see the constant doc).
 fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
+    walk_expr_depth(expr, diagnostics, 0);
+}
+
+fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize) {
+    if depth > MAX_EXPR_DEPTH {
+        return;
+    }
+    let next = depth + 1;
     match &expr.kind {
-        ExprKind::MemberAccess { object, .. } => {
-            // Count chain length: 1 (root) + N (member-hops walked while
-            // `object` remains `MemberAccess`).
-            let mut hops: usize = 1; // for the outermost `.member`
+        ExprKind::MemberAccess { object, member } => {
+            // Count chain length AND collect member names in a single walk so
+            // `render_chain_text` doesn't have to re-traverse the chain.
+            // Members are pushed outermost-first: index 0 is the outermost
+            // `.member`, the last entry is the innermost member-hop directly
+            // above the root.
+            let mut members_outer_to_inner: Vec<&str> = vec![member.as_str()];
             let mut cursor: &Expr = object;
-            while let ExprKind::MemberAccess { object: inner, .. } = &cursor.kind {
-                hops += 1;
+            while let ExprKind::MemberAccess {
+                object: inner,
+                member: m,
+            } = &cursor.kind
+            {
+                members_outer_to_inner.push(m.as_str());
                 cursor = inner;
             }
             // `cursor` now points at the chain's leaf root (a non-MemberAccess).
-            let chain_len = 1 + hops; // 1 for root + N member-hops
+            // chain_len = 1 (root) + N (member-hops)
+            let chain_len = 1 + members_outer_to_inner.len();
             if chain_len > DEEP_DOT_CHAIN_THRESHOLD {
-                let chain_text = render_chain_text(expr);
+                let chain_text = render_chain_text(cursor, &members_outer_to_inner);
                 diagnostics.push(
                     Diagnostic::warning(format!(
                         "deep dot-chain (depth {chain_len}): {chain_text} \
@@ -255,33 +285,35 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
                     .with_label(DiagnosticLabel::new(expr.span, "deep dot-chain")),
                 );
             }
-            // Recurse into the chain's leaf root for nested chains.
-            walk_expr(cursor, diagnostics);
+            // Recurse into the chain's leaf root for nested chains. The chain
+            // walk above is iterative (one frame regardless of N), so the
+            // depth bound here only applies to the structural descent below.
+            walk_expr_depth(cursor, diagnostics, next);
         }
         ExprKind::BinOp { left, right, .. } => {
-            walk_expr(left, diagnostics);
-            walk_expr(right, diagnostics);
+            walk_expr_depth(left, diagnostics, next);
+            walk_expr_depth(right, diagnostics, next);
         }
-        ExprKind::UnOp { operand, .. } => walk_expr(operand, diagnostics),
+        ExprKind::UnOp { operand, .. } => walk_expr_depth(operand, diagnostics, next),
         ExprKind::FunctionCall { args, .. } => {
             for a in args {
-                walk_expr(a, diagnostics);
+                walk_expr_depth(a, diagnostics, next);
             }
         }
         ExprKind::Conditional { condition, then_branch, else_branch } => {
-            walk_expr(condition, diagnostics);
-            walk_expr(then_branch, diagnostics);
-            walk_expr(else_branch, diagnostics);
+            walk_expr_depth(condition, diagnostics, next);
+            walk_expr_depth(then_branch, diagnostics, next);
+            walk_expr_depth(else_branch, diagnostics, next);
         }
         ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
             for e in elems {
-                walk_expr(e, diagnostics);
+                walk_expr_depth(e, diagnostics, next);
             }
         }
         ExprKind::MapLiteral(entries) => {
             for (k, v) in entries {
-                walk_expr(k, diagnostics);
-                walk_expr(v, diagnostics);
+                walk_expr_depth(k, diagnostics, next);
+                walk_expr_depth(v, diagnostics, next);
             }
         }
         ExprKind::IndexAccess { object, index } => {
@@ -290,37 +322,39 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
             // still recurse into BOTH children so deep chains nested inside
             // (e.g. a long chain inside `index`) are detected.
             // Verified end-to-end by `index_access_resets_chain_root_emits_one_warning_post_index`.
-            walk_expr(object, diagnostics);
-            walk_expr(index, diagnostics);
+            walk_expr_depth(object, diagnostics, next);
+            walk_expr_depth(index, diagnostics, next);
         }
         ExprKind::Match { discriminant, arms } => {
-            walk_expr(discriminant, diagnostics);
+            walk_expr_depth(discriminant, diagnostics, next);
             for arm in arms {
-                walk_expr(&arm.body, diagnostics);
+                walk_expr_depth(&arm.body, diagnostics, next);
             }
         }
-        ExprKind::Lambda { body, .. } => walk_expr(body, diagnostics),
+        ExprKind::Lambda { body, .. } => walk_expr_depth(body, diagnostics, next),
         ExprKind::Quantifier { collection, predicate, .. } => {
-            walk_expr(collection, diagnostics);
-            walk_expr(predicate, diagnostics);
+            walk_expr_depth(collection, diagnostics, next);
+            walk_expr_depth(predicate, diagnostics, next);
         }
         ExprKind::AdHocSelector { base, args, .. } => {
-            walk_expr(base, diagnostics);
+            walk_expr_depth(base, diagnostics, next);
             for a in args {
-                walk_expr(a, diagnostics);
+                walk_expr_depth(a, diagnostics, next);
             }
         }
-        ExprKind::QualifiedAccess { qualifier, .. } => walk_expr(qualifier, diagnostics),
+        ExprKind::QualifiedAccess { qualifier, .. } => {
+            walk_expr_depth(qualifier, diagnostics, next)
+        }
         ExprKind::InstanceQualifiedAccess { object, qualified } => {
-            walk_expr(object, diagnostics);
-            walk_expr(qualified, diagnostics);
+            walk_expr_depth(object, diagnostics, next);
+            walk_expr_depth(qualified, diagnostics, next);
         }
         ExprKind::Range { lower, upper, .. } => {
             if let Some(l) = lower {
-                walk_expr(l, diagnostics);
+                walk_expr_depth(l, diagnostics, next);
             }
             if let Some(u) = upper {
-                walk_expr(u, diagnostics);
+                walk_expr_depth(u, diagnostics, next);
             }
         }
         // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
@@ -338,10 +372,12 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
-/// Render a chain text (e.g. `"a.b.c.d.e"`) from an outermost `MemberAccess`.
+/// Render a chain text (e.g. `"a.b.c.d.e"`) from a pre-collected member list
+/// and the chain's leaf root.
 ///
-/// Walks `outermost` from the outermost `MemberAccess` down to its leaf root,
-/// collecting member names in reverse order (outermost-first), then formats
+/// `members_outer_to_inner` is the chain's `.field` hops in outermost-first
+/// order — exactly what the counting loop in [`walk_expr_depth`]'s
+/// `MemberAccess` arm collects. The output format is
 /// `"<root_repr>.<m_innermost>.....<m_outermost>"`.
 ///
 /// Root rendering:
@@ -352,24 +388,11 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
 /// The `<expr>` placeholder is a deliberate v0.1 simplification — the
 /// diagnostic span ALREADY covers the entire chain in source so editor
 /// renderings (LSP/MCP) display the user's literal text via the squiggle.
-///
-/// # Panics
-///
-/// Panics in debug builds if `outermost.kind` is not `ExprKind::MemberAccess`,
-/// since the caller (`walk_expr`) only invokes this from the MemberAccess arm.
-fn render_chain_text(outermost: &Expr) -> String {
-    let mut members_outer_to_inner: Vec<&str> = Vec::new();
-    let mut cursor: &Expr = outermost;
-    while let ExprKind::MemberAccess { object, member } = &cursor.kind {
-        members_outer_to_inner.push(member.as_str());
-        cursor = object;
-    }
-    debug_assert!(
-        !members_outer_to_inner.is_empty(),
-        "render_chain_text: outermost expression must be MemberAccess"
-    );
-
-    let root_repr: String = match &cursor.kind {
+/// Bare-text consumers (CLI output, tools that print `Diagnostic.message`
+/// without span context) will see the placeholder; pinned by
+/// `index_access_resets_chain_root_emits_one_warning_post_index`.
+fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
+    let root_repr: String = match &root.kind {
         ExprKind::Ident(name) => name.clone(),
         ExprKind::EnumAccess { type_name, variant } => format!("{type_name}.{variant}"),
         _ => "<expr>".to_string(),
