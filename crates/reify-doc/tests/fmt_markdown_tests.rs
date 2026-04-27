@@ -699,6 +699,50 @@ fn constraint_def_body_renders_expr() {
     );
 }
 
+/// ConstraintDef body uses safe inline-code fencing when `expr_repr` contains
+/// a literal backtick: the fence must be at least two backticks long so the
+/// embedded backtick does not terminate the span.  Input starts with `` ` ``
+/// so a space pad is also required inside the fence.
+#[test]
+fn constraint_def_body_uses_safe_inline_code_fence() {
+    // "`inner` && true": longest backtick run = 1, starts with backtick.
+    // Expected fence_len = 2, needs_pad = true → "`` `inner` && true ``".
+    let expr_repr = "`inner` && true";
+    let item = ItemDoc::ConstraintDef {
+        name: "safe_check".into(),
+        doc: None,
+        is_pub: false,
+        annotations: vec![],
+        pragmas: vec![],
+        expr_repr: expr_repr.into(),
+    };
+    let out = render_one_item(item);
+
+    // (a) The verbatim value must appear in the output.
+    assert!(
+        out.contains(expr_repr),
+        "expr_repr not verbatim in output:\n{out}"
+    );
+    // (b) The unsafe single-backtick form must NOT be present.
+    let bad_form = format!("`{expr_repr}`");
+    assert!(
+        !out.contains(&bad_form),
+        "output uses single-backtick form which would break CommonMark:\n{out}"
+    );
+    // (c) The correctly-padded double-fence form must be present.
+    let fenced = format!("`` {expr_repr} ``");
+    assert!(
+        out.contains(&fenced),
+        "output does not contain correctly-fenced form `{fenced}`:\n{out}"
+    );
+    // (d) The double-backtick fence appears exactly twice (open + close).
+    assert_eq!(
+        out.matches("``").count(),
+        2,
+        "expected exactly two ``-fence occurrences:\n{out}"
+    );
+}
+
 /// `@deprecated("use Foo instead")` on an item renders a blockquote callout
 /// `> **Deprecated:** use Foo instead` *between* the H2 heading and the
 /// doc-comment paragraph (or kind-specific body).
