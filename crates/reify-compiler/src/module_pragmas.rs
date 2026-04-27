@@ -9,10 +9,12 @@
 //! ([`crate::compile_builder::pre_pass`]) only warns on UNKNOWN module-pragma names;
 //! the two passes run at different phases and emit non-overlapping diagnostic sets.
 
+use std::collections::BTreeMap;
+
 use reify_syntax::{ParsedModule, Pragma, PragmaArg, PragmaValue};
 use reify_types::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan, Value};
 
-use crate::types::CompiledModule;
+use crate::types::{CompiledModule, SolverPragma};
 use crate::units::unit_to_scalar;
 
 /// Apply every known module-level pragma to the assembled `CompiledModule`,
@@ -20,7 +22,9 @@ use crate::units::unit_to_scalar;
 pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledModule) {
     apply_precision_pragma(parsed, module);
     apply_version_pragma(parsed, module);
+    apply_solver_pragma(parsed, module);
     warn_block_level_precision(module);
+    warn_block_level_solver(module);
 }
 
 /// The maximum target language version this compiler can compile.
@@ -32,10 +36,13 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 /// specifies the wording template, not a literal version string.
 const COMPILER_SUPPORTED_VERSION: (u16, u16) = (0, 1);
 
-/// Append the spans of every `#precision` pragma in `pragmas` to `out`.
-fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
+/// Append the spans of every pragma whose `name` matches `target_name` in
+/// `pragmas` to `out`. Shared by `warn_block_level_precision` and
+/// `warn_block_level_solver` so a future container-set change updates both
+/// passes from a single edit.
+fn collect_named_pragma_spans(target_name: &str, pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
     for pragma in pragmas {
-        if pragma.name == "precision" {
+        if pragma.name == target_name {
             out.push(pragma.span);
         }
     }
@@ -56,22 +63,23 @@ fn collect_precision_spans(pragmas: &[Pragma], out: &mut Vec<SourceSpan>) {
 /// fields are: `templates` (`TopologyTemplate`), `trait_defs` (`CompiledTrait`),
 /// `compiled_purposes` (`CompiledPurpose`), and `constraint_defs`
 /// (`CompiledConstraintDef`). If a future PR adds a fifth pragma-bearing
-/// container (e.g. `compiled_functions`), append a matching loop below or the
-/// new container will silently bypass the deferred-to-v0.2 warning.
+/// container (e.g. `compiled_functions`), append a matching loop below — and
+/// also update the sibling `warn_block_level_solver`, which walks the same
+/// four containers for `#solver`.
 fn warn_block_level_precision(module: &mut CompiledModule) {
     let mut spans: Vec<SourceSpan> = Vec::new();
 
     for tmpl in &module.templates {
-        collect_precision_spans(&tmpl.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &tmpl.pragmas, &mut spans);
     }
     for trait_def in &module.trait_defs {
-        collect_precision_spans(&trait_def.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &trait_def.pragmas, &mut spans);
     }
     for purpose in &module.compiled_purposes {
-        collect_precision_spans(&purpose.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &purpose.pragmas, &mut spans);
     }
     for constraint_def in &module.constraint_defs {
-        collect_precision_spans(&constraint_def.pragmas, &mut spans);
+        collect_named_pragma_spans("precision", &constraint_def.pragmas, &mut spans);
     }
 
     for span in spans {
@@ -83,6 +91,59 @@ fn warn_block_level_precision(module: &mut CompiledModule) {
         );
     }
 }
+
+/// Walk every block-level pragma container on the assembled module and emit
+/// one "ignored in v0.1; per-block solver tuning deferred to v0.2" warning
+/// per `#solver` pragma found.
+///
+/// PRD §3: per-block solver selection is deferred to v0.2. The complementary
+/// `validate_pragmas` pre-pass deliberately does NOT warn on `#solver` (it
+/// is in `KNOWN_BLOCK_PRAGMAS`), so this is the single site that flags
+/// block-level usage.
+///
+/// Mirrors `warn_block_level_precision`; see that function's container-set
+/// invariant doc for the contract on adding a fifth pragma-bearing container.
+fn warn_block_level_solver(module: &mut CompiledModule) {
+    let mut spans: Vec<SourceSpan> = Vec::new();
+
+    for tmpl in &module.templates {
+        collect_named_pragma_spans("solver", &tmpl.pragmas, &mut spans);
+    }
+    for trait_def in &module.trait_defs {
+        collect_named_pragma_spans("solver", &trait_def.pragmas, &mut spans);
+    }
+    for purpose in &module.compiled_purposes {
+        collect_named_pragma_spans("solver", &purpose.pragmas, &mut spans);
+    }
+    for constraint_def in &module.constraint_defs {
+        collect_named_pragma_spans("solver", &constraint_def.pragmas, &mut spans);
+    }
+
+    for span in spans {
+        module.diagnostics.push(
+            Diagnostic::warning(
+                "#solver is ignored in v0.1; per-block solver tuning deferred to v0.2",
+            )
+            .with_label(DiagnosticLabel::new(span, "ignored in v0.1")),
+        );
+    }
+}
+
+/// Solver back-end names recognised by the v0.1 compiler.
+///
+/// PRD §3 enumerates the v0.1 known back-ends: `libslvs` (geometric / 2D
+/// dimensional constraints) and `argmin` (numerical optimisation). Any other
+/// name is allowed through `apply_solver_pragma` — `solver_pragma` is still
+/// populated per the storage-reflects-declared design decision (mirroring
+/// `#version`'s policy) — but emits a compile-time warning surfaced via the
+/// LSP diagnostic layer to catch typos like `#solver(libslsv)` early.
+///
+/// This list is intentionally hardcoded: the runtime `Engine.solvers` registry
+/// (registered via `register_solver`) is a separate axis. An embedder can run
+/// reify-eval with only `argmin` registered, in which case `#solver(libslvs)`
+/// parses cleanly here (no compile warning) but still falls through to the
+/// default at solve time. Both warnings are independently useful.
+const KNOWN_SOLVER_BACKENDS: &[&str] = &["libslvs", "argmin"];
 
 /// Sane upper bound for the global tessellation tolerance, in SI metres.
 ///
@@ -389,6 +450,135 @@ fn apply_version_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         pragma.span,
                         format!("predates v{sup_maj}.{sup_min}"),
                     )),
+                );
+            }
+        }
+    }
+}
+
+/// Process the first well-formed module-level
+/// `#solver(<back-end-ident>, [key=value, ...])` pragma: store the back-end
+/// name + options on `module.solver_pragma`. Subsequent `#solver` pragmas
+/// emit a "subsequent pragma ignored; first one wins" warning. See
+/// `docs/prds/pragmas.md` §3.
+///
+/// Per design decision, `solver_pragma` reflects the user-declared back-end
+/// name regardless of whether the name is in the v0.1 known list, mirroring
+/// `#version`'s storage-reflects-declared policy. Only malformed argument
+/// shapes (no Bare-Ident first arg, KeyValue-only, etc.) leave it `None`.
+fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    let mut first_seen = false;
+    for pragma in &parsed.pragmas {
+        if pragma.name != "solver" {
+            continue;
+        }
+
+        if first_seen {
+            module.diagnostics.push(
+                Diagnostic::warning("subsequent #solver pragma ignored; first one wins")
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+            );
+            continue;
+        }
+        first_seen = true;
+
+        // First-seen pragma: interpret its args. The well-formed shape is
+        // `[Bare(Ident(name)), KeyValue*]`. The single bare-ident case is a
+        // degenerate of that shape (empty tail). Every other shape leaves
+        // `solver_pragma` as `None` and emits a single "expected #solver(...)"
+        // warning whose message contains both "expected" and "ident" so the
+        // form-hint substring assertion in
+        // `solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none`
+        // holds.
+        match pragma.args.as_slice() {
+            [PragmaArg::Bare(PragmaValue::Ident(name)), tail @ ..] => {
+                let mut options: BTreeMap<String, PragmaValue> = BTreeMap::new();
+                for (idx, arg) in tail.iter().enumerate() {
+                    match arg {
+                        PragmaArg::KeyValue { key, value } => {
+                            // Last-wins on duplicate keys, matching BTreeMap::insert
+                            // semantics. The compiler does not warn on duplicates
+                            // in v0.1 (deferred to back-end-level validation per
+                            // PRD §3).
+                            options.insert(key.clone(), value.clone());
+                        }
+                        PragmaArg::Bare(_) => {
+                            // The user wrote a second bare value where a key=value
+                            // was expected (e.g. `#solver(argmin, foo)`). Skip the
+                            // arg and continue processing the rest. Position is
+                            // 1-based so users see the arg number after the
+                            // back-end ident.
+                            let pos = idx + 2;
+                            module.diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "#solver: option arguments must be `key = value`; \
+                                     got bare value at position {pos}; ignored"
+                                ))
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        }
+                    }
+                }
+                // Compile-time check: warn if the back-end name is not in the
+                // v0.1 known list. Storage of `solver_pragma` happens
+                // unconditionally, mirroring `#version`'s
+                // storage-reflects-declared policy — downstream tooling and the
+                // runtime registry still need to see the user's verbatim name.
+                if !KNOWN_SOLVER_BACKENDS.contains(&name.as_str()) {
+                    module.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "#solver: unknown back-end '{name}'; v0.1 supports \
+                             {{libslvs, argmin}} \u{2014} falling back to default at runtime"
+                        ))
+                        .with_label(DiagnosticLabel::new(pragma.span, "unknown back-end")),
+                    );
+                }
+                module.solver_pragma = Some(SolverPragma {
+                    name: name.clone(),
+                    options,
+                });
+            }
+            // Zero args: `#solver` with no arg list.
+            [] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // Bare Number / Bool / String / Quantity as the (only) first arg.
+            // The Ident case was already matched above; this arm catches the
+            // remaining bare scalar variants.
+            [PragmaArg::Bare(_)] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // KeyValue first (e.g. `#solver(method="gradient")`): the back-end
+            // ident is required as the leading positional argument in v0.1.
+            [PragmaArg::KeyValue { .. }, ..] => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                );
+            }
+            // Catch-all for any remaining shape (e.g. multi-bare-arg lists
+            // like `#solver(libslvs, argmin)` whose first arg isn't an
+            // Ident — actually unreachable today because the first arm
+            // handles `[Bare(Ident(_)), ..]`, but leave the catch-all as a
+            // future-proofing safety net).
+            _ => {
+                module.diagnostics.push(
+                    Diagnostic::warning(
+                        "#solver: expected #solver(<back-end-ident>, [key=value, ...]); ignored",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
         }

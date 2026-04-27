@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_types::{
     CompiledExpr, ConstraintDomain, ConstraintNodeId, ContentHash, DimensionVector,
@@ -189,8 +189,37 @@ pub struct CompiledModule {
     /// too-old warning, or in-range silent), so downstream tooling (e.g. doc
     /// generators) can render the user's intent verbatim.
     pub declared_version: Option<(u16, u16)>,
+    /// Module-level `#solver` back-end name + options, or None when absent /
+    /// when the pragma was malformed.
+    ///
+    /// Populated by `module_pragmas::apply_module_pragmas` from the first
+    /// well-formed `#solver(<back-end-ident>, [key=value, ...])` module-level
+    /// pragma. Storage reflects the user-declared name regardless of whether
+    /// the back-end appears in the v0.1 known-name list, mirroring `#version`'s
+    /// storage-reflects-declared policy: downstream consumers (doc generator,
+    /// runtime registry lookup) need the verbatim name, and tying storage to
+    /// validation outcome would force them to re-derive it from
+    /// `module.pragmas`.
+    pub solver_pragma: Option<SolverPragma>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
+}
+
+/// Module-level `#solver(<back-end-ident>, [key=value, ...])` value extracted
+/// from the first well-formed `#solver` module pragma by
+/// `module_pragmas::apply_module_pragmas`.
+///
+/// `name` is the back-end identifier (e.g. `"libslvs"`, `"argmin"`); `options`
+/// holds the optional `key=value` arguments in alphabetical key order. The
+/// `BTreeMap` choice (rather than `HashMap` or `Vec<(String, PragmaValue)>`)
+/// matches the PRD specification at `docs/prds/pragmas.md` §3 and provides
+/// deterministic iteration for downstream rendering / hashing consumers.
+#[derive(Debug, Clone)]
+pub struct SolverPragma {
+    /// User-declared back-end identifier (verbatim).
+    pub name: String,
+    /// Optional `key = value` arguments, in alphabetical key order.
+    pub options: BTreeMap<String, reify_syntax::PragmaValue>,
 }
 
 impl CompiledModule {
