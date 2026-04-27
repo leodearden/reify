@@ -122,3 +122,58 @@ structure def S {
         "expected label with 'Money' and 'Force' for 5N + 25USD"
     );
 }
+
+/// `25USD..5N` (range) should produce a DimensionMismatch error with "Money" and "Force" in labels.
+///
+/// This test will fail until the range site in `expr.rs` delegates to
+/// `format_dimension_mismatch_diagnostic` (step-10).
+#[test]
+fn money_range_force_has_dimension_mismatch_code() {
+    let source = r#"
+pub unit USD : Money
+
+structure def S {
+    let r = 25USD..5N
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for 25USD..5N, got: {:?}",
+        module.diagnostics
+    );
+
+    assert!(
+        errors.iter().any(|d| d.message.contains("dimension mismatch in range")),
+        "expected 'dimension mismatch in range' message for 25USD..5N, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    assert!(
+        has_dimension_mismatch_code(&errors),
+        "expected code == DimensionMismatch for 25USD..5N, got codes: {:?}",
+        errors.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+
+    assert!(
+        has_money_and_force_label(&errors),
+        "expected a label containing both 'Money' and 'Force' for 25USD..5N, labels: {:?}",
+        errors.iter().flat_map(|d| d.labels.iter().map(|l| &l.message)).collect::<Vec<_>>()
+    );
+
+    // Non-empty span
+    let dim_err = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::DimensionMismatch))
+        .unwrap();
+    assert!(
+        !dim_err.labels.is_empty(),
+        "expected at least one label on the range DimensionMismatch diagnostic"
+    );
+    assert!(
+        !dim_err.labels[0].span.is_empty(),
+        "expected non-empty span on the range DimensionMismatch diagnostic"
+    );
+}

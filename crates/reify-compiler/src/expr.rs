@@ -449,17 +449,12 @@ pub(crate) fn compile_expr_guarded(
                             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
                                 if ld != rd =>
                             {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "dimension mismatch in {}: {} vs {}",
-                                        op_name,
-                                        compiled_left.result_type,
-                                        compiled_right.result_type,
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(expr.span, "incompatible dimensions"),
-                                    ),
-                                );
+                                diagnostics.push(format_dimension_mismatch_diagnostic(
+                                    op_name,
+                                    &compiled_left.result_type,
+                                    &compiled_right.result_type,
+                                    expr.span,
+                                ));
                             }
                             // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
                             (Type::Scalar { .. }, Type::Int | Type::Real)
