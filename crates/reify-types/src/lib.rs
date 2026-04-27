@@ -6,6 +6,7 @@ pub mod expr;
 pub mod geometry;
 pub mod hash;
 pub mod identity;
+pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
 pub mod source_location;
@@ -13,7 +14,6 @@ pub mod spanned_ident;
 pub mod traits;
 pub mod ty;
 pub mod value;
-pub mod node_traits;
 pub mod warm;
 
 pub use annotation::{
@@ -45,6 +45,7 @@ pub use geometry::{
 };
 pub use hash::ContentHash;
 pub use identity::*;
+pub use node_traits::{NodeArchKind, NodeTraits};
 pub use persistent::PersistentMap;
 pub use provenance::SnapshotProvenance;
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
@@ -55,5 +56,4 @@ pub use value::{
 };
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use spanned_ident::SpannedIdent;
-pub use node_traits::{NodeArchKind, NodeTraits};
 pub use warm::{OpaqueState, WarmStartable};

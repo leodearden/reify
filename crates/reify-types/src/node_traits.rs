@@ -15,6 +15,8 @@
 //! Nothing in this crate or its dependents currently dispatches on these traits.
 //! They are purely declarative scaffolding for downstream scheduler/cache tasks to adopt.
 
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
+
 /// Composable execution-trait flags for a node kind.
 ///
 /// See `docs/reify-implementation-architecture.md §7.6 lines 803–816`.
@@ -85,8 +87,6 @@ impl NodeTraits {
         Self(self.0 & other.0)
     }
 }
-
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 impl BitOr for NodeTraits {
     type Output = Self;
@@ -302,6 +302,26 @@ mod tests {
         assert!(not_immediate.contains(NodeTraits::WARM_STARTABLE));
         assert!(not_immediate.contains(NodeTraits::PROGRESSIVE));
         assert!(not_immediate.contains(NodeTraits::COMMITTABLE));
+    }
+
+    #[test]
+    fn not_empty_contains_exactly_all_four_flags() {
+        // !empty() must be exactly the OR of all four declared flags — this locks
+        // in the ALL_MASK contract: no stray bits leak outside the four-flag domain.
+        let all_flags = NodeTraits::IMMEDIATE
+            | NodeTraits::WARM_STARTABLE
+            | NodeTraits::PROGRESSIVE
+            | NodeTraits::COMMITTABLE;
+        assert_eq!(!NodeTraits::empty(), all_flags);
+    }
+
+    #[test]
+    fn not_all_flags_is_empty() {
+        let all_flags = NodeTraits::IMMEDIATE
+            | NodeTraits::WARM_STARTABLE
+            | NodeTraits::PROGRESSIVE
+            | NodeTraits::COMMITTABLE;
+        assert!((!all_flags).is_empty());
     }
 
     #[test]
