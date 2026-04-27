@@ -477,6 +477,81 @@ mod tests {
         );
     }
 
+    /// Guard: when a `ResolvedSchemaQuery` references a cell that is absent
+    /// from `value_cells`, the missing-cell branch must emit exactly one WARN
+    /// event scoped to `reify_eval::engine_purposes` (graph-vs-resolved-query
+    /// wiring inconsistency signal).
+    ///
+    /// The test wraps the call in `catch_unwind` so it runs identically in
+    /// both debug builds (where `debug_assert!(false)` panics) and release
+    /// builds (where it does not). The WARN fires *before* the
+    /// `debug_assert!`, so the counter increments regardless of build mode.
+    #[test]
+    fn expand_signals_when_resolved_query_cell_missing_from_value_cells() {
+        use std::panic::AssertUnwindSafe;
+        use std::sync::atomic::Ordering;
+        use reify_test_support::CountingSubscriberBuilder;
+
+        let entity = "Foo";
+        let cell_present = ValueCellId::new(entity, "present");
+        let cell_absent = ValueCellId::new(entity, "absent");
+
+        // Query references both "present" and "absent" cells.
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_present.clone(), cell_absent.clone()],
+        }];
+
+        // value_cells contains ONLY the "present" cell — "absent" is
+        // deliberately missing to trigger the new missing-cell branch.
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> =
+            PersistentMap::default();
+        value_cells.insert(
+            cell_present.clone(),
+            ValueCellNode {
+                id: cell_present.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("present"),
+            },
+        );
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::engine_purposes")
+            .build();
+        let warn_arc = counters[&tracing::Level::WARN].clone();
+
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        // Wrap in catch_unwind so debug builds (debug_assert! panics) and
+        // release builds both complete and let us read the warn counter.
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            tracing::subscriber::with_default(subscriber, || {
+                expand_purpose_reflective_placeholders(
+                    &mut expr,
+                    &queries,
+                    entity,
+                    &value_cells,
+                );
+            });
+        }));
+
+        assert_eq!(
+            warn_arc.load(Ordering::Acquire),
+            1,
+            "missing-cell wiring signal: expected exactly one WARN from \
+             reify_eval::engine_purposes when a resolved-query cell is absent \
+             from value_cells"
+        );
+    }
+
     /// Companion: when no matching `ResolvedSchemaQuery` is supplied
     /// (e.g. the wildcard-subject case), expansion falls back to a
     /// sorted scan of `value_cells` for the bound entity. This locks in
