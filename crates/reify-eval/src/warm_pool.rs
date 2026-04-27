@@ -282,6 +282,13 @@ impl WarmStatePool {
             Self::MAX_BUFFERED_EVENTS
         );
         self.events.push(ev);
+        // Release-build seatbelt: if the buffer exceeded the cap (debug_assert!
+        // is a no-op in release mode), drop the oldest half so memory stays bounded.
+        // The warn-once field (auto_trim_warned) is added in step 8; for now
+        // the trim itself is in place.
+        if self.events.len() > Self::MAX_BUFFERED_EVENTS {
+            self.events.drain(..Self::MAX_BUFFERED_EVENTS / 2);
+        }
     }
 
     /// Check out warm-start state for a node (take semantics).
