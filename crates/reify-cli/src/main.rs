@@ -462,6 +462,13 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::from(2u8);
     }
 
+    // `--compact` is json-only.  Mirror the `--split` guard.
+    if compact && format != Format::Json {
+        eprintln!("Error: --compact is only valid with --format json");
+        eprintln!("{}", DOC_USAGE);
+        return ExitCode::from(2u8);
+    }
+
     let compiled = match parse_and_compile(input) {
         Ok(c) => c,
         Err(code) => return code,
