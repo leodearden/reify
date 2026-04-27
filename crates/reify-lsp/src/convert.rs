@@ -354,12 +354,15 @@ mod tests {
     }
 
     /// Locks the `convert_diagnostic` code-field conversion for a representative
-    /// spread of `DiagnosticCode` variants. Each expected wire string must match
-    /// the serde `rename_all = "PascalCase"` form.
+    /// spread of `DiagnosticCode` variants. The LSP `code` field renders
+    /// `DiagnosticCode` via the serde `rename_all = "PascalCase"` wire form.
     ///
-    /// If the `Debug` impl of any listed variant diverges from PascalCase (e.g.
-    /// because it gains fields), this test will catch the regression before it
-    /// reaches the LSP client.
+    /// Each iteration asserts two independent conditions:
+    /// 1. `serde_json::to_value(&code)` produces the hard-coded PascalCase literal.
+    /// 2. `convert_diagnostic` produces the same literal as the LSP `code` field.
+    ///
+    /// Double-binding to a fixed literal catches drift in either direction: if serde
+    /// and the conversion diverge, or if either independently drifts from PascalCase.
     #[test]
     fn convert_diagnostic_code_wire_str_matches_pascal_case_for_representative_variants() {
         let cases: &[(DiagnosticCode, &str)] = &[
@@ -369,6 +372,11 @@ mod tests {
             (DiagnosticCode::Shadowing, "Shadowing"),
         ];
         for &(code, expected_wire) in cases {
+            assert_eq!(
+                serde_json::to_value(&code).unwrap().as_str().unwrap(),
+                expected_wire,
+                "serde wire form for DiagnosticCode::{code:?} must equal {expected_wire:?}"
+            );
             let diag = Diagnostic::warning("test").with_code(code);
             let lsp = convert_diagnostic(&diag, "", &test_uri());
             assert_eq!(
