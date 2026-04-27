@@ -108,7 +108,11 @@ impl OcctKernelHandle {
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
         let bytes = self.send_request_blocking(
-            |reply| OcctRequest::Export { handle, format, reply },
+            |reply| OcctRequest::Export {
+                handle,
+                format,
+                reply,
+            },
             || ExportError::IoError("kernel thread died".into()),
         )??;
         writer
@@ -124,7 +128,10 @@ impl OcctKernelHandle {
     /// [`query_async`](Self::query_async) instead.
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         self.send_request_blocking(
-            |reply| OcctRequest::Query { query: query.clone(), reply },
+            |reply| OcctRequest::Query {
+                query: query.clone(),
+                reply,
+            },
             || QueryError::QueryFailed("kernel thread died".into()),
         )?
     }
@@ -150,10 +157,7 @@ impl OcctKernelHandle {
     /// # Panics
     ///
     /// Panics if called from within a tokio async execution context.
-    pub fn query_many(
-        &self,
-        queries: &[GeometryQuery],
-    ) -> Result<Vec<Value>, QueryError> {
+    pub fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
         // Empty-batch fast path: skip the actor channel round-trip
         // entirely. The kernel-thread arm would itself produce
         // `Ok(Vec::new())`, so the result is identical.
@@ -161,7 +165,10 @@ impl OcctKernelHandle {
             return Ok(Vec::new());
         }
         let reply: Vec<Value> = self.send_request_blocking(
-            |reply| OcctRequest::QueryMany { queries: queries.to_vec(), reply },
+            |reply| OcctRequest::QueryMany {
+                queries: queries.to_vec(),
+                reply,
+            },
             || QueryError::QueryFailed("kernel thread died".into()),
         )??;
         debug_assert_query_many_invariant(queries, &reply);
@@ -176,7 +183,11 @@ impl OcctKernelHandle {
     /// [`tessellate_async`](Self::tessellate_async) instead.
     pub fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         self.send_request_blocking(
-            |reply| OcctRequest::Tessellate { handle, tolerance, reply },
+            |reply| OcctRequest::Tessellate {
+                handle,
+                tolerance,
+                reply,
+            },
             || TessError::TessellationFailed("kernel thread died".into()),
         )?
     }
@@ -223,7 +234,10 @@ impl OcctKernelHandle {
     /// [`execute_async`](Self::execute_async) instead.
     pub fn execute(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         self.send_request_blocking(
-            |reply| OcctRequest::Execute { op: Box::new(op.clone()), reply },
+            |reply| OcctRequest::Execute {
+                op: Box::new(op.clone()),
+                reply,
+            },
             || GeometryError::OperationFailed("kernel thread died".into()),
         )?
     }
@@ -298,31 +312,48 @@ impl OcctKernelHandle {
     }
 
     /// Compress the build-channel + blocking-send + blocking-recv +
-    /// map-channel-died-twice boilerplate for synchronous inherent methods.
+    /// map-channel-died-once boilerplate for synchronous inherent methods that
+    /// return `Result<Resp, E>`.
+    ///
+    /// `chan_died` is `FnOnce` because the two failure paths (send failure and
+    /// recv failure) are mutually exclusive — only one can occur per call.
     ///
     /// Panics if called from within a tokio async execution context; use
     /// [`send_request_async`](Self::send_request_async) instead.
     fn send_request_blocking<Resp, E>(
         &self,
         build_req: impl FnOnce(oneshot::Sender<Resp>) -> OcctRequest,
-        chan_died: impl Fn() -> E,
+        chan_died: impl FnOnce() -> E,
     ) -> Result<Resp, E> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx.blocking_send(build_req(reply_tx)).map_err(|_| chan_died())?;
+        if self.tx.blocking_send(build_req(reply_tx)).is_err() {
+            return Err(chan_died());
+        }
         reply_rx.blocking_recv().map_err(|_| chan_died())
     }
 
     /// Compress the build-channel + async-send + await-recv +
-    /// map-channel-died-twice boilerplate for async inherent methods.
+    /// map-channel-died-once boilerplate for async inherent methods that return
+    /// `Result<Resp, E>`.
+    ///
+    /// `chan_died` is `FnOnce` because the two failure paths (send failure and
+    /// recv failure) are mutually exclusive — only one can occur per call.
+    ///
+    /// Note: `warm_state_async` and `with_warm_state_async` intentionally do
+    /// not use this helper — their channel-death semantics differ (`Option`/`()`
+    /// with `.ok()?` rather than a typed error), so they inline the pattern
+    /// directly. See the TODO on each of those methods.
     ///
     /// Safe to call from within a tokio async execution context.
     async fn send_request_async<Resp, E>(
         &self,
         build_req: impl FnOnce(oneshot::Sender<Resp>) -> OcctRequest,
-        chan_died: impl Fn() -> E,
+        chan_died: impl FnOnce() -> E,
     ) -> Result<Resp, E> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx.send(build_req(reply_tx)).await.map_err(|_| chan_died())?;
+        if self.tx.send(build_req(reply_tx)).await.is_err() {
+            return Err(chan_died());
+        }
         reply_rx.await.map_err(|_| chan_died())
     }
 
@@ -336,7 +367,10 @@ impl OcctKernelHandle {
     /// Safe to call from within a tokio async execution context.
     pub async fn execute_async(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         self.send_request_async(
-            |reply| OcctRequest::Execute { op: Box::new(op.clone()), reply },
+            |reply| OcctRequest::Execute {
+                op: Box::new(op.clone()),
+                reply,
+            },
             || GeometryError::OperationFailed("kernel thread died".into()),
         )
         .await?
@@ -347,7 +381,10 @@ impl OcctKernelHandle {
     /// Safe to call from within a tokio async execution context.
     pub async fn query_async(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         self.send_request_async(
-            |reply| OcctRequest::Query { query: query.clone(), reply },
+            |reply| OcctRequest::Query {
+                query: query.clone(),
+                reply,
+            },
             || QueryError::QueryFailed("kernel thread died".into()),
         )
         .await?
@@ -366,7 +403,11 @@ impl OcctKernelHandle {
         format: ExportFormat,
     ) -> Result<Vec<u8>, ExportError> {
         self.send_request_async(
-            |reply| OcctRequest::Export { handle, format, reply },
+            |reply| OcctRequest::Export {
+                handle,
+                format,
+                reply,
+            },
             || ExportError::IoError("kernel thread died".into()),
         )
         .await?
@@ -381,7 +422,11 @@ impl OcctKernelHandle {
         tolerance: f64,
     ) -> Result<Mesh, TessError> {
         self.send_request_async(
-            |reply| OcctRequest::Tessellate { handle, tolerance, reply },
+            |reply| OcctRequest::Tessellate {
+                handle,
+                tolerance,
+                reply,
+            },
             || TessError::TessellationFailed("kernel thread died".into()),
         )
         .await?
@@ -418,6 +463,14 @@ impl OcctKernelHandle {
     /// Extract warm-start state from the kernel thread (async version).
     ///
     /// Safe to call from within a tokio async execution context.
+    ///
+    /// # TODO
+    ///
+    /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
+    /// because its channel-death semantics differ: a dead kernel is treated as
+    /// "no warm state" (`Option` / `.ok()?`) rather than as a typed error.
+    /// Routing through the helper would require a fake error type or a third
+    /// helper variant — neither improves clarity over the explicit inline form.
     pub async fn warm_state_async(&self) -> Option<OpaqueState> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -430,6 +483,14 @@ impl OcctKernelHandle {
     /// Restore warm-start state on the kernel thread (async version).
     ///
     /// Safe to call from within a tokio async execution context.
+    ///
+    /// # TODO
+    ///
+    /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
+    /// because its channel-death semantics differ: failure is silently ignored
+    /// (`()` return, fire-and-forget) rather than mapped to a typed error.
+    /// Routing through the helper would require a fake error type or a third
+    /// helper variant — neither improves clarity over the explicit inline form.
     pub async fn with_warm_state_async(&self, state: OpaqueState) {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
@@ -809,7 +870,11 @@ mod tests {
             distance: Value::Real(1.0),
         };
         let result = handle.execute(&chamfer_op);
-        assert!(result.is_ok(), "chamfer should succeed, got: {:?}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "chamfer should succeed, got: {:?}",
+            result.unwrap_err()
+        );
         let chamfered = result.unwrap();
         assert!(
             chamfered.id.0 > 0,
