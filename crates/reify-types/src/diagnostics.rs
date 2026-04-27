@@ -273,6 +273,25 @@ pub enum DiagnosticCode {
 }
 
 /// A diagnostic message with location and optional labels.
+///
+/// # Construction
+///
+/// Use [`Diagnostic::error`], [`Diagnostic::warning`], or [`Diagnostic::info`] to
+/// create a diagnostic, then chain [`Diagnostic::with_code`], [`Diagnostic::with_label`],
+/// and/or [`Diagnostic::with_candidates`] as needed.
+///
+/// Direct struct-literal construction is not supported for external crates:
+///
+/// ```compile_fail,E0639
+/// use reify_types::{Diagnostic, Severity};
+/// let _ = Diagnostic {
+///     severity: Severity::Error,
+///     message: String::new(),
+///     labels: vec![],
+///     code: None,
+///     candidates: vec![],
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: Severity,
