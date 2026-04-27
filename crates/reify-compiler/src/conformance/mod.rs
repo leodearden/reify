@@ -314,14 +314,13 @@ pub(crate) fn emit_geometry_unbounded(
 /// cases — the symmetric sibling of [`emit_geometry_unbounded`] for the `Bounded` case.
 ///
 /// Pushes exactly one `Diagnostic::error(...)` with code
-/// [`DiagnosticCode::TypeNotConformingToTrait`] and a single label at `span`. Per design
-/// decision §2 of task 2312, the PRD only allocates `E_GEOMETRY_UNBOUNDED` for missing
-/// `Bounded`; `Connected`/`Convex` reuse `TypeNotConformingToTrait`.
+/// [`DiagnosticCode::TypeNotConformingToTrait`] and a single label at `span`. The PRD
+/// only allocates `E_GEOMETRY_UNBOUNDED` for missing `Bounded`; `Connected`/`Convex`
+/// reuse `TypeNotConformingToTrait`.
 ///
-/// The message intentionally does **not** include a separate param-name slot. The old
-/// inline branch appended `required by param '{}'` with `arg_name` a second time, which
-/// was redundant under reify's keyword-arg convention (arg name == param name in practice).
-/// That clause was dropped in task 2493 — see design decision §1 there.
+/// The message intentionally does **not** include a separate param-name slot. Under
+/// reify's keyword-arg convention the arg name and param name are identical in practice,
+/// so appending `required by param '{}'` a second time is redundant and was dropped.
 pub(crate) fn emit_geometry_trait_violation(
     arg_name: &str,
     required_trait: &str,
@@ -3723,15 +3722,14 @@ mod tests {
     }
 
     /// `emit_geometry_trait_violation` pushes exactly one `Diagnostic` with severity
-    /// `Error`, code `Some(DiagnosticCode::TypeNotConformingToTrait)`, a message
-    /// mentioning the arg name and the required trait name (`Connected` in this call),
-    /// and a `DiagnosticLabel` at the supplied span. This is the symmetric sibling of
+    /// `Error`, code `Some(DiagnosticCode::TypeNotConformingToTrait)`, the exact message
+    /// `"geometry argument 'g' does not conform to trait 'Connected'"`, and a
+    /// `DiagnosticLabel` at the supplied span. This is the symmetric sibling of
     /// `emit_geometry_unbounded` for the `Connected`/`Convex` cases.
     ///
-    /// The load-bearing assertion here is `!d.message.contains("required by param")`:
-    /// the old inline branch included a redundant `required by param '{}'` suffix that
-    /// repeated the arg name already present in the `argument '{}'` slot. This test pins
-    /// the corrected wording contract and prevents accidental reintroduction.
+    /// The full `assert_eq!` on `d.message` is the wording contract: it simultaneously
+    /// confirms the arg name and trait name are present and that there is no redundant
+    /// `"required by param"` suffix (the old inline branch repeated the arg name there).
     #[test]
     fn emit_geometry_trait_violation_helper_produces_error_with_code_and_label() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -3746,20 +3744,10 @@ mod tests {
         let d = &diagnostics[0];
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::TypeNotConformingToTrait));
-        assert!(
-            d.message.contains("Connected"),
-            "message should mention the required trait 'Connected', got: {}",
-            d.message
-        );
-        assert!(
-            d.message.contains("'g'"),
-            "message should mention the arg name 'g', got: {}",
-            d.message
-        );
-        assert!(
-            !d.message.contains("required by param"),
-            "message must NOT contain 'required by param' (redundant suffix was dropped), got: {}",
-            d.message
+        assert_eq!(
+            d.message,
+            "geometry argument 'g' does not conform to trait 'Connected'",
+            "message wording contract: arg name + trait name, no 'required by param' suffix"
         );
         assert_eq!(
             d.labels.len(),
