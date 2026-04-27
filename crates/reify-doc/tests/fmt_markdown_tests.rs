@@ -811,6 +811,34 @@ fn type_alias_body_renders_rhs() {
     );
 }
 
+/// TypeAlias body uses safe inline-code fencing when `type_repr` contains a
+/// literal backtick in the interior (no leading/trailing → no pad).
+#[test]
+fn type_alias_body_uses_safe_inline_code_fence() {
+    // "Vec<`T`>": one internal backtick run (length 1), no leading/trailing.
+    // → fence_len = 2, needs_pad = false → "``Vec<`T`>``"
+    let type_repr = "Vec<`T`>";
+    let item = ItemDoc::TypeAlias {
+        name: "VecT".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![],
+        pragmas: vec![],
+        type_repr: type_repr.into(),
+    };
+    let out = render_one_item(item);
+
+    // (a) Verbatim value must appear.
+    assert!(out.contains(type_repr), "type_repr not verbatim:\n{out}");
+
+    // (b) Correct double-fence form (no pad).
+    let fenced = format!("= ``{type_repr}``");
+    assert!(
+        out.contains(&fenced),
+        "TypeAlias rhs not correctly fenced (`{fenced}`):\n{out}"
+    );
+}
+
 /// ConstraintDef variant emits a single `\`{expr_repr}\`` line.
 #[test]
 fn constraint_def_body_renders_expr() {
