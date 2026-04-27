@@ -546,6 +546,15 @@ mod tests {
     /// both debug builds (where `debug_assert!(false)` panics) and release
     /// builds (where it does not). The WARN fires *before* the
     /// `debug_assert!`, so the counter increments regardless of build mode.
+    ///
+    /// **Dual-mode coverage:** the release-only structural assertions below
+    /// (the `#[cfg(not(debug_assertions))]` block) are exercised in CI by
+    /// `orchestrator.yaml:28`'s `cargo test -p reify-eval --release` pass
+    /// (the second cargo-test call in the two-pass pattern documented at
+    /// `orchestrator.yaml:19`). The *debug-mode posture* (panic + no expr
+    /// mutation) is pinned by the sibling test
+    /// `expand_missing_cell_debug_mode_halts_via_debug_assert`; run it via
+    /// `cargo test -p reify-eval -- --ignored`.
     #[test]
     fn expand_signals_when_resolved_query_cell_missing_from_value_cells() {
         use std::panic::AssertUnwindSafe;
@@ -618,6 +627,13 @@ mod tests {
         // the expand call completes: verify that both cells (the present one
         // and the absent-fallback one) produce ValueRef elements typed as
         // Type::Real, and that the ListLiteral has exactly 2 elements.
+        //
+        // CI dependency: this block executes only in release builds; it is
+        // exercised by `orchestrator.yaml:28`'s `cargo test -p reify-eval
+        // --release` invocation (the second cargo-test call in the two-pass
+        // pattern documented at `orchestrator.yaml:19`). The *debug-mode
+        // posture* (panic + no expr mutation + warn fires first) is pinned by
+        // the sibling test `expand_missing_cell_debug_mode_halts_via_debug_assert`.
         #[cfg(not(debug_assertions))]
         {
             let elements = match &expr.kind {
