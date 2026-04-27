@@ -366,6 +366,20 @@ impl CacheStore {
         }
     }
 
+    /// Canonical reader for cache freshness.
+    ///
+    /// Returns the cached entry's freshness when present, else
+    /// `Freshness::default()` (= `Final`) — see task #2326. Prefer this to
+    /// `self.get(node).map(|e| e.freshness.clone())` so the default is
+    /// centralized and any future audit of "what is the default freshness"
+    /// has a single grep target.
+    pub fn freshness(&self, node: &NodeId) -> Freshness {
+        self.caches
+            .get(node)
+            .map(|e| e.freshness.clone())
+            .unwrap_or_default()
+    }
+
     /// Restore a node's freshness to Final after early cutoff skips its
     /// re-evaluation. This handles nodes that were pre-marked Pending but
     /// then bypassed because an upstream node produced an unchanged result.
