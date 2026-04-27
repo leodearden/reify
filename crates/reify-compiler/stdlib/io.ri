@@ -48,3 +48,36 @@ trait Source {}
 // Something leaves design scope — finished output, scrapped waste, or a
 // filed inspection report.
 trait Sink {}
+
+// ── Refining traits ──────────────────────────────────────────────────────────
+
+// Geometry imported from an external file or tool.
+// source: path or identifier of the originating file/tool.
+// provenance: full audit trail for the import.
+trait Input : Source {
+    param source : String
+    param provenance : Provenance
+}
+
+// A purchased off-the-shelf component.
+// unit_cost uses bare Money (not Scalar<Money>) — see header comment §deviation 1.
+// lead_time uses bare Time for the same reason.
+trait Buy : Source {
+    param supplier : String
+    param part_number : String
+    param unit_cost : Money
+    param lead_time : Time
+}
+
+// A geometry element exported or sent downstream.
+// format: the target file or display format.
+trait Output : Sink {
+    param format : OutputFormat
+}
+
+// A geometry element removed from the design scope (waste, off-cuts, etc.).
+// reason: why it was discarded; disposal_method: how it is handled.
+trait Discard : Sink {
+    param reason : DiscardReason
+    param disposal_method : DisposalMethod
+}
