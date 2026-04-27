@@ -76,6 +76,43 @@ fn edges_by_length_box_10x20x30_filters_to_x_axis_edges() {
 }
 
 #[test]
+fn faces_by_normal_box_top_face_one_degree_tolerance_returns_one() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // 10×10×10 mm box has 6 faces with axis-aligned normals (±x, ±y, ±z).
+    // Filtering by the +z direction with a 1-degree angular tolerance
+    // should select exactly one face (the top), since the next nearest
+    // normal is the bottom face at 180° (which is *also* parallel to z
+    // and so is correctly accepted under the parity-tolerant predicate
+    // — the test calls for "exactly one" though, so the impl must NOT
+    // accept anti-parallel directions for `faces_by_normal`).
+    //
+    // i.e. unlike `edges_parallel_to`, `faces_by_normal` distinguishes
+    // outward vs inward — only one face has its outward normal aligned
+    // with +z.
+    let (mut kernel, box_id) = box_handle(10.0, 10.0, 10.0);
+
+    let result = topology_selectors::faces_by_normal(
+        &mut kernel,
+        box_id,
+        [0.0, 0.0, 1.0],
+        (1.0_f64).to_radians(),
+    )
+    .expect("faces_by_normal on a valid box should succeed");
+
+    assert_eq!(
+        result.len(),
+        1,
+        "faces_by_normal([0,0,1], 1°) on a 10x10x10 box should return exactly the top face, got {} ids",
+        result.len()
+    );
+    assert_ne!(result[0], box_id, "filtered id must differ from the source box");
+}
+
+#[test]
 fn faces_by_area_box_10x20x30_filters_to_pair_with_target_area() {
     if !OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
