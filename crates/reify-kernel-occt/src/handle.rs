@@ -130,16 +130,10 @@ impl OcctKernelHandle {
     /// Panics if called from within a tokio async execution context. Use
     /// [`query_async`](Self::query_async) instead.
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::Query {
-                query: query.clone(),
-                reply: reply_tx,
-            })
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
-            .blocking_recv()
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+        self.send_request_blocking(
+            |reply| OcctRequest::Query { query: query.clone(), reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
     }
 
     /// Run a batch of queries in a single channel round-trip and return
@@ -194,17 +188,10 @@ impl OcctKernelHandle {
     /// Panics if called from within a tokio async execution context. Use
     /// [`tessellate_async`](Self::tessellate_async) instead.
     pub fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::Tessellate {
-                handle,
-                tolerance,
-                reply: reply_tx,
-            })
-            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?;
-        reply_rx
-            .blocking_recv()
-            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
+        self.send_request_blocking(
+            |reply| OcctRequest::Tessellate { handle, tolerance, reply },
+            || TessError::TessellationFailed("kernel thread died".into()),
+        )?
     }
 
     /// Extract the unique edges of a shape, storing each as a new handle on
@@ -218,16 +205,10 @@ impl OcctKernelHandle {
         &self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::ExtractEdges {
-                handle,
-                reply: reply_tx,
-            })
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
-            .blocking_recv()
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+        self.send_request_blocking(
+            |reply| OcctRequest::ExtractEdges { handle, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
     }
 
     /// Extract the unique faces of a shape, storing each as a new handle on
@@ -241,16 +222,10 @@ impl OcctKernelHandle {
         &self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::ExtractFaces {
-                handle,
-                reply: reply_tx,
-            })
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
-            .blocking_recv()
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+        self.send_request_blocking(
+            |reply| OcctRequest::ExtractFaces { handle, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
     }
 
     /// Execute a geometry operation on the kernel thread.
@@ -260,16 +235,10 @@ impl OcctKernelHandle {
     /// Panics if called from within a tokio async execution context. Use
     /// [`execute_async`](Self::execute_async) instead.
     pub fn execute(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::Execute {
-                op: Box::new(op.clone()),
-                reply: reply_tx,
-            })
-            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?;
-        reply_rx
-            .blocking_recv()
-            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?
+        self.send_request_blocking(
+            |reply| OcctRequest::Execute { op: Box::new(op.clone()), reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )?
     }
 
     /// Spawn a new OCCT kernel on a dedicated OS thread and return a handle.
@@ -379,34 +348,22 @@ impl OcctKernelHandle {
     ///
     /// Safe to call from within a tokio async execution context.
     pub async fn execute_async(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::Execute {
-                op: Box::new(op.clone()),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?
+        self.send_request_async(
+            |reply| OcctRequest::Execute { op: Box::new(op.clone()), reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )
+        .await?
     }
 
     /// Run a query against a geometry handle on the kernel thread (async version).
     ///
     /// Safe to call from within a tokio async execution context.
     pub async fn query_async(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::Query {
-                query: query.clone(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+        self.send_request_async(
+            |reply| OcctRequest::Query { query: query.clone(), reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )
+        .await?
     }
 
     /// Export a geometry handle to the given format (async version).
@@ -443,18 +400,11 @@ impl OcctKernelHandle {
         handle: GeometryHandleId,
         tolerance: f64,
     ) -> Result<Mesh, TessError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::Tessellate {
-                handle,
-                tolerance,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
+        self.send_request_async(
+            |reply| OcctRequest::Tessellate { handle, tolerance, reply },
+            || TessError::TessellationFailed("kernel thread died".into()),
+        )
+        .await?
     }
 
     /// Extract the unique edges of a shape (async version).
@@ -464,17 +414,11 @@ impl OcctKernelHandle {
         &self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::ExtractEdges {
-                handle,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+        self.send_request_async(
+            |reply| OcctRequest::ExtractEdges { handle, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )
+        .await?
     }
 
     /// Extract the unique faces of a shape (async version).
@@ -484,17 +428,11 @@ impl OcctKernelHandle {
         &self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::ExtractFaces {
-                handle,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+        self.send_request_async(
+            |reply| OcctRequest::ExtractFaces { handle, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )
+        .await?
     }
 
     /// Extract warm-start state from the kernel thread (async version).
