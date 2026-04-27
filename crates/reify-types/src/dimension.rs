@@ -310,16 +310,26 @@ pub const FORCE: DimensionVector = {
 impl fmt::Display for DimensionVector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr", "USD"];
-        let mut parts = Vec::new();
+        // Emit positive-exponent slots first, then negative-exponent slots,
+        // preserving index order within each group. This produces conventional
+        // notation like "USD·kg^-1" rather than "kg^-1·USD".
+        let mut numerator = Vec::new();
+        let mut denominator = Vec::new();
         for (i, r) in self.0.iter().enumerate() {
             if !r.is_zero() {
-                if *r == Rational::ONE {
-                    parts.push(names[i].to_string());
+                let part = if *r == Rational::ONE {
+                    names[i].to_string()
                 } else {
-                    parts.push(format!("{}^{}", names[i], r));
+                    format!("{}^{}", names[i], r)
+                };
+                if r.num() > 0 {
+                    numerator.push(part);
+                } else {
+                    denominator.push(part);
                 }
             }
         }
+        let parts: Vec<String> = numerator.into_iter().chain(denominator).collect();
         if parts.is_empty() {
             write!(f, "dimensionless")
         } else {
