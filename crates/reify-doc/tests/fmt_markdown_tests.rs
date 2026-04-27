@@ -1994,6 +1994,45 @@ fn split_mode_multi_module_prefixes_and_backlinks() {
              (multi-module case), got body:\n{body}"
         );
     }
+
+    // (d) index.md uses H2 module headings with module-prefixed filename links.
+    let index_body = &files
+        .iter()
+        .find(|(n, _)| n == "index.md")
+        .expect("index.md missing")
+        .1;
+
+    // Module H2 headings — one per module, in model.modules order.
+    assert!(
+        index_body.contains("## alpha\n"),
+        "index.md must contain `## alpha` H2 heading, got:\n{index_body}"
+    );
+    assert!(
+        index_body.contains("## beta\n"),
+        "index.md must contain `## beta` H2 heading, got:\n{index_body}"
+    );
+    let alpha_pos = index_body.find("## alpha\n").unwrap();
+    let beta_pos = index_body.find("## beta\n").unwrap();
+    assert!(
+        alpha_pos < beta_pos,
+        "## alpha must precede ## beta in index.md (model.modules order)"
+    );
+
+    // Module-prefixed filename links resolve same-name collision.
+    assert!(
+        index_body.contains("- [`Board`](alpha/structure-Board.md)"),
+        "index.md must link alpha Board via alpha/structure-Board.md, got:\n{index_body}"
+    );
+    assert!(
+        index_body.contains("- [`Board`](beta/structure-Board.md)"),
+        "index.md must link beta Board via beta/structure-Board.md, got:\n{index_body}"
+    );
+
+    // Negative guard: no bare fragment links.
+    assert!(
+        !index_body.contains("(#Board)"),
+        "index.md must NOT contain fragment-only link (#Board), got:\n{index_body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
