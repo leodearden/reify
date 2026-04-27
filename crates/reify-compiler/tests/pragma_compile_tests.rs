@@ -1426,8 +1426,8 @@ fn multiple_version_pragmas_emit_error_at_most_one() {
 }
 
 /// Malformed `#version` arg shapes emit exactly one warning mentioning
-/// "version" + "expected" (suggesting MAJOR.MINOR), produce zero errors,
-/// and leave `module.declared_version` as None. Covers representative
+/// "version" + "expected" + the form hint "MAJOR.MINOR", produce zero
+/// errors, and leave `module.declared_version` as None. Covers representative
 /// shapes: bare String with bad component count or non-numeric components,
 /// no args, Bool, KeyValue, and Quantity. Mirrors the catch-all coverage
 /// of `precision_pragma_with_*_warns_and_does_not_set_tolerance` tests.
@@ -1458,20 +1458,23 @@ fn version_pragma_malformed_args_emit_warning_and_leave_declared_version_none() 
             module.declared_version
         );
 
-        // Warnings mentioning "version" with form-guidance ("expected" or
-        // "malformed") — the message wording is bounded so callers can grep
-        // for the canonical phrase but we don't pin the entire string here.
+        // Warnings mentioning "version" with the substantive contract: an
+        // "expected" form hint that names the MAJOR.MINOR shape the user
+        // should write. We pin both substrings (rather than `expected ||
+        // malformed`) so a future wording shift is caught here.
         let version_warns: Vec<_> = warnings_only(&module)
             .into_iter()
             .filter(|d| {
                 d.message.contains("version")
-                    && (d.message.contains("expected") || d.message.contains("malformed"))
+                    && d.message.contains("expected")
+                    && d.message.contains("MAJOR.MINOR")
             })
             .collect();
         assert_eq!(
             version_warns.len(),
             1,
-            "[{label}] expected exactly 1 malformed-version warning, got {}: {:?}",
+            "[{label}] expected exactly 1 malformed-version warning mentioning \
+             'expected' + 'MAJOR.MINOR', got {}: {:?}",
             version_warns.len(),
             warnings_only(&module)
         );
