@@ -1,6 +1,20 @@
 // Stdlib: Manufacturing-stock collections (std.stock).
 // Provides standard bolt length and sheet thickness series referenced by
 // @solver_hint annotations (e.g. @solver_hint("discrete_set", standard_bolt_lengths)).
+//
+// Representation note: these series are conceptually constant reference data,
+// but Reify currently has no top-level `const` declaration syntax (the
+// `Declaration` enum in `crates/reify-syntax/src/lib.rs` admits only
+// Structure/Occurrence/Import/Enum/Function/Trait/Field/Purpose/Constraint/
+// Unit/TypeAlias). They are exposed as zero-arg `pub fn` so the
+// `@solver_hint("discrete_set", standard_bolt_lengths)` and
+// `@solver_hint("prefer_stock", standard_sheet_thicknesses)` references
+// can resolve through the existing function-resolution path. When/if
+// language-level `pub const` is added, these should be migrated — at which
+// point the call-site evaluation path narrows from
+// eval_user_function_call (let_bindings + fresh scope + result_expr) to a
+// constant lookup, eliminating the per-call `Value::List` allocation noted
+// in task #2455.
 
 /// Standard ISO 4014 / ISO 4017 bolt length series, 8 mm through 100 mm.
 /// Values are the canonical preferred increments used in fastener catalogues.
