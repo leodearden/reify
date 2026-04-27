@@ -113,6 +113,36 @@ fn doc_missing_file_exits_one() {
 }
 
 #[test]
+fn doc_parse_error_exits_one_with_stderr() {
+    // Mirrors `doc_compile_error_exits_one_with_stderr` but exercises the
+    // *parse-error* branch of `parse_and_compile`.  Compile errors print
+    // `error: ...` (severity tag); parse errors print `Parse error: ...`.
+    // Without this test, the parse-error branch of cmd_doc's pipeline is
+    // exercised only transitively by other crates.
+    let path = common::fixture_path("bracket_parse_error.ri");
+    let (status, stdout, stderr) = run_doc(&[&path]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "parse errors must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Parse error:"),
+        "stderr should contain 'Parse error:' for a parse failure, got: {stderr}"
+    );
+    // No doc body should reach stdout when parsing fails.
+    assert!(
+        !stdout.contains("<!DOCTYPE html>"),
+        "stdout should not contain HTML doc body on parse error, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"modules\""),
+        "stdout should not contain JSON doc body on parse error, got: {stdout}"
+    );
+}
+
+#[test]
 fn doc_format_json_compact_emits_single_line() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--format", "json", "--compact", &path]);
@@ -306,6 +336,129 @@ fn doc_o_flag_writes_to_file_for_json() {
             String::from_utf8_lossy(&bytes)
         )
     });
+}
+
+#[test]
+fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
+    // Pins the `write_single_file_or_stdout` contract that file-mode does
+    // *not* append a trailing newline (the comment in cmd_doc explicitly
+    // calls out "round-trips cleanly").  We compare the on-disk bytes to the
+    // formatter's own output via render_markdown's single-mode body.
+    let path = common::fixture_path("bracket.ri");
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let out_path = dir.path().join("doc.md");
+    let out_str = out_path.to_str().expect("tmp path is utf-8");
+
+    let (status, stdout, stderr) = run_doc(&["--format", "markdown", "-o", out_str, &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format markdown -o <file> must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "stdout must be empty when -o <file> is supplied, got: {stdout}"
+    );
+    let written = std::fs::read_to_string(&out_path).expect("read tmp doc.md");
+    // Compare against the formatter's own output: file mode must equal the
+    // body byte-for-byte, with no extra trailing newline appended by the
+    // CLI write path.
+    let expected = match reify_doc::fmt_markdown::render_markdown(
+        &reify_doc::model::DocModel {
+            modules: vec![reify_doc::model::ModuleDoc {
+                path: "bracket".to_string(),
+                ..Default::default()
+            }],
+        },
+        None,
+        &reify_doc::fmt_markdown::MarkdownOptions::default(),
+    ) {
+        reify_doc::fmt_markdown::MarkdownOutput::Single(s) => s,
+        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => {
+            panic!("default MarkdownOptions must produce Single, not Split")
+        }
+    };
+    assert_eq!(
+        written, expected,
+        "markdown file write must equal render_markdown's output byte-for-byte \
+         (no extra trailing newline appended)"
+    );
+}
+
+#[test]
+fn doc_o_flag_writes_html_without_extra_trailing_newline() {
+    // Same contract as the markdown variant: `-o <file>` writes the raw
+    // formatter output without appending a stdout-style trailing newline.
+    // The HTML stub itself ends with `</html>\n` (one newline baked in by
+    // the format string), so the on-disk byte count is exactly that — no
+    // extra `\n` after.
+    let path = common::fixture_path("bracket.ri");
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let out_path = dir.path().join("doc.html");
+    let out_str = out_path.to_str().expect("tmp path is utf-8");
+
+    let (status, stdout, stderr) = run_doc(&["--format", "html", "-o", out_str, &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format html -o <file> must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "stdout must be empty when -o <file> is supplied, got: {stdout}"
+    );
+    let written = std::fs::read_to_string(&out_path).expect("read tmp doc.html");
+    // The HTML stub format string ends with exactly one `\n` after `</html>`.
+    // File-mode must NOT add a second trailing newline on top of that.
+    assert!(
+        written.ends_with("</html>\n"),
+        "html file body must end with '</html>\\n' (one newline from the \
+         format template, not two), got tail: {:?}",
+        &written[written.len().saturating_sub(20)..]
+    );
+    assert!(
+        !written.ends_with("</html>\n\n"),
+        "html file body must NOT end with double newlines (file mode does \
+         not append a trailing newline), got tail: {:?}",
+        &written[written.len().saturating_sub(20)..]
+    );
+}
+
+#[test]
+fn doc_format_without_value_exits_two() {
+    // Pins the `--format` requires-a-value branch in cmd_doc's arg loop.
+    // Easy regression to introduce when refactoring; this test catches it.
+    let (status, stdout, stderr) = run_doc(&["--format"]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --format with no value must exit 2.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--format requires a value"),
+        "stderr should contain '--format requires a value', got: {stderr}"
+    );
+}
+
+#[test]
+fn doc_o_without_value_exits_two() {
+    // Pins the `-o` requires-a-value branch in cmd_doc's arg loop.
+    let (status, stdout, stderr) = run_doc(&["-o"]);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc -o with no path must exit 2.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("-o requires a path"),
+        "stderr should contain '-o requires a path', got: {stderr}"
+    );
 }
 
 #[test]
