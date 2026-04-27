@@ -488,6 +488,16 @@ mod tests {
             InstanceQualifiedAccessQualified,
             RangeLower,
             RangeUpper,
+            // Second-element entries for variadic arms: guards against a
+            // regression where only the first iteration of a for-loop forwards
+            // `next` while subsequent iterations capture the wrong variable.
+            FunctionCallSecondArg,
+            ListLiteralSecond,
+            SetLiteralSecond,
+            MapLiteralSecondKey,
+            MapLiteralSecondValue,
+            AdHocSelectorSecondArg,
+            MatchSecondArmBody,
         }
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
@@ -615,6 +625,44 @@ mod tests {
                     lower_inclusive: true,
                     upper_inclusive: true,
                 },
+                ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
+                    name: "f".to_string(),
+                    args: vec![shallow_leaf(span), leaf],
+                },
+                ArmKind::ListLiteralSecond => {
+                    ExprKind::ListLiteral(vec![shallow_leaf(span), leaf])
+                }
+                ArmKind::SetLiteralSecond => {
+                    ExprKind::SetLiteral(vec![shallow_leaf(span), leaf])
+                }
+                ArmKind::MapLiteralSecondKey => ExprKind::MapLiteral(vec![
+                    (shallow_leaf(span), shallow_leaf(span)),
+                    (leaf, shallow_leaf(span)),
+                ]),
+                ArmKind::MapLiteralSecondValue => ExprKind::MapLiteral(vec![
+                    (shallow_leaf(span), shallow_leaf(span)),
+                    (shallow_leaf(span), leaf),
+                ]),
+                ArmKind::AdHocSelectorSecondArg => ExprKind::AdHocSelector {
+                    base: Box::new(shallow_leaf(span)),
+                    selector: "_".into(),
+                    args: vec![shallow_leaf(span), leaf],
+                },
+                ArmKind::MatchSecondArmBody => ExprKind::Match {
+                    discriminant: Box::new(shallow_leaf(span)),
+                    arms: vec![
+                        MatchArm {
+                            patterns: vec![],
+                            body: shallow_leaf(span),
+                            span,
+                        },
+                        MatchArm {
+                            patterns: vec![],
+                            body: leaf,
+                            span,
+                        },
+                    ],
+                },
             };
             Expr { kind, span }
         }
@@ -646,8 +694,32 @@ mod tests {
             ArmKind::InstanceQualifiedAccessQualified,
             ArmKind::RangeLower,
             ArmKind::RangeUpper,
+            ArmKind::FunctionCallSecondArg,
+            ArmKind::ListLiteralSecond,
+            ArmKind::SetLiteralSecond,
+            ArmKind::MapLiteralSecondKey,
+            ArmKind::MapLiteralSecondValue,
+            ArmKind::AdHocSelectorSecondArg,
+            ArmKind::MatchSecondArmBody,
         ];
         for arm in arms {
+            // Sanity pass: a single-layer wrap must NOT panic. Guards against
+            // `wrap_in_arm` silently constructing a broken or depth-saturated
+            // AST, which would make the depth-saturation assertion below
+            // trivially vacuous (or erroneously attribute a construction panic
+            // to a missing `next` forward).
+            let shallow_wrapped = wrap_in_arm(arm, shallow_leaf(span), span);
+            let sanity = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                walk_expr(&shallow_wrapped, &mut diagnostics);
+            }));
+            assert!(
+                sanity.is_ok(),
+                "arm {:?} panicked on a single-layer (depth-1) wrap — \
+                 wrap_in_arm may construct a broken AST or a leaf-equivalent node",
+                arm
+            );
+
             let mut expr = Expr {
                 kind: ExprKind::NumberLiteral(0.0),
                 span,
