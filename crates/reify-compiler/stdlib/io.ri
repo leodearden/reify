@@ -14,3 +14,13 @@
 //      materials_mechanical.ri and tolerancing.ri.
 //   3. Provenance is declared before trait Input so that `Input.provenance :
 //      Provenance` resolves through the structure-name set in the pre-pass.
+
+// ── Marker traits ────────────────────────────────────────────────────────────
+
+// Something enters design scope — raw stock, a purchased component, or an
+// imported geometry file.
+trait Source {}
+
+// Something leaves design scope — finished output, scrapped waste, or a
+// filed inspection report.
+trait Sink {}
