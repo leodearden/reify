@@ -49,8 +49,8 @@ pub enum EngineError {
     /// The supplied value's dimension does not match the cell's declared type.
     DimensionMismatch {
         cell: reify_types::ValueCellId,
-        expected: reify_types::DimensionVector,
-        got: reify_types::DimensionVector,
+        expected: Box<reify_types::DimensionVector>,
+        got: Box<reify_types::DimensionVector>,
     },
     /// The supplied value's type variant does not match the cell's declared type kind.
     /// (e.g., passing Value::Bool to a Type::Scalar cell.)
