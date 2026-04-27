@@ -338,12 +338,20 @@ impl Diagnostic {
     /// Attach a machine-readable candidate list to this diagnostic.
     ///
     /// Mirrors [`Diagnostic::with_code`]: builder-fluent, takes ownership,
-    /// returns `Self`. Callers chain `.with_candidates(vec![...])` to expose
+    /// returns `Self`. Callers chain `.with_candidates(items)` to expose
     /// the "expected one of …" set as a structured field so downstream
     /// consumers (LSP quick-fixes, IDE error UIs) can read it without
     /// parsing the human-readable message.
-    pub fn with_candidates(mut self, candidates: Vec<String>) -> Self {
-        self.candidates = candidates;
+    ///
+    /// Accepts any `IntoIterator` whose items convert to `String`, so
+    /// callers can pass `&[&str]`, an iterator of `&str`, or a
+    /// pre-built `Vec<String>` without an intermediate allocation.
+    pub fn with_candidates<I, S>(mut self, candidates: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.candidates = candidates.into_iter().map(Into::into).collect();
         self
     }
 }

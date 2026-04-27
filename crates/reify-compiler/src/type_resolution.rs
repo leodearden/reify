@@ -109,12 +109,16 @@ pub(crate) fn resolve_dimension_type(
     // The list is exposed both in the prose message and in the structured `candidates` field;
     // downstream consumers (LSP quick-fixes, IDE tooling) should prefer the structured field
     // rather than parsing the prose.
-    let candidates: Vec<String> = reify_types::NAMED_DIMENSIONS
+    //
+    // Build as Vec<&str> first so names_list (the prose join) and with_candidates (the
+    // structured field) share the same source; with_candidates converts &str → String
+    // internally, avoiding a double-allocation pass.
+    let candidate_strs: Vec<&str> = reify_types::NAMED_DIMENSIONS
         .iter()
-        .map(|(_, n)| (*n).to_string())
-        .chain(std::iter::once("Dimensionless".to_string()))
+        .map(|(_, n)| *n)
+        .chain(std::iter::once("Dimensionless"))
         .collect();
-    let names_list = candidates.join(", ");
+    let names_list = candidate_strs.join(", ");
     diagnostics.push(
         Diagnostic::error(format!(
             "unknown dimension type '{}': expected one of {}",
@@ -124,7 +128,7 @@ pub(crate) fn resolve_dimension_type(
             type_expr.span,
             "unrecognized dimension type",
         ))
-        .with_candidates(candidates),
+        .with_candidates(candidate_strs),
     );
     None
 }
