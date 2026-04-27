@@ -529,138 +529,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             collection,
             predicate,
             ..
-        } => {
-            // ── Cell-iteration mode (task-2289) ───────────────────────────────
-            //
-            // When `collection.kind` is a `ListLiteral` whose elements are all
-            // `ValueRef`s (the post-activation shape produced by
-            // `activate_purpose`'s expansion of a
-            // `PurposeReflectiveAggregation` placeholder), iterate over the
-            // *cell IDs* rather than the values. Per iteration:
-            //   1. Clone the predicate.
-            //   2. Call `predicate_clone.remap_cell(variable_id, cell_id)`
-            //      so any `DeterminacyPredicate { cell: $loop_var }` is
-            //      rewritten to `DeterminacyPredicate { cell: $iterated_cell }`.
-            //      `remap_cell` also rewrites nested `Quantifier.variable_id`,
-            //      `Lambda.captures/param_ids`, and `ValueRef` ids that match.
-            //   3. Insert the cell's value into a per-iteration scope so
-            //      non-DeterminacyPredicate uses of the bound variable
-            //      (e.g. arithmetic) still see a value.
-            //   4. Evaluate the rewritten predicate.
-            //
-            // The Kleene short-circuit semantics (forall: false short-circuits,
-            // undef tracked; exists: true short-circuits, undef tracked) are
-            // shared with the value-iteration fallback below.
-            if let CompiledExprKind::ListLiteral(list_elements) = &collection.kind
-                && !list_elements.is_empty()
-                && list_elements
-                    .iter()
-                    .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_)))
-            {
-                let cell_ids: Vec<ValueCellId> = list_elements
-                    .iter()
-                    .map(|e| match &e.kind {
-                        CompiledExprKind::ValueRef(id) => id.clone(),
-                        _ => unreachable!("checked by all() above"),
-                    })
-                    .collect();
-
-                let mut has_undef = false;
-                for cell_id in &cell_ids {
-                    let mut pred_clone = predicate.as_ref().clone();
-                    pred_clone.remap_cell(variable_id, cell_id);
-
-                    // Defense-in-depth: bind the iterated cell's value under
-                    // the synthetic loop-var name. After `remap_cell` above,
-                    // every cell-bearing reference to `variable_id` (ValueRef,
-                    // DeterminacyPredicate.cell, nested Quantifier.variable_id,
-                    // Lambda.captures/param_ids) has been rewritten to
-                    // `cell_id`, so this insert is effectively dead for
-                    // present node kinds. We keep it so that any future
-                    // expression variant that references the loop variable
-                    // by name without going through `remap_cell` still sees
-                    // a live binding instead of `Value::Undef`. Cost is one
-                    // map insert per iteration.
-                    let mut scope = ctx.values.clone();
-                    let cell_value = ctx.values.get_or_undef(cell_id);
-                    scope.insert(variable_id.clone(), cell_value);
-
-                    let pred_val = eval_expr(&pred_clone, &ctx.with_scope(&scope));
-                    match (kind, pred_val) {
-                        (QuantifierKind::ForAll, Value::Bool(false)) => return Value::Bool(false),
-                        (QuantifierKind::ForAll, Value::Bool(true)) => {}
-                        (QuantifierKind::Exists, Value::Bool(true)) => return Value::Bool(true),
-                        (QuantifierKind::Exists, Value::Bool(false)) => {}
-                        (_, Value::Undef) => has_undef = true,
-                        (_, _) => return Value::Undef, // type error
-                    }
-                }
-                return if has_undef {
-                    Value::Undef
-                } else {
-                    match kind {
-                        QuantifierKind::ForAll => Value::Bool(true),
-                        QuantifierKind::Exists => Value::Bool(false),
-                    }
-                };
-            }
-
-            // ── Value-iteration fallback ──────────────────────────────────────
-            let coll_val = eval_expr(collection, ctx);
-            if coll_val.is_undef() {
-                return Value::Undef;
-            }
-
-            // Extract elements from collection (List or Set)
-            let elements: Vec<&Value> = match &coll_val {
-                Value::List(items) => items.iter().collect(),
-                Value::Set(items) => items.iter().collect(),
-                _ => return Value::Undef, // not a collection
-            };
-
-            match kind {
-                QuantifierKind::ForAll => {
-                    // Kleene forall: false short-circuits, undef tracked
-                    let mut has_undef = false;
-                    for elem in &elements {
-                        let mut scope = ctx.values.clone();
-                        scope.insert(variable_id.clone(), (*elem).clone());
-                        let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
-                        match pred_val {
-                            Value::Bool(false) => return Value::Bool(false),
-                            Value::Bool(true) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef, // type error
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(true)
-                    }
-                }
-                QuantifierKind::Exists => {
-                    // Kleene exists: true short-circuits, undef tracked
-                    let mut has_undef = false;
-                    for elem in &elements {
-                        let mut scope = ctx.values.clone();
-                        scope.insert(variable_id.clone(), (*elem).clone());
-                        let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
-                        match pred_val {
-                            Value::Bool(true) => return Value::Bool(true),
-                            Value::Bool(false) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef, // type error
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(false)
-                    }
-                }
-            }
-        }
+        } => eval_quantifier(*kind, variable_id, collection, predicate, ctx),
 
         // Ad-hoc selector evaluation is handled by the engine (Task 250),
         // which has access to the geometry kernel. The pure expression
@@ -734,6 +603,156 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
     // Evaluate result expression with final scope
     let final_ctx = ctx.with_scope(&scope);
     eval_expr(&func.body.result_expr, &final_ctx)
+}
+
+/// Evaluate a Quantifier (`forall` / `exists`) expression.
+///
+/// Extracted from `eval_expr` to keep that recursive function's stack frame
+/// small (the cell-iteration mode below needs to clone a `CompiledExpr` and a
+/// `ValueMap` per iteration; in debug builds those locals would otherwise sit
+/// on every `eval_expr` frame and blow the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
+/// `eval_user_fn_recursion_depth_exceeded` test).
+///
+/// Two iteration modes:
+/// - **Cell-iteration mode (task-2289):** when `collection.kind` is a
+///   `ListLiteral` whose elements are all `ValueRef`s — the post-activation
+///   shape produced by `activate_purpose`'s expansion of a
+///   `PurposeReflectiveAggregation` placeholder — iterate over the *cell IDs*
+///   rather than the values. Per iteration:
+///     1. Clone the predicate.
+///     2. Call `predicate_clone.remap_cell(variable_id, cell_id)` so any
+///        `DeterminacyPredicate { cell: $loop_var }` is rewritten to point at
+///        the iterated cell. `remap_cell` also rewrites nested
+///        `Quantifier.variable_id`, `Lambda.captures/param_ids`, and
+///        `ValueRef` ids that match.
+///     3. Insert the cell's value into a per-iteration scope so
+///        non-DeterminacyPredicate uses of the bound variable (e.g.
+///        arithmetic) still see a value.
+///     4. Evaluate the rewritten predicate.
+/// - **Value-iteration fallback:** any other collection shape — evaluate the
+///   collection, bind each element value under `variable_id`, evaluate the
+///   predicate.
+///
+/// Both modes share Kleene short-circuit semantics: forall short-circuits on
+/// `false`, exists short-circuits on `true`, `Undef` is tracked through the
+/// loop and yields `Undef` if no short-circuit fired.
+fn eval_quantifier(
+    kind: QuantifierKind,
+    variable_id: &ValueCellId,
+    collection: &CompiledExpr,
+    predicate: &CompiledExpr,
+    ctx: &EvalContext,
+) -> Value {
+    // ── Cell-iteration mode (task-2289) ───────────────────────────────────
+    if let CompiledExprKind::ListLiteral(list_elements) = &collection.kind
+        && !list_elements.is_empty()
+        && list_elements
+            .iter()
+            .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_)))
+    {
+        let cell_ids: Vec<ValueCellId> = list_elements
+            .iter()
+            .map(|e| match &e.kind {
+                CompiledExprKind::ValueRef(id) => id.clone(),
+                _ => unreachable!("checked by all() above"),
+            })
+            .collect();
+
+        let mut has_undef = false;
+        for cell_id in &cell_ids {
+            let mut pred_clone = predicate.clone();
+            pred_clone.remap_cell(variable_id, cell_id);
+
+            // Defense-in-depth: bind the iterated cell's value under the
+            // synthetic loop-var name. After `remap_cell` above, every
+            // cell-bearing reference to `variable_id` (ValueRef,
+            // DeterminacyPredicate.cell, nested Quantifier.variable_id,
+            // Lambda.captures/param_ids) has been rewritten to `cell_id`,
+            // so this insert is effectively dead for present node kinds.
+            // We keep it so that any future expression variant that
+            // references the loop variable by name without going through
+            // `remap_cell` still sees a live binding instead of
+            // `Value::Undef`. Cost is one map insert per iteration.
+            let mut scope = ctx.values.clone();
+            let cell_value = ctx.values.get_or_undef(cell_id);
+            scope.insert(variable_id.clone(), cell_value);
+
+            let pred_val = eval_expr(&pred_clone, &ctx.with_scope(&scope));
+            match (kind, pred_val) {
+                (QuantifierKind::ForAll, Value::Bool(false)) => return Value::Bool(false),
+                (QuantifierKind::ForAll, Value::Bool(true)) => {}
+                (QuantifierKind::Exists, Value::Bool(true)) => return Value::Bool(true),
+                (QuantifierKind::Exists, Value::Bool(false)) => {}
+                (_, Value::Undef) => has_undef = true,
+                (_, _) => return Value::Undef, // type error
+            }
+        }
+        return if has_undef {
+            Value::Undef
+        } else {
+            match kind {
+                QuantifierKind::ForAll => Value::Bool(true),
+                QuantifierKind::Exists => Value::Bool(false),
+            }
+        };
+    }
+
+    // ── Value-iteration fallback ──────────────────────────────────────────
+    let coll_val = eval_expr(collection, ctx);
+    if coll_val.is_undef() {
+        return Value::Undef;
+    }
+
+    // Extract elements from collection (List or Set)
+    let elements: Vec<&Value> = match &coll_val {
+        Value::List(items) => items.iter().collect(),
+        Value::Set(items) => items.iter().collect(),
+        _ => return Value::Undef, // not a collection
+    };
+
+    match kind {
+        QuantifierKind::ForAll => {
+            // Kleene forall: false short-circuits, undef tracked
+            let mut has_undef = false;
+            for elem in &elements {
+                let mut scope = ctx.values.clone();
+                scope.insert(variable_id.clone(), (*elem).clone());
+                let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
+                match pred_val {
+                    Value::Bool(false) => return Value::Bool(false),
+                    Value::Bool(true) => {}
+                    Value::Undef => has_undef = true,
+                    _ => return Value::Undef, // type error
+                }
+            }
+            if has_undef {
+                Value::Undef
+            } else {
+                Value::Bool(true)
+            }
+        }
+        QuantifierKind::Exists => {
+            // Kleene exists: true short-circuits, undef tracked
+            let mut has_undef = false;
+            for elem in &elements {
+                let mut scope = ctx.values.clone();
+                scope.insert(variable_id.clone(), (*elem).clone());
+                let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
+                match pred_val {
+                    Value::Bool(true) => return Value::Bool(true),
+                    Value::Bool(false) => {}
+                    Value::Undef => has_undef = true,
+                    _ => return Value::Undef, // type error
+                }
+            }
+            if has_undef {
+                Value::Undef
+            } else {
+                Value::Bool(false)
+            }
+        }
+    }
 }
 
 /// Apply a lambda closure to a list of argument values.
