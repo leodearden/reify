@@ -463,7 +463,7 @@ structure def HeatSink : ThermallyConductive {
     assert_eq!(
         template.constraints.len(),
         2,
-        "expected exactly 2 constraints from ThermallyConductive+Physical+MaterialSpec \
+        "expected exactly 2 constraints from chain ThermallyConductive→Physical→MaterialSpec \
          (volume > 0, thermal_conductivity > 0), got {}",
         template.constraints.len()
     );
@@ -510,7 +510,7 @@ structure def Wire : ElectricallyConductive {
     assert_eq!(
         template.constraints.len(),
         2,
-        "expected exactly 2 constraints from ElectricallyConductive+Physical+MaterialSpec \
+        "expected exactly 2 constraints from chain ElectricallyConductive→Physical→MaterialSpec \
          (volume > 0, electrical_conductivity > 0), got {}",
         template.constraints.len()
     );
