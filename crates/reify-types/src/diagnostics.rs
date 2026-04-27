@@ -261,6 +261,15 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_INTERPOLATION_DEFERRED`.
     InterpolationDeferred,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (binary-op `Add`/`Sub` site and
+    ///          range-bounds site), via `crates/reify-compiler/src/type_compat::format_dimension_mismatch_diagnostic`.
+    /// Canonical message form: `"dimension mismatch in {op}: {left} vs {right}"`.
+    ///
+    /// Emitted when two `Type::Scalar` operands carry different, incompatible
+    /// dimensions (e.g. Money vs Force). The diagnostic may carry an optional
+    /// secondary label naming the canonical dimensions when both are known
+    /// (e.g. `"Money and Force are different dimensions and cannot be combined directly"`).
+    DimensionMismatch,
 }
 
 /// A diagnostic message with location and optional labels.
