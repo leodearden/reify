@@ -3,8 +3,6 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
-#include <BRepCheck_Analyzer.hxx>
-#include <ShapeAnalysis_Shell.hxx>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -272,10 +270,12 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
 
 /// Check whether `shape` is watertight (closed, no free edges).
 ///
-/// Backed by `BRepCheck_Analyzer.IsValid()`. Returns `false` for shape types
-/// other than SOLID/COMPSOLID/COMPOUND/SHELL without running the analyzer,
-/// because valid wires and faces are not "watertight" in the geometry-trait
-/// sense (they do not enclose a volume).
+/// Backed by `BRepCheck_Analyzer.IsValid()`. Returns `false` immediately for
+/// shape types other than SOLID/COMPSOLID/SHELL: COMPOUND is excluded because
+/// `IsValid()` reports topological consistency, not closure — a compound of
+/// open faces can spuriously pass. FACE/WIRE/EDGE/VERTEX are also excluded
+/// as they never enclose a volume. Callers testing a COMPOUND should iterate
+/// its sub-shapes individually.
 bool is_watertight(const OcctShape& shape);
 
 /// Check whether every edge of `shape` has at most 2 parent faces.
@@ -292,6 +292,25 @@ bool is_manifold(const OcctShape& shape);
 /// orientations on its two incident faces. Shapes with no shells loaded
 /// (wires, isolated faces, vertices) trivially return `true`.
 bool is_orientable(const OcctShape& shape);
+
+// --- Test fixture helpers ---
+// These functions build deliberately malformed or exotic shapes that are only
+// useful for conformance integration tests. They are gated by `#[cfg(has_occt)]`
+// (not `cfg(test)`) in the Rust layer so that integration-test crates — which
+// compile the library in normal (non-test) mode — can call them.
+
+/// Build three planar faces sharing a common edge, assembled into a compound.
+/// The shared edge has 3 incident faces, making the compound non-manifold.
+std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test();
+
+/// Build a 10×10×10 mm box with one face removed, wrapped in a solid.
+/// The resulting open shell causes BRepCheck_Analyzer::IsValid() to return false.
+std::unique_ptr<OcctShape> make_malformed_solid_for_test();
+
+/// Build a shell of two faces sharing a common edge, where both faces use
+/// the shared edge in the same orientation — violating the consistency
+/// requirement for an oriented shell.
+std::unique_ptr<OcctShape> make_nonorientable_shell_for_test();
 
 // --- Export ---
 

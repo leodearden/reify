@@ -765,27 +765,6 @@ mod tests {
     }
 
     #[test]
-    fn geometry_query_conformance_variants_can_be_constructed_and_matched() {
-        let wt = GeometryQuery::IsWatertight(GeometryHandleId(1));
-        match &wt {
-            GeometryQuery::IsWatertight(id) => assert_eq!(*id, GeometryHandleId(1)),
-            _ => panic!("expected IsWatertight variant"),
-        }
-
-        let mf = GeometryQuery::IsManifold(GeometryHandleId(2));
-        match &mf {
-            GeometryQuery::IsManifold(id) => assert_eq!(*id, GeometryHandleId(2)),
-            _ => panic!("expected IsManifold variant"),
-        }
-
-        let or = GeometryQuery::IsOrientable(GeometryHandleId(3));
-        match &or {
-            GeometryQuery::IsOrientable(id) => assert_eq!(*id, GeometryHandleId(3)),
-            _ => panic!("expected IsOrientable variant"),
-        }
-    }
-
-    #[test]
     fn geometry_query_topology_variants_can_be_constructed_and_matched() {
         let adj = GeometryQuery::AdjacentFaces {
             shape: GeometryHandleId(1),

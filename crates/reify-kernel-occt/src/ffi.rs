@@ -288,8 +288,10 @@ pub mod ffi {
         // --- Conformance queries ---
 
         /// Check whether `shape` is watertight (closed, no free edges).
-        /// Returns false immediately for FACE/WIRE/EDGE/VERTEX types (shape-type guard).
-        /// Backed by BRepCheck_Analyzer.IsValid() for SOLID/COMPSOLID/COMPOUND/SHELL.
+        /// Returns false immediately for types other than SOLID/COMPSOLID/SHELL.
+        /// COMPOUND is excluded: IsValid() checks topological consistency, not
+        /// closure — a compound of open faces can spuriously return true.
+        /// Backed by BRepCheck_Analyzer.IsValid() for SOLID/COMPSOLID/SHELL.
         fn is_watertight(shape: &OcctShape) -> Result<bool>;
 
         /// Check whether every edge of `shape` has at most 2 parent faces.
@@ -300,6 +302,19 @@ pub mod ffi {
         /// Backed by ShapeAnalysis_Shell::CheckOrientedShells(shape, alsofree=false).
         /// Trivially true for shapes with no shells (wires, isolated faces, vertices).
         fn is_orientable(shape: &OcctShape) -> Result<bool>;
+
+        // --- Test fixture helpers ---
+        // Exposed (not gated on cfg(test)) so integration-test crates can call them
+        // via OcctKernel::store_*_for_test helpers in lib.rs.
+
+        /// Three faces sharing one edge → non-manifold compound.
+        fn make_nonmanifold_compound_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// 10×10×10 mm box missing one face → open shell inside a solid.
+        fn make_malformed_solid_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// Two faces sharing one edge with identical orientation → non-orientable shell.
+        fn make_nonorientable_shell_for_test() -> Result<UniquePtr<OcctShape>>;
 
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
