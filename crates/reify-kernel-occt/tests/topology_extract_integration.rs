@@ -8,7 +8,9 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, ReprKind, Value};
+use reify_types::{
+    GeometryHandleId, GeometryOp, GeometryQuery, QueryError, ReprKind, Value, WarmStartable,
+};
 
 /// Helper: build a kernel containing one box of the given mm dimensions
 /// (converted to SI metres at the kernel boundary so geometric queries
@@ -428,4 +430,83 @@ fn extract_edges_after_fillet_count_differs_from_box() {
         assert_ne!(*id, GeometryHandleId::INVALID, "extracted edge handle must not be INVALID");
         assert!(seen.insert(*id), "duplicate edge handle id {:?}", id);
     }
+}
+
+#[test]
+fn centroid_of_face_handle_survives_warm_start_round_trip() {
+    // Regression test for: face-handle centroid dispatch silently wrong after warm-start.
+    //
+    // Pre-fix: `reprs` was not persisted in OcctWarmState, so after a warm-start round-trip
+    // every restored handle reported repr_of == None, falling back to the volume-based
+    // query_centroid which returns (0,0,0) for a sub-face. The top face of a 10mm box
+    // should have centroid (0, 0, +5e-3), not the origin.
+
+    // 1. Build kernel A with a 10×10×10 mm box centered at origin.
+    let (mut kernel_a, box_id) = box_kernel(10.0, 10.0, 10.0);
+
+    // 2. Extract faces → 6 handles. Find the top face (centroid z ≈ +5e-3).
+    let faces = kernel_a
+        .extract_faces(box_id)
+        .expect("extract_faces on a valid box should succeed");
+    assert_eq!(faces.len(), 6, "a 10×10×10 box has 6 faces");
+
+    let target_z = 5e-3_f64;
+    let pos_tol = 1e-9_f64;
+
+    let (top_face_id, pre_cx, pre_cy, pre_cz) = faces
+        .iter()
+        .find_map(|id| {
+            let c = kernel_a
+                .query(&GeometryQuery::Centroid(*id))
+                .expect("Centroid query on face handle should succeed");
+            let (x, y, z) = parse_xyz(&c);
+            if (z - target_z).abs() < pos_tol {
+                Some((*id, x, y, z))
+            } else {
+                None
+            }
+        })
+        .expect("a 10×10×10 box centered at origin must have a top face at z=+5e-3");
+
+    // 3. Sanity-assert pre-warm centroid.
+    assert!(
+        (pre_cz - target_z).abs() < pos_tol,
+        "pre-warm top-face centroid z should be ≈5e-3, got {pre_cz}"
+    );
+
+    // 4. Round-trip: warm_state → fresh kernel → with_warm_state.
+    let state = kernel_a
+        .warm_state()
+        .expect("kernel with shapes should produce warm state");
+    let mut kernel_b = OcctKernel::new();
+    kernel_b.with_warm_state(state);
+
+    // 5. Re-query centroid via kernel_b using the same face handle id.
+    let post_c = kernel_b
+        .query(&GeometryQuery::Centroid(top_face_id))
+        .expect("Centroid query on restored face handle should succeed");
+    let (post_x, post_y, post_z) = parse_xyz(&post_c);
+
+    // 6. Post-warm centroid must match pre-warm centroid within tolerance.
+    assert!(
+        (post_x - pre_cx).abs() < pos_tol,
+        "post-warm centroid x should be ≈{pre_cx}, got {post_x}"
+    );
+    assert!(
+        (post_y - pre_cy).abs() < pos_tol,
+        "post-warm centroid y should be ≈{pre_cy}, got {post_y}"
+    );
+    assert!(
+        (post_z - pre_cz).abs() < pos_tol,
+        "post-warm centroid z should be ≈{pre_cz}, got {post_z}"
+    );
+
+    // 7. Specifically assert the face centroid is NOT the origin (z ≠ 0).
+    // Before the fix, the face handle loses its ReprKind::Face classification
+    // after warm-start, causing dispatch to the volume-based query_centroid
+    // which returns (0,0,0) for sub-faces. This assertion catches that regression.
+    assert!(
+        (post_z - target_z).abs() < pos_tol,
+        "post-warm top-face centroid z must be ≈+5e-3, not origin: got z={post_z}"
+    );
 }

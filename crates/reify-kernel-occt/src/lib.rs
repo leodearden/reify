@@ -54,12 +54,22 @@ use reify_types::{
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
 ///
-/// Contains BRep ASCII serializations of all shapes in the kernel, plus the
-/// next handle ID counter. BRep format is valid UTF-8 text, so `String` is
-/// used instead of `Vec<u8>`.
+/// Contains BRep ASCII serializations of all shapes in the kernel, the
+/// per-handle [`ReprKind`] classification map, and the next handle ID counter.
+/// BRep format is valid UTF-8 text, so `String` is used instead of `Vec<u8>`.
+///
+/// The `reprs` map is kept in lock-step with `shapes`: only IDs whose BRep
+/// serialized successfully are included, so every key in `reprs` is also a
+/// key in `shapes`.
 struct OcctWarmState {
     /// Map from handle ID to BRep ASCII string of the corresponding shape.
     shapes: HashMap<u64, String>,
+    /// Map from handle ID to [`ReprKind`] classification (Face, Solid, Edge, …).
+    ///
+    /// Restored alongside `shapes` in `with_warm_state` so that post-warm-start
+    /// dispatch (e.g. `Centroid` → `query_face_centroid` for `ReprKind::Face`)
+    /// works correctly.
+    reprs: HashMap<u64, ReprKind>,
     /// The next handle ID to assign (preserves ID namespace across warm-start).
     next_id: u64,
 }
@@ -179,8 +189,12 @@ impl OcctKernel {
     }
 
     /// Return the [`ReprKind`] that was assigned to `id` at `store_with_repr`
-    /// time, or `None` if `id` is unknown to this kernel (also `None` after
-    /// warm-start since the repr map is not serialized).
+    /// time, or `None` if `id` is unknown to this kernel.
+    ///
+    /// After a `warm_state()`/`with_warm_state()` round-trip the classification
+    /// is restored from the persisted `reprs` map. Any handle whose BRep
+    /// serialized successfully but whose repr entry was absent falls back to
+    /// [`ReprKind::Solid`] (matches the implicit default in [`OcctKernel::store`]).
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<ReprKind> {
         self.reprs.get(&id.0).copied()
     }
@@ -1244,6 +1258,7 @@ impl WarmStartable for OcctKernel {
             return None;
         }
         let mut warm_shapes = HashMap::new();
+        let mut warm_reprs: HashMap<u64, ReprKind> = HashMap::new();
         let mut total_bytes: usize = 0;
         for (&id, shape) in &self.shapes {
             let Some(shape_ref) = shape.as_ref() else {
@@ -1253,6 +1268,11 @@ impl WarmStartable for OcctKernel {
                 Ok(brep) => {
                     total_bytes += brep.len();
                     warm_shapes.insert(id, brep);
+                    // Mirror repr entry only for ids that successfully serialized,
+                    // keeping shapes and reprs in lock-step.
+                    if let Some(&repr) = self.reprs.get(&id) {
+                        warm_reprs.insert(id, repr);
+                    }
                 }
                 Err(_) => {
                     // Skip shapes that fail to serialize (best-effort)
@@ -1263,10 +1283,17 @@ impl WarmStartable for OcctKernel {
         if warm_shapes.is_empty() {
             return None;
         }
-        let size_estimate = total_bytes + 64; // overhead for HashMap + struct
+        let staged_count = warm_shapes.len();
+        // size_estimate is a payload-bytes lower bound, not a true heap footprint.
+        // Per-repr entry: 16 bytes (u64 key + enum byte, payload only). True cost in
+        // hashbrown's open-addressing layout is ~32–48 bytes/entry, but the existing
+        // +64 struct overhead already underestimates the shapes HashMap the same way —
+        // callers treat this figure as approximate, not as a precise allocator reading.
+        let size_estimate = total_bytes + staged_count * 16 + 64;
         Some(OpaqueState::new(
             OcctWarmState {
                 shapes: warm_shapes,
+                reprs: warm_reprs,
                 next_id: self.next_id,
             },
             size_estimate,
@@ -1298,7 +1325,25 @@ impl WarmStartable for OcctKernel {
         // Atomic swap: only replace kernel state if at least one shape was
         // successfully deserialized. Otherwise the kernel state is untouched.
         if !staged.is_empty() {
+            // Rebuild repr map: for every successfully staged id, take the
+            // persisted repr if present, falling back to ReprKind::Solid
+            // (matches the implicit default in OcctKernel::store).
+            // debug_assert guards against a future producer that serializes
+            // warm.shapes and warm.reprs out of sync: if reprs is non-empty it
+            // must contain an entry for every shape id (the lock-step invariant
+            // maintained by warm_state()). The production fallback remains safe.
+            let mut new_reprs = HashMap::new();
+            for &id in staged.keys() {
+                debug_assert!(
+                    warm.reprs.is_empty() || warm.reprs.contains_key(&id),
+                    "warm.reprs and warm.shapes are out of sync: \
+                     id {id} present in shapes but missing from reprs"
+                );
+                let repr = warm.reprs.get(&id).copied().unwrap_or(ReprKind::Solid);
+                new_reprs.insert(id, repr);
+            }
             self.shapes = staged;
+            self.reprs = new_reprs;
             self.next_id = warm.next_id;
         }
     }
@@ -1685,6 +1730,69 @@ mod tests {
     }
 
     #[test]
+    fn repr_of_survives_warm_start_round_trip() {
+        // Pins the invariant that `repr_of` returns the correct ReprKind after a
+        // warm_state()/with_warm_state() round-trip. Prior to the fix, OcctWarmState
+        // did not persist the `reprs` map, so every restored handle returned None.
+
+        // 1. Build kernel A with a box → ReprKind::Solid (id 1).
+        let mut kernel_a = OcctKernel::new();
+        let box_h = kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+
+        // 2. Extract faces → each is ReprKind::Face. Capture the first face id.
+        let faces = kernel_a
+            .extract_faces(box_id)
+            .expect("extract_faces on a valid box should succeed");
+        assert_eq!(faces.len(), 6, "a box has 6 faces");
+        let face_id = faces[0];
+
+        // 3. Pre-condition: assert reprs are correct before warm-start.
+        assert_eq!(
+            kernel_a.repr_of(face_id),
+            Some(ReprKind::Face),
+            "pre-warm: face handle should have ReprKind::Face"
+        );
+        assert_eq!(
+            kernel_a.repr_of(box_id),
+            Some(ReprKind::Solid),
+            "pre-warm: box handle should have ReprKind::Solid"
+        );
+
+        // 4. Round-trip.
+        let state = kernel_a.warm_state().expect("kernel should have warm state");
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        // 5. Post-warm: face handle must still report ReprKind::Face (the regression).
+        assert_eq!(
+            kernel_b.repr_of(face_id),
+            Some(ReprKind::Face),
+            "post-warm: face handle should have ReprKind::Face, not None"
+        );
+
+        // 6. Post-warm: box handle must still report ReprKind::Solid.
+        assert_eq!(
+            kernel_b.repr_of(box_id),
+            Some(ReprKind::Solid),
+            "post-warm: box handle should have ReprKind::Solid"
+        );
+
+        // 7. Truly-unknown id must still report None.
+        assert_eq!(
+            kernel_b.repr_of(GeometryHandleId(99999)),
+            None,
+            "repr_of for unknown id should return None"
+        );
+    }
+
+    #[test]
     fn with_warm_state_ignores_wrong_type() {
         let mut kernel = OcctKernel::new();
         // Pass a String instead of OcctWarmState — should be silently ignored
@@ -1729,6 +1837,7 @@ mod tests {
         corrupted_shapes.insert(2, "ALSO_GARBAGE".to_string());
         let corrupted_warm = OcctWarmState {
             shapes: corrupted_shapes,
+            reprs: HashMap::new(),
             next_id: 99,
         };
         let corrupted_state = OpaqueState::new(corrupted_warm, 64);
@@ -1807,6 +1916,7 @@ mod tests {
         partial_shapes.insert(2, "CORRUPT".to_string());
         let partial_warm = OcctWarmState {
             shapes: partial_shapes,
+            reprs: HashMap::new(),
             next_id: 10,
         };
         let partial_state = OpaqueState::new(partial_warm, 64);
@@ -1875,6 +1985,7 @@ mod tests {
         shapes.insert(2, "CORRUPT_DATA".to_string());
         let warm = OcctWarmState {
             shapes,
+            reprs: HashMap::new(),
             next_id: 10,
         };
         let state = OpaqueState::new(warm, 64);
