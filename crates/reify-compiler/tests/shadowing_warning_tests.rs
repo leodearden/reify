@@ -66,3 +66,74 @@ structure S {
         l0.span
     );
 }
+
+/// Quantifier-bound variable case: a `forall x in coll: pred` whose `x`
+/// matches an entity-scope `param x` MUST emit one Shadowing warning. The
+/// child span overlaps the quantifier expression (per design decision §5
+/// — `Expr.span` is the binder span available without an AST extension);
+/// the original-decl span is at the entity's `param x`.
+#[test]
+fn quantifier_variable_shadows_entity_param_emits_w_shadow() {
+    let source = r#"
+structure S {
+    param x : Real = 0
+    constraint forall x in [1, 2, 3]: x > 0
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning for quantifier-shadow case, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(
+        warning.labels.len(),
+        2,
+        "Shadowing warning must carry two labels (child + original), got: {:?}",
+        warning.labels
+    );
+
+    let l0 = &warning.labels[0];
+    let l1 = &warning.labels[1];
+    assert!(
+        !l0.span.is_empty(),
+        "child-site label span must be non-empty, got: {:?}",
+        l0.span
+    );
+    assert!(
+        !l1.span.is_empty(),
+        "original-decl label span must be non-empty, got: {:?}",
+        l1.span
+    );
+    assert_ne!(
+        l0.span, l1.span,
+        "child-site and original-decl spans must be distinct, both = {:?}",
+        l0.span
+    );
+
+    // The original-decl span should land at the entity's `param x` decl.
+    // Locate `param x` in the source and verify the original-decl label
+    // (l1) covers it. The simplest verification is that the original-decl
+    // span sits BEFORE the quantifier-expression span (the entity's param
+    // appears before the constraint that uses it).
+    assert!(
+        l1.span.start < l0.span.start,
+        "original-decl span ({:?}) must precede the child-site span ({:?})",
+        l1.span,
+        l0.span
+    );
+}
