@@ -234,8 +234,7 @@ pub fn expect_binop(
 /// where `|rhs - expected_rhs| <= rhs_epsilon`.
 ///
 /// This tightens the constraint-present check: a regression that flips the
-/// operator (e.g. `>=` → `>`) or changes the bound (e.g. `0.0` instead of
-/// `1500.0`) will fail here.  Shape is:
+/// operator or changes the bound will fail here.  Shape is:
 ///   `BinOp { op: expected_op, left: Ident(expected_member), right: NumberLiteral(rhs) }`
 /// with `|rhs - expected_rhs| <= rhs_epsilon`.
 #[track_caller]
@@ -275,32 +274,40 @@ pub fn assert_trait_constraint_binop(
             )
         });
 
-    if let DefaultKind::Constraint(decl) = &constraint_default.kind {
-        if let ExprKind::BinOp { op, left: _, right } = &decl.expr.kind {
-            assert_eq!(
-                op.as_str(),
-                expected_op,
-                "{} constraint op for '{}' should be '{}', got '{}'",
-                trait_name,
-                expected_member,
-                expected_op,
-                op
-            );
-            match &right.kind {
-                ExprKind::NumberLiteral(v) => assert!(
-                    (*v - expected_rhs).abs() <= rhs_epsilon,
-                    "{} constraint RHS for '{}' should be {} (±{}), got {}",
-                    trait_name,
-                    expected_member,
-                    expected_rhs,
-                    rhs_epsilon,
-                    v
-                ),
-                other => panic!(
-                    "{} constraint RHS for '{}' should be NumberLiteral, got {:?}",
-                    trait_name, expected_member, other
-                ),
-            }
-        }
+    let DefaultKind::Constraint(decl) = &constraint_default.kind else {
+        unreachable!(
+            "{} default for '{}' matched the Constraint predicate but kind is not Constraint",
+            trait_name, expected_member
+        )
+    };
+    let ExprKind::BinOp { op, left: _, right } = &decl.expr.kind else {
+        unreachable!(
+            "{} constraint expr for '{}' is not a BinOp, got {:?}",
+            trait_name, expected_member, decl.expr.kind
+        )
+    };
+    assert_eq!(
+        op.as_str(),
+        expected_op,
+        "{} constraint op for '{}' should be '{}', got '{}'",
+        trait_name,
+        expected_member,
+        expected_op,
+        op
+    );
+    match &right.kind {
+        ExprKind::NumberLiteral(v) => assert!(
+            (*v - expected_rhs).abs() <= rhs_epsilon,
+            "{} constraint RHS for '{}' should be {} (±{}), got {}",
+            trait_name,
+            expected_member,
+            expected_rhs,
+            rhs_epsilon,
+            v
+        ),
+        other => panic!(
+            "{} constraint RHS for '{}' should be NumberLiteral, got {:?}",
+            trait_name, expected_member, other
+        ),
     }
 }
