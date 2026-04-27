@@ -78,7 +78,19 @@ fn build_fixture() -> DocModel {
                         args: vec![],
                     }],
                     pragmas: vec![],
-                    params: vec![],
+                    params: vec![ParamDoc {
+                        name: "length".into(),
+                        doc: Some("Bolt length.".into()),
+                        type_repr: "Length".into(),
+                        default_repr: Some("100 mm".into()),
+                        annotations: vec![AnnotationDoc {
+                            name: "solver_hint".into(),
+                            args: vec![
+                                "\"discrete_set\"".into(),
+                                "standard_bolt_lengths".into(),
+                            ],
+                        }],
+                    }],
                     ports: vec![],
                     constraints: vec![],
                     sub_components: vec![],
