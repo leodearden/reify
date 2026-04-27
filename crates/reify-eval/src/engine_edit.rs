@@ -229,28 +229,18 @@ fn group_needs_phase3(
     }
 }
 
-/// Shared guard-cell lookup used by the Phase 3 loop in both
-/// `Engine::edit_param` Phase 3 and `Engine::edit_source` Phase 3.
+/// Shared guard-cell lookup used by Phase 3 in both `Engine::edit_param` and
+/// `Engine::edit_source` (one call site each).
 ///
-/// Returns `Some(v.clone())` when `values.get(guard_cell)` is present.
-/// On `None`: emits `tracing::warn!` (observable by the counting-subscriber
-/// test), fires `debug_assert!(false, ...)` (halts in debug builds), then
-/// returns `None` so the caller's `let-else` can `continue`.
+/// Returns `Some(v.clone())` when present; on `None`, emits `tracing::warn!`,
+/// fires `debug_assert!(false)` in debug builds, and returns `None`.  The
+/// absent-guard arm is unreachable today (Phase 1 seeds every guard cell) but
+/// becomes reachable after a future refactor that narrows
+/// `structure_controlling` (task 2229).
 ///
-/// The absent-guard arm is unreachable in current flow because Phase 1 always
-/// seeds every guard cell into `values` (Phase 1, the
-/// `structure_controlling` guard-seeding pass), but a future refactor that
-/// narrows `structure_controlling` (so Phase 1 doesn't fire / doesn't seed
-/// every guard) would expose it.  This helper captures the entire absent-guard
-/// skip logic in one place, making the contract testable and enforcing
-/// `Engine::edit_param`/`Engine::edit_source` symmetry by construction — both
-/// call sites use the same helper, so any future asymmetric change to one will
-/// fail the helper's tests.
-///
-/// **Warn-before-assert ordering is load-bearing**: the WARN event must fire
-/// before the `debug_assert!` so that a `CountingSubscriber` (used in the
-/// dual-mode test) can observe the counter increment even when the
-/// `debug_assert!` subsequently unwinds the thread.
+/// **Warn-before-assert ordering is load-bearing**: the WARN must fire before
+/// the `debug_assert!` so a `CountingSubscriber` can observe the counter
+/// increment even when the `debug_assert!` subsequently unwinds the thread.
 fn phase3_get_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
     match values.get(guard_cell) {
         Some(v) => Some(v.clone()),
@@ -1044,15 +1034,7 @@ impl Engine {
                     if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
-                    // Phase 1 (the dirty-cone-triggered branch above) seeds every guard
-                    // cell value into `values`, but Phase 3 is separately gated by
-                    // `guard_changed` (value diff vs. old snapshot) — and `group_needs_phase3`
-                    // returns true in the absent-guard arm (`old_guard_val.is_some() &&
-                    // new_val.is_none()`, post-task-2146). A future refactor that narrows
-                    // `structure_controlling` could leave a guard_cell unevaluated here. Skip
-                    // those defensively rather than panic; the old snapshot's guard value
-                    // will be used for the downstream diff in subsequent edits. Symmetric
-                    // with edit_source Phase 3 (task 2229).
+                    // Absent-guard skip rationale and warn-before-assert invariant: see `phase3_get_guard_val` docs.
                     let Some(guard_val) = phase3_get_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
@@ -2134,15 +2116,7 @@ impl Engine {
                     if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
-                    // Phase 1 (the dirty-cone-triggered branch above) guarantees
-                    // that every guard_cell in structure_controlling has a value
-                    // in `values`. But Phase 3 is separately gated on
-                    // `guard_changed` (value diff vs. old snapshot) — a future
-                    // refactor that narrows structure_controlling could leave a
-                    // guard_cell unevaluated here. Skip those defensively rather
-                    // than panic; the old snapshot's guard value will be used for
-                    // the downstream diff in subsequent edits. Symmetric with
-                    // edit_param Phase 3 (task 2229).
+                    // Absent-guard skip rationale and warn-before-assert invariant: see `phase3_get_guard_val` docs.
                     let Some(guard_val) = phase3_get_guard_val(&values, &group.guard_cell) else {
                         continue;
                     };
