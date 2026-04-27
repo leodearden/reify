@@ -71,21 +71,38 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 /// Recurse through every expression-bearing position of a top-level declaration.
 ///
 /// Visits:
-///   * `Structure`/`Occurrence`/`Trait`/`Purpose`: `members` (delegates to
-///     [`walk_members`]).
-///   * `Function`: `body.let_bindings[*].value` + `body.result_expr`.
-///   * `Field`: `source` (Analytical/Composed `expr`, Sampled config values).
-///   * `Constraint` (named def): `params[*].default` + `predicates[*]`.
-///   * `Unit`: `conversion` + `offset`.
-///   * `Enum`/`Import`/`TypeAlias`: no expressions, no-op.
+///   * `Structure`/`Occurrence`/`Trait`/`Purpose`: `annotations[*].args` +
+///     `members` (delegates to [`walk_members`]).
+///   * `Function`: `annotations[*].args` + `body.let_bindings[*].value` +
+///     `body.result_expr`.
+///   * `Field`: `annotations[*].args` + `source` (Analytical/Composed `expr`,
+///     Sampled config values).
+///   * `Constraint` (named def): `annotations[*].args` + `params[*].default` +
+///     `predicates[*]`.
+///   * `Unit`: `annotations[*].args` + `conversion` + `offset`.
+///   * `Enum`/`Import`/`TypeAlias`: `annotations[*].args` only (no other
+///     embedded expressions today).
 fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diagnostic>) {
     use reify_syntax::{Declaration, FieldSource};
     match decl {
-        Declaration::Structure(s) => walk_members(&s.members, diagnostics, 0),
-        Declaration::Occurrence(o) => walk_members(&o.members, diagnostics, 0),
-        Declaration::Trait(t) => walk_members(&t.members, diagnostics, 0),
-        Declaration::Purpose(p) => walk_members(&p.members, diagnostics, 0),
+        Declaration::Structure(s) => {
+            walk_annotations(&s.annotations, diagnostics);
+            walk_members(&s.members, diagnostics, 0);
+        }
+        Declaration::Occurrence(o) => {
+            walk_annotations(&o.annotations, diagnostics);
+            walk_members(&o.members, diagnostics, 0);
+        }
+        Declaration::Trait(t) => {
+            walk_annotations(&t.annotations, diagnostics);
+            walk_members(&t.members, diagnostics, 0);
+        }
+        Declaration::Purpose(p) => {
+            walk_annotations(&p.annotations, diagnostics);
+            walk_members(&p.members, diagnostics, 0);
+        }
         Declaration::Function(f) => {
+            walk_annotations(&f.annotations, diagnostics);
             for binding in &f.body.let_bindings {
                 walk_expr(&binding.value, diagnostics);
                 if let Some(wc) = &binding.where_clause {
@@ -94,18 +111,22 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             }
             walk_expr(&f.body.result_expr, diagnostics);
         }
-        Declaration::Field(f) => match &f.source {
-            FieldSource::Analytical { expr } | FieldSource::Composed { expr } => {
-                walk_expr(expr, diagnostics);
-            }
-            FieldSource::Sampled { config } => {
-                for (_, expr) in config {
+        Declaration::Field(f) => {
+            walk_annotations(&f.annotations, diagnostics);
+            match &f.source {
+                FieldSource::Analytical { expr } | FieldSource::Composed { expr } => {
                     walk_expr(expr, diagnostics);
                 }
+                FieldSource::Sampled { config } => {
+                    for (_, expr) in config {
+                        walk_expr(expr, diagnostics);
+                    }
+                }
+                FieldSource::Imported { .. } => {}
             }
-            FieldSource::Imported { .. } => {}
-        },
+        }
         Declaration::Constraint(c) => {
+            walk_annotations(&c.annotations, diagnostics);
             for p in &c.params {
                 if let Some(default) = &p.default {
                     walk_expr(default, diagnostics);
@@ -119,6 +140,7 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             }
         }
         Declaration::Unit(u) => {
+            walk_annotations(&u.annotations, diagnostics);
             if let Some(conv) = &u.conversion {
                 walk_expr(conv, diagnostics);
             }
@@ -126,8 +148,11 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
                 walk_expr(off, diagnostics);
             }
         }
-        // Declarations with no embedded expressions.
-        Declaration::Enum(_) | Declaration::Import(_) | Declaration::TypeAlias(_) => {}
+        // These declarations have no embedded body expressions, but their
+        // annotation args are full expressions and must be walked.
+        Declaration::Enum(e) => walk_annotations(&e.annotations, diagnostics),
+        Declaration::Import(i) => walk_annotations(&i.annotations, diagnostics),
+        Declaration::TypeAlias(t) => walk_annotations(&t.annotations, diagnostics),
     }
 }
 
@@ -235,6 +260,24 @@ fn walk_members(
             }
             // Members with no embedded expressions.
             MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
+        }
+    }
+}
+
+/// Walk every arg of every annotation in `annotations`, emitting a diagnostic
+/// for each deep `MemberAccess` chain found.
+///
+/// Annotation args are arbitrary `Expr` values (spec §5.7 covers all user
+/// expressions), so they require the same chain-detection pass as any other
+/// expression-bearing position. Depth-bounding is inherited for free from the
+/// existing [`walk_expr`] → [`walk_expr_depth`] entry point.
+fn walk_annotations(
+    annotations: &[reify_syntax::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        for arg in &ann.args {
+            walk_expr(arg, diagnostics);
         }
     }
 }
