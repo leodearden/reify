@@ -1239,58 +1239,49 @@ mod tests {
     // that gap by driving `tessellate_realizations` with a recording stub kernel
     // that captures every `tolerance` argument.
 
-    /// Recording stub kernel: produces successful handles + a minimal mesh,
-    /// and captures every `tolerance` argument passed to `tessellate` into a
-    /// shared Vec the test can read back after the engine takes ownership.
+    /// Recording stub kernel: delegates the full `GeometryKernel` surface to a
+    /// `MockGeometryKernel` and only intercepts `tessellate` to capture every
+    /// `tolerance` argument into a shared Vec the test can read back after the
+    /// engine takes ownership. Delegating (rather than reimplementing the
+    /// trait) keeps this stub consistent with how the rest of this file's
+    /// tests construct kernels and avoids drift if `MockGeometryKernel` gains
+    /// new behaviour.
     struct RecordingTessellationKernel {
-        next_id: u64,
+        inner: reify_test_support::mocks::MockGeometryKernel,
         recorded_tolerances: std::sync::Arc<std::sync::Mutex<Vec<f64>>>,
     }
 
     impl reify_types::GeometryKernel for RecordingTessellationKernel {
         fn execute(
             &mut self,
-            _op: &reify_types::GeometryOp,
+            op: &reify_types::GeometryOp,
         ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
-            let id = reify_types::GeometryHandleId(self.next_id);
-            self.next_id += 1;
-            Ok(reify_types::GeometryHandle {
-                id,
-                repr: reify_types::ReprKind::Solid,
-            })
+            self.inner.execute(op)
         }
 
         fn query(
             &self,
-            _query: &reify_types::GeometryQuery,
+            query: &reify_types::GeometryQuery,
         ) -> Result<reify_types::Value, reify_types::QueryError> {
-            Err(reify_types::QueryError::QueryFailed(
-                "RecordingTessellationKernel::query not used in this test".into(),
-            ))
+            self.inner.query(query)
         }
 
         fn export(
             &self,
-            _handle: reify_types::GeometryHandleId,
-            _format: reify_types::ExportFormat,
-            _writer: &mut dyn std::io::Write,
+            handle: reify_types::GeometryHandleId,
+            format: reify_types::ExportFormat,
+            writer: &mut dyn std::io::Write,
         ) -> Result<(), reify_types::ExportError> {
-            Ok(())
+            self.inner.export(handle, format, writer)
         }
 
         fn tessellate(
             &self,
-            _handle: reify_types::GeometryHandleId,
+            handle: reify_types::GeometryHandleId,
             tolerance: f64,
         ) -> Result<reify_types::Mesh, reify_types::TessError> {
             self.recorded_tolerances.lock().unwrap().push(tolerance);
-            // Minimal valid mesh (one triangle), shape-compatible with
-            // MockGeometryKernel::tessellate.
-            Ok(reify_types::Mesh {
-                vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                indices: vec![0, 1, 2],
-                normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
-            })
+            self.inner.tessellate(handle, tolerance)
         }
     }
 
@@ -1341,7 +1332,7 @@ mod tests {
 
         let recorded: Arc<Mutex<Vec<f64>>> = Arc::new(Mutex::new(Vec::new()));
         let kernel = RecordingTessellationKernel {
-            next_id: 1,
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
             recorded_tolerances: Arc::clone(&recorded),
         };
         let checker = MockConstraintChecker::new();
@@ -1381,7 +1372,7 @@ mod tests {
 
         let recorded: Arc<Mutex<Vec<f64>>> = Arc::new(Mutex::new(Vec::new()));
         let kernel = RecordingTessellationKernel {
-            next_id: 1,
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
             recorded_tolerances: Arc::clone(&recorded),
         };
         let checker = MockConstraintChecker::new();
