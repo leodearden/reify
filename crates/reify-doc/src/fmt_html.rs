@@ -175,15 +175,31 @@ fn render_item(out: &mut String, item: &ItemDoc) {
     out.push_str(&html_escape(name));
     out.push_str("</h2>\n");
 
-    // Kind-specific body. Container variants get parameter / port / constraint
-    // / meta sections; the simpler variants will be wired up in later steps.
-    if let ItemDoc::Structure { params, ports, constraints, meta, .. }
-        | ItemDoc::Occurrence { params, ports, constraints, meta, .. } = item
-    {
-        render_params_table(out, params);
-        render_ports_table(out, ports);
-        render_constraints(out, constraints);
-        render_meta(out, meta);
+    // Kind-specific body.
+    match item {
+        ItemDoc::Structure { params, ports, constraints, meta, .. }
+        | ItemDoc::Occurrence { params, ports, constraints, meta, .. } => {
+            render_params_table(out, params);
+            render_ports_table(out, ports);
+            render_constraints(out, constraints);
+            render_meta(out, meta);
+        }
+        ItemDoc::Trait { members, .. } => {
+            render_trait_members(out, members);
+        }
+        ItemDoc::Function { signature, .. } => {
+            render_function_signature(out, signature);
+        }
+        ItemDoc::Enum { variants, .. } => {
+            render_enum_variants(out, variants);
+        }
+        // Scalar-bodied variants (Field/Purpose/Unit/TypeAlias/ConstraintDef)
+        // get their bodies wired up in step-22.
+        ItemDoc::Field { .. }
+        | ItemDoc::Purpose { .. }
+        | ItemDoc::Unit { .. }
+        | ItemDoc::TypeAlias { .. }
+        | ItemDoc::ConstraintDef { .. } => {}
     }
 
     out.push_str("</section>\n");
@@ -311,6 +327,53 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     }
     out.push_str("</tbody>\n");
     out.push_str("</table>\n");
+}
+
+/// Render the `<h3>Members</h3>` bullet list for a `Trait`.  No-op when empty.
+///
+/// Each member is one rendered signature string (e.g. `"voltage: Voltage"`)
+/// emitted as `<li>{escaped-member}</li>`.
+fn render_trait_members(out: &mut String, members: &[String]) {
+    if members.is_empty() {
+        return;
+    }
+    out.push_str("<h3>Members</h3>\n");
+    out.push_str("<ul>\n");
+    for m in members {
+        out.push_str("<li>");
+        out.push_str(&html_escape(m));
+        out.push_str("</li>\n");
+    }
+    out.push_str("</ul>\n");
+}
+
+/// Render the `<h3>Variants</h3>` bullet list for an `Enum`.  No-op when empty.
+///
+/// Each variant name is emitted as `<li>{escaped-name}</li>`.
+fn render_enum_variants(out: &mut String, variants: &[String]) {
+    if variants.is_empty() {
+        return;
+    }
+    out.push_str("<h3>Variants</h3>\n");
+    out.push_str("<ul>\n");
+    for v in variants {
+        out.push_str("<li>");
+        out.push_str(&html_escape(v));
+        out.push_str("</li>\n");
+    }
+    out.push_str("</ul>\n");
+}
+
+/// Render a function signature inside `<pre><code>…</code></pre>`.
+///
+/// The signature passes through `html_escape` so embedded `<` / `>` / `&`
+/// characters (notably the `>` in `->`) survive as their entity references.
+/// Per PRD §HTML there is no syntax highlighting in v0.1, so no class hint
+/// is set on `<code>`.
+fn render_function_signature(out: &mut String, signature: &str) {
+    out.push_str("<pre><code>");
+    out.push_str(&html_escape(signature));
+    out.push_str("</code></pre>\n");
 }
 
 /// Render the `<h3>Meta</h3>` definition list, sorted alphabetically by key.
