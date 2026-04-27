@@ -293,7 +293,8 @@ pub mod ffi {
         /// so the result is the mass-weighted tensor. For a uniform-density solid
         /// with mass m = density·volume, the diagonal entries are the principal
         /// moments; off-diagonals are products of inertia (zero for axis-aligned
-        /// shapes).
+        /// shapes). Off-diagonal pairs are averaged so `m_ij == m_ji` is guaranteed
+        /// bit-exactly in the returned struct.
         fn query_inertia_tensor(shape: &OcctShape, density: f64) -> Result<InertiaTensor3x3>;
 
         /// Return cache build counts for all three topology-map slots of `shape`.

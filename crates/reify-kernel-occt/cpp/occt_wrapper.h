@@ -246,6 +246,8 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
 /// Compute the full 3×3 inertia tensor about the shape's centroid,
 /// scaled by `density` to yield mass-weighted moments (kg·m²).
 /// Uses BRepGProp::VolumeProperties + GProp_GProps::MatrixOfInertia().
+/// Off-diagonal pairs `(i,j)` and `(j,i)` are averaged so the returned
+/// tensor is bit-exactly symmetric (`I_ij == I_ji`).
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density);
 
 /// Return the number of times each topology-map cache slot has been built for
