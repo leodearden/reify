@@ -848,4 +848,67 @@ mod tests {
         assert_eq!(pool.cost_per_byte_of(&node_neg_inf), Some(0.0), "-inf clamped to 0.0");
         assert_eq!(pool.cost_per_byte_of(&node_neg), Some(0.0), "negative clamped to 0.0");
     }
+
+    // --- Task 2345 step-1: WarmStatePool::checkout alias tests ---
+    //
+    // These tests pin the `checkout` API named in arch §4.3 line 539: take-semantics
+    // retrieval that returns `None` when the entry is absent OR has been LRU-evicted.
+    // The method aliases the existing `retrieve` (same body, same contract); both
+    // names remain valid for back-compat. Compile-fails until step-2 adds the alias.
+
+    #[test]
+    fn checkout_returns_none_when_absent() {
+        let mut pool = WarmStatePool::new(1024);
+        let unknown = NodeId::Value(ValueCellId::new("T", "absent"));
+        assert!(
+            pool.checkout(&unknown).is_none(),
+            "checkout on a fresh pool with no donations must return None"
+        );
+    }
+
+    #[test]
+    fn checkout_returns_state_and_removes_entry() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node.clone(), OpaqueState::new(42i32, 4));
+
+        let first = pool.checkout(&node);
+        assert!(first.is_some(), "first checkout returns Some");
+        assert_eq!(
+            first.unwrap().downcast::<i32>(),
+            Some(42),
+            "checkout returns the donated state"
+        );
+
+        let second = pool.checkout(&node);
+        assert!(
+            second.is_none(),
+            "checkout has take semantics — second call returns None"
+        );
+    }
+
+    #[test]
+    fn checkout_returns_none_after_eviction() {
+        // Tiny budget pool: donate A (50 bytes), then donate B (50 bytes), then
+        // donate C (200 bytes) which triggers LRU eviction of A and B.
+        let mut pool = WarmStatePool::new(100);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(1i32, 50));
+        pool.donate(node_b.clone(), OpaqueState::new(2i32, 50));
+        // used = 100 (at budget). Donating C (200 bytes) forces eviction of A then B.
+        pool.donate(node_c.clone(), OpaqueState::new(3i32, 200));
+
+        assert!(
+            pool.checkout(&node_a).is_none(),
+            "evicted entry checks out as None"
+        );
+        // C is the just-donated item and remains.
+        assert!(
+            pool.checkout(&node_c).is_some(),
+            "freshly donated entry remains checkable"
+        );
+    }
 }
