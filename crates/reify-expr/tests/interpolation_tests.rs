@@ -786,6 +786,260 @@ fn linear_3d_out_of_range_clamps_each_axis() {
     assert!(approx_eq(r3.value, expected, TOL), "got {}", r3.value);
 }
 
+// ---------------------------------------------------------------------------
+// 3D NearestNeighbor
+// ---------------------------------------------------------------------------
+
+/// Knot-exact reproduction at every grid point on a 3x3x3 grid.
+#[test]
+fn nearest_3d_knot_exact_reproduction() {
+    let gx = vec![0.0f64, 1.0, 2.0];
+    let gy = vec![0.0f64, 0.5, 1.0];
+    let gz = vec![0.0f64, 1.0, 3.0];
+    let f = |x: f64, y: f64, z: f64| 7.0 * x - 2.0 * y + 3.0 * z + 1.0;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let ny = gy.len();
+    let nz = gz.len();
+    for (i, &x) in gx.iter().enumerate() {
+        for (j, &y) in gy.iter().enumerate() {
+            for (k, &z) in gz.iter().enumerate() {
+                let r = interpolate_3d(
+                    InterpolationMethod::NearestNeighbor,
+                    &gx,
+                    &gy,
+                    &gz,
+                    &values,
+                    (x, y, z),
+                );
+                let expected = values[i * ny * nz + j * nz + k];
+                assert!(approx_eq(r.value, expected, TOL), "({},{},{})", i, j, k);
+                assert!(r.diagnostics.is_empty());
+            }
+        }
+    }
+}
+
+/// Octant of nearest cell wins: 2x2x2 grid, query `(0.3, 0.7, 0.4)` snaps to
+/// corner `(0, 1, 0)` (closer in x to 0, closer in y to 1, closer in z to 0).
+#[test]
+fn nearest_3d_octant_of_nearest_cell_wins() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let gz = [0.0f64, 1.0];
+    let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    // Layout: (i, j, k) → values[i*4 + j*2 + k].
+    // (0, 1, 0) → values[0 + 2 + 0] = 3.0
+    let r = interpolate_3d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (0.3, 0.7, 0.4),
+    );
+    assert!(approx_eq(r.value, 3.0, TOL), "got {}", r.value);
+}
+
+/// Exact ties on each axis use `round_ties_even` independently. With grid
+/// `[0.0, 1.0, 2.0]` on each axis, query `(0.5, 1.5, 0.5)` ties on all three:
+/// x even index wins → 0; y even index wins → 2; z even index wins → 0.
+/// Result is `values[(0, 2, 0)]`.
+#[test]
+fn nearest_3d_axis_ties_independent() {
+    let gx = [0.0f64, 1.0, 2.0];
+    let gy = [0.0f64, 1.0, 2.0];
+    let gz = [0.0f64, 1.0, 2.0];
+    let f = |x: f64, y: f64, z: f64| x * 100.0 + y * 10.0 + z;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let r = interpolate_3d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (0.5, 1.5, 0.5),
+    );
+    let expected = f(0.0, 2.0, 0.0);
+    assert!(approx_eq(r.value, expected, TOL), "got {}", r.value);
+}
+
+/// Out-of-range queries clamp each axis independently.
+#[test]
+fn nearest_3d_out_of_range_clamps_each_axis() {
+    let gx = [0.0f64, 1.0];
+    let gy = [0.0f64, 1.0];
+    let gz = [0.0f64, 1.0];
+    let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    // All below: corner (0, 0, 0) → 1.0
+    let r1 = interpolate_3d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (-5.0, -5.0, -5.0),
+    );
+    assert!(approx_eq(r1.value, 1.0, TOL));
+    // x above, y in-range (closer to 1), z below → corner (1, 1, 0) → values[1*4+1*2+0] = 7.0
+    let r2 = interpolate_3d(
+        InterpolationMethod::NearestNeighbor,
+        &gx,
+        &gy,
+        &gz,
+        &values,
+        (10.0, 0.7, -2.0),
+    );
+    assert!(approx_eq(r2.value, 7.0, TOL), "got {}", r2.value);
+}
+
+// ---------------------------------------------------------------------------
+// 3D Tricubic
+// ---------------------------------------------------------------------------
+
+/// Knot-exact reproduction at every grid point on a 5x5x5 uniform grid.
+#[test]
+fn cubic_3d_knot_exact_reproduction() {
+    let gx: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let gy: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let gz: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let f = |x: f64, y: f64, z: f64| 1.0 + x - 2.0 * y + 0.5 * z + x * y - y * z;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let ny = gy.len();
+    let nz = gz.len();
+    for (i, &x) in gx.iter().enumerate() {
+        for (j, &y) in gy.iter().enumerate() {
+            for (k, &z) in gz.iter().enumerate() {
+                let r = interpolate_3d(
+                    InterpolationMethod::Cubic,
+                    &gx,
+                    &gy,
+                    &gz,
+                    &values,
+                    (x, y, z),
+                );
+                let expected = values[i * ny * nz + j * nz + k];
+                assert!(
+                    approx_eq(r.value, expected, CUBIC_TOL),
+                    "({},{},{}) got {}, expected {}",
+                    i,
+                    j,
+                    k,
+                    r.value,
+                    expected
+                );
+                assert!(r.diagnostics.is_empty());
+            }
+        }
+    }
+}
+
+/// Tricubic recovers a synthetic polynomial of total degree 3 exactly within
+/// the interior 2x2x2 block of cells on a 5x5x5 grid (cells indexed by
+/// `1..=2` on every axis have a fully available 4x4x4 stencil).
+///
+/// Polynomial: f(x,y,z) = 1 + 2x - y + 3z + x*y + y*z + x*z + x^2 - y^3 + z^2*x.
+#[test]
+fn cubic_3d_reproduces_total_degree_three_in_interior() {
+    let gx: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let gy: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let gz: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let f = |x: f64, y: f64, z: f64| {
+        1.0 + 2.0 * x - y + 3.0 * z + x * y + y * z + x * z + x * x - y * y * y + z * z * x
+    };
+    let values = build_3d(&gx, &gy, &gz, f);
+
+    for ci in 1..=2usize {
+        for cj in 1..=2usize {
+            for ck in 1..=2usize {
+                for &dx in &[0.1, 0.5, 0.9] {
+                    for &dy in &[0.2, 0.5, 0.8] {
+                        for &dz in &[0.25, 0.5, 0.75] {
+                            let qx = gx[ci] + dx;
+                            let qy = gy[cj] + dy;
+                            let qz = gz[ck] + dz;
+                            let r = interpolate_3d(
+                                InterpolationMethod::Cubic,
+                                &gx,
+                                &gy,
+                                &gz,
+                                &values,
+                                (qx, qy, qz),
+                            );
+                            let expected = f(qx, qy, qz);
+                            assert!(
+                                approx_eq(r.value, expected, 1e-9),
+                                "cell ({},{},{}) ({},{},{}) got {}, expected {}",
+                                ci,
+                                cj,
+                                ck,
+                                qx,
+                                qy,
+                                qz,
+                                r.value,
+                                expected
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Separability: tricubic equals the tensor product of `interpolate_2d(Cubic)`
+/// (collapsing y,z) followed by a final `interpolate_1d(Cubic)` along x.
+/// Concretely: for each x-index i, interpolate the (y,z) slice at (qy, qz)
+/// using `interpolate_2d(Cubic)`; this gives a row of length nx; then evaluate
+/// that row at qx via 1D Cubic.
+#[test]
+fn cubic_3d_separable_against_tensor_product() {
+    let gx: Vec<f64> = (0..6).map(|i| i as f64).collect();
+    let gy: Vec<f64> = (0..6).map(|i| i as f64).collect();
+    let gz: Vec<f64> = (0..6).map(|i| i as f64).collect();
+    let f = |x: f64, y: f64, z: f64| (x * 0.3 - 0.2).sin() + (y * 0.4).cos() + 0.1 * z * z;
+    let values = build_3d(&gx, &gy, &gz, f);
+    let nx = gx.len();
+    let ny = gy.len();
+    let nz = gz.len();
+
+    let qs = [(2.3f64, 2.7f64, 3.1f64), (2.5, 3.5, 2.5), (1.1, 4.4, 4.0)];
+    for &(qx, qy, qz) in &qs {
+        let r3 = interpolate_3d(
+            InterpolationMethod::Cubic,
+            &gx,
+            &gy,
+            &gz,
+            &values,
+            (qx, qy, qz),
+        );
+
+        // Manual tensor product: for each i, build the (y,z) slice of values
+        // at fixed x=grid_x[i], evaluate at (qy, qz) via interpolate_2d(Cubic).
+        let row: Vec<f64> = (0..nx)
+            .map(|i| {
+                let mut slice = Vec::with_capacity(ny * nz);
+                for j in 0..ny {
+                    for k in 0..nz {
+                        slice.push(values[i * ny * nz + j * nz + k]);
+                    }
+                }
+                interpolate_2d(InterpolationMethod::Cubic, &gy, &gz, &slice, (qy, qz)).value
+            })
+            .collect();
+        let r_tensor = interpolate_1d(InterpolationMethod::Cubic, &gx, &row, qx).value;
+
+        assert!(
+            approx_eq(r3.value, r_tensor, 1e-9),
+            "({},{},{}) 3D={} tensor={}",
+            qx,
+            qy,
+            qz,
+            r3.value,
+            r_tensor
+        );
+    }
+}
+
 /// Larger 4x4 monotone grid: the midpoint of any cell equals the mean of its
 /// four corner values.
 #[test]
