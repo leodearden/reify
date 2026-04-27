@@ -11,14 +11,25 @@
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::DiagnosticCode;
 
-/// Helper: find any error diagnostic with `code == DimensionMismatch`.
+/// Helper: assert exactly one error diagnostic carries `code == DimensionMismatch`.
+///
+/// Checking `count() == 1` (rather than `any()`) catches a class of regression
+/// where the dimension-mismatch diagnostic is emitted twice — e.g. once from the
+/// binary-op site and once from a wrapper coercion — which would otherwise pass
+/// silently.
 fn has_dimension_mismatch_code(errors: &[&reify_types::Diagnostic]) -> bool {
     errors
         .iter()
-        .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch))
+        .filter(|d| d.code == Some(DiagnosticCode::DimensionMismatch))
+        .count()
+        == 1
 }
 
 /// Helper: check if the labels of any error diagnostic mention both "Money" and "Force".
+///
+/// Uses `any()` (existence check) rather than `count()` because having the hint
+/// appear in more than one label is redundant but not incorrect — the primary and
+/// secondary labels may both be informative.
 fn has_money_and_force_label(errors: &[&reify_types::Diagnostic]) -> bool {
     errors.iter().any(|d| {
         d.labels

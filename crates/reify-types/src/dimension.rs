@@ -814,6 +814,62 @@ mod tests {
         assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
     }
 
+    /// Full coverage: every named singleton round-trips through `canonical_name`.
+    ///
+    /// This table intentionally mirrors `resolve_dimension_type` in
+    /// `crates/reify-compiler/src/type_resolution.rs`. When a new named
+    /// dimension is added to that function, add the matching
+    /// `(DimensionVector, name)` entry here to keep diagnostic enrichment
+    /// from going silently missing (the match default arm returns `None`,
+    /// so a forgotten entry produces no secondary hint label without a test
+    /// failure).
+    #[test]
+    fn canonical_name_covers_all_named_singletons() {
+        let cases: &[(DimensionVector, &str)] = &[
+            (DimensionVector::LENGTH, "Length"),
+            (DimensionVector::MASS, "Mass"),
+            (DimensionVector::TIME, "Time"),
+            (DimensionVector::CURRENT, "Current"),
+            (DimensionVector::TEMPERATURE, "Temperature"),
+            (DimensionVector::AMOUNT_OF_SUBSTANCE, "AmountOfSubstance"),
+            (DimensionVector::LUMINOUS_INTENSITY, "LuminousIntensity"),
+            (DimensionVector::ANGLE, "Angle"),
+            (DimensionVector::SOLID_ANGLE, "SolidAngle"),
+            (DimensionVector::MONEY, "Money"),
+            (DimensionVector::AREA, "Area"),
+            (DimensionVector::VOLUME, "Volume"),
+            (DimensionVector::FREQUENCY, "Frequency"),
+            (DimensionVector::FORCE, "Force"),
+            (DimensionVector::ENERGY, "Energy"),
+            (DimensionVector::POWER, "Power"),
+            (DimensionVector::PRESSURE, "Pressure"),
+            (DimensionVector::VOLTAGE, "Voltage"),
+            (DimensionVector::CHARGE, "Charge"),
+            (DimensionVector::CAPACITANCE, "Capacitance"),
+            (DimensionVector::RESISTANCE, "Resistance"),
+            (DimensionVector::CONDUCTANCE, "Conductance"),
+            (DimensionVector::INDUCTANCE, "Inductance"),
+            (DimensionVector::MAGNETIC_FLUX, "MagneticFlux"),
+            (DimensionVector::MAGNETIC_FLUX_DENSITY, "MagneticFluxDensity"),
+            (DimensionVector::LUMINOUS_FLUX, "LuminousFlux"),
+            (DimensionVector::ILLUMINANCE, "Illuminance"),
+            (DimensionVector::ABSORBED_DOSE, "AbsorbedDose"),
+            (DimensionVector::ANGULAR_VELOCITY, "AngularVelocity"),
+            (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
+        ];
+        for &(dim, expected) in cases {
+            assert_eq!(
+                dim.canonical_name(),
+                Some(expected),
+                "canonical_name() mismatch for {:?}: expected {:?}",
+                dim,
+                expected,
+            );
+        }
+        // DIMENSIONLESS is intentionally not named (self-explanatory to users).
+        assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
+    }
+
     #[test]
     fn content_hash_buffer_covers_slot_9() {
         // Verify that slot-9 bytes actually feed into the digest.

@@ -531,10 +531,23 @@ mod tests {
         assert_eq!(d.labels[0].message, "incompatible dimensions");
     }
 
-    /// (e) Non-Scalar left type does not panic and still produces a diagnostic with code.
+    /// (e) Non-Scalar operands do not panic and still produce a diagnostic with code.
+    /// Covers the three asymmetric/symmetric non-Scalar cases the helper may receive:
+    /// (Real, Scalar), (Scalar, Real), and (Real, Real).
     #[test]
-    fn fmt_dim_mismatch_non_scalar_left_does_not_panic() {
+    fn fmt_dim_mismatch_non_scalar_does_not_panic() {
+        // Left non-Scalar, right Scalar
         let d = format_dimension_mismatch_diagnostic("addition", &Type::Real, &force_ty(), test_span());
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
+
+        // Left Scalar, right non-Scalar
+        let d = format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::Real, test_span());
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
+
+        // Both non-Scalar
+        let d = format_dimension_mismatch_diagnostic("addition", &Type::Real, &Type::Real, test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
     }

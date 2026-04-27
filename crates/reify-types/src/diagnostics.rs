@@ -438,29 +438,10 @@ mod tests {
     }
 
     // --- DimensionMismatch tests (step-3) ---
-
-    /// `DiagnosticCode::DimensionMismatch` constructs and supports
-    /// `Copy + Clone + PartialEq + Eq + Hash + Debug` (mirrors `diagnostic_code_derives`).
-    #[test]
-    fn diagnostic_code_dimension_mismatch_derives() {
-        use std::collections::HashSet;
-        let a = DiagnosticCode::DimensionMismatch;
-        let b: DiagnosticCode = a; // Copy
-        let c = a; // Copy again — `a` still usable below
-        assert_eq!(a, b); // PartialEq
-        assert_eq!(a, c); // PartialEq
-        let _: DiagnosticCode = Clone::clone(&a); // Clone (explicit to bypass clippy::clone_on_copy)
-        let mut set: HashSet<DiagnosticCode> = HashSet::new();
-        assert!(set.insert(a)); // Hash + Eq
-        assert!(!set.insert(b)); // dedup on Eq
-        let _ = format!("{:?}", a); // Debug
-    }
-
-    /// `Debug` formatting of `DiagnosticCode::DimensionMismatch` produces `"DimensionMismatch"`.
-    #[test]
-    fn diagnostic_code_dimension_mismatch_debug_format() {
-        assert_eq!(format!("{:?}", DiagnosticCode::DimensionMismatch), "DimensionMismatch");
-    }
+    // Note: Copy/Clone/PartialEq/Eq/Hash/Debug derives for DimensionMismatch are
+    // already covered by the variant-agnostic `diagnostic_code_derives` test above.
+    // Only the serde wire-format test is kept here because it is genuinely
+    // variant-specific (PascalCase serialization of the exact string "DimensionMismatch").
 
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionMismatch` serializes as
     /// `"DimensionMismatch"` (PascalCase, from `rename_all = "PascalCase"`).
