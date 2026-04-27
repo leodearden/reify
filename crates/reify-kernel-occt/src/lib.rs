@@ -5159,6 +5159,51 @@ mod tests {
         }
     }
 
+    /// Verify that `CenterOfMass` is density-independent for a uniform-density solid.
+    ///
+    /// The kernel's `CenterOfMass` query ignores the `density` field (bound to `_`
+    /// in the dispatch arm at lib.rs:957) because the centre of mass of a uniform-density
+    /// body equals its geometric centroid regardless of density.  This test locks in that
+    /// invariant for three edge values: `density=1.0` (baseline), `density=0.0` (zero),
+    /// and `density=-2.0` (negative) — the two cases the task description called out.
+    ///
+    /// **This pins current observable behavior.**  A future kernel change MAY reject
+    /// ρ ≤ 0 with a typed error — update this test if so.
+    #[test]
+    fn center_of_mass_density_zero_or_negative_unchanged() {
+        let mut kernel = OcctKernel::new();
+        // A 10×10×10 box centred at the origin.
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .expect("Box creation must succeed");
+        // Query with four density values including the two edge cases ρ=0 and ρ<0.
+        let densities = [1.0_f64, 0.0, -2.0, 100.0];
+        let results: Vec<Value> = densities
+            .iter()
+            .map(|&d| {
+                kernel
+                    .query(&GeometryQuery::CenterOfMass { handle: box_h.id, density: d })
+                    .unwrap_or_else(|e| {
+                        panic!("CenterOfMass with density={d} must not return Err: {e:?}")
+                    })
+            })
+            .collect();
+        // All four results must be identical (bit-equal strings) — CenterOfMass is density-
+        // independent for uniform-density bodies.
+        for (i, r) in results.iter().enumerate().skip(1) {
+            assert_eq!(
+                &results[0], r,
+                "CenterOfMass with density={} must equal result with density={} \
+                 (density-independent for uniform bodies); got {:?} vs {:?}",
+                densities[i], densities[0], r, &results[0]
+            );
+        }
+    }
+
     #[test]
     fn inertia_tensor_box_with_density_analytic() {
         let mut kernel = OcctKernel::new();
