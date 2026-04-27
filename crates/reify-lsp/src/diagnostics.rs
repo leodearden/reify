@@ -940,17 +940,14 @@ structure S {
     /// Parses and compiles `"structure S { param width: Scalar = 100mm }"`, does an initial
     /// eval to warm the engine state, then overrides `width` with `override_value` and returns
     /// the diagnostics from the second eval.
-    fn build_param_override_diags(
-        override_value: Value,
-    ) -> (reify_eval::Engine, Vec<Diagnostic>) {
+    fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
         let source = "structure S { param width: Scalar = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
         let _ = engine.eval(&compiled);
         engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
-        let diags = engine.eval(&compiled).diagnostics;
-        (engine, diags)
+        engine.eval(&compiled).diagnostics
     }
 
     /// Shared setup for the two solver pass-through emitter tests.
@@ -998,9 +995,10 @@ structure S {
     ///
     /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
     /// from the param_override type-kind mismatch emitter.
+    /// Counter contract for this emitter lives in `crates/reify-eval/tests/eval_instrumentation_counters.rs`.
     #[test]
     fn eval_diag_format_param_override_type_kind() {
-        let (engine, diags) = build_param_override_diags(Value::Bool(true));
+        let diags = build_param_override_diags(Value::Bool(true));
 
         assert!(
             !diags.is_empty(),
@@ -1012,17 +1010,13 @@ structure S {
              got: {:#?}",
             diags
         );
-        // Keep discriminating substring so a different emitter sneaking in would fail this test
-        // even if the counter is satisfied — counter alone can't distinguish which Warning fired.
+        // Substring discriminator: ensures the right emitter fired (the counter contract is
+        // anchored at `crates/reify-eval/tests/eval_instrumentation_counters.rs`).
         assert!(
             diags.iter().any(|d| d.message.contains("type-kind mismatch")),
             "param_override_type_kind: expected a diagnostic containing 'type-kind mismatch'; \
              got: {:#?}",
             diags
-        );
-        assert!(
-            engine.last_param_override_type_kind_rejections() >= 1,
-            "param_override_type_kind: structural check — type-kind rejection counter must be ≥ 1"
         );
         assert_no_violation_format(&diags, "param_override_type_kind");
     }
@@ -1032,9 +1026,10 @@ structure S {
     ///
     /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
     /// from the param_override dimension mismatch emitter.
+    /// Counter contract for this emitter lives in `crates/reify-eval/tests/eval_instrumentation_counters.rs`.
     #[test]
     fn eval_diag_format_param_override_dimension() {
-        let (engine, diags) = build_param_override_diags(Value::Scalar {
+        let diags = build_param_override_diags(Value::Scalar {
             si_value: 1.0,
             dimension: DimensionVector::MASS,
         });
@@ -1049,17 +1044,13 @@ structure S {
              got: {:#?}",
             diags
         );
-        // Keep discriminating substring so a different emitter sneaking in would fail this test
-        // even if the counter is satisfied — counter alone can't distinguish which Warning fired.
+        // Substring discriminator: ensures the right emitter fired (the counter contract is
+        // anchored at `crates/reify-eval/tests/eval_instrumentation_counters.rs`).
         assert!(
             diags.iter().any(|d| d.message.contains("dimension mismatch")),
             "param_override_dimension: expected a diagnostic containing 'dimension mismatch'; \
              got: {:#?}",
             diags
-        );
-        assert!(
-            engine.last_param_override_dimension_rejections() >= 1,
-            "param_override_dimension: structural check — dimension rejection counter must be ≥ 1"
         );
         assert_no_violation_format(&diags, "param_override_dimension");
     }
@@ -1069,6 +1060,7 @@ structure S {
     ///
     /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
     /// from the sub-component unknown-structure emitter.
+    /// Counter contract for this emitter lives in `crates/reify-eval/tests/eval_instrumentation_counters.rs`.
     #[test]
     fn eval_diag_format_sub_component_unknown() {
         let source = "structure S { sub x = Unknown() }";
@@ -1087,8 +1079,8 @@ structure S {
              got: {:#?}",
             diags
         );
-        // Keep discriminating substrings so a different emitter sneaking in would fail this test
-        // even if the counter is satisfied — counter alone can't distinguish which Error fired.
+        // Substring discriminator: ensures the right emitter fired (the counter contract is
+        // anchored at `crates/reify-eval/tests/eval_instrumentation_counters.rs`).
         assert!(
             diags
                 .iter()
@@ -1096,10 +1088,6 @@ structure S {
             "sub_component_unknown: expected a diagnostic containing both 'sub-component' and \
              'references unknown structure'; got: {:#?}",
             diags
-        );
-        assert!(
-            engine.last_sub_component_unknown_structure_errors() >= 1,
-            "sub_component_unknown: structural check — unknown-structure counter must be ≥ 1"
         );
         assert_no_violation_format(&diags, "sub_component_unknown");
     }
