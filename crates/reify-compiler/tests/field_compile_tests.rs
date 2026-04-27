@@ -50,17 +50,23 @@ fn compile_field_sampled() {
     let module = compile_source(
         "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
     );
+
+    // sampled is deferred to v0.2: compilation must emit FieldSampledV02.
     assert!(
-        errors_only(&module).is_empty(),
-        "errors: {:?}",
+        errors_only(&module)
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FieldSampledV02)),
+        "expected FieldSampledV02 diagnostic, got: {:?}",
         errors_only(&module)
     );
+
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
     assert_eq!(field.name, "pressure");
 
-    // Source should be sampled with config key-value pairs
+    // Source should be sampled with config key-value pairs (defence-in-depth:
+    // compilation still produces the variant even though a diagnostic is emitted).
     match &field.source {
         reify_compiler::CompiledFieldSource::Sampled { config } => {
             assert_eq!(config.len(), 2, "expected 2 config entries");
@@ -343,6 +349,43 @@ fn compile_field_imported_emits_v02_deferral_diagnostic() {
     let first = errors
         .iter()
         .find(|d| d.code == Some(DiagnosticCode::FieldImportedV02))
+        .unwrap();
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
+// ── Step 2416: sampled field emits v0.2 deferral diagnostic ─────────────────
+
+#[test]
+fn compile_field_sampled_emits_v02_diagnostic() {
+    let module = compile_source(
+        "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
+    );
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for sampled field source, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_code_and_msg = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::FieldSampledV02)
+            && d.message.contains("v0.2")
+            && d.message.contains("sampled")
+    });
+    assert!(
+        has_code_and_msg,
+        "expected DiagnosticCode::FieldSampledV02 with message containing 'v0.2' and 'sampled', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let first = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FieldSampledV02))
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
