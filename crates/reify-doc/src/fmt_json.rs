@@ -77,4 +77,77 @@ mod tests {
             .unwrap_or_else(|e| panic!("pretty json must round-trip: {e}\njson: {output}"));
         assert_eq!(model, back);
     }
+
+    #[test]
+    fn render_json_compact_emits_single_line_output() {
+        let model = fixture_model();
+        let output = render_json(&model, true);
+
+        // Compact mode must be a single line (no newlines anywhere).
+        assert!(
+            !output.contains('\n'),
+            "compact json must be single-line, got: {output}"
+        );
+
+        // Round-trip: deserializing the compact form must produce the same
+        // model.
+        let back: DocModel = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("compact json must round-trip: {e}\njson: {output}"));
+        assert_eq!(model, back);
+    }
+
+    /// Regression guard: every `ItemDoc` variant must serialize with a
+    /// snake_case `"kind"` tag value.  This pins the
+    /// `#[serde(tag = "kind", rename_all = "snake_case")]` attribute on
+    /// `ItemDoc` against accidental removal — downstream JSON consumers
+    /// depend on the snake_case tags (`type_alias`, `constraint_def`).
+    #[test]
+    fn render_json_uses_snake_case_kind_tags() {
+        let model = DocModel {
+            modules: vec![ModuleDoc {
+                path: "regression".to_string(),
+                doc: None,
+                items: vec![
+                    ItemDoc::TypeAlias {
+                        name: "Meters".to_string(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                        type_repr: "f64".to_string(),
+                    },
+                    ItemDoc::ConstraintDef {
+                        name: "voltage_safe".to_string(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                        expr_repr: "v <= 5.5 V".to_string(),
+                    },
+                ],
+                annotations: vec![],
+                pragmas: vec![],
+                cross_refs: Default::default(),
+            }],
+        };
+
+        let output = render_json(&model, true);
+        assert!(
+            output.contains("\"kind\":\"type_alias\""),
+            "expected snake_case `type_alias` kind tag in: {output}"
+        );
+        assert!(
+            output.contains("\"kind\":\"constraint_def\""),
+            "expected snake_case `constraint_def` kind tag in: {output}"
+        );
+        // Negative guards: catch a regression to camelCase / PascalCase.
+        assert!(
+            !output.contains("typeAlias"),
+            "kind tag must not be camelCase, got: {output}"
+        );
+        assert!(
+            !output.contains("constraintDef"),
+            "kind tag must not be camelCase, got: {output}"
+        );
+    }
 }
