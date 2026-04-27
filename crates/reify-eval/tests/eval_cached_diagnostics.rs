@@ -526,14 +526,11 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
 /// (b) still be returned on a same-version repeat call (cached override value returned),
 /// (c) produce no `param_override`-keyed diagnostic on either call.
 ///
-/// This locks the contract that the cache-miss `Some(Ok(()))` arm correctly clones the override
-/// into the cache AND that the cached value is returned on subsequent calls.  Without this test a
-/// future refactor of the re-borrow logic (e.g. dropping the `.clone()` in the `Some(Ok(()))` arm
-/// or short-circuiting the cache write) would silently break override application across cache
-/// calls without any test failure.
-///
-/// Introduced by task 2273 step-1 as a regression-lock before the step-2 no-clone refactor.
-/// Should pass both before and after step-2 (the refactor preserves external behavior).
+/// This locks the cache-miss-write + same-version fast-path-read contract for a VALID override.
+/// That contract is independently valuable: the existing rejection-warning regression tests only
+/// exercise the `Err` arm and the invalid-override fallback path, so a regression in the
+/// `Ok(())` cache-write or the fast-path cache-return for valid overrides would go undetected
+/// without this test.
 #[test]
 fn eval_cached_applies_valid_param_override_on_repeat_call() {
     let x_id = ValueCellId::new("S", "x");
@@ -576,9 +573,8 @@ fn eval_cached_applies_valid_param_override_on_repeat_call() {
     );
 
     // Second call — same version (fast-path hit).  The cached override value must be returned.
-    // This is the contract being locked: if the refactor drops the .clone() in the Some(Ok(()))
-    // arm or short-circuits the cache write, the fast-path returns the stale default mm(1.0)
-    // instead of the override mm(12.0), and this assertion fails.
+    // This assertion locks the fast-path-read half of the contract: a same-version repeat call
+    // must return the cached override mm(12.0), not regress to the cell-default mm(1.0).
     let result2 = engine.eval_cached(&module, VersionId(1));
     assert!(
         result2.stats.cache_hits >= 1,
