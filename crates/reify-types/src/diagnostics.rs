@@ -573,6 +573,34 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
         assert_eq!(s, "\"GeometryUnbounded\"");
     }
+
+    // --- Shadowing tests (task 2310 — spec §8.5) ---
+    // Pairs with the lint pass in
+    // `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::Shadowing` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"Shadowing"`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `Shadowing` is caught here.
+    #[test]
+    fn diagnostic_code_shadowing_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::Shadowing);
+        assert_eq!(d.code, Some(DiagnosticCode::Shadowing));
+        assert_eq!(format!("{:?}", DiagnosticCode::Shadowing), "Shadowing");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::Shadowing` serializes as
+    /// `"Shadowing"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shadowing_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::Shadowing).unwrap();
+        assert_eq!(s, "\"Shadowing\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
