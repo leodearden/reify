@@ -510,10 +510,26 @@ fn cmd_doc(args: &[String]) -> ExitCode {
                         /*trailing_newline=*/ false,
                     )
                 }
-                reify_doc::fmt_markdown::MarkdownOutput::Split(_files) => {
-                    // TODO(post-2361): split-write directory plumbing lands
-                    // in step 28.  For now, fall through with SUCCESS so
-                    // intermediate test runs don't regress.
+                reify_doc::fmt_markdown::MarkdownOutput::Split(files) => {
+                    let dir = match output.as_deref() {
+                        Some(d) => std::path::PathBuf::from(d),
+                        None => {
+                            eprintln!("Error: --split requires -o <directory>");
+                            eprintln!("{}", DOC_USAGE);
+                            return ExitCode::from(2u8);
+                        }
+                    };
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        eprintln!("Error writing {}: {}", dir.display(), e);
+                        return ExitCode::FAILURE;
+                    }
+                    for (name, body) in files {
+                        let file_path = dir.join(&name);
+                        if let Err(e) = std::fs::write(&file_path, body.as_bytes()) {
+                            eprintln!("Error writing {}: {}", file_path.display(), e);
+                            return ExitCode::FAILURE;
+                        }
+                    }
                     ExitCode::SUCCESS
                 }
             }
