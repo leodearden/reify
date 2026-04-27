@@ -214,12 +214,12 @@ const MAX_PRECISION_TOLERANCE_M: f64 = 1.0;
 /// `docs/prds/pragmas.md` §2.
 ///
 /// **Range bounds (v0.1).** The accepted SI-metres value must be finite,
-/// strictly positive, and ≤ [`MAX_PRECISION_TOLERANCE_M`]. Values outside this
-/// range emit a warning and leave `default_tolerance` unset (so the engine
-/// falls back to its built-in default). The grammar's `number_literal` regex
-/// (`\d+(\.\d+)?`) currently produces only non-negative finite f64 values, so
-/// the non-finite / negative branches are unreachable from source today; they
-/// remain as defence-in-depth against a future grammar relaxation.
+/// strictly positive, and ≤ [`MAX_PRECISION_TOLERANCE_M`]. Out-of-range values
+/// leave `default_tolerance` unset (so the engine falls back to its built-in
+/// default). Non-finite and negative branches emit **errors** (internal
+/// invariant violations — unreachable from source today because the grammar's
+/// `number_literal` regex `\d+(\.\d+)?` only produces non-negative finite
+/// f64s); zero and above-cap emit **warnings** (plausible user mistakes).
 fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -247,21 +247,31 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         if dimension == DimensionVector::LENGTH =>
                     {
                         // Range gate: tolerance must be finite, > 0, and within
-                        // a sane upper bound. Out-of-range values warn and leave
+                        // a sane upper bound. Out-of-range values leave
                         // default_tolerance unset so the engine falls back to
                         // Engine::DEFAULT_TESSELLATION_TOLERANCE.
                         //
-                        // Negative / non-finite cases are currently unreachable
-                        // from source (see fn-level docstring) but the check
-                        // stays as a safety net.
+                        // Non-finite / negative cases are unreachable from source
+                        // (see fn-level docstring) but are defended with ERROR
+                        // severity so they surface in release builds. Zero (`0m`)
+                        // and above-cap stay as warnings — those are plausible
+                        // user mistakes rather than internal invariant violations.
                         if !si_value.is_finite() {
                             module.diagnostics.push(
-                                Diagnostic::warning(
+                                Diagnostic::error(
                                     "#precision: tolerance is not finite; ignored",
                                 )
                                 .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                             );
-                        } else if si_value <= 0.0 {
+                        } else if si_value < 0.0 {
+                            module.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "#precision: tolerance must be positive (got {si_value}m); \
+                                     ignored"
+                                ))
+                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                            );
+                        } else if si_value == 0.0 {
                             module.diagnostics.push(
                                 Diagnostic::warning(format!(
                                     "#precision: tolerance must be positive (got {si_value}m); \
