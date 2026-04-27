@@ -45,3 +45,32 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+/// A chain just above threshold (length 5 — `a.b.c.d.e`) emits exactly one
+/// Warning whose `code == Some(DiagnosticCode::DeepDotChain)`.
+#[test]
+fn chain_above_threshold_emits_one_warning_with_deep_dot_chain_code() {
+    let source = r#"
+structure S {
+    param a: Real = 0
+    let x = a.b.c.d.e
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .collect();
+
+    assert_eq!(
+        deep_dot_chain_warnings.len(),
+        1,
+        "expected exactly 1 DeepDotChain warning for above-threshold chain `a.b.c.d.e`, \
+         got: {:?}",
+        deep_dot_chain_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
