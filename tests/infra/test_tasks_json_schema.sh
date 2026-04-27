@@ -104,6 +104,47 @@ assert "int dep error mentions dep or type" \
 assert "valid non-empty dep passes validator" \
     python3 "$VALIDATOR" "$VALID_DEP"
 
+# -- Invariant 2 (dotted form): <parent>.<subtask> deps -----------------------
+# Top-level deps may take the form "<parent>.<subtask>" iff parent is a known
+# top-level id AND subtask exists under that parent's subtasks[].  This
+# tolerance accommodates tm-core legacy data where parents were briefly listed
+# as depending on their own subtasks.
+echo ""
+echo "--- Test: invariant 2 (dotted <parent>.<subtask> deps) ---"
+
+# (a) Dotted dep where parent and subtask both resolve → must PASS.
+DOTTED_DEP_VALID="$TMPDIR_FIXTURES/dotted_dep_valid.json"
+cat >"$DOTTED_DEP_VALID" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":["200.1"],"subtasks":[]},{"id":"200","dependencies":[],"subtasks":[{"id":"1","dependencies":[]}]}]}}
+EOF
+
+assert "valid dotted <parent>.<subtask> dep passes validator" \
+    python3 "$VALIDATOR" "$DOTTED_DEP_VALID"
+
+# (b) Dotted dep where parent does not exist → must FAIL as orphan.
+DOTTED_DEP_BAD_PARENT="$TMPDIR_FIXTURES/dotted_dep_bad_parent.json"
+cat >"$DOTTED_DEP_BAD_PARENT" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":["999.1"],"subtasks":[]}]}}
+EOF
+
+assert "dotted dep with missing parent fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$DOTTED_DEP_BAD_PARENT'"
+
+assert "dotted dep with missing parent error mentions '999.1' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' '$DOTTED_DEP_BAD_PARENT' 2>&1 | grep -qE '999\\.1|orphan'"
+
+# (c) Dotted dep where subtask does not exist under parent → must FAIL as orphan.
+DOTTED_DEP_BAD_SUBTASK="$TMPDIR_FIXTURES/dotted_dep_bad_subtask.json"
+cat >"$DOTTED_DEP_BAD_SUBTASK" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":["200.99"],"subtasks":[]},{"id":"200","dependencies":[],"subtasks":[{"id":"1","dependencies":[]}]}]}}
+EOF
+
+assert "dotted dep with missing subtask fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$DOTTED_DEP_BAD_SUBTASK'"
+
+assert "dotted dep with missing subtask error mentions '200.99' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' '$DOTTED_DEP_BAD_SUBTASK' 2>&1 | grep -qE '200\\.99|orphan'"
+
 # -- Invariant 3: no duplicate ids -------------------------------------------
 echo ""
 echo "--- Test: invariant 3 (duplicate ids) ---"

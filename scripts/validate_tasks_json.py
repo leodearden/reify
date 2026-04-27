@@ -4,9 +4,11 @@
 Enforces three structural invariants on top-level tasks to prevent ID/dependency
 drift after Task 1866's string-ID normalization migration:
 
-  1. Every task `id` is a string matching ``^\d+$`` (not an int, not a slug).
+  1. Every task `id` is a string matching ``^\\d+$`` (not an int, not a slug).
   2. Every entry in a task's `dependencies[]` is a string **and** references an
-     existing task id (no orphan deps, no int deps).
+     existing task id (no orphan deps, no int deps).  A dotted form
+     ``<parent>.<subtask>`` is also accepted iff the parent is a known top-level
+     id AND the subtask id exists under that parent's ``subtasks[]``.
   3. No duplicate `id` values within any tag's ``tasks[]``; tags are independent
      namespaces (so the same id may appear in ``master`` and in a sibling tag).
 
@@ -158,7 +160,10 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
             )
 
     # Invariant 1: every id is a string matching ^\d+$.
+    # Also collect each parent's valid subtask ids so invariant 2 can accept
+    # dotted ``<parent>.<subtask>`` deps (tm-core legacy/transitional data).
     known_ids: set[str] = set()
+    subtasks_by_parent: dict[str, set[str]] = {}
     for task in tasks:
         tid = task.get("id")
         if not isinstance(tid, str):
@@ -171,8 +176,17 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
             )
         else:
             known_ids.add(tid)
+            subtasks_by_parent[tid] = {
+                s["id"]
+                for s in task.get("subtasks") or []
+                if isinstance(s, dict)
+                and isinstance(s.get("id"), str)
+                and re.fullmatch(r"\d+", s["id"]) is not None
+            }
 
-    # Invariant 2: every dep is a string referencing a known id.
+    # Invariant 2: every dep is a string referencing a known id.  Dotted
+    # ``<parent>.<subtask>`` form is also accepted when both halves resolve.
+    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for task in tasks:
         tid = task.get("id", "?")
         deps_raw = task.get("dependencies", [])
@@ -186,16 +200,15 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
                 errors.append(
                     f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
-            elif dep not in known_ids:
-                # Also accept dotted subtask references (format "NNN.M") where
-                # the parent task id "NNN" is a known top-level id.  The task
-                # management system emits these when a parent task is made to
-                # depend on its own subtasks (e.g. "2324.1", "2324.2").
-                m = re.fullmatch(r"(\d+)\.\d+", dep)
-                if not (m and m.group(1) in known_ids):
-                    errors.append(
-                        f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
-                    )
+                continue
+            if dep in known_ids:
+                continue
+            m = dotted_re.fullmatch(dep)
+            if m and m.group(1) in known_ids and m.group(2) in subtasks_by_parent.get(m.group(1), set()):
+                continue
+            errors.append(
+                f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
+            )
 
     return known_ids
 

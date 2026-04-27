@@ -1,7 +1,8 @@
 //! Composable execution-trait flags for node-kind classification.
 //!
-//! Implements the [`NodeTraits`] bitflag newtype and the [`NodeArchKind`] enum
-//! as specified in `docs/reify-implementation-architecture.md §7.6 lines 803–816`.
+//! Implements the [`NodeTraits`] bitflag newtype (four trait flags from §7.6 "Node Traits")
+//! and the [`NodeArchKind`] enum (seven-kind taxonomy from §2.1 "Node Taxonomy (7 Types)");
+//! see `docs/reify-implementation-architecture.md`.
 //!
 //! ### Trait semantics (§7.6 table)
 //!
@@ -19,7 +20,7 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 /// Composable execution-trait flags for a node kind.
 ///
-/// See `docs/reify-implementation-architecture.md §7.6 lines 803–816`.
+/// See `docs/reify-implementation-architecture.md §7.6 Node Traits`.
 ///
 /// Implemented as a `u8` bitflag newtype to avoid introducing a third-party
 /// dependency (`bitflags`, `enumflags2`) for ~30 lines of trivial logic.
@@ -137,7 +138,8 @@ impl Not for NodeTraits {
 /// Architectural node-kind taxonomy used to carry [`NodeTraits`] defaults.
 ///
 /// Declares the seven node kinds from `docs/reify-implementation-architecture.md
-/// §7.6 lines 803–816` and their documented default [`NodeTraits`] sets.
+/// §2.1 "Node Taxonomy (7 Types)"` and their documented default [`NodeTraits`] sets
+/// (trait flags defined in §7.6 "Node Traits").
 ///
 /// **Note on naming:** A 4-variant runtime/instance taxonomy also named `NodeKind`
 /// exists in `reify_runtime::commitment` (introduced by task 2353 to key per-type
@@ -153,41 +155,74 @@ impl Not for NodeTraits {
 pub enum NodeArchKind {
     /// A scalar value cell. Default traits: [`NodeTraits::IMMEDIATE`].
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     ValueCellScalar,
     /// A schema node (structural type declaration). Default traits: [`NodeTraits::IMMEDIATE`].
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     /// (No corresponding Rust struct in the codebase yet.)
     SchemaNode,
     /// A source/input node. Default traits: [`NodeTraits::IMMEDIATE`].
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     /// (No corresponding Rust struct in the codebase yet.)
     SourceNode,
     /// A resolution node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     ResolutionNode,
     /// A realization node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     RealizationNode,
     /// A compute node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     /// (No corresponding Rust struct in the codebase yet.)
     ComputeNode,
     /// A constraint node. Default traits: empty (no flags set).
     ///
-    /// See `docs/reify-implementation-architecture.md §7.6`.
+    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
     ConstraintNode,
 }
 
 impl NodeArchKind {
     /// Returns the architecture-specified default [`NodeTraits`] for this node kind.
     ///
-    /// Source: `docs/reify-implementation-architecture.md §7.6 lines 803–816`.
+    /// ## Derivation
+    ///
+    /// Each per-kind default is drawn from several sections of
+    /// `docs/reify-implementation-architecture.md`:
+    ///
+    /// | Section | Role in this function |
+    /// |---------|----------------------|
+    /// | §2.1 "Node Taxonomy (7 Types)" | Canonical description of each kind's purpose |
+    /// | §3.3 "Two-Cone Scheduling Model" | P0/P1-fast scheduling → `IMMEDIATE` |
+    /// | §4.1 "The WarmStartable Protocol" | Iterative/incremental computation → `WARM_STARTABLE` |
+    /// | §7.3 "Task Commitment Policy" | May run past commitment thresholds → `COMMITTABLE` |
+    /// | §7.6 "Node Traits" | Authoritative definition of the four trait flags |
+    ///
+    /// **`IMMEDIATE` kinds** (`ValueCellScalar`, `SchemaNode`, `SourceNode`): §3.3 classifies
+    /// these as P0/P1-fast — cheap, sub-frame reads evaluable inline. No warm-start or
+    /// commitment machinery is required.
+    ///
+    /// **`WARM_STARTABLE | COMMITTABLE` kinds** (`ResolutionNode`, `RealizationNode`,
+    /// `ComputeNode`): §4.1 targets these as the long-running iterative/incremental
+    /// computations that benefit from resuming a saved warm state. §7.3 notes that they
+    /// may run past a commitment threshold and must therefore finish against their original
+    /// snapshot, justifying `COMMITTABLE`.
+    ///
+    /// **`ConstraintNode` (empty)**: Predicate evaluation is cheap but §7.6 does not yet
+    /// classify it under any of the four traits. Assigning `IMMEDIATE` would conflate it
+    /// with sub-frame `ValueCell` reads; leaving the set empty is the conservative choice
+    /// until a downstream scheduler task formalises the policy.
     pub const fn default_traits(self) -> NodeTraits {
         match self {
             NodeArchKind::ValueCellScalar => NodeTraits::IMMEDIATE,

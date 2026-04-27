@@ -1,0 +1,91 @@
+// Stdlib: I/O — Source, Sink, Input, Buy, Output, Discard, Provenance
+// Provides core traits and types for representing where design geometry comes
+// from (sources) and where it goes to (sinks).
+//
+// Reference: docs/reify-stdlib-reference.md §9.
+//
+// Deviations from the §9 spec (forced by current language scope):
+//   1. `Scalar<Money>` → bare `Money`.  The type resolver only parameterises
+//      List/Set/Map/Option; writing `Scalar<Money>` degrades to Length-dimension.
+//      Bare `Money` resolves correctly to DimensionVector::MONEY.
+//   2. `= undef` defaults dropped.  The Reify grammar has no `undef` keyword;
+//      no `= undef` appears in any existing stdlib .ri file.  Params without
+//      defaults are required at conformance time, matching the convention in
+//      materials_mechanical.ri and tolerancing.ri.
+//   3. Provenance is declared before trait Input so that `Input.provenance :
+//      Provenance` resolves through the structure-name set in the pre-pass.
+
+// ── Enumerations ─────────────────────────────────────────────────────────────
+
+// Why a part was removed from the design scope.
+enum DiscardReason { Offcut, Scrap, FailedInspection, Waste }
+
+// How a discarded part is disposed of.
+enum DisposalMethod { Recycle, Landfill, Reprocess }
+
+// The file or display format for an output sink.
+enum OutputFormat { STEP, STL, ThreeMF, Display }
+
+// ── Provenance structure ─────────────────────────────────────────────────────
+
+// Records where a design element originated.
+// ISO 8601 string for timestamp; no Date type exists in v0.1.
+//
+// tolerance_guarantee (Length) — the precision guarantee made by the source
+//   tool for the imported geometry (e.g. STEP/OCCT kernel tolerance).  This is
+//   an attribute of the *import event itself*: it lets downstream conformance
+//   checks verify that incoming geometry was produced within a stated tolerance
+//   bound.  Faithful transcription of §9 spec field
+//   `tolerance_guarantee : Length = undef`.
+//
+// No defaults are provided because no `undef` keyword exists — see header
+// comment deviation 2.  Consumers must supply all four fields.
+structure def Provenance {
+    param source_tool : String
+    param source_version : String
+    param timestamp : String
+    param tolerance_guarantee : Length
+}
+
+// ── Marker traits ────────────────────────────────────────────────────────────
+
+// Something enters design scope — raw stock, a purchased component, or an
+// imported geometry file.
+trait Source {}
+
+// Something leaves design scope — finished output, scrapped waste, or a
+// filed inspection report.
+trait Sink {}
+
+// ── Refining traits ──────────────────────────────────────────────────────────
+
+// Geometry imported from an external file or tool.
+// source: path or identifier of the originating file/tool.
+// provenance: full audit trail for the import.
+trait Input : Source {
+    param source : String
+    param provenance : Provenance
+}
+
+// A purchased off-the-shelf component.
+// unit_cost uses bare Money (not Scalar<Money>) — see header comment §deviation 1.
+// lead_time uses bare Time for the same reason.
+trait Buy : Source {
+    param supplier : String
+    param part_number : String
+    param unit_cost : Money
+    param lead_time : Time
+}
+
+// A geometry element exported or sent downstream.
+// format: the target file or display format.
+trait Output : Sink {
+    param format : OutputFormat
+}
+
+// A geometry element removed from the design scope (waste, off-cuts, etc.).
+// reason: why it was discarded; disposal_method: how it is handled.
+trait Discard : Sink {
+    param reason : DiscardReason
+    param disposal_method : DisposalMethod
+}

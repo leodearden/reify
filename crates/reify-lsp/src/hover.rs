@@ -249,6 +249,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hover_on_money_param_shows_usd_in_type_string() {
+        let source = "structure S {\n    param p: Money = auto\n}";
+        // 'p' is on line 1: "    param p: Money = auto"
+        // 4 spaces + "param " = 10 chars, so 'p' is at column 10
+        let position = Position::new(1, 10); // on 'p'
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for Money param");
+        assert!(
+            md.contains("Scalar[USD]"),
+            "type string should contain 'Scalar[USD]' (source-form via Type::Display), got: {md}"
+        );
+        assert!(
+            !md.contains("Rational"),
+            "type string must not contain 'Rational' (raw Debug), got: {md}"
+        );
+        assert!(
+            !md.contains("DimensionVector("),
+            "type string must not contain 'DimensionVector(' (raw Debug), got: {md}"
+        );
+    }
+
     // --- step-3: hover on let binding and ident references ---
 
     #[test]

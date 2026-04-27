@@ -289,17 +289,11 @@ fn record_eval_completed(
 }
 
 /// Builds and topologically sorts the let-cell dependency graph for `template`,
-/// pushes a `Diagnostic::error` if a cycle is detected, and returns the three
-/// artefacts both call sites need.
+/// pushes a `Diagnostic::error` if a cycle is detected, and returns
+/// `(let_cells, let_traces, sorted_lets)`.
 ///
-/// Centralises the let-cycle logic so that a future fix to the error message or
-/// the cycle-detection algorithm propagates to both `evaluate_let_bindings` (the
-/// `eval()` path) and the `eval_cached()` second-pass setup simultaneously.
-///
-/// The `sorted_set` for cycle filtering is allocated **lazily** inside the
-/// `if sorted_lets.len() < let_node_ids.len()` block — mirroring the pattern in
-/// `evaluate_let_bindings` and removing the stale unconditional allocation that
-/// existed in the `eval_cached()` path before this refactor.
+/// When a cycle exists, `sorted_lets` is the cycle-free topological prefix;
+/// callers iterate it to evaluate the cycle-free portion.
 fn detect_let_cycle<'a>(
     template: &'a reify_compiler::TopologyTemplate,
     diagnostics: &mut Vec<Diagnostic>,
@@ -354,13 +348,6 @@ fn detect_let_cycle<'a>(
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
-///
-/// Centralises the problem-construction logic so that both `eval()` and
-/// `eval_cached()` build identical inputs to the solver.  Each caller retains its
-/// own `match solve_result` handling because the `Solved` arm semantics diverge
-/// intentionally: `eval()`'s `Solved` arm performs snapshot/cache/journal updates
-/// while `eval_cached()`'s `Solved` arm is an intentional no-op (pinned by
-/// `eval_cached_solver_solved_arm_is_intentional_noop`).
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     values: &ValueMap,
@@ -412,14 +399,11 @@ fn build_solver_problem(
     })
 }
 
-/// Centralises the rejection-warning vocabulary for param_override validation
-/// so that adding a future `ParamOverrideRejection` variant only requires
-/// updating this one function.
+/// Pushes the appropriate `Diagnostic::warning` for `rejection` and bumps the
+/// corresponding test counter (`type_kind_counter` for `TypeKindMismatch`,
+/// `dimension_counter` for `ScalarDimensionMismatch`).
 ///
-/// Call whenever `validate_param_override` returns `Err(rejection)` to push
-/// the appropriate `Diagnostic::warning` onto the accumulated diagnostics list.
-/// Replaces the three former inline match-arm blocks in `eval()`,
-/// `eval_cached()`'s unconditional pre-check, and `eval_guarded_group_param_cell`.
+/// Call whenever `validate_param_override` returns `Err(rejection)`.
 fn emit_param_override_rejection_warning(
     diagnostics: &mut Vec<Diagnostic>,
     cell_id: &ValueCellId,
@@ -440,7 +424,7 @@ fn emit_param_override_rejection_warning(
         ParamOverrideRejection::ScalarDimensionMismatch { expected, got } => {
             *dimension_counter += 1;
             diagnostics.push(Diagnostic::warning(format!(
-                "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                "param_override for `{}` skipped: dimension mismatch (expected {}, got {})",
                 cell_id, expected, got
             )));
         }
