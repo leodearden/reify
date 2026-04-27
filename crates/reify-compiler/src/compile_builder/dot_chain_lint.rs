@@ -858,4 +858,20 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn parse_overflow_depth_extracts_value_from_well_formed_panic_message() {
+        let msg = "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = 256 (depth = 257); \
+                   dot-chain lint coverage truncated at this subtree";
+        assert_eq!(parse_overflow_depth(msg), 257);
+    }
+
+    #[test]
+    #[should_panic(expected = "format string drifted")]
+    fn parse_overflow_depth_panics_with_clear_message_when_format_drifts() {
+        parse_overflow_depth(
+            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = 256 \
+             — no depth marker here",
+        );
+    }
 }
