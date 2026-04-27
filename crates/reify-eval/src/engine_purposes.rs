@@ -9,6 +9,7 @@ use reify_types::{
     CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, OptimizationObjective,
     PersistentMap, Type, ValueCellId,
 };
+use std::sync::Arc;
 
 impl Engine {
     /// Activate a purpose by name against a target entity.
@@ -130,9 +131,27 @@ impl Engine {
         //
         // We reborrow eval_state mutably here — the immutable borrow (`state`)
         // created earlier was already released after inserting into the graph.
+        //
+        // Compose-field edge preservation (task-2343): pass `&compiled_fields`
+        // into the `_and_fields` builders so composed-field reverse-index
+        // edges (`__field.<dep>` → `Value(__field.<composed>)`) survive the
+        // rebuild. Without this, every composed-field edge would be dropped
+        // here, breaking the cache invariant downstream — pinned by
+        // `purpose_activation_preserves_composed_field_reverse_index` in
+        // `crates/reify-eval/tests/purpose_activation.rs`. The
+        // `Arc::clone(&self.compiled_fields)` happens BEFORE the
+        // `self.eval_state.as_mut()` reborrow because both go through
+        // `&mut self`; cloning the Arc first into a fully owned local
+        // sidesteps the cross-field borrow. Mirrors the pattern at
+        // `engine_edit.rs:829`.
+        let compiled_fields = Arc::clone(&self.compiled_fields);
         if let Some(state) = self.eval_state.as_mut() {
-            state.reverse_index = ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
-            state.trace_map = crate::deps::build_trace_map(&state.snapshot.graph);
+            state.reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
+                &state.snapshot.graph,
+                &compiled_fields,
+            );
+            state.trace_map =
+                crate::deps::build_trace_map_and_fields(&state.snapshot.graph, &compiled_fields);
         }
         if let Some(state) = self.eval_state.as_ref() {
             self.demand.rebuild_cone(&state.snapshot.graph);
@@ -164,12 +183,22 @@ impl Engine {
         // Remove each injected constraint from the evaluation graph, then
         // rebuild the infrastructure so subsequent edit_param() calls no longer
         // route through purpose constraint dependencies.
+        //
+        // Compose-field edge preservation (task-2343): pass `&compiled_fields`
+        // into the `_and_fields` builders for the same reason as
+        // `activate_purpose` above — composed-field edges must survive every
+        // rebuild path or the cache invariant breaks downstream.
+        let compiled_fields = Arc::clone(&self.compiled_fields);
         if let Some(state) = self.eval_state.as_mut() {
             for constraint_id in &injected_ids {
                 state.snapshot.graph.constraints.remove(constraint_id);
             }
-            state.reverse_index = ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
-            state.trace_map = crate::deps::build_trace_map(&state.snapshot.graph);
+            state.reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
+                &state.snapshot.graph,
+                &compiled_fields,
+            );
+            state.trace_map =
+                crate::deps::build_trace_map_and_fields(&state.snapshot.graph, &compiled_fields);
         }
         if let Some(state) = self.eval_state.as_ref() {
             self.demand.rebuild_cone(&state.snapshot.graph);

@@ -172,10 +172,10 @@ impl ReverseDependencyIndex {
 /// Build a forward dependency trace map for all nodes in the graph.
 ///
 /// Thin wrapper over [`build_trace_map_and_fields`] with an empty fields slice.
-/// Preserved for callers (e.g. tests, dirty.rs, engine_purposes.rs) that have no
-/// access to `module.fields`. Production paths in `engine_eval.rs` and
-/// `engine_edit.rs` use the `_and_fields` variant so composed-field traces
-/// are registered alongside template traces.
+/// Preserved for callers (e.g. tests, dirty.rs) that have no access to
+/// `module.fields`. Production paths in `engine_eval.rs`, `engine_edit.rs`,
+/// and `engine_purposes.rs` use the `_and_fields` variant so composed-field
+/// traces are registered alongside template traces.
 pub fn build_trace_map(graph: &crate::graph::EvaluationGraph) -> HashMap<NodeId, DependencyTrace> {
     build_trace_map_and_fields(graph, &[])
 }
