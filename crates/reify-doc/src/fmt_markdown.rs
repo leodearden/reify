@@ -560,9 +560,21 @@ fn render_type_alias_body(out: &mut String, type_repr: &str) {
 
 /// Render the `\`{expr_repr}\`` line for a `ConstraintDef`.
 fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
-    out.push('`');
-    out.push_str(expr_repr);
-    out.push_str("`\n\n");
+    out.push_str(&md_inline_code(expr_repr));
+    out.push_str("\n\n");
+}
+
+/// Wrap `s` in a Markdown inline-code span, picking a backtick fence longer
+/// than the longest backtick run inside `s` and padding with a space when `s`
+/// starts or ends with a backtick.  Sibling of [`md_inline_code_cell`] for
+/// non-table contexts: skips pipe / newline escaping because those characters
+/// have no special meaning outside a GFM table cell.
+fn md_inline_code(s: &str) -> String {
+    let fence_len = max_consecutive_backticks(s) + 1;
+    let fence: String = "`".repeat(fence_len);
+    let needs_pad = s.starts_with('`') || s.ends_with('`');
+    let space = if needs_pad { " " } else { "" };
+    format!("{fence}{space}{s}{space}{fence}")
 }
 
 /// Escape a single Markdown table cell value.
