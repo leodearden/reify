@@ -1273,6 +1273,8 @@ fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
         "kg"
     } else if *dim == DimensionVector::ANGLE {
         "rad"
+    } else if *dim == DimensionVector::MONEY {
+        "USD"
     } else if dim.is_dimensionless() {
         ""
     } else {
