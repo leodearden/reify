@@ -1,0 +1,44 @@
+// Stdlib: Geometry Conformance Traits
+// Pure marker traits for characterizing the topology and geometry of bodies.
+// Conformance is intended to be inferred from kernel results (volumes, faces,
+// orientations) and attached as metadata; user `.ri` sources only need to
+// reference these names — no fields are required for conformance.
+//
+// Reference: docs/reify-stdlib-reference.md §3.10. Scope: marker traits only.
+// §3.10's `Geometry` / `Transformable` supertraits and the Plane / Axis /
+// BoundingBox structures (with helpers like plane_xy) are deferred to a
+// follow-up task.
+
+// ── Spatial extent ──────────────────────────────────────────────────────────
+
+// A body that occupies a finite region of space (bounded extent).
+trait Bounded {}
+
+// ── Topological closure ─────────────────────────────────────────────────────
+
+// A body whose boundary is a closed surface (no open edges).
+trait Closed {}
+
+// A body whose boundary is a 2-manifold (every edge is shared by exactly
+// two faces).
+trait Manifold {}
+
+// ── Surface orientation ─────────────────────────────────────────────────────
+
+// A body whose boundary admits a consistent global outward normal.
+trait Orientable {}
+
+// ── Geometric shape ─────────────────────────────────────────────────────────
+
+// A body whose region is convex (every line segment between two interior
+// points lies entirely within the body).
+trait Convex {}
+
+// A body whose region is path-connected (a single component).
+trait Connected {}
+
+// ── Watertightness (multi-refinement) ───────────────────────────────────────
+
+// A body that is both Closed and Manifold — the canonical predicate for
+// "watertight" geometry suitable for downstream simulation and manufacturing.
+trait Watertight : Closed + Manifold {}

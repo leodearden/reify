@@ -2,7 +2,7 @@
 //! with no Error-severity diagnostics.
 //!
 //! Motivation: per-file test wrappers (m5_integration, m8_stdlib_integration,
-//! m11_full_integration, …) cover a subset of the 42 example files, but files
+//! m11_full_integration, …) cover a subset of the example files, but files
 //! without a wrapper drift silently.  This test walks the directory and catches
 //! every file at once.
 
@@ -12,13 +12,17 @@ use std::path::{Path, PathBuf};
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
-/// Files to skip in the bulk smoke test.  Each entry is `(filename, reason)`.
+/// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
+/// where `relative_path` is the forward-slash-separated path rooted at `examples/`
+/// (e.g. `"bracket.ri"`, `"fields/composed_stiffness.ri"`).  Using the full
+/// relative path rather than a bare basename means that same-basename files in
+/// different subdirectories can be skipped independently without ambiguity.
 /// The reason is mandatory — the `(&str, &str)` tuple shape forces every entry
 /// to carry a one-line human-readable justification, making skips auditable at
 /// review time.
 ///
-/// Default: empty — all 42 example files compile clean on HEAD after task #2181
-/// (purpose-body MemberAccess) was merged on 2026-04-24.
+/// Default: empty — all 43 example files compile clean on HEAD after task #2346
+/// (recursive examples_smoke discovery) was merged on 2026-04-26.
 const SKIP_SET: &[(&str, &str)] = &[];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
@@ -45,16 +49,12 @@ fn all_examples_parse_and_compile_with_stdlib() {
 
     let mut exercised = 0usize;
     for path in &paths {
-        let filename = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        if skip.contains(filename.as_str()) {
+        let rel_key = relative_to_examples_dir(path);
+        if skip.contains(rel_key.as_str()) {
             continue;
         }
         exercised += 1;
-        smoke_one(path, &filename, &mut failures);
+        smoke_one(path, &rel_key, &mut failures);
     }
 
     if !failures.is_empty() {
@@ -74,17 +74,17 @@ fn all_examples_parse_and_compile_with_stdlib() {
     }
 }
 
-/// Sanity guard: every entry in SKIP_SET must name a file that actually exists
-/// under `examples/`.  Catches mis-typed or stale skip entries before they
+/// Sanity guard: every entry in SKIP_SET must name a relative path that actually
+/// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    for (filename, reason) in SKIP_SET {
-        let path = Path::new(EXAMPLES_DIR).join(filename);
+    for (rel_path, reason) in SKIP_SET {
+        let path = Path::new(EXAMPLES_DIR).join(rel_path);
         assert!(
             path.exists(),
             "SKIP_SET entry '{}' (reason: {}) does not exist under {}",
-            filename,
+            rel_path,
             reason,
             EXAMPLES_DIR,
         );
@@ -93,56 +93,126 @@ fn skip_set_entries_exist_under_examples_dir() {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-/// Return all `*.ri` files under `EXAMPLES_DIR`, sorted by filename for
-/// deterministic output.
+/// Strip the `EXAMPLES_DIR` prefix from `path` and return a portable,
+/// forward-slash-separated relative path string.
+///
+/// For example:
+/// - `<EXAMPLES_DIR>/bracket.ri`                   → `"bracket.ri"`
+/// - `<EXAMPLES_DIR>/fields/composed_stiffness.ri` → `"fields/composed_stiffness.ri"`
+///
+/// This is the canonical form used as SKIP_SET keys and in failure reports,
+/// so that same-basename files in different subdirectories are unambiguous.
+///
+/// # Panics
+///
+/// Panics if `path` does not begin with the lexical `EXAMPLES_DIR` prefix.
+/// **Callers must pass paths produced by [`discover_ri_files`]** — i.e. paths
+/// that are constructed by walking `EXAMPLES_DIR` without canonicalization.
+/// Canonicalized paths (which resolve `..` components) will not match the
+/// lexical prefix string and will panic.
+fn relative_to_examples_dir(path: &Path) -> String {
+    let rel = path
+        .strip_prefix(EXAMPLES_DIR)
+        .unwrap_or_else(|e| panic!(
+            "examples_smoke: '{}' is not under EXAMPLES_DIR ({}): {}",
+            path.display(), EXAMPLES_DIR, e
+        ));
+    rel.to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
+/// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted by
+/// their full path for deterministic output.
 fn discover_ri_files() -> Vec<PathBuf> {
-    let dir = std::fs::read_dir(EXAMPLES_DIR).unwrap_or_else(|e| {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    collect_ri_files(std::path::Path::new(EXAMPLES_DIR), &mut paths);
+    paths.sort();
+    paths
+}
+
+/// Recursively collect `*.ri` files under `dir` into `out`.
+fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
-            "examples_smoke: cannot read examples directory '{}': {}",
-            EXAMPLES_DIR, e
+            "examples_smoke: cannot read directory '{}': {}",
+            dir.display(),
+            e
         )
     });
+    for entry in entries {
+        let entry = entry.expect("IO error reading examples dir entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ri_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
+            out.push(path);
+        }
+    }
+}
 
-    let mut paths: Vec<PathBuf> = dir
-        .filter_map(|entry| {
-            let entry = entry.expect("IO error reading examples dir entry");
-            let path = entry.path();
-            // Guard: assert no subdirectories exist so future restructuring
-            // surfaces this limitation loudly rather than silently losing files.
-            assert!(
-                !path.is_dir(),
-                "examples_smoke: unexpected subdirectory '{}' under examples/; \
-                 discover_ri_files is non-recursive — update it or escalate",
-                path.display()
-            );
-            if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
+/// Verify that `relative_to_examples_dir` strips the `EXAMPLES_DIR` prefix and
+/// returns a portable forward-slash-separated relative path for both top-level
+/// and nested `.ri` files.
+#[test]
+fn relative_to_examples_dir_strips_prefix_for_top_level_and_nested_files() {
+    let top_level = Path::new(EXAMPLES_DIR).join("bracket.ri");
+    let nested = Path::new(EXAMPLES_DIR).join("fields/composed_stiffness.ri");
 
-    paths.sort_by(|a, b| {
-        a.file_name()
-            .unwrap_or_default()
-            .cmp(b.file_name().unwrap_or_default())
-    });
-    paths
+    assert_eq!(relative_to_examples_dir(&top_level), "bracket.ri");
+    assert_eq!(
+        relative_to_examples_dir(&nested),
+        "fields/composed_stiffness.ri"
+    );
+}
+
+/// Verify that the string produced by `relative_to_examples_dir` for the only
+/// nested example on HEAD round-trips back to an existing file when joined onto
+/// `EXAMPLES_DIR`.
+///
+/// This locks the SKIP_SET-key contract: entries must be join-compatible
+/// (no leading slash, portable forward-slash separators, no absolute path).
+#[test]
+fn relative_to_examples_dir_output_round_trips_to_existing_file() {
+    let abs = Path::new(EXAMPLES_DIR).join("fields/composed_stiffness.ri");
+    let rel = relative_to_examples_dir(&abs);
+    let joined = Path::new(EXAMPLES_DIR).join(&rel);
+    assert!(
+        joined.exists() && joined.is_file(),
+        "round-trip failed: EXAMPLES_DIR.join({:?}) = {:?} does not exist",
+        rel,
+        joined
+    );
+}
+
+/// Verify that every path returned by `discover_ri_files()` is accepted by
+/// `relative_to_examples_dir` without panicking.
+///
+/// This locks the contract between the two functions: if `discover_ri_files`
+/// ever begins canonicalizing paths (which would resolve `..` and break the
+/// lexical `strip_prefix` inside `relative_to_examples_dir`), this test will
+/// fail, surfacing the regression before it silently corrupts SKIP_SET lookups
+/// or failure reports.
+#[test]
+fn relative_to_examples_dir_accepts_all_discovered_paths() {
+    for path in discover_ri_files() {
+        // Will panic if path is not lexically rooted under EXAMPLES_DIR.
+        let _ = relative_to_examples_dir(&path);
+    }
 }
 
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
 /// `failures` if either parse errors or Error-severity compile diagnostics are
 /// found.  Returns without appending when the file is clean.
 ///
-/// `filename` is the `file_name()` string computed by the caller; passing it
-/// in avoids a second extraction of the same data.
-fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) {
+/// `rel_key` is the `relative_to_examples_dir()` string computed by the caller;
+/// it is used as the failure-tuple key and in error messages so that nested
+/// files are unambiguous in failure reports.
+fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     use reify_compiler::compile_with_stdlib;
     use reify_types::{ModulePath, Severity};
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("examples_smoke: cannot read '{}': {}", filename, e)
+        panic!("examples_smoke: cannot read '{}': {}", rel_key, e)
     });
 
     // Derive a module name from the file stem (e.g. "m5_geometry_flange").
@@ -161,7 +231,7 @@ fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) 
             .iter()
             .map(|e| e.message.clone())
             .collect();
-        failures.push((filename.to_owned(), msgs.join("\n")));
+        failures.push((rel_key.to_owned(), msgs.join("\n")));
         return;
     }
 
@@ -175,6 +245,6 @@ fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) 
         .collect();
 
     if !errors.is_empty() {
-        failures.push((filename.to_owned(), errors.join("\n")));
+        failures.push((rel_key.to_owned(), errors.join("\n")));
     }
 }

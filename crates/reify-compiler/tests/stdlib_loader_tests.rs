@@ -2,8 +2,8 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::{
-    CompiledModuleBuilder, EXPECTED_MATERIAL_TRAITS, collect_errors, steel_elastic_source,
-    steel_strong_source,
+    CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
+    steel_elastic_source, steel_strong_source,
 };
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash,
@@ -69,6 +69,45 @@ fn materials_mechanical_traits_present() {
             "expected trait '{}' in stdlib, found: {:?}",
             name,
             all_traits
+        );
+    }
+}
+
+/// `std.geometry.traits` contains exactly the EXPECTED_GEOMETRY_TRAITS list
+/// — same names, same count. Single source of truth for the geometry trait
+/// set; per-module `geometry_traits_tests.rs` delegates to this rather than
+/// re-asserting names locally. Scoped to the geometry module specifically so
+/// the count assertion is meaningful (a flat cross-module count would not be).
+#[test]
+fn geometry_traits_present() {
+    let modules = stdlib_loader::load_stdlib();
+
+    let geometry_module = modules
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/geometry/traits")
+        .expect("std.geometry.traits module should be present in the stdlib");
+
+    let trait_names: Vec<&str> = geometry_module
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+
+    assert_eq!(
+        trait_names.len(),
+        EXPECTED_GEOMETRY_TRAITS.len(),
+        "std.geometry.traits should contain exactly {} traits, got {}: {:?}",
+        EXPECTED_GEOMETRY_TRAITS.len(),
+        trait_names.len(),
+        trait_names
+    );
+
+    for name in EXPECTED_GEOMETRY_TRAITS {
+        assert!(
+            trait_names.contains(name),
+            "expected trait '{}' in std.geometry.traits, found: {:?}",
+            name,
+            trait_names
         );
     }
 }

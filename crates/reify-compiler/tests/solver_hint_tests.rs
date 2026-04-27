@@ -264,6 +264,72 @@ fn solver_hint_multiple_on_same_param() {
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
 
+// ── Task 2339: preferred_strategy accepts any ident — table-driven ──────────
+//
+// Covers argmin_default (principal), slvs_default (second initial recognised
+// name), and an arbitrary unknown ident.  All three must compile with no errors
+// and no warnings, locking the spec §12.2 advisory invariant.
+
+#[test]
+fn solver_hint_preferred_strategy_accepts_any_ident() {
+    for ident in ["argmin_default", "slvs_default", "custom_xyz_strategy"] {
+        let source = format!(
+            r#"structure S {{ @solver_hint("preferred_strategy", {ident}) param length : Length = auto }}"#
+        );
+        let module = compile_source(&source);
+        assert!(
+            errors_only(&module).is_empty(),
+            "{ident}: expected no errors, got: {:?}",
+            errors_only(&module)
+        );
+        assert!(
+            warnings_only(&module).is_empty(),
+            "{ident}: expected no compile-time warnings (spec §12.2 advisory invariant), got: {:?}",
+            warnings_only(&module)
+        );
+        let cell = &module.templates[0].value_cells[0];
+        assert_eq!(
+            cell.solver_hints.len(),
+            1,
+            "{ident}: expected 1 solver hint, got {:?}",
+            cell.solver_hints
+        );
+        assert_eq!(
+            cell.solver_hints[0].kind,
+            reify_compiler::SolverHintKind::PreferredStrategy,
+            "{ident}: unexpected kind"
+        );
+        assert_eq!(
+            cell.solver_hints[0].collection,
+            ident,
+            "{ident}: unexpected collection value"
+        );
+    }
+}
+
+// ── Step-3 (task 2339): unknown-kind warning message lists preferred_strategy ──
+
+#[test]
+fn solver_hint_invalid_kind_message_lists_preferred_strategy() {
+    let source =
+        r#"structure S { @solver_hint("invalid_kind", collection) param length : Length = auto }"#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = warnings_only(&module);
+    assert!(
+        warns
+            .iter()
+            .any(|d| d.message.contains("preferred_strategy")),
+        "expected warning message to mention 'preferred_strategy', got: {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ── Step 21: builder creates param with solver hints ───────────────────────
 
 #[test]

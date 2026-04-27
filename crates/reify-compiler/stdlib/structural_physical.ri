@@ -43,22 +43,24 @@ trait Flexible {
 
 // ── Elastic deformation ─────────────────────────────────────────────────────
 
-// ElasticallyDeformable refines Elastic (from materials_mechanical.ri),
-// adding a max_elastic_strain limit (dimensionless fraction, using Real).
-trait ElasticallyDeformable : Elastic {
+// ElasticallyDeformable refines Flexible (same-module refinement): elastic
+// deformation is a specific form of reversible flexibility. Adds a
+// max_elastic_strain limit (dimensionless fraction, using Real).
+trait ElasticallyDeformable : Flexible {
     param max_elastic_strain : Real
     constraint max_elastic_strain > 0
 }
 
 // ── Plasticity ──────────────────────────────────────────────────────────────
 
-// A body exhibiting permanent deformation beyond yield.
+// Plastic refines Flexible: plastic deformation extends the elastic flexibility
+// contract, inheriting stiffness and max_deflection.
 // plastic_strain (dimensionless fraction, using Real),
 // hardening_modulus (Pa, using Real).
 // Note: hardening_modulus > 0 is strictly positive — a zero modulus would mean
 // perfectly-plastic behaviour (no strain hardening), which is outside the scope
 // of this trait. Use a separate trait if perfectly-plastic models are required.
-trait Plastic {
+trait Plastic : Flexible {
     param plastic_strain : Real
     param hardening_modulus : Real
     constraint hardening_modulus > 0
@@ -67,9 +69,11 @@ trait Plastic {
 
 // ── Thermal conductivity ────────────────────────────────────────────────────
 
+// ThermallyConductive refines Physical: a thermally conductive body is also a
+// physical body, inheriting volume, centroid, and mass.
 // thermal_conductivity (W/(m·K), using Real),
 // max_service_temp (K, using Real).
-trait ThermallyConductive {
+trait ThermallyConductive : Physical {
     param thermal_conductivity : Real
     param max_service_temp : Real
     constraint thermal_conductivity > 0
@@ -77,9 +81,11 @@ trait ThermallyConductive {
 
 // ── Electrical conductivity ─────────────────────────────────────────────────
 
+// ElectricallyConductive refines Physical: an electrically conductive body is
+// also a physical body, inheriting volume, centroid, and mass.
 // electrical_conductivity (S/m, using Real),
 // resistivity (Ω·m, using Real).
-trait ElectricallyConductive {
+trait ElectricallyConductive : Physical {
     param electrical_conductivity : Real
     param resistivity : Real
     constraint electrical_conductivity > 0

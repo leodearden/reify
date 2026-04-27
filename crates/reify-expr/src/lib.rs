@@ -1,6 +1,7 @@
 mod analysis;
 mod calculus;
 mod complex;
+pub mod kleene;
 mod sanitize;
 
 use std::collections::HashMap;
@@ -1106,51 +1107,53 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
 }
 
 /// Kleene AND: false ∧ Undef = false
+///
+/// Delegates truth-table folding to [`kleene::kleene_and`] while preserving:
+/// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
+///   right not evaluated).
+/// - Short-circuit on absorbing element (`False` left → `Value::Bool(false)`,
+///   right not evaluated).
 fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
     let lv = eval_expr(left, ctx);
-    match lv {
-        Value::Bool(false) => Value::Bool(false),
-        Value::Bool(true) => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(b) => Value::Bool(b),
-                Value::Undef => Value::Undef,
-                _ => Value::Undef,
-            }
-        }
-        Value::Undef => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(false) => Value::Bool(false),
-                _ => Value::Undef,
-            }
-        }
-        _ => Value::Undef,
+    let lk = match kleene::KBool::try_from(&lv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    // Short-circuit on absorbing element: False ∧ anything = False.
+    if matches!(lk, kleene::KBool::False) {
+        return Value::Bool(false);
     }
+    let rv = eval_expr(right, ctx);
+    let rk = match kleene::KBool::try_from(&rv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    kleene::kleene_and(lk, rk).into()
 }
 
 /// Kleene OR: true ∨ Undef = true
+///
+/// Delegates truth-table folding to [`kleene::kleene_or`] while preserving:
+/// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
+///   right not evaluated).
+/// - Short-circuit on absorbing element (`True` left → `Value::Bool(true)`,
+///   right not evaluated).
 fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
     let lv = eval_expr(left, ctx);
-    match lv {
-        Value::Bool(true) => Value::Bool(true),
-        Value::Bool(false) => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(b) => Value::Bool(b),
-                Value::Undef => Value::Undef,
-                _ => Value::Undef,
-            }
-        }
-        Value::Undef => {
-            let rv = eval_expr(right, ctx);
-            match rv {
-                Value::Bool(true) => Value::Bool(true),
-                _ => Value::Undef,
-            }
-        }
-        _ => Value::Undef,
+    let lk = match kleene::KBool::try_from(&lv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    // Short-circuit on absorbing element: True ∨ anything = True.
+    if matches!(lk, kleene::KBool::True) {
+        return Value::Bool(true);
     }
+    let rv = eval_expr(right, ctx);
+    let rk = match kleene::KBool::try_from(&rv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    kleene::kleene_or(lk, rk).into()
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
@@ -2098,9 +2101,13 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
     }
     match op {
         UnOp::Neg => negate_value(v),
-        UnOp::Not => match v {
-            Value::Bool(b) => Value::Bool(!b),
-            _ => Value::Undef,
+        // Note: `v` cannot be `Value::Undef` here — the guard above returns
+        // early for Undef, so `KBool::try_from` will never produce
+        // `Ok(KBool::Undef)`.  `kleene_not` is the truth-table authority for
+        // the Bool(true)/Bool(false) cases; non-bool inputs fall to `Err`.
+        UnOp::Not => match kleene::KBool::try_from(&v) {
+            Ok(k) => kleene::kleene_not(k).into(),
+            Err(_) => Value::Undef,
         },
     }
 }
@@ -3527,4 +3534,235 @@ mod tests {
             other => panic!("expected Complex, got {:?}", other),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Full truth-table characterization tests for eval-level Kleene operators.
+    // These pin end-to-end behavior through eval_expr so that the step-4
+    // refactor (delegating to kleene::*) cannot silently drift.
+    // -----------------------------------------------------------------------
+
+    /// Assert that evaluating `expr` (a BinOp or UnOp literal) yields `expected`.
+    fn check(expr: CompiledExpr, expected: Value) {
+        let values = ValueMap::new();
+        let got = eval_expr(&expr, &EvalContext::simple(&values));
+        assert_eq!(got, expected, "eval result mismatch");
+    }
+
+    #[test]
+    fn eval_binop_and_truth_table_full() {
+        // Row: L  ∧  R  =  expected
+        let cases: &[(Value, Value, Value)] = &[
+            (Value::Bool(true), Value::Bool(true), Value::Bool(true)),
+            (Value::Bool(true), Value::Bool(false), Value::Bool(false)),
+            (Value::Bool(true), Value::Undef, Value::Undef),
+            (Value::Bool(false), Value::Bool(true), Value::Bool(false)),
+            (Value::Bool(false), Value::Bool(false), Value::Bool(false)),
+            (Value::Bool(false), Value::Undef, Value::Bool(false)), // absorbing
+            (Value::Undef, Value::Bool(true), Value::Undef),
+            (Value::Undef, Value::Bool(false), Value::Bool(false)), // absorbing
+            (Value::Undef, Value::Undef, Value::Undef),
+        ];
+        for (l, r, expected) in cases {
+            let expr = CompiledExpr::binop(
+                BinOp::And,
+                lit(l.clone(), Type::Bool),
+                lit(r.clone(), Type::Bool),
+                Type::Bool,
+            );
+            check(expr, expected.clone());
+        }
+    }
+
+    #[test]
+    fn eval_binop_or_truth_table_full() {
+        // Row: L  ∨  R  =  expected
+        let cases: &[(Value, Value, Value)] = &[
+            (Value::Bool(true), Value::Bool(true), Value::Bool(true)),
+            (Value::Bool(true), Value::Bool(false), Value::Bool(true)),
+            (Value::Bool(true), Value::Undef, Value::Bool(true)), // absorbing
+            (Value::Bool(false), Value::Bool(true), Value::Bool(true)),
+            (Value::Bool(false), Value::Bool(false), Value::Bool(false)),
+            (Value::Bool(false), Value::Undef, Value::Undef),
+            (Value::Undef, Value::Bool(true), Value::Bool(true)), // absorbing
+            (Value::Undef, Value::Bool(false), Value::Undef),
+            (Value::Undef, Value::Undef, Value::Undef),
+        ];
+        for (l, r, expected) in cases {
+            let expr = CompiledExpr::binop(
+                BinOp::Or,
+                lit(l.clone(), Type::Bool),
+                lit(r.clone(), Type::Bool),
+                Type::Bool,
+            );
+            check(expr, expected.clone());
+        }
+    }
+
+    #[test]
+    fn eval_unop_not_truth_table_full() {
+        // ¬T=F, ¬F=T, ¬U=U
+        let cases: &[(Value, Value)] = &[
+            (Value::Bool(true), Value::Bool(false)),
+            (Value::Bool(false), Value::Bool(true)),
+            (Value::Undef, Value::Undef),
+        ];
+        for (operand, expected) in cases {
+            let expr = CompiledExpr::unop(UnOp::Not, lit(operand.clone(), Type::Bool), Type::Bool);
+            check(expr, expected.clone());
+        }
+    }
+
+    #[test]
+    fn eval_binop_and_non_bool_left_is_undef() {
+        // Non-bool left operand → Value::Undef (type-error catch-all)
+        let expr = CompiledExpr::binop(
+            BinOp::And,
+            lit(Value::Int(3), Type::Int),
+            lit(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        );
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    #[test]
+    fn eval_binop_or_non_bool_left_is_undef() {
+        // Non-bool left operand → Value::Undef (type-error catch-all)
+        let expr = CompiledExpr::binop(
+            BinOp::Or,
+            lit(Value::Int(3), Type::Int),
+            lit(Value::Bool(false), Type::Bool),
+            Type::Bool,
+        );
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    #[test]
+    fn eval_unop_not_non_bool_is_undef() {
+        // Non-bool operand → Value::Undef (type-error catch-all)
+        let expr = CompiledExpr::unop(UnOp::Not, lit(Value::Int(3), Type::Int), Type::Bool);
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef(),
+            "UnOp::Not on non-bool operand must return Value::Undef (type-error contract)"
+        );
+    }
+
+    /// Returns a `CompiledExpr` that panics if it is ever evaluated.
+    ///
+    /// Uses `CompiledExprKind::MetaAccess` as the panic mechanism: when
+    /// `EvalContext.meta` is `None` (which is the case for
+    /// `EvalContext::simple(&values)`), evaluation panics with
+    /// "MetaAccess evaluation requires meta context in EvalContext".
+    ///
+    /// Place this expression on the right operand of AND/OR short-circuit
+    /// tests. If the implementation correctly short-circuits, the sentinel is
+    /// never evaluated → no panic → test passes. If a future refactor
+    /// silently evaluates the right operand, the test panics loudly.
+    fn panic_on_eval_sentinel() -> CompiledExpr {
+        CompiledExpr::meta_access("__sentinel".into(), "should_not_evaluate".into())
+    }
+
+    /// Verifies the assumption that `panic_on_eval_sentinel()` actually panics
+    /// when evaluated under `EvalContext::simple` (i.e., `ctx.meta` is `None`).
+    ///
+    /// If `MetaAccess` evaluation is ever changed to return `Value::Undef` instead
+    /// of panicking on missing context, this test fails — alerting maintainers that
+    /// the short-circuit sentinel mechanism is broken and the AND/OR short-circuit
+    /// tests no longer provide reliable coverage.
+    #[test]
+    #[should_panic(expected = "MetaAccess evaluation requires meta context")]
+    fn panic_on_eval_sentinel_panics_when_evaluated() {
+        let sentinel = panic_on_eval_sentinel();
+        let _ = eval_expr(&sentinel, &EvalContext::simple(&ValueMap::new()));
+    }
+
+    /// Pins that `eval_and` short-circuits on a non-bool left operand:
+    /// the right operand is **never evaluated** when the left is not bool/undef.
+    ///
+    /// Contract: non-bool left → `Value::Undef`, right NOT evaluated
+    /// (see `eval_and`, type-error branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_and_short_circuit_on_non_bool_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::And,
+            lit(Value::Int(3), Type::Int),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    /// Pins that `eval_and` short-circuits on the absorbing element `False`:
+    /// the right operand is **never evaluated** when the left is `Bool(false)`.
+    ///
+    /// Contract: `False` left → `Value::Bool(false)`, right NOT evaluated
+    /// (see `eval_and`, absorbing-element branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_and_short_circuit_on_false_absorbing_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::And,
+            lit(Value::Bool(false), Type::Bool),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(false)
+        );
+    }
+
+    /// Pins that `eval_or` short-circuits on a non-bool left operand:
+    /// the right operand is **never evaluated** when the left is not bool/undef.
+    ///
+    /// Contract: non-bool left → `Value::Undef`, right NOT evaluated
+    /// (see `eval_or`, type-error branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_or_short_circuit_on_non_bool_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Or,
+            lit(Value::Int(3), Type::Int),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    /// Pins that `eval_or` short-circuits on the absorbing element `True`:
+    /// the right operand is **never evaluated** when the left is `Bool(true)`.
+    ///
+    /// Contract: `True` left → `Value::Bool(true)`, right NOT evaluated
+    /// (see `eval_or`, absorbing-element branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_or_short_circuit_on_true_absorbing_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Or,
+            lit(Value::Bool(true), Type::Bool),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true)
+        );
+    }
+
 }

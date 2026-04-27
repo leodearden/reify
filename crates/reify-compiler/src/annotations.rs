@@ -324,10 +324,11 @@ pub(crate) fn extract_solver_hints(
             Some(reify_types::AnnotationArg::String(s)) => match s.as_str() {
                 "discrete_set" => SolverHintKind::DiscreteSet,
                 "prefer_stock" => SolverHintKind::PreferStock,
+                "preferred_strategy" => SolverHintKind::PreferredStrategy,
                 other => {
                     diagnostics.push(
                         Diagnostic::warning(format!(
-                            "unknown solver hint kind '{other}'; expected 'discrete_set' or 'prefer_stock'"
+                            "unknown solver hint kind '{other}'; expected 'discrete_set', 'prefer_stock', or 'preferred_strategy'"
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "unknown kind")),
                     );

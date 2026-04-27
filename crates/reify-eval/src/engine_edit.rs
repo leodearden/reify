@@ -843,9 +843,9 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
                     objective,
-                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
-                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
-                    functions: (*functions).clone(),
+                    // Arc::clone is O(1) — a refcount bump into the merged table
+                    // already held by Engine.functions (tasks #1997, #2286).
+                    functions: Arc::clone(&functions),
                 };
 
                 match solver.solve(&problem) {
@@ -1927,9 +1927,9 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
                     objective,
-                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
-                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
-                    functions: (*functions).clone(),
+                    // Arc::clone is O(1) — a refcount bump into the merged table
+                    // already held by Engine.functions (tasks #1997, #2286).
+                    functions: Arc::clone(&functions),
                 };
 
                 match solver.solve(&problem) {

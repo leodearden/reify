@@ -227,6 +227,19 @@ pub enum DiagnosticCode {
     /// parameter requires a unique solution; this code is emitted when perturbation-based
     /// uniqueness checking finds a second distinct solution.
     ConstraintNonUnique,
+    /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
+    /// Emitted when a field declaration uses the `imported { ... }` source form,
+    /// which is deferred to v0.2 (v0.1 supports `analytical`, `sampled`, and
+    /// `composed` only).
+    FieldImportedV02,
+    /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
+    /// Replaces canonical message:
+    /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
+    ///
+    /// Emitted when the inferred type of an `analytical` lambda body does not
+    /// implicitly convert to the declared codomain type. The human-readable
+    /// mnemonic used in PRD prose is `E_FIELD_CODOMAIN_MISMATCH`.
+    FieldCodomainMismatch,
 }
 
 /// A diagnostic message with location and optional labels.

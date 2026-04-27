@@ -2207,6 +2207,7 @@ fn entity_tree_node_serialization_roundtrip() {
         entity_path: "Bracket".to_string(),
         kind: "structure".to_string(),
         type_name: None,
+        display_name: None,
         has_mesh: false,
         trait_geometry: false,
         children: vec![],
@@ -2222,6 +2223,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         entity_path: "Bracket.width".to_string(),
         kind: "param".to_string(),
         type_name: Some("Length".to_string()),
+        display_name: None,
         has_mesh: false,
         trait_geometry: false,
         children: vec![],
@@ -2230,6 +2232,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         entity_path: "Bracket".to_string(),
         kind: "structure".to_string(),
         type_name: None,
+        display_name: None,
         has_mesh: true,
         trait_geometry: false,
         children: vec![child],
@@ -2251,6 +2254,7 @@ fn entity_tree_node_default_type_name_is_none() {
         entity_path: "Foo".to_string(),
         kind: "occurrence".to_string(),
         type_name: None,
+        display_name: None,
         has_mesh: false,
         trait_geometry: false,
         children: vec![],
@@ -2936,8 +2940,24 @@ fn entity_tree_and_identity_map_entity_paths_are_consistent() {
         }
     }
 
-    // Every path from the tree must be a key in the identity map.
+    // Every path from the tree must be a key in the identity map — except
+    // for "realization" nodes, which are keyed by the mesh-key form
+    // (`Entity#realization[N]`) and intentionally don't have an entry in
+    // the identity map (which is keyed by source-navigable cell paths).
+    // Realizations are surfaced in the tree purely for visibility control.
+    let queue_kinds: std::collections::HashMap<String, String> = {
+        let mut m = std::collections::HashMap::new();
+        let mut q: std::collections::VecDeque<&crate::types::EntityTreeNode> = tree.iter().collect();
+        while let Some(node) = q.pop_front() {
+            m.insert(node.entity_path.clone(), node.kind.clone());
+            for c in &node.children { q.push_back(c); }
+        }
+        m
+    };
     for path in &tree_paths {
+        if queue_kinds.get(path).map(|k| k.as_str()) == Some("realization") {
+            continue;
+        }
         assert!(
             map.contains_key(path.as_str()),
             "entity_path '{}' is in the tree but missing from the identity map; \

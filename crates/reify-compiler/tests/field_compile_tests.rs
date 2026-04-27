@@ -3,13 +3,15 @@
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
 use reify_test_support::{compile_source, errors_only};
+use reify_types::DiagnosticCode;
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
 #[test]
 fn compile_field_analytical() {
-    let module =
-        compile_source("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
+    let module = compile_source(
+        "field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }",
+    );
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -78,8 +80,8 @@ fn compile_field_compose_type_check_valid() {
     // Result should be Field<Point3, Scalar>.
     let module = compile_source(
         r#"
-field def f1 : Point3 -> Scalar { source = analytical { |p| p } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def f1 : Point3 -> Scalar { source = analytical { |p| 1.0m } }
+field def f2 : Scalar -> Scalar { source = analytical { |x| 1.0m } }
 field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
 "#,
     );
@@ -198,4 +200,101 @@ field def temp : Scalar -> Scalar { source = analytical { |x| x } }
         1,
         "expected only 1 compiled field (duplicate should be skipped)"
     );
+}
+
+// ── Step 2336: analytical field codomain type-check ─────────────────────────
+
+#[test]
+fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
+    // Body returns Real (param x has default Real type), codomain declared as Scalar[m].
+    // implicitly_converts_to(Real, Scalar[LENGTH]) is false → FieldCodomainMismatch.
+    let module =
+        compile_source("field def temp : Real -> Scalar { source = analytical { |x| x } }");
+
+    let has_mismatch = module.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Error
+            && d.code == Some(DiagnosticCode::FieldCodomainMismatch)
+    });
+    assert!(
+        has_mismatch,
+        "expected DiagnosticCode::FieldCodomainMismatch error for codomain mismatch, got: {:?}",
+        module.diagnostics
+    );
+
+    // The diagnostic message should use the canonical phrasing, naming both sides.
+    // Checking the full phrase rather than bare type names avoids false positives
+    // from substrings like "Vector<Real>", "Scalar<Temperature>", etc.
+    let mismatch_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch))
+        .unwrap();
+    assert!(
+        mismatch_diag.message.contains("declared codomain `Scalar"),
+        "expected message to contain 'declared codomain `Scalar...`', got: {}",
+        mismatch_diag.message
+    );
+    assert!(
+        mismatch_diag.message.contains("lambda body produces `Real`"),
+        "expected message to contain 'lambda body produces `Real`', got: {}",
+        mismatch_diag.message
+    );
+}
+
+// ── Step 2336: positive-path guard — matching codomain does not emit mismatch ─
+
+#[test]
+fn compile_field_analytical_matching_codomain_does_not_emit_mismatch() {
+    // Body returns Real (2.5 * x + 1.0), codomain declared as Real — types match.
+    // No FieldCodomainMismatch diagnostic should be emitted.
+    let module = compile_source(
+        "field def linear : Real -> Real { source = analytical { |x| 2.5 * x + 1.0 } }",
+    );
+
+    let has_mismatch = module
+        .diagnostics
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch));
+    assert!(
+        !has_mismatch,
+        "expected NO FieldCodomainMismatch for Real->Real field with Real body, got: {:?}",
+        module.diagnostics
+    );
+}
+
+// ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
+
+#[test]
+fn compile_field_imported_emits_v02_deferral_diagnostic() {
+    let module = compile_source(
+        r#"field def data : Point3 -> Scalar { source = imported { "data.vtu" } }"#,
+    );
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for imported field source, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_code_and_msg = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::FieldImportedV02)
+            && d.message.contains("v0.2")
+            && d.message.contains("imported")
+    });
+    assert!(
+        has_code_and_msg,
+        "expected DiagnosticCode::FieldImportedV02 with message containing 'v0.2' and 'imported', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let first = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FieldImportedV02))
+        .unwrap();
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
@@ -120,7 +121,9 @@ pub struct ResolutionProblem {
     /// Optional optimization objective.
     pub objective: Option<OptimizationObjective>,
     /// User-defined functions available for evaluating expressions.
-    pub functions: Vec<CompiledFunction>,
+    /// Shares the same Arc allocation as `Engine.functions` — assigned via
+    /// `Arc::clone` at the solver boundary so construction is O(1) (task #2286).
+    pub functions: Arc<Vec<CompiledFunction>>,
 }
 
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
@@ -347,7 +350,7 @@ mod tests {
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: Arc::new(vec![]),
         };
         assert!(problem.auto_params.is_empty());
         assert!(problem.constraints.is_empty());
@@ -374,7 +377,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,
             objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
-            functions: vec![],
+            functions: Arc::new(vec![]),
         };
         assert_eq!(problem.auto_params.len(), 1);
         assert_eq!(problem.constraints.len(), 1);
@@ -510,7 +513,7 @@ mod tests {
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: Arc::new(vec![]),
         };
         let result = solver.solve(&problem);
         match result {

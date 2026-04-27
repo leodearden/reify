@@ -1,0 +1,43 @@
+// Field source kinds worked example — exercises analytical, sampled, and
+// composed source kinds from §4.1.4 of docs/reify-language-spec.md.
+//
+// Coverage:
+//   1. Analytical source: lambda evaluated directly at each sample point
+//   2. Sampled source: resolution+interpolation config (runtime data pending)
+//   3. Composed source: lambda evaluated at each sample point (pure arithmetic)
+//   4. Structure sampling analytical and composed fields with range constraints
+
+// ── Analytical field ─────────────────────────────────────────────────────────
+
+// f(p) = 300.0 + 50.0 * p  — linear temperature profile
+field def temperature_distribution : Real -> Real { source = analytical { |p| 300.0 + 50.0 * p } }
+
+// ── Sampled field ─────────────────────────────────────────────────────────────
+
+// Grid-based field with linear interpolation (runtime data pending).
+// The sampled lambda is Value::Undef until field-data infrastructure lands;
+// the source kind is verified via metadata only (not sampled at runtime).
+field def material_density : Real -> Real { source = sampled { resolution = 100  interpolation = linear } }
+
+// ── Composed field ────────────────────────────────────────────────────────────
+
+// f(p) = 2.0 * p + 1.0  — linear stiffness composition (self-contained lambda)
+field def composed_stiffness : Real -> Real { source = composed { |p| 2.0 * p + 1.0 } }
+
+// ── Structure exercising analytical and composed fields ───────────────────────
+// Note: material_density (sampled) is NOT sampled at runtime — its lambda is
+// Value::Undef until field-data infrastructure lands (sibling tasks 2338/2341).
+
+structure def ComposedStiffnessDemo {
+    // Sample temperature_distribution at p=2.0:  300.0 + 50.0 * 2.0 = 400.0 (exact)
+    let temp_at_p = sample(temperature_distribution, 2.0)
+
+    // Sample composed_stiffness at p=4.0:  2.0 * 4.0 + 1.0 = 9.0 (exact)
+    let stiff_at_p = sample(composed_stiffness, 4.0)
+
+    // Constraints — four range bounds, all Satisfied
+    constraint temp_at_p > 399.999
+    constraint temp_at_p < 400.001
+    constraint stiff_at_p > 8.999
+    constraint stiff_at_p < 9.001
+}

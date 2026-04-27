@@ -22,6 +22,8 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
+#[cfg(has_occt)]
+pub use ffi::ffi::TopologyCacheBuildCounts;
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 #[cfg(has_occt)]
@@ -38,7 +40,7 @@ const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
 #[cfg(not(has_occt))]
 mod stubs;
 #[cfg(not(has_occt))]
-pub use stubs::{OcctKernel, OcctKernelHandle};
+pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 
 #[cfg(has_occt)]
 use std::collections::HashMap;
@@ -198,6 +200,19 @@ impl OcctKernel {
             .ok_or(GeometryError::InvalidReference(id))?;
         ptr.as_ref()
             .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
+    }
+
+    /// Return the topology-map cache build counts for the shape identified by
+    /// `handle`. Each counter is 0 on a fresh shape and increments to 1 when
+    /// the corresponding lazy cache slot is first populated.
+    ///
+    /// Returns [`GeometryError::InvalidReference`] if `handle` is unknown.
+    pub fn topology_cache_build_counts(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<ffi::ffi::TopologyCacheBuildCounts, GeometryError> {
+        let shape = self.get_shape(handle)?;
+        Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
 }
 
@@ -936,6 +951,51 @@ impl OcctKernel {
                 let moi = ffi::ffi::query_moment_of_inertia(shape, axis[0], axis[1], axis[2])
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(moi))
+            }
+            GeometryQuery::AdjacentFaces { shape, face_index } => {
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let idx_u32: u32 = (*face_index).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "adjacent_faces: face_index {} exceeds u32::MAX",
+                        face_index
+                    ))
+                })?;
+                let neighbors = ffi::ffi::adjacent_faces(s, idx_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    neighbors
+                        .into_iter()
+                        .map(|i| Value::Int(i as i64))
+                        .collect(),
+                ))
+            }
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => {
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let a_u32: u32 = (*face_a).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "shared_edges: face_a {} exceeds u32::MAX",
+                        face_a
+                    ))
+                })?;
+                let b_u32: u32 = (*face_b).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "shared_edges: face_b {} exceeds u32::MAX",
+                        face_b
+                    ))
+                })?;
+                let edges = ffi::ffi::shared_edges(s, a_u32, b_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    edges.into_iter().map(|i| Value::Int(i as i64)).collect(),
+                ))
             }
         }
     }

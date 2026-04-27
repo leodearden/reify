@@ -4,26 +4,54 @@ use std::time::Instant;
 use reify_eval::cache::NodeId;
 use reify_types::OpaqueState;
 
+/// Environment variable that overrides the warm-state pool memory budget.
+///
+/// Accepted values:
+/// - Absent / unset → uses [`DEFAULT_BUDGET_BYTES`].
+/// - `"unlimited"` (case-insensitive) → disables the budget; eviction is skipped.
+/// - A decimal integer string → interpreted as bytes.
+/// - Any other value → a `tracing::warn!` is emitted and [`DEFAULT_BUDGET_BYTES`] is used.
+pub const BUDGET_ENV_VAR: &str = "REIFY_WARM_STATE_BUDGET_BYTES";
+
+/// Default warm-state pool memory budget: 2 GiB.
+///
+/// Used when [`BUDGET_ENV_VAR`] is absent or set to an unparseable value.
+pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
 /// Entry in the warm-state pool, wrapping an `OpaqueState` with metadata.
 struct PoolEntry {
     state: OpaqueState,
     last_accessed: Instant,
     size_bytes: usize,
+    /// Estimated cost of recomputing this state in seconds per byte of output.
+    ///
+    /// Per arch §4.3 line 538: `estimated_cold_compute_time_secs / size_bytes`.
+    /// Currently stored but not consulted by the eviction comparator (pure LRU).
+    /// Reserved for the future cost-weighted-LRU eviction policy.
+    cost_per_byte: f64,
 }
 
 /// Memory-budgeted pool for warm-start state across evaluation nodes.
 ///
 /// Stores `OpaqueState` keyed by `NodeId` with LRU eviction when the
 /// total estimated memory usage exceeds the configured budget.
+/// When the budget is `None` (unlimited), eviction is skipped entirely.
 pub struct WarmStatePool {
     pool: HashMap<NodeId, PoolEntry>,
-    budget_bytes: usize,
+    budget_bytes: Option<usize>,
     used_bytes: usize,
 }
 
 impl WarmStatePool {
     /// Create a new pool with the given memory budget in bytes.
+    ///
+    /// This is a back-compat wrapper around [`with_budget`](Self::with_budget).
     pub fn new(budget_bytes: usize) -> Self {
+        Self::with_budget(Some(budget_bytes))
+    }
+
+    /// Create a new pool with an explicit budget (or `None` for unlimited).
+    pub fn with_budget(budget_bytes: Option<usize>) -> Self {
         Self {
             pool: HashMap::new(),
             budget_bytes,
@@ -31,17 +59,81 @@ impl WarmStatePool {
         }
     }
 
-    /// Store warm-start state for a node.
+    /// Create a new pool with no memory budget (unlimited; eviction is disabled).
+    pub fn unlimited() -> Self {
+        Self::with_budget(None)
+    }
+
+    /// Create a pool by reading [`BUDGET_ENV_VAR`] from the environment.
     ///
-    /// If the pool exceeds its memory budget after insertion, LRU eviction
-    /// is triggered to bring usage back within budget.
-    /// Store warm-start state for a node.
+    /// Falls back to [`DEFAULT_BUDGET_BYTES`] when the variable is unset.
+    /// See [`from_env_value`](Self::from_env_value) for parse semantics.
     ///
-    /// If the pool exceeds its memory budget after insertion, LRU eviction
-    /// is triggered to bring usage back within budget. A single item that
-    /// exceeds the entire budget is still stored (over-budget by one item
-    /// is acceptable).
-    pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
+    /// # Wiring note
+    /// This constructor is the intended entry point for runtime pool construction.
+    /// TODO: wire this into the runtime's pool construction site so that
+    /// `REIFY_WARM_STATE_BUDGET_BYTES` actually takes effect at runtime.
+    ///
+    /// # Unit-test coverage
+    /// This thin wrapper delegates entirely to `from_env_value` and is intentionally
+    /// not unit-tested with `std::env::set_var` (which is `unsafe` in Rust 2024 edition
+    /// and race-prone across parallel tests). Integration tests cover the real env-read path.
+    pub fn from_env_or_default() -> Self {
+        Self::from_env_value(std::env::var(BUDGET_ENV_VAR).ok().as_deref())
+    }
+
+    /// Create a pool from an optional string value (the test seam for env-var parsing).
+    ///
+    /// | `value`              | Result                                                         |
+    /// |----------------------|----------------------------------------------------------------|
+    /// | `None`               | `Some(DEFAULT_BUDGET_BYTES)`                                   |
+    /// | `"unlimited"` (any case) | `None` (unlimited)                                         |
+    /// | parseable `usize`    | `Some(parsed)`                                                 |
+    /// | anything else        | `tracing::warn!` emitted; `Some(DEFAULT_BUDGET_BYTES)` used    |
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        let budget = match value {
+            None => Some(DEFAULT_BUDGET_BYTES),
+            Some(s) if s.eq_ignore_ascii_case("unlimited") => None,
+            // An empty string is a common shell artifact (`VAR=` exports "" rather than unset).
+            // Treat it the same as absent — use the default rather than emitting a spurious warn.
+            Some("") => Some(DEFAULT_BUDGET_BYTES),
+            Some(s) => match s.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::warn!(
+                        env_var = BUDGET_ENV_VAR,
+                        value = s,
+                        default_bytes = DEFAULT_BUDGET_BYTES,
+                        "Invalid value for {}; falling back to default ({} bytes)",
+                        BUDGET_ENV_VAR,
+                        DEFAULT_BUDGET_BYTES,
+                    );
+                    Some(DEFAULT_BUDGET_BYTES)
+                }
+            },
+        };
+        Self::with_budget(budget)
+    }
+
+    /// Store warm-start state for a node with an explicit cost-per-byte estimate.
+    ///
+    /// `cost_per_byte` is `estimated_cold_compute_time_secs / size_bytes` per arch §4.3.
+    /// It is stored on the pool entry as metadata for the future cost-weighted-LRU eviction
+    /// policy but is **not** consulted by the current pure-LRU eviction comparator.
+    ///
+    /// If the pool exceeds its memory budget after insertion, LRU eviction is triggered
+    /// to bring usage back within budget. A single item that exceeds the entire budget is
+    /// still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
+    /// is `None`) skip eviction entirely.
+    pub fn donate_with_cost(&mut self, node_id: NodeId, state: OpaqueState, cost_per_byte: f64) {
+        // Sanitize cost_per_byte: clamp NaN, ±inf, and negative values to 0.0 so that
+        // a future cost-weighted-LRU comparator can safely call `partial_cmp` without
+        // panicking on non-finite values or mishandling negative costs.
+        let cost_per_byte = if cost_per_byte.is_finite() && cost_per_byte >= 0.0 {
+            cost_per_byte
+        } else {
+            0.0
+        };
         let size = state.estimated_size_bytes();
 
         // If this node already has an entry, remove the old one first
@@ -49,18 +141,35 @@ impl WarmStatePool {
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
-        // Evict LRU entries until the new item fits within budget
-        while self.used_bytes + size > self.budget_bytes && !self.pool.is_empty() {
-            self.evict_lru();
+        // Evict LRU entries until the new item fits within budget (unlimited pools skip this)
+        if let Some(budget) = self.budget_bytes {
+            while self.used_bytes + size > budget && !self.pool.is_empty() {
+                self.evict_lru();
+            }
         }
 
         let entry = PoolEntry {
             state,
             last_accessed: Instant::now(),
             size_bytes: size,
+            cost_per_byte,
         };
         self.pool.insert(node_id, entry);
         self.used_bytes += size;
+    }
+
+    /// Store warm-start state for a node.
+    ///
+    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0` and is currently inert
+    /// (eviction is pure LRU). Use [`donate_with_cost`](Self::donate_with_cost) to record
+    /// the actual cost when known.
+    pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
+        self.donate_with_cost(node_id, state, 0.0);
+    }
+
+    /// Return the stored `cost_per_byte` for a node, or `None` if the node is not in the pool.
+    pub fn cost_per_byte_of(&self, node_id: &NodeId) -> Option<f64> {
+        self.pool.get(node_id).map(|e| e.cost_per_byte)
     }
 
     /// Evict the least-recently-accessed entry from the pool.
@@ -93,8 +202,13 @@ impl WarmStatePool {
         self.used_bytes
     }
 
-    /// Configured memory budget in bytes.
-    pub fn budget_bytes(&self) -> usize {
+    /// Configured memory budget in bytes, or `None` if the pool is unlimited.
+    ///
+    /// Note: the return type changed from `usize` to `Option<usize>` in this task
+    /// (task-2340). In-tree there are no other callers (verified via grep). Out-of-tree
+    /// consumers that pattern-matched the old `usize` will need to handle the `Option`.
+    #[must_use]
+    pub fn budget_bytes(&self) -> Option<usize> {
         self.budget_bytes
     }
 
@@ -300,5 +414,193 @@ mod tests {
         pool.retrieve(&node);
         assert_eq!(pool.len(), 0);
         assert!(pool.is_empty());
+    }
+
+    // --- Step 1: unlimited-budget path tests ---
+
+    #[test]
+    fn with_budget_none_reports_unlimited() {
+        let pool_a = WarmStatePool::with_budget(None);
+        assert_eq!(pool_a.budget_bytes(), None);
+
+        let pool_b = WarmStatePool::unlimited();
+        assert_eq!(pool_b.budget_bytes(), None);
+    }
+
+    // 32-bit targets cannot represent 5 GiB in a usize; gate the test so CI
+    // stays green if a 32-bit target is ever added.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn unlimited_pool_does_not_evict() {
+        // 5 items of 1 GiB each — would exceed the 2 GiB default but should
+        // not be evicted because the pool has no budget limit.
+        let mut pool = WarmStatePool::unlimited();
+        let gib: usize = 1 << 30;
+        let nodes: Vec<NodeId> = (0..5)
+            .map(|i| NodeId::Value(ValueCellId::new("T", &format!("n{i}"))))
+            .collect();
+
+        for node in &nodes {
+            pool.donate(node.clone(), OpaqueState::new(0u8, gib));
+        }
+
+        assert_eq!(pool.len(), 5);
+        assert_eq!(pool.used_bytes(), 5 * gib);
+
+        for node in &nodes {
+            assert!(
+                pool.retrieve(node).is_some(),
+                "node {:?} should not have been evicted",
+                node
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_new_still_returns_some_budget() {
+        let pool = WarmStatePool::new(1024);
+        assert_eq!(pool.budget_bytes(), Some(1024));
+    }
+
+    // --- Step 3: env-var parsing tests (compile-fails until step-4) ---
+
+    #[test]
+    fn default_budget_is_two_gib() {
+        assert_eq!(DEFAULT_BUDGET_BYTES, 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn budget_env_var_name() {
+        assert_eq!(BUDGET_ENV_VAR, "REIFY_WARM_STATE_BUDGET_BYTES");
+    }
+
+    #[test]
+    fn from_env_value_none_uses_default() {
+        let pool = WarmStatePool::from_env_value(None);
+        assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
+    }
+
+    #[test]
+    fn from_env_value_numeric_parses() {
+        let pool = WarmStatePool::from_env_value(Some("1024"));
+        assert_eq!(pool.budget_bytes(), Some(1024));
+    }
+
+    #[test]
+    fn from_env_value_unlimited_disables_budget() {
+        // All three case variants must work
+        assert_eq!(WarmStatePool::from_env_value(Some("unlimited")).budget_bytes(), None);
+        assert_eq!(WarmStatePool::from_env_value(Some("UNLIMITED")).budget_bytes(), None);
+        assert_eq!(WarmStatePool::from_env_value(Some("Unlimited")).budget_bytes(), None);
+    }
+
+    #[test]
+    fn from_env_value_invalid_falls_back_to_default() {
+        let pool = WarmStatePool::from_env_value(Some("not-a-number"));
+        assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
+    }
+
+    // --- Step 5: cost_per_byte metadata tests (compile-fails until step-6) ---
+
+    #[test]
+    fn donate_with_cost_records_cost_per_byte() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 0.5);
+        assert_eq!(pool.cost_per_byte_of(&node), Some(0.5));
+    }
+
+    #[test]
+    fn legacy_donate_defaults_cost_to_zero() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node.clone(), OpaqueState::new(0u8, 100));
+        assert_eq!(pool.cost_per_byte_of(&node), Some(0.0));
+    }
+
+    #[test]
+    fn cost_per_byte_of_missing_node_is_none() {
+        let pool = WarmStatePool::new(1024);
+        let unknown = NodeId::Value(ValueCellId::new("T", "unknown"));
+        assert_eq!(pool.cost_per_byte_of(&unknown), None);
+    }
+
+    #[test]
+    fn donate_with_cost_replaces_cost_on_same_node() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 0.5);
+        pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 1.5);
+        assert_eq!(pool.cost_per_byte_of(&node), Some(1.5));
+    }
+
+    #[test]
+    fn cost_per_byte_does_not_alter_lru_eviction_order() {
+        // Eviction is still pure LRU; cost_per_byte is stored but not consulted.
+        // Setup: budget=250, donate A(50,cost=10.0), B(50,cost=0.1), C(50,cost=5.0).
+        // Touch B (retrieve+re-donate), then donate large D(200).
+        // Expect A and C evicted (oldest), B and D retained — same as pure LRU.
+        let mut pool = WarmStatePool::new(250);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+        let node_d = NodeId::Value(ValueCellId::new("T", "d"));
+
+        // High cost on the would-be LRU victim — eviction must still be LRU
+        pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 50), 10.0);
+        pool.donate_with_cost(node_b.clone(), OpaqueState::new(2i32, 50), 0.1);
+        pool.donate_with_cost(node_c.clone(), OpaqueState::new(3i32, 50), 5.0);
+
+        // Touch B to make it newer than A and C
+        let b_state = pool.retrieve(&node_b).unwrap();
+        pool.donate_with_cost(node_b.clone(), b_state, 0.1);
+
+        // Large donation forces eviction
+        pool.donate_with_cost(node_d.clone(), OpaqueState::new(4i32, 200), 2.0);
+
+        // Pure LRU order: A and C (oldest) must be evicted; B and D retained
+        assert!(pool.retrieve(&node_a).is_none(), "A should be LRU-evicted");
+        assert!(pool.retrieve(&node_c).is_none(), "C should be LRU-evicted");
+        assert!(pool.retrieve(&node_b).is_some(), "B should be retained (recently accessed)");
+        assert!(pool.retrieve(&node_d).is_some(), "D should be retained (just added)");
+    }
+
+    // --- Amendment: robustness tests ---
+
+    #[test]
+    fn from_env_value_empty_string_uses_default() {
+        // `VAR=` in shell exports an empty string rather than unsetting the var.
+        // We must treat "" the same as absent rather than emitting a spurious warning.
+        let pool = WarmStatePool::from_env_value(Some(""));
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(DEFAULT_BUDGET_BYTES),
+            "empty string should fall back to default, not trigger a warn"
+        );
+    }
+
+    #[test]
+    fn donate_with_cost_clamps_non_finite_cost() {
+        // NaN, ±inf, and negative costs must be clamped to 0.0 at entry so that
+        // the future cost-weighted-LRU comparator can safely call `partial_cmp`.
+        let mut pool = WarmStatePool::new(1024);
+        let node_nan = NodeId::Value(ValueCellId::new("T", "nan"));
+        let node_inf = NodeId::Value(ValueCellId::new("T", "inf"));
+        let node_neg_inf = NodeId::Value(ValueCellId::new("T", "neg_inf"));
+        let node_neg = NodeId::Value(ValueCellId::new("T", "neg"));
+
+        pool.donate_with_cost(node_nan.clone(), OpaqueState::new(0u8, 10), f64::NAN);
+        pool.donate_with_cost(node_inf.clone(), OpaqueState::new(0u8, 10), f64::INFINITY);
+        pool.donate_with_cost(
+            node_neg_inf.clone(),
+            OpaqueState::new(0u8, 10),
+            f64::NEG_INFINITY,
+        );
+        pool.donate_with_cost(node_neg.clone(), OpaqueState::new(0u8, 10), -1.0);
+
+        assert_eq!(pool.cost_per_byte_of(&node_nan), Some(0.0), "NaN clamped to 0.0");
+        assert_eq!(pool.cost_per_byte_of(&node_inf), Some(0.0), "+inf clamped to 0.0");
+        assert_eq!(pool.cost_per_byte_of(&node_neg_inf), Some(0.0), "-inf clamped to 0.0");
+        assert_eq!(pool.cost_per_byte_of(&node_neg), Some(0.0), "negative clamped to 0.0");
     }
 }

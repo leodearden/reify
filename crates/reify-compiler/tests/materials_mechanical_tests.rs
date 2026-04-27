@@ -5,7 +5,7 @@
 //! trait conformance and constraint injection work as expected.
 
 use reify_compiler::*;
-use reify_test_support::compile_first_template;
+use reify_test_support::{compile_first_template, compile_source_with_stdlib};
 use reify_types::*;
 use std::path::PathBuf;
 
@@ -505,6 +505,139 @@ fn remaining_five_traits_exist() {
             .any(|r| r.name == "loss_factor"),
         "Damping should have 'loss_factor' member"
     );
+}
+
+// ─── four mechanical traits refine MaterialSpec ───────────────────────────────
+
+/// FatigueRated, FractureTough, ImpactResistant, Damping must each declare
+/// `MaterialSpec` as a parent trait (refinements == ["MaterialSpec"]).
+/// This verifies that the four §6.2 mechanical-material traits are properly
+/// anchored to the base material contract, not free-standing.
+#[test]
+fn four_mechanical_traits_refine_material_spec() {
+    let module = load_stdlib_module();
+
+    for trait_name in &["FatigueRated", "FractureTough", "ImpactResistant", "Damping"] {
+        let trait_def = module
+            .trait_defs
+            .iter()
+            .find(|t| t.name == *trait_name)
+            .unwrap_or_else(|| panic!("expected '{}' trait in compiled module", trait_name));
+
+        // `contains` rather than `assert_eq!`: expresses the invariant that the trait
+        // refines MaterialSpec without over-constraining the refinements list, tolerating
+        // legitimate future additions of additional parent traits.  If exact-membership
+        // becomes important (e.g. to catch accidental extra refinements), revisit and
+        // switch back to assert_eq!(trait_def.refinements, vec!["MaterialSpec"…]).
+        assert!(
+            trait_def.refinements.contains(&"MaterialSpec".to_string()),
+            "'{}' should refine MaterialSpec but got refinements: {:?}",
+            trait_name,
+            trait_def.refinements
+        );
+    }
+}
+
+// ─── conformance: all four §6.2 refining traits enforce MaterialSpec at compile time ─
+
+/// Each of the four §6.2 traits that refine MaterialSpec (`FatigueRated`,
+/// `FractureTough`, `ImpactResistant`, `Damping`) must enforce the inherited
+/// `density` and `name` contract at compile time.  A structure that declares
+/// only the trait's own members but omits `density`/`name` must produce error
+/// diagnostics that specifically mention those missing inherited members.
+#[test]
+fn four_refining_traits_without_material_members_is_conformance_error() {
+    // (trait_name, trait-specific params to include in the structure — inherited
+    // MaterialSpec params deliberately omitted to trigger the conformance error)
+    let cases: &[(&str, &str)] = &[
+        ("FatigueRated", "    param endurance_limit : Real = 500.0"),
+        ("FractureTough", "    param fracture_toughness : Real = 50.0"),
+        ("ImpactResistant", "    param impact_energy : Real = 30.0"),
+        (
+            "Damping",
+            "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
+        ),
+    ];
+
+    for (trait_name, own_members) in cases {
+        let source = format!(
+            "structure def TestFoo : {} {{\n{}\n}}\n",
+            trait_name, own_members
+        );
+        let compiled = compile_source_with_stdlib(&source);
+
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "'{}': expected conformance errors for structure missing inherited density/name, but got none",
+            trait_name
+        );
+        // Assert on `density` specifically — it is always among the missing inherited
+        // MaterialSpec members and provides a concrete, unambiguous signal.  Checking
+        // bare "name" is avoided because that substring appears in many unrelated
+        // diagnostics ("unknown name", "name resolution failed", etc.) and could cause
+        // a false pass.
+        assert!(
+            errors.iter().any(|d| d.message.contains("density")),
+            "'{}': expected error specifically mentioning missing inherited 'density', got: {:?}",
+            trait_name,
+            errors
+        );
+    }
+}
+
+/// Each of the four §6.2 traits that refine MaterialSpec (`FatigueRated`,
+/// `FractureTough`, `ImpactResistant`, `Damping`) must accept a structure that
+/// supplies both the inherited MaterialSpec params (`density`, `name`) and the
+/// trait's own required params.  No error diagnostics should be emitted and the
+/// compiled template must carry the trait as a bound.
+#[test]
+fn four_refining_traits_with_all_material_members_conform_cleanly() {
+    // (trait_name, trait-specific params to include alongside inherited density/name)
+    let cases: &[(&str, &str)] = &[
+        ("FatigueRated", "    param endurance_limit : Real = 500.0"),
+        ("FractureTough", "    param fracture_toughness : Real = 50.0"),
+        ("ImpactResistant", "    param impact_energy : Real = 30.0"),
+        (
+            "Damping",
+            "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
+        ),
+    ];
+
+    for (trait_name, own_members) in cases {
+        let source = format!(
+            "structure def Test{} : {} {{\n    param density : Real = 7850.0\n    param name : String = \"steel\"\n{}\n}}\n",
+            trait_name, trait_name, own_members
+        );
+        let compiled = compile_source_with_stdlib(&source);
+
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "'{}': structure with all required members should compile cleanly, got: {:?}",
+            trait_name,
+            errors
+        );
+
+        let template = compiled
+            .templates
+            .first()
+            .expect("expected at least 1 template");
+        assert!(
+            template.trait_bounds.contains(&trait_name.to_string()),
+            "'{}': compiled template should have trait bound, got: {:?}",
+            trait_name,
+            template.trait_bounds
+        );
+    }
 }
 
 // ─── step-17: full integration ────────────────────────────────────────────────

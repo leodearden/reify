@@ -38,6 +38,25 @@ mod tests {
         kinds
     }
 
+    /// Depth-first search for the first node with the given kind.
+    fn find_node_by_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                if let Some(found) = find_node_by_kind(cursor.node(), kind) {
+                    return Some(found);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn can_load_grammar() {
         make_parser();
@@ -72,6 +91,91 @@ mod tests {
         assert!(
             !tree.root_node().has_error(),
             "unexpected parse error in source with /* */ comment"
+        );
+    }
+
+    #[test]
+    fn test_forall_statement_with_connect() {
+        let mut parser = make_parser();
+        let source =
+            b"structure S { forall v in vents: connect v.inlet -> housing.air_channel }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        // (a) No parse errors
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall-connect source: {kinds:?}"
+        );
+
+        // (b) Both forall_statement and connect_statement nodes must be present
+        assert!(
+            kinds.contains(&"forall_statement".to_string()),
+            "expected forall_statement node, got: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"connect_statement".to_string()),
+            "expected connect_statement node, got: {kinds:?}"
+        );
+
+        // (c) The forall_statement's body field must be a connect_statement
+        let forall_node = find_node_by_kind(tree.root_node(), "forall_statement")
+            .expect("forall_statement not found in tree");
+        let _variable = forall_node
+            .child_by_field_name("variable")
+            .expect("forall_statement missing 'variable' field");
+        let _collection = forall_node
+            .child_by_field_name("collection")
+            .expect("forall_statement missing 'collection' field");
+        let body = forall_node
+            .child_by_field_name("body")
+            .expect("forall_statement missing 'body' field");
+        assert_eq!(
+            body.kind(),
+            "connect_statement",
+            "expected body to be connect_statement, got: {}",
+            body.kind()
+        );
+    }
+
+    #[test]
+    fn test_forall_expression_form_unchanged() {
+        let mut parser = make_parser();
+        // The expression-form must still be parsed as quantifier_expression
+        // nested inside a constraint_declaration — not as a forall_statement.
+        let source = b"structure S { let items = [1, 2, 3] constraint forall x in items: x > 0 }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        // (a) No parse errors
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall expression-form source: {kinds:?}"
+        );
+
+        // (b) quantifier_expression must appear
+        assert!(
+            kinds.contains(&"quantifier_expression".to_string()),
+            "expected quantifier_expression node, got: {kinds:?}"
+        );
+
+        // (c) forall_statement must NOT appear
+        assert!(
+            !kinds.contains(&"forall_statement".to_string()),
+            "forall_statement should not appear for expression-form, got: {kinds:?}"
+        );
+
+        // (d) quantifier_expression must be nested inside constraint_declaration
+        let constraint_node = find_node_by_kind(tree.root_node(), "constraint_declaration")
+            .expect("constraint_declaration not found in tree");
+        let expr_field = constraint_node
+            .child_by_field_name("expr")
+            .expect("constraint_declaration missing 'expr' field");
+        assert_eq!(
+            expr_field.kind(),
+            "quantifier_expression",
+            "expected constraint_declaration.expr to be quantifier_expression, got: {}",
+            expr_field.kind()
         );
     }
 

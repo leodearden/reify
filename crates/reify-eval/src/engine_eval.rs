@@ -356,7 +356,7 @@ fn detect_let_cycle<'a>(
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     values: &ValueMap,
-    functions: &[CompiledFunction],
+    functions: Arc<Vec<CompiledFunction>>,
 ) -> Option<ResolutionProblem> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -398,7 +398,9 @@ fn build_solver_problem(
         constraints: filtered_constraints,
         current_values: values.clone(),
         objective: template.objective.clone(),
-        functions: functions.to_vec(),
+        // Moved in by value — callers pass Arc::clone, so this is O(1).
+        // The merged table is shared with Engine.functions (tasks #1997, #2286).
+        functions,
     })
 }
 
@@ -1195,11 +1197,10 @@ impl Engine {
             }
             for template in &module.templates {
                 // Build the ResolutionProblem; returns None when there are no auto cells.
-                // `build_solver_problem` deref-clones `functions` from the Arc — this path
-                // only runs when the constraint solver is invoked (not on every eval), so
-                // the allocation cost is acceptable.
+                // `build_solver_problem` Arc::clones `functions` — O(1) refcount bump,
+                // not a deep copy (task #2286).
                 let Some(problem) =
-                    build_solver_problem(template, &values, &functions)
+                    build_solver_problem(template, &values, Arc::clone(&functions))
                 else {
                     continue;
                 };
@@ -1817,7 +1818,7 @@ impl Engine {
                 // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
                 // keystroke. See step-10/step-11 regression tests.
                 if let Some(problem) =
-                    build_solver_problem(template, &values, &self.functions)
+                    build_solver_problem(template, &values, Arc::clone(&self.functions))
                 {
                     let solve_result = solver.solve(&problem);
 

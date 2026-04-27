@@ -397,11 +397,10 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
                     objective,
-                    // ResolutionProblem.functions is Vec<CompiledFunction> (defined in
-                    // reify-types, out of scope). Deref-clone extracts the inner Vec;
-                    // this solver path runs only when constraints exist on auto-params,
-                    // so the residual deep clone is off the hot path (task #1997).
-                    functions: (*setup.functions).clone(),
+                    // Arc::clone is O(1) — threads the same Arc allocation held by
+                    // ConcurrentEditSetup.functions (and transitively Engine.functions)
+                    // into ResolutionProblem.functions (tasks #1997, #2286).
+                    functions: Arc::clone(&setup.functions),
                 };
 
                 match solver.solve(&problem) {

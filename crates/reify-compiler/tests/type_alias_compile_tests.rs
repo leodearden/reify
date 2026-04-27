@@ -434,7 +434,7 @@ fn alias_as_function_return_type() {
 fn alias_as_field_domain_codomain_type() {
     let source = r#"
         type Stress = Force
-        field def f : Point3 -> Stress { source = analytical { |p| p } }
+        field def f : Point3 -> Stress { source = analytical { |p: Force| p } }
     "#;
     let module = compile_source(source);
     let errs = errors_only(&module);

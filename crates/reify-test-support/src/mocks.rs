@@ -18,7 +18,7 @@ pub fn empty_problem() -> ResolutionProblem {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     }
 }
 
@@ -377,6 +377,17 @@ enum QueryKey {
         handle: GeometryHandleId,
         axis_bits: [u64; 3],
     },
+    /// AdjacentFaces keys the handle + 0-based face index.
+    AdjacentFaces {
+        shape: GeometryHandleId,
+        face_index: usize,
+    },
+    /// SharedEdges keys the handle + both 0-based face indices.
+    SharedEdges {
+        shape: GeometryHandleId,
+        face_a: usize,
+        face_b: usize,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -410,6 +421,19 @@ impl QueryKey {
                     axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
                 }
             }
+            GeometryQuery::AdjacentFaces { shape, face_index } => QueryKey::AdjacentFaces {
+                shape: *shape,
+                face_index: *face_index,
+            },
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => QueryKey::SharedEdges {
+                shape: *shape,
+                face_a: *face_a,
+                face_b: *face_b,
+            },
         }
     }
 }
@@ -592,6 +616,8 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::BoundingBox(id) => id,
             GeometryQuery::Distance { from, .. } => from,
             GeometryQuery::MomentOfInertia { handle, .. } => handle,
+            GeometryQuery::AdjacentFaces { shape, .. } => shape,
+            GeometryQuery::SharedEdges { shape, .. } => shape,
         };
 
         self.queries
@@ -2478,7 +2504,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: Arc::new(vec![]),
         };
         let result1 = spy.solve(&problem1);
         assert!(
@@ -2492,7 +2518,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: Arc::new(vec![]),
         };
         let result2 = spy.solve(&problem2);
         assert!(

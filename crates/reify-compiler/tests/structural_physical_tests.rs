@@ -49,13 +49,17 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
     );
 }
 
-/// Minimal structure that conforms to `Plastic` and carries both a
-/// `plastic_strain` (≥ 0, `BinOp::Ge`) and a `hardening_modulus` (> 0,
-/// `BinOp::Gt`) constraint. Shared by the `assert_constraint_op` helper tests.
+/// Minimal structure that conforms to `Plastic` (which refines `Flexible`) and
+/// carries all four injected constraints: `plastic_strain` (≥ 0, `BinOp::Ge`),
+/// `hardening_modulus` (> 0, `BinOp::Gt`), `stiffness` (> 0, `BinOp::Gt`), and
+/// `max_deflection` (> 0, `BinOp::Gt`). Shared by the `assert_constraint_op`
+/// helper tests.
 const PLASTIC_BODY_SRC: &str = r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
     param hardening_modulus : Real = 500.0
+    param stiffness : Real = 1000.0
+    param max_deflection : Real = 0.1
 }
 "#;
 
@@ -325,15 +329,14 @@ fn rigid_refines_physical_with_moment_of_inertia() {
     }
 }
 
-// ─── step-11: ElasticallyDeformable cross-module refinement ──────────────────
+// ─── step-11: ElasticallyDeformable same-module refinement ───────────────────
 
-/// Step 11: ElasticallyDeformable refines Elastic (cross-module refinement to
-/// materials_mechanical.ri). Verify refinements list includes 'Elastic' and
-/// that a structure conforming to ElasticallyDeformable via compile_with_prelude
-/// works (provides youngs_modulus, poissons_ratio, shear_modulus from Elastic
-/// plus max_elastic_strain).
+/// Step 11: ElasticallyDeformable refines Flexible (same-module refinement;
+/// elastic deformation is a specific form of reversible flexibility). Verify
+/// refinements list includes 'Flexible' and that the trait has
+/// max_elastic_strain as a required member.
 #[test]
-fn elastically_deformable_refines_elastic_cross_module() {
+fn elastically_deformable_refines_flexible_same_module() {
     let module = load_stdlib_module();
 
     let ed = module
@@ -342,10 +345,10 @@ fn elastically_deformable_refines_elastic_cross_module() {
         .find(|t| t.name == "ElasticallyDeformable")
         .expect("expected 'ElasticallyDeformable' trait in compiled module");
 
-    // Refinements should contain "Elastic"
+    // Refinements should contain "Flexible"
     assert!(
-        ed.refinements.contains(&"Elastic".to_string()),
-        "ElasticallyDeformable should refine Elastic, got refinements: {:?}",
+        ed.refinements.contains(&"Flexible".to_string()),
+        "ElasticallyDeformable should refine Flexible, got refinements: {:?}",
         ed.refinements
     );
 
@@ -362,16 +365,153 @@ fn elastically_deformable_refines_elastic_cross_module() {
     );
 }
 
-/// Cross-module conformance: a structure conforming to ElasticallyDeformable
-/// must provide Elastic's members (youngs_modulus, poissons_ratio, shear_modulus)
-/// plus max_elastic_strain — all via prelude.
+/// Plastic refines Flexible (plastic deformation extends the elastic flexibility
+/// contract). Verify refinements list includes 'Flexible'.
 #[test]
-fn structure_conforms_to_elastically_deformable_via_prelude() {
+fn plastic_refines_flexible() {
+    let module = load_stdlib_module();
+
+    let plastic = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Plastic")
+        .expect("expected 'Plastic' trait in compiled module");
+
+    assert!(
+        plastic.refinements.contains(&"Flexible".to_string()),
+        "Plastic should refine Flexible, got refinements: {:?}",
+        plastic.refinements
+    );
+}
+
+/// ThermallyConductive refines Physical (a thermally conductive body is also a
+/// physical body). Verify refinements list includes 'Physical'.
+#[test]
+fn thermally_conductive_refines_physical() {
+    let module = load_stdlib_module();
+
+    let tc = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ThermallyConductive")
+        .expect("expected 'ThermallyConductive' trait in compiled module");
+
+    assert!(
+        tc.refinements.contains(&"Physical".to_string()),
+        "ThermallyConductive should refine Physical, got refinements: {:?}",
+        tc.refinements
+    );
+}
+
+/// ElectricallyConductive refines Physical (an electrically conductive body is
+/// also a physical body). Verify refinements list includes 'Physical'.
+#[test]
+fn electrically_conductive_refines_physical() {
+    let module = load_stdlib_module();
+
+    let ec = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ElectricallyConductive")
+        .expect("expected 'ElectricallyConductive' trait in compiled module");
+
+    assert!(
+        ec.refinements.contains(&"Physical".to_string()),
+        "ElectricallyConductive should refine Physical, got refinements: {:?}",
+        ec.refinements
+    );
+}
+
+/// Conformance test: a structure conforming to ThermallyConductive must satisfy
+/// Physical's requirements (volume, centroid_*, density, name) plus its own
+/// (thermal_conductivity, max_service_temp). Physical's `volume > 0` constraint
+/// must be injected via inheritance. Exercises the two-level TC→Physical chain.
+#[test]
+fn structure_conforms_to_thermally_conductive_with_inherited_physical_constraints() {
+    let compiled = compile_structure(
+        r#"
+structure def HeatSink : ThermallyConductive {
+    param density : Real = 2700.0
+    param name : String = "aluminum heat sink"
+    param volume : Real = 0.005
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+    param thermal_conductivity : Real = 205.0
+    param max_service_temp : Real = 573.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    assert!(
+        template
+            .trait_bounds
+            .contains(&"ThermallyConductive".to_string()),
+        "HeatSink should have 'ThermallyConductive' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // Physical's `volume > 0` must be injected via inheritance.
+    assert_constraint_op(template, "volume", BinOp::Gt);
+    // ThermallyConductive's own `thermal_conductivity > 0`.
+    assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
+}
+
+/// Conformance test: a structure conforming to ElectricallyConductive must
+/// satisfy Physical's requirements (volume, centroid_*, density, name) plus its
+/// own (electrical_conductivity, resistivity). Physical's `volume > 0` constraint
+/// must be injected via inheritance. Exercises the two-level EC→Physical chain.
+#[test]
+fn structure_conforms_to_electrically_conductive_with_inherited_physical_constraints() {
+    let compiled = compile_structure(
+        r#"
+structure def Wire : ElectricallyConductive {
+    param density : Real = 8960.0
+    param name : String = "copper wire"
+    param volume : Real = 0.001
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+    param electrical_conductivity : Real = 1000.0
+    param resistivity : Real = 0.001
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    assert!(
+        template
+            .trait_bounds
+            .contains(&"ElectricallyConductive".to_string()),
+        "Wire should have 'ElectricallyConductive' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // Physical's `volume > 0` must be injected via inheritance.
+    assert_constraint_op(template, "volume", BinOp::Gt);
+    // ElectricallyConductive's own `electrical_conductivity > 0`.
+    assert_constraint_op(template, "electrical_conductivity", BinOp::Gt);
+}
+
+/// Same-module conformance: a structure conforming to ElasticallyDeformable
+/// must provide Flexible's inherited members (stiffness, max_deflection) plus
+/// ElasticallyDeformable's own max_elastic_strain. Exercises the same-module
+/// inheritance path (both traits in std/structural/physical).
+#[test]
+fn structure_conforms_to_elastically_deformable_with_inherited_flexible_members() {
     let source = r#"
 structure def Rubber : ElasticallyDeformable {
-    param youngs_modulus : Real = 0.01
-    param poissons_ratio : Real = 0.49
-    param shear_modulus : Real = 0.003
+    param stiffness : Real = 1000.0
+    param max_deflection : Real = 0.1
     param max_elastic_strain : Real = 5.0
 }
 "#;
@@ -512,8 +652,9 @@ fn plastic_trait_has_constraint_defaults() {
 
 // ─── task-558 step-3: Plastic conforming structure has constraints injected ───
 
-/// A structure conforming to Plastic should have exactly 2 constraints injected
-/// from the trait: `hardening_modulus > 0` and `plastic_strain >= 0`.
+/// A structure conforming to Plastic should have exactly 4 constraints injected
+/// from the Plastic+Flexible traits: `hardening_modulus > 0`,
+/// `plastic_strain >= 0`, `stiffness > 0`, and `max_deflection > 0`.
 #[test]
 fn plastic_conforming_structure_has_constraints_injected() {
     let compiled = compile_structure(
@@ -521,6 +662,8 @@ fn plastic_conforming_structure_has_constraints_injected() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 1000.0
+    param stiffness : Real = 1000.0
+    param max_deflection : Real = 0.1
 }
 "#,
     );
@@ -538,15 +681,16 @@ structure def PlasticBody : Plastic {
 
     assert_eq!(
         template.constraints.len(),
-        2,
-        "expected exactly 2 constraints injected from Plastic trait, got {}",
+        4,
+        "expected exactly 4 constraints injected from Plastic+Flexible traits, got {}",
         template.constraints.len()
     );
 }
 
 // ─── task-558 step-4: Plastic constraint expressions use correct operators ────
 
-/// The 2 injected Plastic constraints must use the correct comparison operators:
+/// Among the 4 injected Plastic+Flexible constraints, the Plastic-specific ones
+/// must use the correct comparison operators:
 /// - `hardening_modulus > 0` uses BinOp::Gt (strictly greater-than), RHS = 0
 /// - `plastic_strain >= 0` uses BinOp::Ge (greater-than-or-equal), RHS = 0
 #[test]
@@ -556,6 +700,8 @@ fn plastic_constraint_expressions_use_correct_operators() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 1000.0
+    param stiffness : Real = 1000.0
+    param max_deflection : Real = 0.1
 }
 "#,
     );
@@ -567,8 +713,8 @@ structure def PlasticBody : Plastic {
 
     assert_eq!(
         template.constraints.len(),
-        2,
-        "expected exactly 2 constraints from Plastic, got {}",
+        4,
+        "expected exactly 4 constraints from Plastic+Flexible, got {}",
         template.constraints.len()
     );
 
@@ -623,6 +769,12 @@ structure def PlasticBody : Plastic {
         "expected BinOp(Ge, plastic_strain, 0), found_pairs: {:?}",
         found_pairs
     );
+
+    // Verify Flexible's inherited constraints also use strictly-greater-than so
+    // a future regression (e.g. Gt→Ge for stiffness) is caught here, not just
+    // by the len()==4 check above.
+    assert_constraint_op(template, "stiffness", BinOp::Gt);
+    assert_constraint_op(template, "max_deflection", BinOp::Gt);
 }
 
 // ─── task-558 step-5: plastic_strain=0.0 boundary value compiles ─────────────
@@ -640,6 +792,8 @@ fn plastic_strain_zero_boundary_compiles() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
     param hardening_modulus : Real = 500.0
+    param stiffness : Real = 1000.0
+    param max_deflection : Real = 0.1
 }
 "#,
     );
@@ -669,6 +823,8 @@ fn hardening_modulus_zero_boundary_compiles() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 0.0
+    param stiffness : Real = 1000.0
+    param max_deflection : Real = 0.1
 }
 "#,
     );

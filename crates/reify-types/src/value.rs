@@ -2007,6 +2007,16 @@ impl Satisfaction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalError(pub String);
 
+impl EvalError {
+    /// Returns the error message string.
+    ///
+    /// Provides an accessor so wrappers (e.g. [`ErrorRef`]) can delegate
+    /// without depending on the tuple-field representation.
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
 impl std::fmt::Display for EvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -2015,23 +2025,116 @@ impl std::fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
-/// Freshness of a cached value (for incremental evaluation).
+/// Opaque carrier for the last substantive result referenced by
+/// [`Freshness::Pending`].
 ///
-/// M2 model: tracks evaluation lifecycle with richer state than M1's
-/// simple Fresh/Stale/Uncomputed.
+/// Wraps `Option<ContentHash>` with private inner field so callers cannot
+/// pattern-match on `Some`/`None` directly, satisfying the "opaque type"
+/// requirement of the spec.  The two-state semantics (no prior result vs.
+/// prior result identified by hash) are exposed via `none()` / `of_hash()`
+/// constructors and `has_hash()` / `content_hash()` accessors.
+///
+/// See arch §7.1 lines 716-728.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultRef(Option<ContentHash>);
+
+impl ResultRef {
+    /// Construct a `ResultRef` that carries no prior substantive result.
+    pub fn none() -> Self {
+        ResultRef(None)
+    }
+
+    /// Construct a `ResultRef` that carries the given content hash.
+    pub fn of_hash(hash: ContentHash) -> Self {
+        ResultRef(Some(hash))
+    }
+
+    /// Returns `true` when a prior substantive result is available (identified
+    /// by a content hash).  Returns `false` when no prior result exists.
+    pub fn has_hash(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Returns the content hash of the last substantive result, if any.
+    pub fn content_hash(&self) -> Option<ContentHash> {
+        self.0
+    }
+}
+
+/// Opaque nominal wrapper for an evaluation failure stored in [`Freshness::Failed`].
+///
+/// Wraps the existing [`EvalError`] with a private inner field.  The only
+/// public accessor is `message() -> &str`; `Display` is delegated to the
+/// inner `EvalError`.  Use `ErrorRef::from(eval_error)` or `.into()` for
+/// ergonomic conversion from any site that already holds an `EvalError`.
+///
+/// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorRef(EvalError);
+
+impl ErrorRef {
+    /// Construct an `ErrorRef` from a plain message string.
+    pub fn new(message: impl Into<String>) -> Self {
+        ErrorRef(EvalError(message.into()))
+    }
+
+    /// Returns the error message string.
+    ///
+    /// Delegates to [`EvalError::message`] so the wrapper depends on
+    /// `EvalError`'s API rather than its tuple-field representation.
+    pub fn message(&self) -> &str {
+        self.0.message()
+    }
+}
+
+impl std::fmt::Display for ErrorRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for ErrorRef {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl From<EvalError> for ErrorRef {
+    fn from(error: EvalError) -> Self {
+        ErrorRef(error)
+    }
+}
+
+/// Four-variant evaluation lifecycle tag for cached nodes.
+///
+/// The four variants model the full lifecycle of a node in the incremental
+/// evaluation cache: `Final | Intermediate | Pending | Failed`.  All four
+/// share the same cache infrastructure (see arch §7.1 line 728).
+///
+/// See arch §7.1 lines 716-728, arch §9.2 lines 880-890,
+/// and spec §9.6 lines 1799-1819.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Freshness {
-    /// Value is fully computed and up-to-date.
+    /// Committed, fully evaluated; the cached value is authoritative.
+    ///
+    /// See arch §7.1 lines 716-728.
     Final,
-    /// Value is a provisional result from an in-progress evaluation pass.
+    /// Still refining; generation monotonically increases across passes.
+    ///
+    /// See arch §7.1 lines 716-728.
     Intermediate { generation: u64 },
-    /// Value has been requested but not yet computed.
-    /// `last_substantive` holds the content hash of the last known-good value, if any.
-    Pending {
-        last_substantive: Option<ContentHash>,
-    },
-    /// Evaluation failed with an error.
-    Failed { error: EvalError },
+    /// Gated; not recalculated, showing previous best.
+    ///
+    /// `last_substantive` carries the opaque identity of the last
+    /// known-good result (if any); use [`ResultRef::none()`] when no
+    /// prior result exists.
+    ///
+    /// See arch §7.1 lines 716-728.
+    Pending { last_substantive: ResultRef },
+    /// Computation failure — see arch §9.2.
+    ///
+    /// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
+    Failed { error: ErrorRef },
 }
 
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
@@ -2536,12 +2639,12 @@ mod tests {
     #[test]
     fn test_freshness_pending_none() {
         let f = Freshness::Pending {
-            last_substantive: None,
+            last_substantive: ResultRef::none(),
         };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
-            Freshness::Pending { last_substantive } => assert!(last_substantive.is_none()),
+            Freshness::Pending { last_substantive } => assert!(!last_substantive.has_hash()),
             _ => panic!("expected Pending"),
         }
     }
@@ -2550,26 +2653,85 @@ mod tests {
     fn test_freshness_pending_some() {
         let hash = ContentHash::of(b"test");
         let f = Freshness::Pending {
-            last_substantive: Some(hash),
+            last_substantive: ResultRef::of_hash(hash),
         };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
-            Freshness::Pending { last_substantive } => assert_eq!(*last_substantive, Some(hash)),
+            Freshness::Pending { last_substantive } => {
+                assert_eq!(last_substantive.content_hash(), Some(hash))
+            }
             _ => panic!("expected Pending"),
         }
     }
 
     #[test]
     fn test_freshness_failed() {
-        let err = EvalError("type mismatch".to_string());
-        let f = Freshness::Failed { error: err.clone() };
+        let f = Freshness::Failed {
+            error: ErrorRef::new("type mismatch"),
+        };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
-            Freshness::Failed { error } => assert_eq!(error.0, "type mismatch"),
+            Freshness::Failed { error } => assert_eq!(error.message(), "type mismatch"),
             _ => panic!("expected Failed"),
         }
+    }
+
+    // ── ResultRef tests (step-1) ─────────────────────────────────────────────
+
+    #[test]
+    fn test_result_ref_none() {
+        let r = ResultRef::none();
+        assert!(!r.has_hash());
+        assert_eq!(r.content_hash(), None);
+    }
+
+    #[test]
+    fn test_result_ref_of_hash() {
+        let hash = ContentHash::of(b"x");
+        let r = ResultRef::of_hash(hash);
+        assert!(r.has_hash());
+        assert_eq!(r.content_hash(), Some(hash));
+    }
+
+    #[test]
+    fn test_result_ref_clone_eq_debug() {
+        let hash = ContentHash::of(b"y");
+        let r = ResultRef::of_hash(hash);
+        let r2 = r.clone();
+        assert_eq!(r, r2);
+        // Debug output must include the type name and the inner hash content.
+        let debug_str = format!("{:?}", r);
+        assert!(debug_str.contains("ResultRef"));
+        assert!(debug_str.contains(&format!("{:?}", hash)));
+    }
+
+    // ── ErrorRef tests (step-3) ──────────────────────────────────────────────
+
+    #[test]
+    fn test_error_ref_new() {
+        let err = ErrorRef::new("oops");
+        assert_eq!(err.message(), "oops");
+    }
+
+    #[test]
+    fn test_error_ref_from_eval_error() {
+        let e = EvalError("boom".to_string());
+        let via_from: ErrorRef = e.clone().into();
+        assert_eq!(via_from.message(), "boom");
+        // From and Into agree
+        assert_eq!(ErrorRef::from(e), via_from);
+    }
+
+    #[test]
+    fn test_error_ref_display_clone_eq() {
+        let err = ErrorRef::new("boom");
+        assert_eq!(format!("{}", err), "boom");
+        let err2 = err.clone();
+        assert_eq!(err, err2);
+        // Debug output must include the message content
+        assert!(format!("{:?}", err).contains("boom"));
     }
 
     #[test]

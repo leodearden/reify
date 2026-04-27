@@ -155,6 +155,22 @@ pub(crate) fn resolve_field_type_name(
     })
 }
 
+/// Check whether `body_ty` is compatible with the declared `codomain_ty` as an
+/// analytical field codomain, incorporating the Int→Real widening coercion.
+///
+/// `implicitly_converts_to` is intentionally direction-sensitive and does NOT
+/// include Int→Real widening (that rule lives in `type_compatible`, which is
+/// symmetric by design). Field codomain checks are directional (body → declared),
+/// but whole-number float literals are typed as `Int` by the expression compiler,
+/// so we must also accept `Int` where `Real` is declared. Encoding this in a
+/// dedicated predicate avoids repeating the widening rule at each call site —
+/// a future change to widening semantics (e.g. `Int→Scalar[dimensionless]`) needs
+/// updating only here.
+fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
+    implicitly_converts_to(body_ty, codomain_ty)
+        || matches!((body_ty, codomain_ty), (Type::Int, Type::Real))
+}
+
 /// Compile a field declaration into a CompiledField.
 pub(crate) fn compile_field(
     field_def: &reify_syntax::FieldDef,
@@ -213,6 +229,45 @@ pub(crate) fn compile_field(
     let source = match &field_def.source {
         reify_syntax::FieldSource::Analytical { expr } => {
             let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+            // Codomain type-check: the lambda body's inferred type must implicitly
+            // convert to the declared codomain. Skip the check when either type is
+            // already poisoned (anti-cascade — task-1918).
+            //
+            // Int→Real widening is handled by `field_codomain_compatible` so that
+            // the rule is encoded in exactly one place.
+            //
+            // The analytical source always compiles to a Lambda. If the result is not
+            // a Lambda, the expression compiler encountered an internal error and set
+            // `result_type` to `Type::Error`; the debug_assert below catches any
+            // regression where a non-Error, non-Lambda escapes.
+            debug_assert!(
+                matches!(
+                    compiled_expr.kind,
+                    reify_types::CompiledExprKind::Lambda { .. }
+                ) || compiled_expr.result_type.is_error(),
+                "analytical field source compiled to non-Lambda with non-Error result type — \
+                 this indicates a compiler bug"
+            );
+            if let reify_types::CompiledExprKind::Lambda { body, .. } = &compiled_expr.kind {
+                let body_ty = &body.result_type;
+                if !body_ty.is_error()
+                    && !codomain_type.is_error()
+                    && !field_codomain_compatible(body_ty, &codomain_type)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "field '{}' codomain mismatch: declared codomain `{}`, \
+                             lambda body produces `{}`",
+                            field_def.name, codomain_type, body_ty
+                        ))
+                        .with_code(DiagnosticCode::FieldCodomainMismatch)
+                        .with_label(DiagnosticLabel::new(
+                            field_def.codomain_type.span,
+                            "declared codomain",
+                        )),
+                    );
+                }
+            }
             CompiledFieldSource::Analytical {
                 expr: compiled_expr,
             }
@@ -245,7 +300,19 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Imported { .. } => CompiledFieldSource::Imported,
+        reify_syntax::FieldSource::Imported { .. } => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "imported field sources are deferred to v0.2; v0.1 supports analytical, sampled, and composed only",
+                )
+                .with_code(DiagnosticCode::FieldImportedV02)
+                .with_label(DiagnosticLabel::new(
+                    field_def.span,
+                    "imported field source is deferred to v0.2",
+                )),
+            );
+            CompiledFieldSource::Imported
+        }
     };
 
     // Compute content hash

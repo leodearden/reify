@@ -309,6 +309,26 @@ pub enum GeometryQuery {
         handle: GeometryHandleId,
         axis: [f64; 3],
     },
+    /// Find faces sharing at least one edge with the given face.
+    ///
+    /// `face_index` is the 0-based index into the shape's face enumeration
+    /// (TopExp_Explorer order). Returns a `Value::List` of `Value::Int`
+    /// global face indices, with the queried face itself excluded.
+    AdjacentFaces {
+        shape: GeometryHandleId,
+        face_index: usize,
+    },
+    /// Find edges shared between two faces of the same solid.
+    ///
+    /// `face_a` and `face_b` are 0-based indices into the shape's face
+    /// enumeration (TopExp_Explorer order). Returns a `Value::List` of
+    /// `Value::Int` global edge indices. When `face_a == face_b`, returns
+    /// an empty list (per design decision).
+    SharedEdges {
+        shape: GeometryHandleId,
+        face_a: usize,
+        face_b: usize,
+    },
 }
 
 /// Export formats for geometry.
@@ -721,6 +741,39 @@ mod tests {
                 assert_eq!(*degree, 3);
             }
             _ => panic!("expected NurbsCurve variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_query_topology_variants_can_be_constructed_and_matched() {
+        let adj = GeometryQuery::AdjacentFaces {
+            shape: GeometryHandleId(1),
+            face_index: 0,
+        };
+        match &adj {
+            GeometryQuery::AdjacentFaces { shape, face_index } => {
+                assert_eq!(*shape, GeometryHandleId(1));
+                assert_eq!(*face_index, 0);
+            }
+            _ => panic!("expected AdjacentFaces variant"),
+        }
+
+        let shared = GeometryQuery::SharedEdges {
+            shape: GeometryHandleId(1),
+            face_a: 0,
+            face_b: 1,
+        };
+        match &shared {
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => {
+                assert_eq!(*shape, GeometryHandleId(1));
+                assert_eq!(*face_a, 0);
+                assert_eq!(*face_b, 1);
+            }
+            _ => panic!("expected SharedEdges variant"),
         }
     }
 }

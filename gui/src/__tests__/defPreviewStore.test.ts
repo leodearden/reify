@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { GuiState } from '../types';
+import { createDefPreviewStore } from '../stores/defPreviewStore';
 
 // ── Helper to build a minimal GuiState with one mesh ────────────────────────
 function makeGuiState(entityPath: string): GuiState {
@@ -20,16 +21,9 @@ function makeGuiState(entityPath: string): GuiState {
   };
 }
 
-// Lazy import so TypeScript doesn't complain about not-yet-existing module
-// during the test (step-7 = red; step-8 = green).
-async function importStore() {
-  return import('../stores/defPreviewStore');
-}
-
 describe('defPreviewStore', () => {
   describe('initial state', () => {
-    it('fresh store has defName === null', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('fresh store has defName === null', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         expect(store.state.defName).toBeNull();
@@ -37,8 +31,7 @@ describe('defPreviewStore', () => {
       });
     });
 
-    it('fresh store has empty meshes record', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('fresh store has empty meshes record', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         expect(store.state.meshes).toEqual({});
@@ -46,8 +39,7 @@ describe('defPreviewStore', () => {
       });
     });
 
-    it('fresh store has isLoading === false', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('fresh store has isLoading === false', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         expect(store.state.isLoading).toBe(false);
@@ -55,8 +47,7 @@ describe('defPreviewStore', () => {
       });
     });
 
-    it('fresh store has error === null', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('fresh store has error === null', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         expect(store.state.error).toBeNull();
@@ -66,8 +57,7 @@ describe('defPreviewStore', () => {
   });
 
   describe('applyPreview', () => {
-    it('keys meshes by entity_path, sets defName, clears error and isLoading', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('keys meshes by entity_path, sets defName, clears error and isLoading', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         const guiState = makeGuiState('BoltFlange.body');
@@ -84,8 +74,7 @@ describe('defPreviewStore', () => {
   });
 
   describe('clearPreview', () => {
-    it('resets everything to initial state', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('resets everything to initial state', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         store.applyPreview('BoltFlange', makeGuiState('BoltFlange.body'));
@@ -101,8 +90,7 @@ describe('defPreviewStore', () => {
   });
 
   describe('setError', () => {
-    it('records the error and clears isLoading', async () => {
-      const { createDefPreviewStore } = await importStore();
+    it('records the error and clears isLoading', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
         store.setError('boom');
@@ -116,7 +104,6 @@ describe('defPreviewStore', () => {
 
   describe('loadPreview', () => {
     it('sets isLoading=true synchronously then populates meshes on resolve', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
@@ -144,7 +131,6 @@ describe('defPreviewStore', () => {
     });
 
     it('sets isLoading=false and error on reject', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
@@ -164,7 +150,6 @@ describe('defPreviewStore', () => {
     });
 
     it('skips fetch when defName matches state.defName (de-duplication)', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
@@ -190,7 +175,6 @@ describe('defPreviewStore', () => {
 
   describe('race condition', () => {
     it('(a) stale slow fetch result is discarded when a newer fast fetch resolves first', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
@@ -232,7 +216,6 @@ describe('defPreviewStore', () => {
     });
 
     it('(b) stale slow fetch error does not overwrite state set by a newer fetch', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
@@ -272,7 +255,6 @@ describe('defPreviewStore', () => {
     });
 
     it('(c) pure happy path: single loadPreview still populates state correctly after guard', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
@@ -292,7 +274,6 @@ describe('defPreviewStore', () => {
     });
 
     it('(d) clearPreview() invalidates an in-flight loadPreview so stale results do not reappear', async () => {
-      const { createDefPreviewStore } = await importStore();
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();

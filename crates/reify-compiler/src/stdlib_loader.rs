@@ -27,8 +27,8 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// On the first call, parses and compiles all embedded `.ri` stdlib files
 /// **sequentially**, threading a growing prelude so each module sees all
 /// previously compiled modules. This makes cross-module dependencies
-/// (e.g. `Physical : Material`, `ElasticallyDeformable : Elastic`) explicit
-/// during compilation rather than relying on lazy string resolution.
+/// (e.g. `Physical : MaterialSpec`) explicit during compilation rather than
+/// relying on lazy string resolution.
 ///
 /// Any Error-severity diagnostic in any stdlib module panics immediately
 /// rather than caching a broken result: a broken `OnceLock` entry would
@@ -64,6 +64,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ),
             ("std.analysis", include_str!("../stdlib/analysis.ri")),
             ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),
+            (
+                "std.geometry.traits",
+                include_str!("../stdlib/geometry_traits.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
@@ -90,8 +94,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
 
             // Compile with the growing prelude so each stdlib module sees all
             // previously compiled modules. This ensures cross-module trait
-            // refinements (Physical→Material, ElasticallyDeformable→Elastic)
-            // are available during compilation.
+            // refinements (Physical→MaterialSpec) are available during compilation.
             let compiled = crate::compile_with_prelude(&parsed, &modules);
 
             // Fail fast: Error-severity diagnostics in embedded stdlib are always

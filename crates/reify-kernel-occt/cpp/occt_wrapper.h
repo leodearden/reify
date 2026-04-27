@@ -1,14 +1,56 @@
 #pragma once
 #include "rust/cxx.h"
 #include <TopoDS_Shape.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace occt {
 
 /// Opaque wrapper around TopoDS_Shape for crossing the FFI boundary.
+///
+/// IMMUTABLE POST-CONSTRUCTION INVARIANT: Once `shape` is assigned (e.g.
+/// `result->shape = maker.Shape()`), no FFI operation mutates it in place.
+/// Every "modification" (translate, boolean, fillet, etc.) returns a fresh
+/// OcctShape. The three topology-map caches below are therefore safe to
+/// populate lazily and never need invalidation.
+///
+/// THREAD-SAFETY NOTE: The cache slots are unsynchronized (`mutable` without
+/// a mutex). Safety relies on OcctShape being accessed only via the
+/// `!Send + !Sync` `OcctKernel`, which pins all accesses to a single thread.
+/// If a future change wraps OcctShape in something `Sync`, a synchronization
+/// primitive (e.g. `std::call_once`) must be added to the lazy accessors.
+///
+/// STRONG-EXCEPTION-GUARANTEE: Each lazy accessor builds the map into a local
+/// `unique_ptr` and moves it into the cache slot only after MapShapes /
+/// MapShapesAndAncestors returns successfully.  On a throw the local dies, the
+/// slot stays null, and the build counter stays at 0, so the next call retries
+/// cleanly and observability remains honest.  See the per-accessor comments in
+/// occt_wrapper.cpp for the rationale; do NOT reorder back to the
+/// assign-then-fill pattern.
 struct OcctShape {
     TopoDS_Shape shape;
+
+    // --- Lazy topology-map cache slots ---
+    // Null until first use; built exactly once per shape lifetime.
+    mutable std::unique_ptr<TopTools_IndexedMapOfShape> face_map_cache_;
+    mutable std::unique_ptr<TopTools_IndexedMapOfShape> edge_map_cache_;
+    mutable std::unique_ptr<TopTools_IndexedDataMapOfShapeListOfShape> edge_face_map_cache_;
+
+    // Build counters: each increments exactly once, on the cache miss that
+    // populates the corresponding slot. Zero-cost on cache-hit fast paths.
+    mutable uint32_t face_map_builds_ = 0;
+    mutable uint32_t edge_map_builds_ = 0;
+    mutable uint32_t edge_face_map_builds_ = 0;
+
+    // --- Lazy accessor methods ---
+    // Each returns a const reference to the corresponding cached map, building
+    // it (and incrementing the counter) on the first call only.
+    const TopTools_IndexedMapOfShape& face_map() const;
+    const TopTools_IndexedMapOfShape& edge_map() const;
+    const TopTools_IndexedDataMapOfShapeListOfShape& edge_face_map() const;
 };
 
 /// Opaque vector of TopoDS_Shape for passing N shapes across the CXX FFI boundary.
@@ -27,6 +69,7 @@ void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
 struct Point3;
 struct BBox;
 struct TessResult;
+struct TopologyCacheBuildCounts;
 
 // --- Primitive construction ---
 
@@ -198,6 +241,30 @@ BBox query_bbox(const OcctShape& shape);
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
+
+/// Return the number of times each topology-map cache slot has been built for
+/// `shape`. Each counter is 0 on a fresh shape and increments to 1 on first
+/// use via the lazy accessors `face_map()`, `edge_map()`, or `edge_face_map()`.
+/// Exposed as an observability hook for deterministic cache-effectiveness tests.
+TopologyCacheBuildCounts topology_cache_build_counts(const OcctShape& shape);
+
+/// Return the 0-based global indices of faces sharing at least one edge with
+/// the face at `face_index`. Indices follow the canonical
+/// `TopExp::MapShapes(..., TopAbs_FACE, ...)` order — a 0-based view of the
+/// 1-based `TopTools_IndexedMapOfShape`, deduplicated by `TopoDS_Shape::IsSame`.
+/// Excludes the queried face itself; deduplicated; returned in ascending order.
+/// Throws std::runtime_error if `face_index` is out of range.
+rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
+
+/// Return the 0-based global indices of edges shared between the faces at
+/// `face_a_index` and `face_b_index`, using `TopoDS_Shape::IsSame` for
+/// matching. Indices follow the canonical
+/// `TopExp::MapShapes(..., TopAbs_EDGE, ...)` order — a 0-based view of the
+/// 1-based `TopTools_IndexedMapOfShape`, deduplicated by `TopoDS_Shape::IsSame`.
+/// Returns an empty vector if `face_a_index == face_b_index`. Deduplicated;
+/// returned in ascending order. Throws std::runtime_error if either index is
+/// out of range.
+rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
 
 // --- Export ---
 
