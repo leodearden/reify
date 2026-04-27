@@ -30,20 +30,29 @@ fn money_per_mass_keeps_only_slots_one_and_nine() {
 
 // ─── Money does not touch Angle slot 7 under any composition ─────────────────
 
-/// `MONEY × FORCE` must leave Angle slot 7 = ZERO.
+/// `MONEY × FORCE` must pin every slot to its expected exponent:
+/// slot 0 (Length) = +1, slot 1 (Mass) = +1, slot 2 (Time) = −2,
+/// slot 9 (Money) = +1, and all remaining slots
+/// (Current, Temperature, Substance, Luminosity, Angle, SolidAngle) = 0.
 ///
-/// Force (kg·m·s⁻²) has no Angle component. Composing it with Money must not
-/// introduce any spurious Angle exponent — this guards against any future
-/// 10-slot exponent-buffer bug that might cross-populate adjacent slots when
-/// `mul` iterates indices.
+/// Asserting every slot — not only Angle slot 7 — ensures that any
+/// 10-slot exponent-buffer bug that bled into ANY adjacent slot would be
+/// caught, not only a bleed into Angle.
 #[test]
 fn money_compound_with_force_keeps_angle_slot_zero() {
     let result = DimensionVector::MONEY.mul(&DimensionVector::FORCE);
-    assert_eq!(
-        result.0[7],
-        Rational::ZERO,
-        "Angle slot 7 should remain ZERO after MONEY × FORCE"
-    );
+    assert_eq!(result.0[0], Rational::ONE, "slot 0 (Length) should be ONE for MONEY × FORCE");
+    assert_eq!(result.0[1], Rational::ONE, "slot 1 (Mass) should be ONE for MONEY × FORCE");
+    assert_eq!(result.0[2], Rational::new(-2, 1), "slot 2 (Time) should be -2 for MONEY × FORCE");
+    assert_eq!(result.0[9], Rational::ONE, "slot 9 (Money) should be ONE for MONEY × FORCE");
+    for i in [3usize, 4, 5, 6, 7, 8] {
+        assert_eq!(
+            result.0[i],
+            Rational::ZERO,
+            "slot {} should be ZERO for MONEY × FORCE",
+            i
+        );
+    }
 }
 
 // ─── Torque ≠ Energy at the DimensionVector level ────────────────────────────
