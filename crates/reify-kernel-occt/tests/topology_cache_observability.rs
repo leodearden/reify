@@ -238,6 +238,42 @@ fn lazy_slots_advance_atomically_with_counters() {
     );
 }
 
+/// Two adjacent calls to AdjacentFaces with the SAME face_index must not
+/// rebuild any cache slot — the lazy slots are non-null after the first call,
+/// so the second call must short-circuit. Locks down a regression where the
+/// face_map or edge_face_map could be rebuilt despite the slot being non-null.
+#[test]
+fn adjacent_faces_same_query_does_not_rebuild_cache() {
+    let (kernel, box_id) = box_kernel();
+
+    query_adjacent_faces(&kernel, box_id, 0);
+    let counts1 = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts1,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 0,
+            edge_face_map_builds: 1,
+        },
+        "after first AdjacentFaces call: expected (1,0,1), got {:?}",
+        counts1
+    );
+
+    // Second IDENTICAL call — same shape, same face_index. No slot may rebuild.
+    query_adjacent_faces(&kernel, box_id, 0);
+    let counts2 = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts2, counts1,
+        "second identical AdjacentFaces call must not rebuild any cache slot; \
+         counts1={:?}, counts2={:?}",
+        counts1, counts2
+    );
+}
+
 /// After calling `AdjacentFaces` for every face of a 10×10×10 box (6 calls
 /// total), the face_map and edge_face_map caches should each have been built
 /// exactly once, and the edge_map should remain untouched (adjacent_faces
