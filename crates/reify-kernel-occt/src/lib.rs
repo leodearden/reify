@@ -1296,6 +1296,19 @@ mod tests {
         kernel.store_raw(translated)
     }
 
+    /// Create the canonical 20×10×5 axis-aligned box used by the InertiaTensor
+    /// density/analytic tests and store it in `kernel`. Returns the handle ID.
+    fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(5.0),
+            })
+            .expect("Box creation must succeed")
+            .id
+    }
+
     /// Assert that the volume of the shape at `handle_id` is within `tolerance`
     /// relative error of `expected`. Panics with a descriptive message including `label`.
     fn assert_volume_near(
@@ -5250,24 +5263,18 @@ mod tests {
     #[test]
     fn inertia_tensor_density_edge_cases_documented() {
         let mut kernel = OcctKernel::new();
-        // A 20×10×5 box (same fixture as `inertia_tensor_box_with_density_analytic`).
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(5.0),
-            })
-            .expect("Box creation must succeed");
+        // Canonical 20×10×5 box (see make_box_20_10_5 helper).
+        let box_h_id = make_box_20_10_5(&mut kernel);
 
         // Baseline: ρ = 2.0.
         let result_baseline = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: 2.0 })
+            .query(&GeometryQuery::InertiaTensor { handle: box_h_id, density: 2.0 })
             .expect("InertiaTensor with density=2.0 must not return Err");
         let baseline = extract_3x3_tensor_entries(&result_baseline);
 
         // Edge case 1: ρ = 0.0 → zero tensor.
         let result_zero = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: 0.0 })
+            .query(&GeometryQuery::InertiaTensor { handle: box_h_id, density: 0.0 })
             .expect("InertiaTensor with density=0.0 must not return Err (kernel is permissive)");
         let zero_entries = extract_3x3_tensor_entries(&result_zero);
         for i in 0..3 {
@@ -5283,7 +5290,7 @@ mod tests {
 
         // Edge case 2: ρ = -2.0 → negated baseline tensor.
         let result_neg = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: box_h.id, density: -2.0 })
+            .query(&GeometryQuery::InertiaTensor { handle: box_h_id, density: -2.0 })
             .expect("InertiaTensor with density=-2.0 must not return Err (kernel is permissive)");
         let neg_entries = extract_3x3_tensor_entries(&result_neg);
         // Each entry must equal the negation of the baseline within an absolute tolerance.
@@ -5308,22 +5315,17 @@ mod tests {
     #[test]
     fn inertia_tensor_box_with_density_analytic() {
         let mut kernel = OcctKernel::new();
-        // Create a 20×10×5 axis-aligned box. Volume = 1000; mass = ρ·V = 2·1000 = 2000.
+        // Canonical 20×10×5 box (see make_box_20_10_5 helper).
+        // Volume = 1000; mass = ρ·V = 2·1000 = 2000.
         // Analytic moments about centroid (box m/12·(h²+d²)):
         //   I_xx = 2000/12 · (10² + 5²) = 2000/12 · 125 ≈ 20833.33
         //   I_yy = 2000/12 · (20² + 5²) = 2000/12 · 425 ≈ 70833.33
         //   I_zz = 2000/12 · (20² + 10²) = 2000/12 · 500 ≈ 83333.33
         // Off-diagonals = 0 for axis-aligned box at origin.
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(5.0),
-            })
-            .unwrap();
+        let box_h_id = make_box_20_10_5(&mut kernel);
         let result = kernel
             .query(&GeometryQuery::InertiaTensor {
-                handle: box_h.id,
+                handle: box_h_id,
                 density: 2.0,
             })
             .unwrap();
@@ -5385,7 +5387,7 @@ mod tests {
         // inertia about the *centroid*.
         let translated_h = kernel
             .execute(&GeometryOp::Translate {
-                target: box_h.id,
+                target: box_h_id,
                 dx: 100.0,
                 dy: 0.0,
                 dz: 0.0,
