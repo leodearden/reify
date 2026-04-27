@@ -37,7 +37,10 @@
 //! `crates/reify-compiler/src/conformance/mod.rs`'s
 //! `E_GEOMETRY_UNBOUNDED` emission for real source.
 
-use crate::types::{CurveKind, PrimitiveKind};
+use crate::types::{
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
+    SweepKind, TransformKind,
+};
 
 /// The three compile-time-inferred geometry traits.
 ///
@@ -260,5 +263,95 @@ pub const fn infer_curve(kind: CurveKind) -> InferredTraits {
         | CurveKind::InterpCurve
         | CurveKind::BezierCurve
         | CurveKind::NurbsCurve => InferredTraits::all(),
+    }
+}
+
+/// Resolve a single `GeomRef` (Step or Sub) within an op array to its
+/// inferred trait set.
+///
+/// `GeomRef::Step(i)` recurses into [`infer_traits_for_op`] with index
+/// `i`. `GeomRef::Sub(_)` returns [`InferredTraits::all()`] — the safe
+/// v0.1 default for cross-component references (see plan design decision
+/// §3 and the test
+/// `infer_traits_for_op_treats_geomref_sub_as_bounded`).
+fn resolve_geom_ref(geom_ref: &GeomRef, ops: &[CompiledGeometryOp]) -> InferredTraits {
+    match geom_ref {
+        GeomRef::Step(idx) => infer_traits_for_op(*idx, ops),
+        // Cross-component sub-reference: assume Bounded+Connected+Convex.
+        // Cross-component inference would require resolving the sub's own
+        // realization; for v0.1 we default to "all three" since structure
+        // instances built from primitives are typically bounded. This
+        // choice is pinned by a unit test so a future change becomes a
+        // deliberate, observable diff rather than silent drift.
+        GeomRef::Sub(_) => InferredTraits::all(),
+    }
+}
+
+/// Walk the inference table over a `CompiledGeometryOp` array.
+///
+/// Returns the [`InferredTraits`] for the operation at index `op_idx` by
+/// recursively resolving its inputs through [`resolve_geom_ref`] and
+/// applying the matching `combine_*` rule. Suppress visited tracking
+/// (and the resulting recursion guard) is unnecessary because compiled
+/// op arrays are acyclic by construction — a `GeomRef::Step(j)` always
+/// satisfies `j < op_idx` (op compilation is forward-only).
+///
+/// # Panics
+///
+/// Panics if `op_idx >= ops.len()` (use a debug-only bounds check via
+/// indexing). Callers are responsible for passing a valid index.
+pub fn infer_traits_for_op(op_idx: usize, ops: &[CompiledGeometryOp]) -> InferredTraits {
+    match &ops[op_idx] {
+        CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
+        CompiledGeometryOp::Boolean { op, left, right } => {
+            let l = resolve_geom_ref(left, ops);
+            let r = resolve_geom_ref(right, ops);
+            match op {
+                BooleanOp::Union => combine_union(l, r),
+                BooleanOp::Difference => combine_difference(l, r),
+                BooleanOp::Intersection => combine_intersection(l, r),
+            }
+        }
+        CompiledGeometryOp::Modify { kind, target, .. } => {
+            let t = resolve_geom_ref(target, ops);
+            // ModifyKind variants share the same propagation rule today;
+            // a future variant with different semantics (e.g. a Modify
+            // that re-introduces convexity) can branch here.
+            let _: ModifyKind = *kind;
+            combine_modify(t)
+        }
+        CompiledGeometryOp::Transform { kind, target, .. } => {
+            let t = resolve_geom_ref(target, ops);
+            let _: TransformKind = *kind;
+            combine_transform(t)
+        }
+        CompiledGeometryOp::Pattern { kind, target, .. } => {
+            let t = resolve_geom_ref(target, ops);
+            let _: PatternKind = *kind;
+            combine_pattern(t)
+        }
+        CompiledGeometryOp::Sweep {
+            kind, profiles, ..
+        } => {
+            let _: SweepKind = *kind;
+            // Sweep takes Bounded+Connected from the **profile**. When
+            // multiple profiles are supplied (loft), conservatively
+            // intersect the trait sets — a profile lacking Bounded
+            // poisons the whole sweep, and Connected requires every
+            // profile to be connected. A missing profile defaults to
+            // `all()` so empty `profiles` arrays do not under-bound the
+            // result.
+            let profile_traits = profiles
+                .iter()
+                .map(|p| resolve_geom_ref(p, ops))
+                .reduce(|acc, next| InferredTraits {
+                    bounded: acc.bounded && next.bounded,
+                    connected: acc.connected && next.connected,
+                    convex: acc.convex && next.convex,
+                })
+                .unwrap_or(InferredTraits::all());
+            combine_sweep(profile_traits)
+        }
+        CompiledGeometryOp::Curve { kind, .. } => infer_curve(*kind),
     }
 }
