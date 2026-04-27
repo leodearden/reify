@@ -11,7 +11,7 @@
 //! subsection for `@test`-annotated items.
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{AnnotationDoc, DocModel, ItemDoc, ParamDoc};
+use crate::model::{AnnotationDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
 
 /// Render a [`DocModel`] as one self-contained HTML5 document.
 ///
@@ -177,8 +177,11 @@ fn render_item(out: &mut String, item: &ItemDoc) {
 
     // Kind-specific body. Container variants get parameter / port / constraint
     // / meta sections; the simpler variants will be wired up in later steps.
-    if let ItemDoc::Structure { params, .. } | ItemDoc::Occurrence { params, .. } = item {
+    if let ItemDoc::Structure { params, ports, .. }
+        | ItemDoc::Occurrence { params, ports, .. } = item
+    {
         render_params_table(out, params);
+        render_ports_table(out, ports);
     }
 
     out.push_str("</section>\n");
@@ -258,6 +261,48 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
             out.push_str("<em>hint: ");
             out.push_str(&html_escape(hint_arg));
             out.push_str("</em>");
+        }
+        out.push_str("</td>");
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n");
+    out.push_str("</table>\n");
+}
+
+/// Render the `<h3>Ports</h3>` table.  No-op when `ports` is empty.
+///
+/// Columns: Name | Kind | Role | Type | Description.  Name and Type wrap
+/// in `<code>`; Kind has no `PortDoc` field so it's an em-dash placeholder
+/// (mirrors markdown); Role is the direction; Description joins members
+/// with `, ` and uses an em-dash when empty.
+fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
+    if ports.is_empty() {
+        return;
+    }
+    out.push_str("<h3>Ports</h3>\n");
+    out.push_str("<table>\n");
+    out.push_str("<thead><tr>");
+    out.push_str("<th>Name</th><th>Kind</th><th>Role</th><th>Type</th><th>Description</th>");
+    out.push_str("</tr></thead>\n");
+    out.push_str("<tbody>\n");
+    for p in ports {
+        out.push_str("<tr>");
+        out.push_str("<td><code>");
+        out.push_str(&html_escape(&p.name));
+        out.push_str("</code></td>");
+        out.push_str("<td>—</td>");
+        out.push_str("<td>");
+        out.push_str(&html_escape(&p.direction));
+        out.push_str("</td>");
+        out.push_str("<td><code>");
+        out.push_str(&html_escape(&p.type_name));
+        out.push_str("</code></td>");
+        out.push_str("<td>");
+        if p.members.is_empty() {
+            out.push_str("—");
+        } else {
+            let joined = p.members.join(", ");
+            out.push_str(&html_escape(&joined));
         }
         out.push_str("</td>");
         out.push_str("</tr>\n");
