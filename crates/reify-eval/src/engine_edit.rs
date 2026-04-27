@@ -3338,4 +3338,54 @@ mod tests {
         let result = phase3_take_guard_val(&values, &guard_cell);
         assert_eq!(result, None);
     }
+
+    /// Regression guard for task 2229: pins the co-variation contract between
+    /// `group_needs_phase3` and `phase3_take_guard_val` on the absent-guard
+    /// arm.
+    ///
+    /// Contract being locked:
+    /// - When the guard cell is absent from `values` but WAS present in the
+    ///   old snapshot (`old_guard_val = Some(...)`), `group_needs_phase3`
+    ///   returns `true` (structural change — re-elaboration needed).
+    /// - In the same scenario, `phase3_take_guard_val` returns `None` (the
+    ///   guard cell is not in the local value map).
+    ///
+    /// The post-fix Phase 3 sites (`edit_param` ~line 1005, `edit_source`
+    /// ~line 2095) handle this co-variation via:
+    /// ```
+    /// let Some(guard_val) = phase3_take_guard_val(&values, &group.guard_cell)
+    ///     else { continue; };
+    /// ```
+    /// i.e. they skip the group defensively when the lookup yields `None`.
+    ///
+    /// A future change that (a) drops the absent arm from `group_needs_phase3`
+    /// or (b) re-introduces `.expect()` inside `phase3_take_guard_val` would
+    /// break one half of this invariant and should be caught here.
+    #[test]
+    fn phase3_predicate_and_lookup_co_vary_in_absent_guard_arm() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let values = ValueMap::default(); // guard_cell absent
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        // Predicate: absent guard + prior value → re-elaboration needed.
+        let needs = group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
+        assert!(
+            needs,
+            "group_needs_phase3: absent guard + prior value → true (structural change)"
+        );
+
+        // Lookup: absent guard → None → caller must skip via let-Some-else-continue.
+        let val = phase3_take_guard_val(&values, &group.guard_cell);
+        assert_eq!(
+            val, None,
+            "phase3_take_guard_val: absent guard → None → defensive skip"
+        );
+    }
 }
