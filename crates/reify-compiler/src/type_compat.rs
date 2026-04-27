@@ -295,6 +295,49 @@ pub(crate) fn format_fn_signature(f: &CompiledFunction) -> String {
     )
 }
 
+// --- Dimension-mismatch diagnostic helpers ---
+
+/// Build the canonical dimension-mismatch error diagnostic.
+///
+/// Produces `"dimension mismatch in {op_name}: {left_ty} vs {right_ty}"` with
+/// `DiagnosticCode::DimensionMismatch` and the primary `"incompatible dimensions"` label.
+///
+/// When BOTH operands are `Type::Scalar` with a canonical name (see
+/// `DimensionVector::canonical_name`) and the two names differ, attaches a
+/// secondary label of the form `"<LName> and <RName> are different dimensions
+/// and cannot be combined directly"` so the user sees the human-readable
+/// dimension name rather than just the unit-symbol form.
+pub(crate) fn format_dimension_mismatch_diagnostic(
+    op_name: &str,
+    left_ty: &Type,
+    right_ty: &Type,
+    span: SourceSpan,
+) -> Diagnostic {
+    let d = Diagnostic::error(format!(
+        "dimension mismatch in {op_name}: {left_ty} vs {right_ty}"
+    ))
+    .with_code(DiagnosticCode::DimensionMismatch)
+    .with_label(DiagnosticLabel::new(span, "incompatible dimensions"));
+
+    // Attach a secondary canonical-names label when both operands are named scalars.
+    if let (
+        Type::Scalar { dimension: ldim },
+        Type::Scalar { dimension: rdim },
+    ) = (left_ty, right_ty)
+    {
+        if let (Some(lname), Some(rname)) = (ldim.canonical_name(), rdim.canonical_name()) {
+            if lname != rname {
+                return d.with_label(DiagnosticLabel::new(
+                    span,
+                    format!("{lname} and {rname} are different dimensions and cannot be combined directly"),
+                ));
+            }
+        }
+    }
+
+    d
+}
+
 // --- Chained comparison helpers ---
 
 /// Returns true if `op` is a comparison operator that participates in chaining.
