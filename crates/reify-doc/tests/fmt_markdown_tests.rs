@@ -1995,3 +1995,105 @@ fn split_mode_multi_module_prefixes_and_backlinks() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Split mode per-item cross-ref filename links
+// ---------------------------------------------------------------------------
+
+/// In single-module split mode, `### Conforms to` and `### Used by` bullets
+/// inside per-item files must use filename-shaped links (`trait-Fastener.md`,
+/// `structure-Board.md`) rather than the old fragment-only form (`#Fastener`,
+/// `#Board`).
+#[test]
+fn split_mode_per_item_cross_refs_use_filename_links() {
+    let fastener = ItemDoc::Trait {
+        name: "Fastener".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![],
+        members: vec![],
+    };
+    let bolt = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let board = ItemDoc::Structure {
+        name: "Board".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let mcu = ItemDoc::Occurrence {
+        name: "MCU".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+        constraints: vec![], sub_components: vec![], realizations: vec![],
+        meta: vec![],
+    };
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "hardware".into(),
+            items: vec![fastener, bolt, board, mcu],
+            ..Default::default()
+        }],
+    };
+    let mut xrefs = CrossRefs::default();
+    xrefs
+        .trait_to_conformers
+        .insert("Fastener".into(), vec!["Bolt".into()]);
+    xrefs
+        .entity_to_containers
+        .insert("MCU".into(), vec!["Board".into()]);
+
+    let files = match render_markdown(&model, Some(&xrefs), &MarkdownOptions { split: true }) {
+        MarkdownOutput::Split(v) => v,
+        MarkdownOutput::Single(_) => panic!("expected Split output"),
+    };
+
+    // Locate the per-item files.
+    let bolt_body = &files
+        .iter()
+        .find(|(n, _)| n == "structure-Bolt.md")
+        .expect("structure-Bolt.md missing in split output")
+        .1;
+    let mcu_body = &files
+        .iter()
+        .find(|(n, _)| n == "occurrence-MCU.md")
+        .expect("occurrence-MCU.md missing in split output")
+        .1;
+
+    // Bolt: Conforms to Fastener — must use filename link.
+    assert!(
+        bolt_body.contains("### Conforms to"),
+        "Bolt file must contain `### Conforms to`, got:\n{bolt_body}"
+    );
+    assert!(
+        bolt_body.contains("- [`Fastener`](trait-Fastener.md)"),
+        "Bolt Conforms-to must link to trait-Fastener.md, got:\n{bolt_body}"
+    );
+    assert!(
+        !bolt_body.contains("(#Fastener)"),
+        "Bolt Conforms-to must NOT use old fragment link (#Fastener), got:\n{bolt_body}"
+    );
+
+    // MCU: Used by Board — must use filename link.
+    assert!(
+        mcu_body.contains("### Used by"),
+        "MCU file must contain `### Used by`, got:\n{mcu_body}"
+    );
+    assert!(
+        mcu_body.contains("- [`Board`](structure-Board.md)"),
+        "MCU Used-by must link to structure-Board.md, got:\n{mcu_body}"
+    );
+    assert!(
+        !mcu_body.contains("(#Board)"),
+        "MCU Used-by must NOT use old fragment link (#Board), got:\n{mcu_body}"
+    );
+}
