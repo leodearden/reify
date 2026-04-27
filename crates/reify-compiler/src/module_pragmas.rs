@@ -220,6 +220,11 @@ const MAX_PRECISION_TOLERANCE_M: f64 = 1.0;
 /// invariant violations — unreachable from source today because the grammar's
 /// `number_literal` regex `\d+(\.\d+)?` only produces non-negative finite
 /// f64s); zero and above-cap emit **warnings** (plausible user mistakes).
+///
+/// The first-wins slot is consumed only when `default_tolerance` is actually
+/// stored — malformed first pragmas (wrong dimension, unrecognised unit, bare
+/// number, out-of-range value, etc.) do not consume the slot, so a following
+/// well-formed `#precision` is still recognised.
 fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -266,8 +271,8 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         } else if si_value < 0.0 {
                             module.diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "#precision: tolerance must be positive (got {si_value}m); \
-                                     ignored"
+                                    "#precision: tolerance must be positive (got {si_value}m; \
+                                     internal invariant violated); ignored"
                                 ))
                                 .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                             );

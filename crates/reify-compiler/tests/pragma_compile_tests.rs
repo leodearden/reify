@@ -1308,13 +1308,14 @@ fn precision_pragma_above_cap_warns_and_does_not_set_tolerance() {
     );
 }
 
-/// `#precision` with a negative or NaN SI value emits an **error** (not a
-/// warning) and leaves `default_tolerance` as `None`.
+/// `#precision` with a negative, NaN, or infinite SI value emits an **error**
+/// (not a warning) and leaves `default_tolerance` as `None`.
 ///
 /// The grammar's `\d+(\.\d+)?` regex only produces non-negative finite f64
 /// values from source, so these branches cannot be reached via
 /// `compile_source`. The test constructs a `ParsedModule` directly (injection)
-/// with `value: -0.001` / `value: f64::NAN` to exercise the defensive code.
+/// with `value: -0.001` / `value: f64::NAN` / `value: f64::INFINITY` /
+/// `value: f64::NEG_INFINITY` to exercise the full not-finite domain.
 ///
 /// Regression guard: the existing `precision_pragma_with_zero_tolerance_warns_and_does_not_set_tolerance`
 /// and `precision_pragma_above_cap_warns_and_does_not_set_tolerance` tests (for
@@ -1400,6 +1401,64 @@ fn precision_pragma_with_negative_or_nan_quantity_emits_error_via_injection() {
             "expected exactly 1 error mentioning '#precision' + 'not finite' for \
              #precision(NaN m), got {}: {:?}",
             nan_errors.len(),
+            module.diagnostics
+        );
+    }
+
+    // ── INFINITY value — also triggers !is_finite() ───────────────────────────
+    {
+        let module = injected_precision_module(f64::INFINITY);
+
+        assert!(
+            module.default_tolerance.is_none(),
+            "expected default_tolerance None for #precision(INFINITY m), got {:?}",
+            module.default_tolerance
+        );
+
+        let inf_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("#precision")
+                    && d.message.contains("not finite")
+            })
+            .collect();
+        assert_eq!(
+            inf_errors.len(),
+            1,
+            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
+             #precision(INFINITY m), got {}: {:?}",
+            inf_errors.len(),
+            module.diagnostics
+        );
+    }
+
+    // ── NEG_INFINITY value — also triggers !is_finite() ──────────────────────
+    {
+        let module = injected_precision_module(f64::NEG_INFINITY);
+
+        assert!(
+            module.default_tolerance.is_none(),
+            "expected default_tolerance None for #precision(NEG_INFINITY m), got {:?}",
+            module.default_tolerance
+        );
+
+        let neg_inf_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("#precision")
+                    && d.message.contains("not finite")
+            })
+            .collect();
+        assert_eq!(
+            neg_inf_errors.len(),
+            1,
+            "expected exactly 1 error mentioning '#precision' + 'not finite' for \
+             #precision(NEG_INFINITY m), got {}: {:?}",
+            neg_inf_errors.len(),
             module.diagnostics
         );
     }
