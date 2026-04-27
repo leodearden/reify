@@ -1502,13 +1502,23 @@ fn split_mode_emits_index_and_per_item_files() {
         index.1
     );
     assert!(
-        index.1.contains("- [`Board`](#Board)"),
-        "TOC must list Board anchor, got:\n{}",
+        index.1.contains("- [`Board`](structure-Board.md)"),
+        "TOC must list Board as filename link, got:\n{}",
         index.1
     );
     assert!(
-        index.1.contains("- [`HasPower`](#HasPower)"),
-        "TOC must list HasPower anchor, got:\n{}",
+        !index.1.contains("(#Board)"),
+        "TOC must NOT contain old fragment-only link for Board, got:\n{}",
+        index.1
+    );
+    assert!(
+        index.1.contains("- [`HasPower`](trait-HasPower.md)"),
+        "TOC must list HasPower as filename link, got:\n{}",
+        index.1
+    );
+    assert!(
+        !index.1.contains("(#HasPower)"),
+        "TOC must NOT contain old fragment-only link for HasPower, got:\n{}",
         index.1
     );
 
