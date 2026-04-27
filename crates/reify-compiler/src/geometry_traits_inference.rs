@@ -41,6 +41,7 @@ use crate::types::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
     SweepKind, TransformKind,
 };
+use reify_types::{CompiledExpr, CompiledExprKind};
 
 /// The three compile-time-inferred geometry traits.
 ///
@@ -357,4 +358,139 @@ pub fn infer_traits_for_op(op_idx: usize, ops: &[CompiledGeometryOp]) -> Inferre
         }
         CompiledGeometryOp::Curve { kind, .. } => infer_curve(*kind),
     }
+}
+
+/// Walk the inference table over a `CompiledExpr`.
+///
+/// This is the call-site form used by the conformance walker, which has a
+/// `&CompiledExpr` argument in hand (not a `CompiledGeometryOp` array). The
+/// dispatch is **by function name**, mirroring the op-array dispatch by
+/// variant: each stdlib geometry constructor (`box`, `cylinder`, ...) and
+/// each combinator (`union`, `intersection`, `difference`, `translate`,
+/// `rotate`, `scale`, `rotate_around`, `fillet`, `chamfer`, `shell`,
+/// `draft`, `thicken`, `linear_pattern`, `circular_pattern`, `mirror`,
+/// `linear_pattern_2d`, `arbitrary_pattern`, `extrude`, `extrude_symmetric`,
+/// `revolve`, `revolve_full`, `sweep`, `sweep_guided`, `loft`,
+/// `loft_guided`, `pipe`, plus curve constructors `line_segment`, `arc`,
+/// `helix`, `interp`, `bezier`, `nurbs`) maps to the matching primitive
+/// or `combine_*` helper.
+///
+/// # Geometry-arg recursion
+///
+/// For combinators, recurse on every argument that has `result_type ==
+/// Type::Geometry` (boolean ops take two geometry args, transforms/modify/
+/// pattern take one as the first geometry-typed arg, sweeps take a list
+/// of profiles plus a path). Non-geometry args are skipped — their
+/// inferred traits don't participate in the combine.
+///
+/// # Default-Bounded fallback
+///
+/// Any expression kind we don't recognise (`ValueRef`, `Literal` of a
+/// geometry handle, `UserFunctionCall`, `MethodCall` returning geometry,
+/// `Conditional`, `Match`, etc.) defaults to [`InferredTraits::all()`].
+/// This is a deliberate **safe-default-Bounded** fallback: the conformance
+/// walker only emits `E_GEOMETRY_UNBOUNDED` when the inferred set
+/// **lacks** Bounded, so an opaque expression at a Bounded slot is
+/// assumed to satisfy the bound. The alternative — defaulting to `none()`
+/// — would produce spurious diagnostics on every `let g = box(...)`
+/// indirected through a value-ref. Future work that reasons about
+/// non-FunctionCall expressions (e.g. inferring traits through a
+/// `let g : Solid = ...` binding) can extend the match arms additively.
+pub fn infer_traits_for_expr(expr: &CompiledExpr) -> InferredTraits {
+    match &expr.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            infer_traits_for_function_call(function.name.as_str(), args)
+        }
+        // Default-Bounded for every other expression kind. See the doc-comment
+        // above for the rationale.
+        _ => InferredTraits::all(),
+    }
+}
+
+/// Dispatch on the function-call name, mirroring the op-array variant
+/// dispatch in [`infer_traits_for_op`].
+fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> InferredTraits {
+    match name {
+        // ─── Primitive constructors → all() ─────────────────────────────
+        "box" | "cylinder" | "sphere" | "tube" => InferredTraits::all(),
+
+        // ─── Boolean combinators → recurse + combine_* ──────────────────
+        "union" => {
+            let (a, b) = first_two_geometry_args(args);
+            combine_union(a, b)
+        }
+        "difference" => {
+            let (a, b) = first_two_geometry_args(args);
+            combine_difference(a, b)
+        }
+        "intersection" => {
+            let (a, b) = first_two_geometry_args(args);
+            combine_intersection(a, b)
+        }
+
+        // ─── Transform combinators → recurse + combine_transform ────────
+        "translate" | "rotate" | "scale" | "rotate_around" => {
+            let t = first_geometry_arg(args);
+            combine_transform(t)
+        }
+
+        // ─── Modify combinators → recurse + combine_modify ──────────────
+        "fillet" | "chamfer" | "shell" | "draft" | "thicken" => {
+            let t = first_geometry_arg(args);
+            combine_modify(t)
+        }
+
+        // ─── Pattern combinators → recurse + combine_pattern ────────────
+        "linear_pattern"
+        | "circular_pattern"
+        | "mirror"
+        | "linear_pattern_2d"
+        | "arbitrary_pattern" => {
+            let t = first_geometry_arg(args);
+            combine_pattern(t)
+        }
+
+        // ─── Sweep combinators → recurse + combine_sweep ────────────────
+        "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep"
+        | "sweep_guided" | "loft" | "loft_guided" | "pipe" => {
+            let t = first_geometry_arg(args);
+            combine_sweep(t)
+        }
+
+        // ─── Curve constructors → all() (1-D primitives) ────────────────
+        "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
+            InferredTraits::all()
+        }
+
+        // Unknown function name → default-Bounded. See the doc-comment on
+        // `infer_traits_for_expr` for the rationale.
+        _ => InferredTraits::all(),
+    }
+}
+
+/// Find the first geometry-typed argument and recurse, defaulting to
+/// `InferredTraits::all()` if no geometry arg is present (defensive — a
+/// well-formed call site always has one).
+fn first_geometry_arg(args: &[CompiledExpr]) -> InferredTraits {
+    args.iter()
+        .find(|a| a.result_type == reify_types::Type::Geometry)
+        .map(infer_traits_for_expr)
+        .unwrap_or(InferredTraits::all())
+}
+
+/// Find the first two geometry-typed arguments and recurse on each,
+/// defaulting to `InferredTraits::all()` if either is missing.
+fn first_two_geometry_args(args: &[CompiledExpr]) -> (InferredTraits, InferredTraits) {
+    let mut iter = args
+        .iter()
+        .filter(|a| a.result_type == reify_types::Type::Geometry);
+    let a = iter
+        .next()
+        .map(infer_traits_for_expr)
+        .unwrap_or(InferredTraits::all());
+    let b = iter
+        .next()
+        .map(infer_traits_for_expr)
+        .unwrap_or(InferredTraits::all());
+    (a, b)
 }
