@@ -13,6 +13,7 @@ pub mod spanned_ident;
 pub mod traits;
 pub mod ty;
 pub mod value;
+pub mod node_traits;
 pub mod warm;
 
 pub use annotation::{
