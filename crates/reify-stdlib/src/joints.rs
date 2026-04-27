@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use reify_types::Value;
+use reify_types::{DimensionVector, Value};
+
+use crate::helpers::tensor_components_f64;
 
 /// Evaluate a joints stdlib function by name.
 ///
@@ -12,16 +14,73 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
+            if validate_axis(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            if validate_range(&args[1], DimensionVector::LENGTH).is_none() {
+                return Some(Value::Undef);
+            }
             make_joint("prismatic", args[0].clone(), args[1].clone())
         }
         "revolute" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
+            if validate_axis(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            if validate_range(&args[1], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
             make_joint("revolute", args[0].clone(), args[1].clone())
         }
         _ => return None,
     })
+}
+
+/// Validate an axis value: must be a Vector3 of dimensionless components,
+/// all finite, with non-zero magnitude.
+///
+/// Returns `Some([x, y, z])` (the raw components, not normalized) on success,
+/// `None` on any failure.
+fn validate_axis(value: &Value) -> Option<[f64; 3]> {
+    let (comps, dim) = tensor_components_f64(value)?;
+    if comps.len() != 3 {
+        return None;
+    }
+    if dim != DimensionVector::DIMENSIONLESS {
+        return None;
+    }
+    let [x, y, z] = [comps[0], comps[1], comps[2]];
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
+    let mag_sq = x * x + y * y + z * z;
+    if mag_sq == 0.0 || !mag_sq.is_finite() {
+        return None;
+    }
+    Some([x, y, z])
+}
+
+/// Validate a range value: must be `Value::Range` with both lower and upper
+/// bounds present, both sharing `expected_dim`.
+///
+/// Returns `Some(())` on success, `None` on any failure.
+fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
+    match value {
+        Value::Range {
+            lower: Some(lo),
+            upper: Some(up),
+            ..
+        } => {
+            if lo.dimension() == expected_dim && up.dimension() == expected_dim {
+                Some(())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Build a joint `Value::Map` with the standard three-key layout:
