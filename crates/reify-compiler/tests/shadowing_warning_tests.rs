@@ -559,3 +559,78 @@ fn lambda_in_constraint_def_predicate_shadows_param() {
         l0.span
     );
 }
+
+/// A lambda inside a trait member shadows the trait's own param. Source:
+///
+/// ```text
+/// trait T {
+///     param mass : Real = 1.0
+///     let f = |mass| mass * 2.0
+/// }
+/// ```
+///
+/// The lambda binds `mass` in its body, shadowing the trait's
+/// `param mass`. Exactly ONE Shadowing warning is expected; the
+/// original-decl span lies on the trait's `param mass` and the
+/// child-site span on the lambda's `|mass|`.
+#[test]
+fn lambda_in_trait_default_shadows_trait_param() {
+    let source = r#"
+trait T {
+    param mass : Real = 1.0
+    let f = |mass| mass * 2.0
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda |mass| vs trait param mass), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert!(
+        warning.message.contains("'mass'"),
+        "expected the warning to be about `mass`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    let param_mass = source
+        .find("param mass")
+        .expect("source must contain `param mass`");
+    let lambda_mass = source
+        .find("|mass|")
+        .expect("source must contain `|mass|`");
+
+    let l0 = &warning.labels[0]; // child site
+    let l1 = &warning.labels[1]; // original-decl site
+    assert!(
+        (l1.span.start as usize) >= param_mass
+            && (l1.span.start as usize) < lambda_mass,
+        "original-decl span must point at the trait `param mass` \
+         (between byte {} and {}), got {:?}",
+        param_mass,
+        lambda_mass,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= lambda_mass,
+        "child-site span must point at the lambda's `|mass|` (>= byte {}), \
+         got {:?}",
+        lambda_mass,
+        l0.span
+    );
+}
