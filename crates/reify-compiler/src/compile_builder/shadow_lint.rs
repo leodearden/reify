@@ -65,11 +65,19 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
     use reify_syntax::Declaration;
     match decl {
         Declaration::Structure(s) => {
+            // Spec §8.8 trait-merge exclusion: walk ONLY the structure's own
+            // `s.members`. Trait member sets are never injected into the frame,
+            // so a structure that declares one member to satisfy multiple
+            // trait requirements has exactly one entry in its frame — no
+            // false-positive shadow. Exclusion is automatic by single-source
+            // iteration; no explicit filter is required.
             let frame = collect_body_frame(&s.members);
             let frames: Vec<&Frame> = vec![&frame];
             walk_members(&s.members, &frames, diagnostics);
         }
         Declaration::Occurrence(o) => {
+            // Same single-source-iteration rule as Structure (§8.8): we never
+            // visit trait member sets, only the occurrence's own members.
             let frame = collect_body_frame(&o.members);
             let frames: Vec<&Frame> = vec![&frame];
             walk_members(&o.members, &frames, diagnostics);
