@@ -251,6 +251,16 @@ pub enum DiagnosticCode {
     /// `IndexAccess`/`FunctionCall`/`EnumAccess` and any other
     /// non-`MemberAccess` expression as a fresh chain root.
     DeepDotChain,
+    /// Origin: `crates/reify-expr/src/interp.rs`.
+    /// Emitted as a Warning when an interpolation call selects
+    /// `InterpolationMethod::Rbf` or `InterpolationMethod::Kriging`, both of
+    /// which are deferred to post-v0.1. The call falls back to
+    /// `InterpolationMethod::Linear` and emits a single diagnostic of the form:
+    ///
+    /// `"interpolation method '<RBF|Kriging>' is deferred to post-v0.1; falling back to Linear"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_INTERPOLATION_DEFERRED`.
+    InterpolationDeferred,
 }
 
 /// A diagnostic message with location and optional labels.

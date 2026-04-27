@@ -35,7 +35,7 @@
 //! arithmetic, matches typical engineering-CAD field behaviour, and keeps
 //! cubic from producing wildly off values via linear extrapolation.
 
-use reify_types::Diagnostic;
+use reify_types::{Diagnostic, DiagnosticCode};
 
 /// Selected interpolation method.
 ///
@@ -75,6 +75,28 @@ pub struct InterpolationResult {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve a possibly-deferred [`InterpolationMethod`] to a concrete v0.1
+/// implementation, producing a single warning diagnostic when a deferred
+/// method is requested.
+///
+/// `Rbf` and `Kriging` map to [`InterpolationMethod::Linear`] plus a single
+/// `Severity::Warning` diagnostic with code
+/// [`DiagnosticCode::InterpolationDeferred`] and message of the form
+/// `"interpolation method '<RBF|Kriging>' is deferred to post-v0.1; falling back to Linear"`.
+/// All other methods pass through unchanged with no diagnostic.
+fn resolve_method(method: InterpolationMethod) -> (InterpolationMethod, Option<Diagnostic>) {
+    let deferred_name = match method {
+        InterpolationMethod::Rbf => "RBF",
+        InterpolationMethod::Kriging => "Kriging",
+        _ => return (method, None),
+    };
+    let msg = format!(
+        "interpolation method '{deferred_name}' is deferred to post-v0.1; falling back to Linear"
+    );
+    let diag = Diagnostic::warning(msg).with_code(DiagnosticCode::InterpolationDeferred);
+    (InterpolationMethod::Linear, Some(diag))
+}
 
 /// Locate the cell `[grid[i], grid[i+1]]` bracketing `query` in a strictly
 /// ascending grid. Returns `Some(i)` if `query` falls inside the grid (taking
@@ -191,12 +213,14 @@ pub fn interpolate_1d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::Rbf => unreachable!(
-            "InterpolationMethod::Rbf 1D not yet implemented"
-        ),
-        InterpolationMethod::Kriging => unreachable!(
-            "InterpolationMethod::Kriging 1D not yet implemented"
-        ),
+        InterpolationMethod::Rbf | InterpolationMethod::Kriging => {
+            let (resolved, diag) = resolve_method(method);
+            let mut result = interpolate_1d(resolved, grid, values, query);
+            if let Some(d) = diag {
+                result.diagnostics.push(d);
+            }
+            result
+        }
     }
 }
 
@@ -358,12 +382,14 @@ pub fn interpolate_2d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::Rbf => unreachable!(
-            "InterpolationMethod::Rbf 2D not yet implemented"
-        ),
-        InterpolationMethod::Kriging => unreachable!(
-            "InterpolationMethod::Kriging 2D not yet implemented"
-        ),
+        InterpolationMethod::Rbf | InterpolationMethod::Kriging => {
+            let (resolved, diag) = resolve_method(method);
+            let mut result = interpolate_2d(resolved, grid_x, grid_y, values, query);
+            if let Some(d) = diag {
+                result.diagnostics.push(d);
+            }
+            result
+        }
     }
 }
 
@@ -504,12 +530,14 @@ pub fn interpolate_3d(
                 diagnostics: Vec::new(),
             }
         }
-        InterpolationMethod::Rbf => unreachable!(
-            "InterpolationMethod::Rbf 3D not yet implemented"
-        ),
-        InterpolationMethod::Kriging => unreachable!(
-            "InterpolationMethod::Kriging 3D not yet implemented"
-        ),
+        InterpolationMethod::Rbf | InterpolationMethod::Kriging => {
+            let (resolved, diag) = resolve_method(method);
+            let mut result = interpolate_3d(resolved, grid_x, grid_y, grid_z, values, query);
+            if let Some(d) = diag {
+                result.diagnostics.push(d);
+            }
+            result
+        }
     }
 }
 
