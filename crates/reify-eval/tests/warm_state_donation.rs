@@ -209,8 +209,8 @@ fn donation_reuse_remove_then_reappear_seeds_cache_warm_state() {
 /// `cache.warm_state` to alter its output today, so an
 /// `assert_eq!(post_evict_value, &cold_value)` would be trivially satisfied
 /// regardless of whether the seed pipeline is broken. That assertion becomes
-/// load-bearing only after a real warm-state consumer lands; track as a
-/// follow-up at that point.
+/// load-bearing only after a real warm-state consumer lands; tracked as
+/// Task 2518 (add warm-state parity assertion once a real consumer exists).
 ///
 /// Eviction mechanics: a 50-byte budget pool. Donating a 32-byte entry
 /// for `volume` fills 32/50. A subsequent 100-byte unrelated donation

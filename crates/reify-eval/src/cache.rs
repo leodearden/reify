@@ -2089,7 +2089,8 @@ mod tests {
         let rid = RealizationNodeId::new("Bracket", 0);
         let node = NodeId::Realization(rid.clone());
 
-        // Helper doesn't exist yet — this test is the TDD red phase.
+        // Verifies the documented contract: entry exists under NodeId::Realization(rid)
+        // with a CachedResult::GeometryHandle placeholder, and donate_warm_state returns true.
         store.insert_synthetic_realization_entry(&rid);
 
         // (a) Entry must exist under NodeId::Realization(rid) with a
