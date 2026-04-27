@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, Diagnostic, DiagnosticCode,
-    DimensionVector, ResolutionProblem, Severity, SolveResult, Type, Value, ValueCellId, ValueMap,
+    DimensionVector, ResolutionProblem, SolveResult, Type, Value, ValueCellId, ValueMap,
 };
 
 use crate::slvs_sys::{
@@ -950,16 +950,11 @@ impl ConstraintSolver for SolveSpaceSolver {
                 }
             }
             SlvsSolveResult::Inconsistent { failed_ids } => SolveResult::Infeasible {
-                diagnostics: vec![Diagnostic {
-                    severity: Severity::Error,
-                    message: format!(
+                diagnostics: vec![Diagnostic::error(format!(
                         "geometric constraints are inconsistent ({} failed)",
                         failed_ids.len()
-                    ),
-                    labels: vec![],
-                    code: Some(DiagnosticCode::ConstraintUnsatisfiable),
-                    candidates: Vec::new(),
-                }],
+                    ))
+                    .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
             },
             SlvsSolveResult::DidntConverge => SolveResult::NoProgress {
                 reason: "SolveSpace solver did not converge".to_string(),
