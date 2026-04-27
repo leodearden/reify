@@ -1,23 +1,16 @@
-// Field source kinds worked example — exercises analytical, sampled, and
-// composed source kinds from §4.1.4 of docs/reify-language-spec.md.
+// Field source kinds worked example — exercises analytical and composed
+// source kinds from §4.1.4 of docs/reify-language-spec.md.
+// (sampled is deferred to v0.2; see task 2416 and DiagnosticCode::FieldSampledV02)
 //
 // Coverage:
 //   1. Analytical source: lambda evaluated directly at each sample point
-//   2. Sampled source: resolution+interpolation config (runtime data pending)
-//   3. Composed source: lambda evaluated at each sample point (pure arithmetic)
-//   4. Structure sampling analytical and composed fields with range constraints
+//   2. Composed source: lambda evaluated at each sample point (pure arithmetic)
+//   3. Structure sampling analytical and composed fields with range constraints
 
 // ── Analytical field ─────────────────────────────────────────────────────────
 
 // f(p) = 300.0 + 50.0 * p  — linear temperature profile
 field def temperature_distribution : Real -> Real { source = analytical { |p| 300.0 + 50.0 * p } }
-
-// ── Sampled field ─────────────────────────────────────────────────────────────
-
-// Grid-based field with linear interpolation (runtime data pending).
-// The sampled lambda is Value::Undef until field-data infrastructure lands;
-// the source kind is verified via metadata only (not sampled at runtime).
-field def material_density : Real -> Real { source = sampled { resolution = 100  interpolation = linear } }
 
 // ── Composed field ────────────────────────────────────────────────────────────
 
@@ -25,8 +18,6 @@ field def material_density : Real -> Real { source = sampled { resolution = 100 
 field def composed_stiffness : Real -> Real { source = composed { |p| 2.0 * p + 1.0 } }
 
 // ── Structure exercising analytical and composed fields ───────────────────────
-// Note: material_density (sampled) is NOT sampled at runtime — its lambda is
-// Value::Undef until field-data infrastructure lands (sibling tasks 2338/2341).
 
 structure def ComposedStiffnessDemo {
     // Sample temperature_distribution at p=2.0:  300.0 + 50.0 * 2.0 = 400.0 (exact)

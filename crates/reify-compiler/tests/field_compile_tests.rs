@@ -43,24 +43,46 @@ fn compile_field_analytical() {
     }
 }
 
-// ── Step 15: compile sampled field ──────────────────────────────────
+// ── Step 15 / 2416: compile sampled field emits v0.2 deferral diagnostic ───
 
 #[test]
 fn compile_field_sampled() {
     let module = compile_source(
         "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
     );
-    assert!(
-        errors_only(&module).is_empty(),
-        "errors: {:?}",
-        errors_only(&module)
+
+    // sampled is deferred to v0.2: compilation must emit exactly one error and
+    // it must be FieldSampledV02 (tighter than .any() to catch regressions where
+    // the config path emits additional unrelated errors).
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error (FieldSampledV02), got: {:?}",
+        errors
     );
+    let diag = &errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::FieldSampledV02),
+        "expected FieldSampledV02 code, got: {:?}",
+        diag.code
+    );
+    assert!(
+        diag.message.contains("v0.2") && diag.message.contains("sampled"),
+        "expected message to contain 'v0.2' and 'sampled', got: {:?}",
+        diag.message
+    );
+    assert!(!diag.labels.is_empty(), "expected at least one label");
+    assert!(!diag.labels[0].span.is_empty(), "expected non-empty span");
+
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
     assert_eq!(field.name, "pressure");
 
-    // Source should be sampled with config key-value pairs
+    // Source should be sampled with config key-value pairs (defence-in-depth:
+    // compilation still produces the variant even though a diagnostic is emitted).
     match &field.source {
         reify_compiler::CompiledFieldSource::Sampled { config } => {
             assert_eq!(config.len(), 2, "expected 2 config entries");

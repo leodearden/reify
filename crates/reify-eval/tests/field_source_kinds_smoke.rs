@@ -1,19 +1,21 @@
 //! Worked-example smoke test for field source kinds.
 //!
-//! Exercises the three user-writeable field source kinds — `analytical`,
-//! `sampled`, and `composed` — as defined by §4.1.4 of
+//! Exercises the two v0.1 user-writeable field source kinds — `analytical`
+//! and `composed` — as defined by §4.1.4 of
 //! `docs/reify-language-spec.md` ("Field Declarations").
+//!
+//! (`sampled` is deferred to v0.2 and has been removed from the fixture.)
 //!
 //! Four-test plan:
 //!   1. `composed_stiffness_ri_parses`              — parse only, no errors
-//!   2. `composed_stiffness_compiles_with_stdlib`   — compile, three fields present
-//!   3. `composed_stiffness_evals_with_three_field_source_kinds` — eval, correct FieldSourceKind per field
+//!   2. `composed_stiffness_compiles_with_stdlib`   — compile, two fields present
+//!   3. `composed_stiffness_evals_with_two_field_source_kinds` — eval, correct FieldSourceKind per field
 //!   4. `composed_stiffness_constraints_all_satisfied` — structure constraints all Satisfied
 //!
 //! Uses `examples/fields/composed_stiffness.ri` as the fixture file.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 use reify_types::{FieldSourceKind, ModulePath, Satisfaction, Severity, Value, FIELD_ENTITY_PREFIX, ValueCellId};
 
 /// Absolute path to the fixture, resolved at compile time from the crate root.
@@ -42,9 +44,10 @@ fn composed_stiffness_ri_parses() {
     );
 }
 
-/// Compile `examples/fields/composed_stiffness.ri` and verify all three field
-/// source kinds are present: `temperature_distribution` (analytical),
-/// `material_density` (sampled), and `composed_stiffness` (composed).
+/// Compile `examples/fields/composed_stiffness.ri` and verify both v0.1
+/// field source kinds are present: `temperature_distribution` (analytical)
+/// and `composed_stiffness` (composed).  Also confirms the module compiles
+/// without error-severity diagnostics (v0.1-clean).
 #[test]
 fn composed_stiffness_compiles_with_stdlib() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
@@ -52,11 +55,18 @@ fn composed_stiffness_compiles_with_stdlib() {
 
     let compiled = parse_and_compile_with_stdlib(&source);
 
-    // Exactly three field defs must be present.
+    // Example must be v0.1-clean — no error-severity diagnostics.
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "expected no errors, got: {:?}",
+        errors_only(&compiled)
+    );
+
+    // Exactly two field defs must be present (sampled removed in task 2416).
     assert_eq!(
         compiled.fields.len(),
-        3,
-        "expected 3 fields, got {}: {:?}",
+        2,
+        "expected 2 fields, got {}: {:?}",
         compiled.fields.len(),
         compiled.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
@@ -65,14 +75,16 @@ fn composed_stiffness_compiles_with_stdlib() {
     let names: Vec<&str> = compiled.fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["temperature_distribution", "material_density", "composed_stiffness"],
+        vec!["temperature_distribution", "composed_stiffness"],
         "unexpected field names: {:?}",
         names
     );
 }
 
 /// Eval the fixture and verify each field's `Value::Field` carries the expected
-/// `FieldSourceKind`: Analytical, Sampled, Composed.
+/// `FieldSourceKind`: Analytical and Composed.
+///
+/// (`sampled` is deferred to v0.2 and has been removed from the fixture in task 2416.)
 ///
 /// Note: tests #3 and #4 intentionally re-run parse+compile independently rather than
 /// sharing a setup step. A failure here (wrong `FieldSourceKind`) points specifically
@@ -80,7 +92,7 @@ fn composed_stiffness_compiles_with_stdlib() {
 /// the sample/constraint pipeline. Keeping them separate gives narrow failure modes.
 /// See plan design decision #7.
 #[test]
-fn composed_stiffness_evals_with_three_field_source_kinds() {
+fn composed_stiffness_evals_with_two_field_source_kinds() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/fields/composed_stiffness.ri should exist");
 
@@ -101,7 +113,6 @@ fn composed_stiffness_evals_with_three_field_source_kinds() {
     // Each field cell must exist in result.values with the correct FieldSourceKind.
     let expected: &[(&str, FieldSourceKind)] = &[
         ("temperature_distribution", FieldSourceKind::Analytical),
-        ("material_density", FieldSourceKind::Sampled),
         ("composed_stiffness", FieldSourceKind::Composed),
     ];
 

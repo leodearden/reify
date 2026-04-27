@@ -8,6 +8,7 @@
 > - § Analytical — type-checking & sampling semantics (**this file; task 2336**)
 > - § Composed — composition chain type-checking (task 2343, TBD)
 > - § Imported — v0.2 deferral diagnostic (task 2344, TBD)
+> - § Sampled — v0.2 deferral diagnostic (task 2416)
 > - § Cross-cutting smoke tests (task 2346, TBD)
 
 ---
@@ -129,11 +130,14 @@ False / Undef) throughout evaluation. The following rules are enforced:
 
 ## § Sampled source kind
 
-> **TBD — task 2346**
+> **TBD — task 2416** (v0.2 deferral diagnostic implemented here)
 
-A field with a `sampled` source stores pre-computed point-value data with an
-interpolation strategy. Semantics for grid resolution, interpolation methods,
-and evaluation are deferred to task 2346.
+A field with a `sampled` source declares discrete point-value data with an
+interpolation strategy. In v0.1 the compiler emits a `FieldSampledV02`
+diagnostic (mnemonic `E_FIELD_SAMPLED_V02`) to indicate that this feature is
+deferred to v0.2 (v0.1 supports `analytical` and `composed` only). Full
+sampling-pipeline specification (grid resolution, interpolation methods,
+evaluation semantics) deferred to v0.2.
 
 ---
 

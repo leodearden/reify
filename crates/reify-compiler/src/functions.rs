@@ -273,6 +273,14 @@ pub(crate) fn compile_field(
             }
         }
         reify_syntax::FieldSource::Sampled { config } => {
+            // Intentional asymmetry with the Imported arm below: we walk and compile
+            // the config block before emitting the deferral diagnostic so that
+            // (a) any malformed config expressions surface secondary diagnostics
+            // rather than being silently dropped, and (b) the resulting
+            // `CompiledFieldSource::Sampled { config }` is well-formed — keeping
+            // the `engine_eval.rs` Undef defence-in-depth arm reachable and the
+            // content-hash at lines below stable.  The compiled config is otherwise
+            // dead at runtime (engine_eval returns Undef for Sampled).
             let compiled_config: Vec<(String, CompiledExpr)> = config
                 .iter()
                 .map(|(key, val_expr)| {
@@ -290,6 +298,16 @@ pub(crate) fn compile_field(
                     (key.clone(), compiled)
                 })
                 .collect();
+            diagnostics.push(
+                Diagnostic::error(
+                    "sampled field sources are deferred to v0.2; v0.1 supports analytical and composed only",
+                )
+                .with_code(DiagnosticCode::FieldSampledV02)
+                .with_label(DiagnosticLabel::new(
+                    field_def.span,
+                    "sampled field source is deferred to v0.2",
+                )),
+            );
             CompiledFieldSource::Sampled {
                 config: compiled_config,
             }
@@ -303,7 +321,7 @@ pub(crate) fn compile_field(
         reify_syntax::FieldSource::Imported { .. } => {
             diagnostics.push(
                 Diagnostic::error(
-                    "imported field sources are deferred to v0.2; v0.1 supports analytical, sampled, and composed only",
+                    "imported field sources are deferred to v0.2; v0.1 supports analytical and composed only",
                 )
                 .with_code(DiagnosticCode::FieldImportedV02)
                 .with_label(DiagnosticLabel::new(
