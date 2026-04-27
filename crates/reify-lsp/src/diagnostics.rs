@@ -1012,6 +1012,14 @@ structure S {
              got: {:#?}",
             diags
         );
+        // Keep discriminating substring so a different emitter sneaking in would fail this test
+        // even if the counter is satisfied — counter alone can't distinguish which Warning fired.
+        assert!(
+            diags.iter().any(|d| d.message.contains("type-kind mismatch")),
+            "param_override_type_kind: expected a diagnostic containing 'type-kind mismatch'; \
+             got: {:#?}",
+            diags
+        );
         assert!(
             engine.last_param_override_type_kind_rejections() >= 1,
             "param_override_type_kind: structural check — type-kind rejection counter must be ≥ 1"
@@ -1038,6 +1046,14 @@ structure S {
         assert!(
             diags.iter().any(|d| d.severity == Severity::Warning),
             "param_override_dimension: expected at least one Warning-severity diagnostic; \
+             got: {:#?}",
+            diags
+        );
+        // Keep discriminating substring so a different emitter sneaking in would fail this test
+        // even if the counter is satisfied — counter alone can't distinguish which Warning fired.
+        assert!(
+            diags.iter().any(|d| d.message.contains("dimension mismatch")),
+            "param_override_dimension: expected a diagnostic containing 'dimension mismatch'; \
              got: {:#?}",
             diags
         );
@@ -1069,6 +1085,16 @@ structure S {
             diags.iter().any(|d| d.severity == Severity::Error),
             "sub_component_unknown: expected at least one Error-severity diagnostic; \
              got: {:#?}",
+            diags
+        );
+        // Keep discriminating substrings so a different emitter sneaking in would fail this test
+        // even if the counter is satisfied — counter alone can't distinguish which Error fired.
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("sub-component") || d.message.contains("references unknown structure")),
+            "sub_component_unknown: expected a diagnostic containing 'sub-component' or \
+             'references unknown structure'; got: {:#?}",
             diags
         );
         assert!(

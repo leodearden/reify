@@ -40,9 +40,13 @@ fn param_override_type_kind_rejection_counter_increments() {
     // Run eval again — triggers the type-kind rejection path.
     let _ = engine.eval(&compiled);
 
-    assert!(
-        engine.last_param_override_type_kind_rejections() >= 1,
-        "type-kind mismatch rejection must have incremented the counter; got 0"
+    // Assert exactly 1 (not just ≥ 1) so a cumulative-count regression (counter not
+    // resetting at eval() entry) would surface as 2+ on a repeated triggering eval.
+    assert_eq!(
+        engine.last_param_override_type_kind_rejections(),
+        1,
+        "type-kind mismatch rejection must have incremented the counter to exactly 1; \
+         if > 1, counter may not be resetting at eval() entry"
     );
 }
 
@@ -78,9 +82,13 @@ fn param_override_dimension_rejection_counter_increments() {
     // Run eval again — triggers the dimension rejection path.
     let _ = engine.eval(&compiled);
 
-    assert!(
-        engine.last_param_override_dimension_rejections() >= 1,
-        "dimension mismatch rejection must have incremented the counter; got 0"
+    // Assert exactly 1 (not just ≥ 1) so a cumulative-count regression (counter not
+    // resetting at eval() entry) would surface as 2+ on a repeated triggering eval.
+    assert_eq!(
+        engine.last_param_override_dimension_rejections(),
+        1,
+        "dimension mismatch rejection must have incremented the counter to exactly 1; \
+         if > 1, counter may not be resetting at eval() entry"
     );
 }
 
@@ -106,17 +114,24 @@ fn sub_component_unknown_structure_counter_increments_in_eval_and_eval_cached() 
 
     // eval() path — writer site at engine_eval.rs (first eval pass).
     let _ = engine.eval(&compiled);
-    assert!(
-        engine.last_sub_component_unknown_structure_errors() >= 1,
-        "eval() sub-component unknown-structure path must have incremented the counter"
+    // Assert exactly 1 (not just ≥ 1): each call resets the counter at entry, so exactly one
+    // unknown-structure reference means exactly one increment per call. If the counter became
+    // cumulative (forgot to reset), the second call would show 2 and fail.
+    assert_eq!(
+        engine.last_sub_component_unknown_structure_errors(),
+        1,
+        "eval() sub-component unknown-structure path must have incremented the counter to \
+         exactly 1; if > 1, counter may not be resetting at eval() entry"
     );
 
     // eval_cached() path — writer site at engine_eval.rs (eval_cached pass).
     // Each eval_cached() call resets its own counter independently (reset-at-entry).
     let version = VersionId(999);
     let _ = engine.eval_cached(&compiled, version);
-    assert!(
-        engine.last_sub_component_unknown_structure_errors() >= 1,
-        "eval_cached() sub-component unknown-structure path must have incremented the counter"
+    assert_eq!(
+        engine.last_sub_component_unknown_structure_errors(),
+        1,
+        "eval_cached() sub-component unknown-structure path must have incremented the counter \
+         to exactly 1; if > 1, counter may not be resetting at eval_cached() entry"
     );
 }
