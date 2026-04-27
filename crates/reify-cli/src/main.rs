@@ -459,12 +459,9 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::from(2u8);
     }
 
-    // `--split` (markdown-only by the guard above) requires `-o <dir>` so we
-    // know where to write the per-item files.  Single-mode markdown can target
-    // stdout, so this combined check is guarded on `format == Markdown && split
-    // && output.is_none()` rather than `split && output.is_none()`.  Hoisted
-    // above `parse_and_compile` so usage errors don't pay for parsing.
-    if split && format == Format::Markdown && output.is_none() {
+    // `--split` requires `-o <dir>` so we know where to write the per-item
+    // files.  Hoisted above `parse_and_compile` so usage errors don't pay for parsing.
+    if split && output.is_none() {
         eprintln!("Error: --split requires -o <directory>");
         eprintln!("{}", DOC_USAGE);
         return ExitCode::from(2u8);
