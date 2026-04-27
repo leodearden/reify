@@ -183,3 +183,34 @@ structure S {
         warning.message
     );
 }
+
+/// `Direction.In.a.b.c` parses as `MA(MA(MA(EnumAccess(Direction, In), "a"),
+/// "b"), "c")`. Chain length is 4 (root = EnumAccess single segment + 3
+/// hops `.a.b.c`) = threshold → NO warn. The lint counts `.field` hops only;
+/// enum-variant access is structurally distinct in the AST.
+#[test]
+fn enum_access_root_within_threshold_does_not_warn() {
+    let source = r#"
+enum Direction { In, Out }
+
+structure S {
+    let x = Direction.In.a.b.c
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let deep_dot_chain_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeepDotChain))
+        .collect();
+
+    assert!(
+        deep_dot_chain_warnings.is_empty(),
+        "expected no DeepDotChain warnings for `Direction.In.a.b.c` (length 4 = threshold), \
+         got: {:?}",
+        deep_dot_chain_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
