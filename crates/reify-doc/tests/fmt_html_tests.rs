@@ -492,6 +492,60 @@ fn parameters_table_omitted_when_empty() {
     assert!(!out.contains("<table>"));
 }
 
+/// Ports table: `<h3>Ports</h3>` plus a 5-column `<table>` with
+/// Name | Kind | Role | Type | Description.  Kind is em-dash placeholder
+/// (PortDoc has no kind field), Description joins members with ", " and
+/// uses em-dash when empty.
+#[test]
+fn ports_table_renders() {
+    let item = structure_with_ports(
+        "Board",
+        vec![
+            PortDoc {
+                name: "pwr_in".into(),
+                direction: "in".into(),
+                type_name: "Power".into(),
+                members: vec!["voltage".into(), "current".into()],
+            },
+            PortDoc {
+                name: "ant".into(),
+                direction: "out".into(),
+                type_name: "RF".into(),
+                members: vec![],
+            },
+        ],
+    );
+    let out = render_one_item(item);
+
+    assert!(out.contains("<h3>Ports</h3>"), "missing <h3>Ports</h3>; got:\n{out}");
+    // 5-column header.
+    assert!(out.contains("<th>Name</th>"));
+    assert!(out.contains("<th>Kind</th>"));
+    assert!(out.contains("<th>Role</th>"));
+    assert!(out.contains("<th>Type</th>"));
+    assert!(out.contains("<th>Description</th>"));
+    // Name/Type wrapped in <code>.
+    assert!(out.contains("<td><code>pwr_in</code></td>"),
+        "expected pwr_in in <code>; got:\n{out}");
+    assert!(out.contains("<td><code>Power</code></td>"));
+    assert!(out.contains("<td><code>ant</code></td>"));
+    assert!(out.contains("<td><code>RF</code></td>"));
+    // Direction in Role column.
+    assert!(out.contains("<td>in</td>"), "expected `in` Role cell; got:\n{out}");
+    assert!(out.contains("<td>out</td>"), "expected `out` Role cell; got:\n{out}");
+    // Members joined by ", " in Description; em-dash when empty.
+    assert!(out.contains("voltage, current"),
+        "expected joined members; got:\n{out}");
+}
+
+/// Empty ports list must produce no `<h3>Ports</h3>` and no table for ports.
+#[test]
+fn ports_table_omitted_when_empty() {
+    let item = structure_with_ports("Board", vec![]);
+    let out = render_one_item(item);
+    assert!(!out.contains("<h3>Ports</h3>"));
+}
+
 /// Empty module (no items) must produce no `<nav>` at all.
 #[test]
 fn toc_nav_omitted_when_no_items() {
