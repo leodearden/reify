@@ -753,6 +753,222 @@ fn optimized_annotation_emits_italic_note() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// TOC (table of contents)
+// ---------------------------------------------------------------------------
+
+/// Helper: build a minimal item with the given variant and name. Test-only
+/// scaffolding used by the TOC tests.
+fn mk_item(kind: &str, name: &str) -> ItemDoc {
+    match kind {
+        "structure" => ItemDoc::Structure {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+            constraints: vec![], sub_components: vec![], realizations: vec![],
+            meta: vec![],
+        },
+        "occurrence" => ItemDoc::Occurrence {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
+            constraints: vec![], sub_components: vec![], realizations: vec![],
+            meta: vec![],
+        },
+        "trait" => ItemDoc::Trait {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], members: vec![],
+        },
+        "function" => ItemDoc::Function {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            signature: format!("fn {name}()"),
+        },
+        "field" => ItemDoc::Field {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            type_repr: "i32".into(), default_repr: None,
+        },
+        "purpose" => ItemDoc::Purpose {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            expr_repr: "x".into(), direction: "minimize".into(),
+        },
+        "enum" => ItemDoc::Enum {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], variants: vec![],
+        },
+        "unit" => ItemDoc::Unit {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            base_unit: "Meter".into(), scale: "1.0".into(),
+        },
+        "type_alias" => ItemDoc::TypeAlias {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![], type_repr: "f64".into(),
+        },
+        "constraint_def" => ItemDoc::ConstraintDef {
+            name: name.into(), doc: None, is_pub: true,
+            annotations: vec![], pragmas: vec![],
+            expr_repr: "x > 0".into(),
+        },
+        other => panic!("unknown kind: {other}"),
+    }
+}
+
+/// TOC must group by kind in fixed order: Traits → Structures → Occurrences
+/// → Enums → Functions → Constants.  Within a group, items appear
+/// alphabetically.  Empty groups are omitted entirely.  Each entry is an
+/// anchor link `- [`{name}`](#{name})`.
+#[test]
+fn toc_groups_kinds_in_fixed_order() {
+    let items = vec![
+        // Mix of kinds and out-of-alphabetical-order names so the test verifies
+        // both bucketing and within-bucket sort.
+        mk_item("structure", "Zeta"),
+        mk_item("structure", "Alpha"),
+        mk_item("trait", "HasPower"),
+        mk_item("occurrence", "MCU"),
+        mk_item("enum", "Color"),
+        mk_item("function", "compute"),
+        mk_item("type_alias", "Meters"),
+        mk_item("unit", "Milliamp"),
+    ];
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items,
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+
+    // Each non-empty group's H3 must appear, in order.
+    let traits_idx = out.find("### Traits").expect("Traits H3 missing");
+    let structures_idx = out
+        .find("### Structures")
+        .expect("Structures H3 missing");
+    let occurrences_idx = out
+        .find("### Occurrences")
+        .expect("Occurrences H3 missing");
+    let enums_idx = out.find("### Enums").expect("Enums H3 missing");
+    let functions_idx = out
+        .find("### Functions")
+        .expect("Functions H3 missing");
+    let constants_idx = out
+        .find("### Constants")
+        .expect("Constants H3 missing");
+    assert!(
+        traits_idx < structures_idx
+            && structures_idx < occurrences_idx
+            && occurrences_idx < enums_idx
+            && enums_idx < functions_idx
+            && functions_idx < constants_idx,
+        "TOC group order wrong: traits={traits_idx} structures={structures_idx} \
+         occurrences={occurrences_idx} enums={enums_idx} functions={functions_idx} \
+         constants={constants_idx}\n{out}"
+    );
+
+    // Anchor link format and within-group alphabetical sort.
+    assert!(
+        out.contains("- [`Alpha`](#Alpha)"),
+        "anchor link for Alpha missing:\n{out}"
+    );
+    assert!(
+        out.contains("- [`Zeta`](#Zeta)"),
+        "anchor link for Zeta missing:\n{out}"
+    );
+    let alpha_idx = out.find("- [`Alpha`]").expect("Alpha bullet present");
+    let zeta_idx = out.find("- [`Zeta`]").expect("Zeta bullet present");
+    assert!(
+        alpha_idx < zeta_idx,
+        "Alpha must precede Zeta in TOC: alpha@{alpha_idx} zeta@{zeta_idx}\n{out}"
+    );
+
+    // The TOC sits between the module H1 (and optional doc paragraph) and the
+    // first item H2 — `## Contents` H2 must precede the first `## ` (item)
+    // heading.
+    let contents = out.find("## Contents").expect("Contents H2 present");
+    let first_h1 = out.find("# m\n").expect("module H1 present");
+    let first_item_h2 = out
+        .find("## `")
+        .expect("first item H2 with backtick keyword present");
+    assert!(
+        first_h1 < contents && contents < first_item_h2,
+        "TOC must sit between module H1 and first item H2: h1={first_h1} contents={contents} item={first_item_h2}\n{out}"
+    );
+}
+
+/// Empty groups are omitted entirely. A module with only a Trait must NOT
+/// emit `### Structures`, `### Occurrences`, etc.
+#[test]
+fn toc_omits_empty_groups() {
+    let items = vec![mk_item("trait", "HasPower")];
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items,
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+    assert!(out.contains("### Traits"), "Traits group missing:\n{out}");
+    assert!(
+        !out.contains("### Structures"),
+        "empty Structures group should be omitted:\n{out}"
+    );
+    assert!(
+        !out.contains("### Occurrences"),
+        "empty Occurrences group should be omitted:\n{out}"
+    );
+    assert!(
+        !out.contains("### Enums"),
+        "empty Enums group should be omitted:\n{out}"
+    );
+    assert!(
+        !out.contains("### Functions"),
+        "empty Functions group should be omitted:\n{out}"
+    );
+    assert!(
+        !out.contains("### Constants"),
+        "empty Constants group should be omitted:\n{out}"
+    );
+}
+
+/// "Constants" group buckets Field, Unit, TypeAlias, ConstraintDef, and
+/// Purpose. All five items must appear under `### Constants`.
+#[test]
+fn toc_constants_bucket_includes_field_unit_alias_constraint_purpose() {
+    let items = vec![
+        mk_item("field", "supply_v"),
+        mk_item("unit", "Milliamp"),
+        mk_item("type_alias", "Meters"),
+        mk_item("constraint_def", "voltage_safe"),
+        mk_item("purpose", "minimize_area"),
+    ];
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items,
+            ..Default::default()
+        }],
+    };
+    let out = render_single(&model);
+    assert!(out.contains("### Constants"), "Constants H3 missing:\n{out}");
+    let constants = out.find("### Constants").unwrap();
+    // Find each of the 5 anchor lines after the Constants header.
+    for name in ["supply_v", "Milliamp", "Meters", "voltage_safe", "minimize_area"] {
+        let needle = format!("- [`{name}`](#{name})");
+        assert!(
+            out.contains(&needle),
+            "missing anchor for {name}:\n{out}"
+        );
+        let pos = out.find(&needle).unwrap();
+        assert!(
+            pos > constants,
+            "anchor for {name} must be after Constants H3"
+        );
+    }
+}
+
 /// `@test`-annotated items are excluded from the main item flow and instead
 /// emitted under a `## Tests` H2 subsection at the bottom of the module.
 #[test]
