@@ -1,0 +1,49 @@
+// Stdlib: Chemical Material Traits
+// Provides chemical characterization trait definitions for engineering materials.
+//
+// Spec reference: docs/reify-stdlib-reference.md §6.6 lines 724-736.
+// Audit reference: docs/notes/stdlib-trait-audit.md §6.6 (both traits and both
+// enums marked MISSING).
+//
+// Note on parent trait name: the spec text says `: Material` but `Material` was
+// renamed to `MaterialSpec` in task 1876 (see BREAKING CHANGE block in
+// materials_mechanical.ri). These traits use `: MaterialSpec` so the parent
+// edge resolves correctly; the convention is established by the §6.2-§6.5
+// traits in the sibling stdlib modules.
+//
+// Note on enum-typed param pattern: the `HardnessScale` enum + `Hard` trait
+// in materials_mechanical.ri lines 88-94 establishes the precedent for
+// enum-typed params in material traits. The chemical traits follow the same
+// syntax: `param field : EnumName`.
+
+// ── CorrosionClass enum ───────────────────────────────────────────────────────
+
+// ISO 9223 corrosion category for atmospheric environments.
+// C1 = very low, C5 = very high (industrial/marine).
+enum CorrosionClass { C1, C2, C3, C4, C5 }
+
+// ── BiocompatibilityClass enum ────────────────────────────────────────────────
+
+// Biocompatibility classification per USP and ISO standards.
+// USP_Class_I = highly purified (plastic containers for aqueous preparations).
+// USP_Class_VI = most stringent USP plastic classification (implant grade).
+// ISO_10993   = ISO standard for biological evaluation of medical devices.
+enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
+
+// ── CorrosionResistant ────────────────────────────────────────────────────────
+
+// A corrosion-resistant material is a MaterialSpec material that carries a
+// declared corrosion class per ISO 9223. The corrosion_class param captures
+// the ISO 9223 category in which the material maintains acceptable integrity.
+trait CorrosionResistant : MaterialSpec {
+    param corrosion_class : CorrosionClass
+}
+
+// ── Biocompatible ─────────────────────────────────────────────────────────────
+
+// A biocompatible material is a MaterialSpec material that satisfies a
+// recognised biocompatibility standard. The biocompatibility_class param
+// records the applicable standard classification.
+trait Biocompatible : MaterialSpec {
+    param biocompatibility_class : BiocompatibilityClass
+}
