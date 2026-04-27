@@ -65,6 +65,29 @@ pub struct WarmStatePool {
 }
 
 impl WarmStatePool {
+    /// Maximum number of buffered telemetry events before the cap enforcement fires.
+    ///
+    /// # Rationale
+    /// [`WarmStatePool::events`] is unbounded until the engine wires `drain_events()`
+    /// at evaluation boundaries (task 2345 follow-up).  This constant defines the hard
+    /// cap for two complementary safety nets:
+    ///
+    /// 1. **Debug-build tripwire** — a `debug_assert!` fires when the buffer reaches
+    ///    this count, surfacing "engine never drains" loudly during `cargo test` (which
+    ///    runs in debug mode by default).
+    ///
+    /// 2. **Release-build auto-trim** — when `events.len()` exceeds this cap the oldest
+    ///    half of the buffer is dropped so memory stays bounded, and a single
+    ///    `tracing::warn!` is emitted per pool instance (see `auto_trim_warned`).
+    ///
+    /// # Sizing
+    /// 65 536 events × ≈64 bytes each ≈ **4 MiB** — three orders of magnitude below the
+    /// 2 GiB warm-pool budget.  Normal test fixtures donate at most a handful of events,
+    /// so this cap will never fire accidentally.
+    ///
+    /// See also: task 2345 (engine drain wiring follow-up).
+    pub const MAX_BUFFERED_EVENTS: usize = 65_536;
+
     /// Create a new pool with the given memory budget in bytes.
     ///
     /// This is a back-compat wrapper around [`with_budget`](Self::with_budget).
