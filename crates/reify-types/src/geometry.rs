@@ -620,14 +620,15 @@ pub trait GeometryKernel: Send + Sync {
 
 /// Debug-build invariant check for kernel implementors that override
 /// [`GeometryKernel::query_many`]. Asserts the kernel's reply has one
-/// `Value` per input query so a buggy actor-channel or FFI path is caught
+/// element per input query so a buggy actor-channel or FFI path is caught
 /// in tests rather than silently truncating consumer results via `zip`'s
 /// shorter-of-two behaviour. In release builds this is a no-op
 /// (`debug_assert_eq!`).
 ///
-/// Generic in `Q` because only `queries.len()` is read — overriders may
-/// call this with any query slice without an explicit turbofish.
-pub fn debug_assert_query_many_invariant<Q>(queries: &[Q], reply: &[Value]) {
+/// Generic in both `Q` and `R` because only the slice lengths are read —
+/// overriders may call this without an explicit turbofish, and the helper
+/// remains valid if `query_many` ever returns a different element type.
+pub fn debug_assert_query_many_invariant<Q, R>(queries: &[Q], reply: &[R]) {
     debug_assert_eq!(
         reply.len(),
         queries.len(),
@@ -1184,14 +1185,28 @@ mod tests {
 
     #[test]
     fn debug_assert_query_many_invariant_passes_when_lengths_match() {
-        let queries = vec![
-            GeometryQuery::Volume(GeometryHandleId(1)),
-            GeometryQuery::Volume(GeometryHandleId(2)),
-            GeometryQuery::Volume(GeometryHandleId(3)),
-        ];
-        let reply = vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)];
-        // If the helper does not panic, the test passes.
-        debug_assert_query_many_invariant(&queries, &reply);
+        // Empty batch: the boundary case most likely to expose an off-by-one
+        // bug if the helper's comparison were inverted.
+        debug_assert_query_many_invariant(
+            &[] as &[GeometryQuery],
+            &[] as &[Value],
+        );
+
+        // Single-element batch.
+        debug_assert_query_many_invariant(
+            &[GeometryQuery::Volume(GeometryHandleId(1))],
+            &[Value::Real(0.0)],
+        );
+
+        // Multi-element batch.
+        debug_assert_query_many_invariant(
+            &[
+                GeometryQuery::Volume(GeometryHandleId(1)),
+                GeometryQuery::Volume(GeometryHandleId(2)),
+                GeometryQuery::Volume(GeometryHandleId(3)),
+            ],
+            &[Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)],
+        );
     }
 
     #[test]
