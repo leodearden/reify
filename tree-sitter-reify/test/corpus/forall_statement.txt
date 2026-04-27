@@ -173,7 +173,7 @@ forall statement with chain body
 ================================================================================
 
 structure S {
-  forall v in vents: chain v.in -> hub.a -> hub.b
+  forall v in vents: chain v.out -> hub.a -> hub.b
 }
 
 --------------------------------------------------------------------------------
@@ -227,3 +227,36 @@ structure S {
           (member_access
             object: (identifier)
             member: (identifier)))))))
+
+================================================================================
+nested-quantifier collection with chain body (regression pin)
+================================================================================
+
+structure S {
+  forall v in (forall x in xs: x > 0): chain v.out -> hub.a -> hub.b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (forall_statement
+      variable: (identifier)
+      collection: (parenthesized_expression
+        (quantifier_expression
+          variable: (identifier)
+          collection: (identifier)
+          predicate: (binary_expression
+            left: (identifier)
+            right: (number_literal))))
+      body: (chain_statement
+        first: (member_access
+          object: (identifier)
+          member: (identifier))
+        (member_access
+          object: (identifier)
+          member: (identifier))
+        (member_access
+          object: (identifier)
+          member: (identifier))))))
