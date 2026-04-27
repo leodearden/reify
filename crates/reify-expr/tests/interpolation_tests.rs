@@ -942,6 +942,15 @@ fn cubic_3d_knot_exact_reproduction() {
 /// `1..=2` on every axis have a fully available 4x4x4 stencil).
 ///
 /// Polynomial: f(x,y,z) = 1 + 2x - y + 3z + x*y + y*z + x*z + x^2 - y^3 + z^2*x.
+///
+/// **Separability guard.** The `cubic_3d` algorithm is separable: it first
+/// collapses the (y,z)-plane with a 2D cubic kernel, then applies a 1D cubic
+/// along x. Exact reproduction of a degree-3 polynomial (guaranteed by
+/// 4-point Lagrange exactness) is only achievable if the tensor-product
+/// composition is correctly wired — any breakage in the separable structure
+/// (wrong axis order, mismatched stencil offsets, etc.) surfaces here as a
+/// reproducible numeric mismatch, without the need for a tautological test
+/// that mirrors the implementation's own factoring.
 #[test]
 fn cubic_3d_reproduces_total_degree_three_in_interior() {
     let gx: Vec<f64> = (0..5).map(|i| i as f64).collect();
