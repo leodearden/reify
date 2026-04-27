@@ -92,10 +92,12 @@ trait Discard : Sink {
 
 // ── Cost-aggregation helper ──────────────────────────────────────────────────
 
-// Costed refines Buy with a per-line production quantity. The companion
-// `let line_cost : Money = unit_cost * quantity_produced` (defined below)
-// provides the canonical money-aggregation primitive — see
-// examples/cost_aggregation.ri for the full BOM idiom.
+// Costed refines Buy with a per-line production quantity. Kept distinct from
+// Buy so Buy stays a faithful procurement marker per §9 (see header-comment
+// deviation #2); opt in to Costed when you need quantity-aware aggregation.
+// The companion `let line_cost : Money = unit_cost * quantity_produced`
+// (defined in the trait body) provides the canonical money-aggregation
+// primitive — see examples/cost_aggregation.ri for the full BOM idiom.
 //
 // `quantity_produced` is dimensionless `Real` (matching the stdlib convention
 // for density/volume/youngs_modulus) so fractional bulk-unit quantities flow
