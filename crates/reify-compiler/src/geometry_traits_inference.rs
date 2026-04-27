@@ -7,15 +7,18 @@
 //!
 //! # Design
 //!
-//! Inference is a **pure function** over `&[CompiledGeometryOp]` and
-//! `&CompiledExpr` rather than a cached field on each `CompiledGeometryOp`
-//! variant. This is a deliberate departure from the PRD's wording (see plan's
-//! design decision §1): caching the set would require a 7-variant constructor
-//! refactor across `geometry.rs`/`geometry_boolean.rs`/.../test fixtures, and
-//! the conformance walker — currently the only consumer — recomputes cheaply
-//! per call site. If a future consumer needs the cached set on the IR (e.g.
-//! for serialization), it can be added additively without breaking this
-//! module's public surface.
+//! Inference is a **pure function** over `&CompiledExpr` rather than a
+//! cached field on each `CompiledGeometryOp` variant. This is a deliberate
+//! departure from the PRD's wording (see plan's design decision §1):
+//! caching the set would require a 7-variant constructor refactor across
+//! `geometry.rs`/`geometry_boolean.rs`/.../test fixtures, and the
+//! conformance walker — currently the only consumer — recomputes cheaply
+//! per call site. The conformance walker has a `&CompiledExpr` in hand
+//! before any `CompiledGeometryOp` array is built, so dispatching by
+//! function-call name is also strictly more useful than walking the op
+//! array. If a future consumer needs an op-array walk or a cached set on
+//! the IR (e.g. for serialization), it can be added additively without
+//! breaking this module's public surface.
 //!
 //! # Public surface
 //!
@@ -23,10 +26,13 @@
 //!   (`all`, `none`, `bounded_only`, `bounded_connected`).
 //! - [`GeometryTrait`] — enum used by [`InferredTraits::has`] for diagnostic
 //!   checks (`Bounded` / `Connected` / `Convex`).
-//!
-//! Subsequent steps in this task add the lookup helpers
-//! (`infer_primitive`, `combine_*`, `infer_traits_for_op`,
-//! `infer_traits_for_expr`).
+//! - [`infer_primitive`] — per-`PrimitiveKind` lookup.
+//! - `combine_union` / `combine_difference` / `combine_intersection` /
+//!   `combine_transform` / `combine_modify` / `combine_pattern` /
+//!   `combine_sweep` — pure pairwise/unary propagation rules.
+//! - [`infer_traits_for_expr`] — walks a `CompiledExpr` tree by FunctionCall
+//!   name. This is the **only** consumer-facing entry point: the conformance
+//!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
 //!
 //! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later)
 //!
@@ -39,9 +45,9 @@
 //!
 //! | Future construct        | Where it slots in                                   | Expected `InferredTraits`             |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
-//! | `half_space(...)`       | `PrimitiveKind::HalfSpace` arm in [`infer_primitive`] / `"half_space"` arm in [`infer_traits_for_function_call`] | `InferredTraits { bounded: false, connected: true, convex: true }` |
-//! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` (or `"extrude_infinite"` name) routed to [`combine_sweep`] with an Unbounded profile, or a dedicated arm | `InferredTraits::none()`              |
-//! | (parametric ray curve)  | New `"ray"`-style arm in [`infer_traits_for_function_call`] | `InferredTraits::none()` (or tuned)   |
+//! | `half_space(...)`       | `PrimitiveKind::HalfSpace` arm in [`infer_primitive`] / `"half_space"` arm in `infer_traits_for_function_call` | `InferredTraits { bounded: false, connected: true, convex: true }` |
+//! | `extrude_infinite(...)` | `"extrude_infinite"` name routed to [`combine_sweep`] with an Unbounded profile, or a dedicated arm | `InferredTraits::none()`              |
+//! | (parametric ray curve)  | New `"ray"`-style arm in `infer_traits_for_function_call` | `InferredTraits::none()` (or tuned)   |
 //!
 //! When an Unbounded source lands, double-check that every routing path the
 //! conformance walker uses is updated. In particular, both the **direct**
@@ -61,10 +67,7 @@
 //! will fire automatically once the inference reports the missing
 //! `bounded` flag.
 
-use crate::types::{
-    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
-    SweepKind, TransformKind,
-};
+use crate::types::PrimitiveKind;
 use reify_types::{CompiledExpr, CompiledExprKind};
 
 /// The three compile-time-inferred geometry traits.
@@ -270,134 +273,19 @@ pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
     }
 }
 
-/// Look up the inferred traits for a curve constructor.
-///
-/// Curves are 1-D primitives consumed as sweep inputs. All current
-/// `CurveKind` variants (line_segment, arc, helix, interp, bezier, nurbs)
-/// are treated as Bounded+Connected+Convex: the propagation through
-/// `combine_sweep` will drop Convex anyway, so encoding all curves as
-/// `all()` keeps the table uniform and lets `combine_sweep` remain the
-/// single decision point for sweep-output convexity. (A future infinite
-/// curve, e.g. a parametric ray, would slot in here as `none()` or a
-/// tuned subset.)
-pub const fn infer_curve(kind: CurveKind) -> InferredTraits {
-    match kind {
-        CurveKind::LineSegment
-        | CurveKind::Arc
-        | CurveKind::Helix
-        | CurveKind::InterpCurve
-        | CurveKind::BezierCurve
-        | CurveKind::NurbsCurve => InferredTraits::all(),
-    }
-}
-
-/// Resolve a single `GeomRef` (Step or Sub) within an op array to its
-/// inferred trait set.
-///
-/// `GeomRef::Step(i)` recurses into [`infer_traits_for_op`] with index
-/// `i`. `GeomRef::Sub(_)` returns [`InferredTraits::all()`] — the safe
-/// v0.1 default for cross-component references.
-///
-/// # Design decision (plan §3, pinned by test)
-///
-/// Cross-component inference (resolving the sub's own realization to a
-/// real trait set) is intentionally deferred: structure instances built
-/// from primitives are typically bounded, so defaulting to "all three"
-/// avoids spurious `E_GEOMETRY_UNBOUNDED` at every cross-component
-/// boundary. The integration test
-/// `infer_traits_for_op_treats_geomref_sub_as_bounded` pins this
-/// behaviour so a future change to cross-component inference becomes a
-/// deliberate, observable diff rather than silent drift.
-fn resolve_geom_ref(geom_ref: &GeomRef, ops: &[CompiledGeometryOp]) -> InferredTraits {
-    match geom_ref {
-        GeomRef::Step(idx) => infer_traits_for_op(*idx, ops),
-        GeomRef::Sub(_) => InferredTraits::all(),
-    }
-}
-
-/// Walk the inference table over a `CompiledGeometryOp` array.
-///
-/// Returns the [`InferredTraits`] for the operation at index `op_idx` by
-/// recursively resolving its inputs through [`resolve_geom_ref`] and
-/// applying the matching `combine_*` rule. Suppress visited tracking
-/// (and the resulting recursion guard) is unnecessary because compiled
-/// op arrays are acyclic by construction — a `GeomRef::Step(j)` always
-/// satisfies `j < op_idx` (op compilation is forward-only).
-///
-/// # Panics
-///
-/// Panics if `op_idx >= ops.len()` (use a debug-only bounds check via
-/// indexing). Callers are responsible for passing a valid index.
-pub fn infer_traits_for_op(op_idx: usize, ops: &[CompiledGeometryOp]) -> InferredTraits {
-    match &ops[op_idx] {
-        CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
-        CompiledGeometryOp::Boolean { op, left, right } => {
-            let l = resolve_geom_ref(left, ops);
-            let r = resolve_geom_ref(right, ops);
-            match op {
-                BooleanOp::Union => combine_union(l, r),
-                BooleanOp::Difference => combine_difference(l, r),
-                BooleanOp::Intersection => combine_intersection(l, r),
-            }
-        }
-        CompiledGeometryOp::Modify { kind, target, .. } => {
-            let t = resolve_geom_ref(target, ops);
-            // ModifyKind variants share the same propagation rule today;
-            // a future variant with different semantics (e.g. a Modify
-            // that re-introduces convexity) can branch here.
-            let _: ModifyKind = *kind;
-            combine_modify(t)
-        }
-        CompiledGeometryOp::Transform { kind, target, .. } => {
-            let t = resolve_geom_ref(target, ops);
-            let _: TransformKind = *kind;
-            combine_transform(t)
-        }
-        CompiledGeometryOp::Pattern { kind, target, .. } => {
-            let t = resolve_geom_ref(target, ops);
-            let _: PatternKind = *kind;
-            combine_pattern(t)
-        }
-        CompiledGeometryOp::Sweep {
-            kind, profiles, ..
-        } => {
-            let _: SweepKind = *kind;
-            // Sweep takes Bounded+Connected from the **profile**. When
-            // multiple profiles are supplied (loft), conservatively
-            // intersect the trait sets — a profile lacking Bounded
-            // poisons the whole sweep, and Connected requires every
-            // profile to be connected. A missing profile defaults to
-            // `all()` so empty `profiles` arrays do not under-bound the
-            // result.
-            let profile_traits = profiles
-                .iter()
-                .map(|p| resolve_geom_ref(p, ops))
-                .reduce(|acc, next| InferredTraits {
-                    bounded: acc.bounded && next.bounded,
-                    connected: acc.connected && next.connected,
-                    convex: acc.convex && next.convex,
-                })
-                .unwrap_or(InferredTraits::all());
-            combine_sweep(profile_traits)
-        }
-        CompiledGeometryOp::Curve { kind, .. } => infer_curve(*kind),
-    }
-}
-
 /// Walk the inference table over a `CompiledExpr`.
 ///
 /// This is the call-site form used by the conformance walker, which has a
-/// `&CompiledExpr` argument in hand (not a `CompiledGeometryOp` array). The
-/// dispatch is **by function name**, mirroring the op-array dispatch by
-/// variant: each stdlib geometry constructor (`box`, `cylinder`, ...) and
-/// each combinator (`union`, `intersection`, `difference`, `translate`,
-/// `rotate`, `scale`, `rotate_around`, `fillet`, `chamfer`, `shell`,
-/// `draft`, `thicken`, `linear_pattern`, `circular_pattern`, `mirror`,
-/// `linear_pattern_2d`, `arbitrary_pattern`, `extrude`, `extrude_symmetric`,
-/// `revolve`, `revolve_full`, `sweep`, `sweep_guided`, `loft`,
-/// `loft_guided`, `pipe`, plus curve constructors `line_segment`, `arc`,
-/// `helix`, `interp`, `bezier`, `nurbs`) maps to the matching primitive
-/// or `combine_*` helper.
+/// `&CompiledExpr` argument in hand. The dispatch is **by function name**:
+/// each stdlib geometry constructor (`box`, `cylinder`, ...) and each
+/// combinator (`union`, `intersection`, `difference`, `union_all`,
+/// `intersection_all`, `translate`, `rotate`, `scale`, `rotate_around`,
+/// `fillet`, `chamfer`, `shell`, `draft`, `thicken`, `linear_pattern`,
+/// `circular_pattern`, `mirror`, `linear_pattern_2d`, `arbitrary_pattern`,
+/// `extrude`, `extrude_symmetric`, `revolve`, `revolve_full`, `sweep`,
+/// `sweep_guided`, `loft`, `loft_guided`, `pipe`, plus curve constructors
+/// `line_segment`, `arc`, `helix`, `interp`, `bezier`, `nurbs`) maps to
+/// the matching primitive or `combine_*` helper.
 ///
 /// # Geometry-arg recursion
 ///
@@ -431,8 +319,9 @@ pub fn infer_traits_for_expr(expr: &CompiledExpr) -> InferredTraits {
     }
 }
 
-/// Dispatch on the function-call name, mirroring the op-array variant
-/// dispatch in [`infer_traits_for_op`].
+/// Dispatch on the function-call name. Each arm either looks up a
+/// primitive's trait set directly or recurses on the geometry-typed
+/// arguments and folds the matching `combine_*` rule.
 fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> InferredTraits {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────

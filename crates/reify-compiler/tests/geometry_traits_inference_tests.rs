@@ -3,11 +3,10 @@
 //! PRD `docs/prds/geometry-traits.md` tasks 2 and 3.
 //!
 //! Scope: the value type `InferredTraits`, the per-`PrimitiveKind` lookup, the
-//! pure propagation helpers (`combine_*`), the op-array walk
-//! (`infer_traits_for_op`), the `CompiledExpr` walk (`infer_traits_for_expr`),
-//! the diagnostic-shape helper, and end-to-end positive call-site behaviour
-//! (`Foo(g: box(...))` with `param g : Bounded` produces no
-//! `GeometryUnbounded`).
+//! pure propagation helpers (`combine_*`), the `CompiledExpr` walk
+//! (`infer_traits_for_expr`), the diagnostic-shape helper, and end-to-end
+//! positive call-site behaviour (`Foo(g: box(...))` with `param g : Bounded`
+//! produces no `GeometryUnbounded`).
 //!
 //! End-to-end negative ("Unbounded source rejected at a `Bounded` slot") is
 //! deferred until a `half_space` / `extrude_infinite` primitive lands — see
@@ -18,13 +17,11 @@
 //! kept in the sibling file `geometry_traits_tests.rs`; this file is reserved
 //! for the inference pipeline.
 
+use reify_compiler::PrimitiveKind;
 use reify_compiler::geometry_traits_inference::{
     GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_modify,
-    combine_pattern, combine_sweep, combine_transform, combine_union, infer_curve, infer_primitive,
-    infer_traits_for_expr, infer_traits_for_op,
-};
-use reify_compiler::{
-    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind,
+    combine_pattern, combine_sweep, combine_transform, combine_union, infer_primitive,
+    infer_traits_for_expr,
 };
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
@@ -284,98 +281,6 @@ fn combine_sweep_with_unbounded_profile_is_none() {
         combine_sweep(InferredTraits::none()),
         InferredTraits::none()
     );
-}
-
-// ─── infer_curve — every curve constructor is "all three" ───────────────────
-
-/// All current `CurveKind` variants (line_segment, arc, helix, interp,
-/// bezier, nurbs) are finite, single-piece, and treated as Convex from the
-/// inference table's perspective: a curve is a 1-D primitive used as a
-/// sweep input, where the propagation through `combine_sweep` will drop
-/// Convex anyway. Documenting them as `all()` here keeps the table
-/// uniform and lets `combine_sweep` remain the single decision point for
-/// sweep-output convexity.
-#[test]
-fn infer_curve_kind_yields_all_three_traits() {
-    let cases: [CurveKind; 6] = [
-        CurveKind::LineSegment,
-        CurveKind::Arc,
-        CurveKind::Helix,
-        CurveKind::InterpCurve,
-        CurveKind::BezierCurve,
-        CurveKind::NurbsCurve,
-    ];
-    for kind in cases {
-        assert_eq!(
-            infer_curve(kind),
-            InferredTraits::all(),
-            "CurveKind::{:?} should currently infer all three traits",
-            kind
-        );
-    }
-}
-
-// ─── infer_traits_for_op — walk Step-chain in op array ──────────────────────
-
-/// `infer_traits_for_op` walks a `GeomRef::Step` chain across the op array.
-/// `Boolean::Union` of two Box primitives propagates to `bounded_only` per
-/// the Boolean rule (Connected and Convex dropped).
-#[test]
-fn infer_traits_for_op_walks_union_of_two_boxes() {
-    let ops = vec![
-        CompiledGeometryOp::Primitive {
-            kind: PrimitiveKind::Box,
-            args: vec![],
-        },
-        CompiledGeometryOp::Primitive {
-            kind: PrimitiveKind::Box,
-            args: vec![],
-        },
-        CompiledGeometryOp::Boolean {
-            op: BooleanOp::Union,
-            left: GeomRef::Step(0),
-            right: GeomRef::Step(1),
-        },
-    ];
-    assert_eq!(infer_traits_for_op(2, &ops), InferredTraits::bounded_only());
-}
-
-/// `Modify::Fillet` of a Box primitive propagates to `bounded_connected`
-/// per `combine_modify` (Convex dropped, Bounded+Connected preserved).
-#[test]
-fn infer_traits_for_op_walks_modify_of_box() {
-    let ops = vec![
-        CompiledGeometryOp::Primitive {
-            kind: PrimitiveKind::Box,
-            args: vec![],
-        },
-        CompiledGeometryOp::Modify {
-            kind: ModifyKind::Fillet,
-            target: GeomRef::Step(0),
-            args: vec![],
-        },
-    ];
-    assert_eq!(
-        infer_traits_for_op(1, &ops),
-        InferredTraits::bounded_connected()
-    );
-}
-
-/// `GeomRef::Sub(_)` defaults to `InferredTraits::all()` — the safe v0.1
-/// assumption for cross-component geometry references (sub-component
-/// realizations are not visible from this op array). When future work
-/// wires cross-component inference, this test will break deliberately,
-/// flagging the design-decision change for review. Pinned per plan
-/// design decision §3.
-#[test]
-fn infer_traits_for_op_treats_geomref_sub_as_bounded() {
-    let ops = vec![CompiledGeometryOp::Boolean {
-        op: BooleanOp::Union,
-        left: GeomRef::Sub("child".to_string()),
-        right: GeomRef::Sub("other".to_string()),
-    }];
-    // Both Sub references default to all(); Union preserves only Bounded.
-    assert_eq!(infer_traits_for_op(0, &ops), InferredTraits::bounded_only());
 }
 
 // ─── infer_traits_for_expr — walk CompiledExpr FunctionCall trees ───────────
