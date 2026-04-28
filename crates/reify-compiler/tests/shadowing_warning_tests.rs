@@ -1537,6 +1537,116 @@ structure S {
     );
 }
 
+/// Spec §6.4 first-seen invariant: the original-decl span in a shadow
+/// diagnostic for a name declared in BOTH branches of a guarded group must
+/// point at the THEN-branch (first-seen) occurrence, not the else-branch.
+///
+/// Background: `collect_body_frame_into` folds `g.members` (THEN branch) and
+/// `g.else_members` (ELSE branch) into the same parent frame because guarded
+/// siblings are mutually-exclusive — they MUST NOT shadow each other. Since
+/// both branches write the same key, the semantics of the write determines
+/// which occurrence is used as the "original declaration" when a LATER child
+/// scope (e.g. a lambda) shadows that name.
+///
+/// With last-writer-wins (`HashMap::insert`), `else_members` is visited last,
+/// so its occurrence wins the frame entry and appears as the "originally
+/// declared here" span — even though the THEN branch is textually first.  A
+/// reader scanning the source top-to-bottom finds the THEN-branch occurrence
+/// first and expects the shadow diagnostic to point there.
+///
+/// With first-seen-wins (`HashMap::entry(...).or_insert(...)`), the THEN-branch
+/// occurrence populates the frame entry and the ELSE-branch visit is a no-op,
+/// producing the user-visible top-to-bottom expectation.
+///
+/// This test pins the first-seen-wins contract by asserting the original-decl
+/// span lies:
+///   (a) at or after the first `param head` (THEN branch, first occurrence), AND
+///   (b) strictly before the last `param head` (ELSE branch, last occurrence).
+///
+/// Because the label lookup uses `labels.iter().find(|l| l.message ==
+/// "originally declared here")` rather than a positional index, the test is
+/// invariant under any future reordering of labels in `push_shadow_diagnostic`.
+/// The literal message is pinned by `shadow_diagnostic_message_format_is_pinned`.
+#[test]
+fn guarded_group_shadow_original_decl_uses_first_seen_branch() {
+    let source = r#"
+structure S {
+    param cond : Bool = true
+    where cond {
+        param head : Real = 1
+    } else {
+        param head : Real = 2
+    }
+    let f = |head| head * 2
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda `|head|` shadows guarded-group \
+         `param head`), got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert_eq!(
+        warning.labels.len(),
+        2,
+        "Shadowing warning must carry 2 labels (child + original-decl), got {:?}",
+        warning.labels
+    );
+
+    // Find the original-decl label by its pinned message (see
+    // shadow_diagnostic_message_format_is_pinned) rather than by position, so
+    // this test is invariant under any future label-order change in
+    // push_shadow_diagnostic.
+    let orig_label = warning
+        .labels
+        .iter()
+        .find(|l| l.message == "originally declared here")
+        .expect("Shadowing warning must include an `originally declared here` label");
+
+    // Byte offsets: THEN-branch's `param head` is the first occurrence;
+    // ELSE-branch's `param head` is the last occurrence.
+    let then_head = source
+        .find("param head")
+        .expect("source must contain `param head` (THEN branch)");
+    let else_head = source
+        .rfind("param head")
+        .expect("source must contain a second `param head` (ELSE branch)");
+
+    // (a) The original-decl span must start at or after the THEN-branch decl.
+    assert!(
+        (orig_label.span.start as usize) >= then_head,
+        "original-decl span must be at or after THEN-branch `param head` \
+         (byte {}), got {:?}",
+        then_head,
+        orig_label.span
+    );
+    // (b) The original-decl span must be STRICTLY before the ELSE-branch decl
+    //     (first-seen wins — the else-branch entry is a no-op in the frame).
+    assert!(
+        (orig_label.span.start as usize) < else_head,
+        "original-decl span must be strictly before ELSE-branch `param head` \
+         (byte {}), got {:?} — expected first-seen (THEN branch) to win, \
+         but the span appears to point at the else-branch (last-writer-wins \
+         regression)",
+        else_head,
+        orig_label.span
+    );
+}
+
 /// Statement-form `forall ... : constraint ...` whose bound variable matches
 /// an entity-scope `param` MUST emit one Shadowing warning. Mirrors the
 /// expression-form `quantifier_variable_shadows_entity_param_emits_w_shadow`
