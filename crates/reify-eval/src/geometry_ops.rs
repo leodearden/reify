@@ -4705,6 +4705,129 @@ mod tests {
     }
 
     #[test]
+    fn try_eval_conformance_query_user_assertion_watertight_short_circuits() {
+        // Kernel is configured to return Bool(false) — but the structure
+        // declares `: Watertight`, so the dispatch must short-circuit to
+        // Bool(true) WITHOUT consulting the kernel.
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "TrustedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Watertight".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "user-asserted Watertight must override kernel reply"
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted when the structure asserts Watertight"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_manifold_short_circuits() {
+        let handle_id = reify_types::GeometryHandleId(11);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_manifold", "TrustedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Manifold".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_types::Value::Bool(true)));
+        assert_eq!(kernel.query_count(), 0);
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_orientable_short_circuits() {
+        let handle_id = reify_types::GeometryHandleId(13);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_orientable", "TrustedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Orientable".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_types::Value::Bool(true)));
+        assert_eq!(kernel.query_count(), 0);
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_closed_does_not_short_circuit_is_watertight() {
+        // Asymmetry per task 2320 design decision: `is_watertight` short-
+        // circuits ONLY on `Watertight` — declaring the (refined) `Closed`
+        // bound is not sufficient. The kernel must be consulted and its
+        // Bool(false) reply honoured.
+        let handle_id = reify_types::GeometryHandleId(17);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Closed".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(false)),
+            "is_watertight must NOT be short-circuited by ': Closed'"
+        );
+        assert_eq!(
+            kernel.query_count(),
+            1,
+            "kernel must be consulted exactly once when no matching marker trait is declared"
+        );
+    }
+
+    #[test]
     fn try_eval_conformance_query_unresolvable_member_returns_none_no_kernel_call() {
         let handle_id = reify_types::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
