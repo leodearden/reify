@@ -622,6 +622,33 @@ impl Engine {
     pub fn set_panic_on_eval(&mut self, cell: reify_types::ValueCellId) {
         self.panic_on_eval_cells.insert(cell);
     }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Remove a single previously-registered cell from the panic-injection
+    /// set. Returns `true` if `cell` was present and removed, `false`
+    /// otherwise. Symmetric counterpart to [`Engine::set_panic_on_eval`] —
+    /// lets tests verify the recovery path (re-evaluate the cell after the
+    /// panic injection is withdrawn) without rebuilding the engine.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn remove_panic_on_eval(&mut self, cell: &reify_types::ValueCellId) -> bool {
+        self.panic_on_eval_cells.remove(cell)
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Clear every cell from the panic-injection set in one call. Wholesale
+    /// counterpart to [`Engine::remove_panic_on_eval`]; useful when a test
+    /// drives several `set_panic_on_eval` calls then wants to verify the
+    /// engine returns to the unforced path on the next eval.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn clear_panic_on_eval(&mut self) {
+        self.panic_on_eval_cells.clear();
+    }
 }
 
 #[cfg(test)]
@@ -678,5 +705,53 @@ mod tests {
             !engine.unregister_solver("missing"),
             "expected unregister_solver('missing') to return false"
         );
+    }
+
+    /// `set_panic_on_eval` accumulates cells and `remove_panic_on_eval` /
+    /// `clear_panic_on_eval` provide the symmetric withdraw-paths required
+    /// for tests that want to verify recovery after a forced-panic eval
+    /// (re-eval the same cell once the injection is removed). Without these
+    /// accessors, tests would have to rebuild the engine to clear the
+    /// hook — see review suggestion on `set_panic_on_eval` (task #2330
+    /// amendment).
+    #[test]
+    fn panic_on_eval_set_remove_and_clear_round_trip() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::ValueCellId;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let a = ValueCellId::new("M", "a");
+        let b = ValueCellId::new("M", "b");
+        let c = ValueCellId::new("M", "c");
+
+        engine.set_panic_on_eval(a.clone());
+        engine.set_panic_on_eval(b.clone());
+        engine.set_panic_on_eval(c.clone());
+
+        // Single removal returns true and only takes that cell out.
+        assert!(
+            engine.remove_panic_on_eval(&b),
+            "remove_panic_on_eval(b) should return true when b was registered"
+        );
+        // Removing a missing cell returns false.
+        assert!(
+            !engine.remove_panic_on_eval(&b),
+            "remove_panic_on_eval(b) should return false on second call"
+        );
+        // a and c are still registered.
+        assert!(engine.panic_on_eval_cells.contains(&a));
+        assert!(engine.panic_on_eval_cells.contains(&c));
+        assert!(!engine.panic_on_eval_cells.contains(&b));
+
+        // Bulk clear empties the set.
+        engine.clear_panic_on_eval();
+        assert!(
+            engine.panic_on_eval_cells.is_empty(),
+            "clear_panic_on_eval should empty the set; got {:?}",
+            engine.panic_on_eval_cells
+        );
+        // Idempotent on empty.
+        engine.clear_panic_on_eval();
+        assert!(engine.panic_on_eval_cells.is_empty());
     }
 }
