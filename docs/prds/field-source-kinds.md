@@ -8,7 +8,7 @@
 > - § Analytical — type-checking & sampling semantics (**this file; task 2336**)
 > - § Composed — composition chain type-checking (task 2343, TBD)
 > - § Imported — v0.2 deferral diagnostic (task 2344, TBD)
-> - § Sampled — v0.2 deferral diagnostic (task 2416)
+> - § Sampled — v0.1 deferral diagnostic (task 2416); v0.2 implementation (task 2341)
 > - § Cross-cutting smoke tests (task 2346, TBD)
 
 ---
@@ -130,14 +130,32 @@ False / Undef) throughout evaluation. The following rules are enforced:
 
 ## § Sampled source kind
 
-> **TBD — task 2416** (v0.2 deferral diagnostic implemented here)
+> **v0.1**: deferral diagnostic implemented (task 2416).
+> **v0.2**: implementation in progress (task 2341); interpolation primitives
+> already landed via task 2338 (`crates/reify-expr/src/interp.rs`).
 
 A field with a `sampled` source declares discrete point-value data with an
-interpolation strategy. In v0.1 the compiler emits a `FieldSampledV02`
-diagnostic (mnemonic `E_FIELD_SAMPLED_V02`) to indicate that this feature is
-deferred to v0.2 (v0.1 supports `analytical` and `composed` only). Full
-sampling-pipeline specification (grid resolution, interpolation methods,
-evaluation semantics) deferred to v0.2.
+interpolation strategy. v0.1 supports `analytical` and `composed` only — the
+compiler emits a `FieldSampledV02` diagnostic (mnemonic `E_FIELD_SAMPLED_V02`)
+when a `sampled { ... }` source is encountered.
+
+v0.2 implements the full sampling pipeline:
+
+- **Grid kinds** — `RegularGrid1`, `RegularGrid2`, `RegularGrid3`, parameterised
+  by `BoundingBox` bounds and per-axis `Length` spacing.
+- **Interpolation** — uses the `InterpolationMethod` enum from
+  `crates/reify-expr/src/interp.rs` (Linear, NearestNeighbor, Cubic; RBF and
+  Kriging emit `W_INTERPOLATION_DEFERRED` and fall back to Linear).
+- **Out-of-bounds policy** — sample lookups outside the grid return
+  `Value::Undef` and emit `W_FIELD_OUT_OF_BOUNDS` once per field per session.
+- **Config syntax** — `grid = ...`, `interpolation = ...`, `data = ...`
+  key-value pairs inside the `sampled { ... }` block; parsed in
+  `crates/reify-compiler/src/functions.rs::compile_field` (Sampled arm) and
+  materialised at runtime in `crates/reify-eval/src/engine_eval.rs`.
+
+When v0.2 lands, the `FieldSampledV02` compile-time error is removed and the
+existing `CompiledFieldSource::Sampled` arm replaces the v0.1 `Value::Undef`
+fallback.
 
 ---
 
