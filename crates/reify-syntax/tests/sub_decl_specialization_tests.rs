@@ -67,20 +67,15 @@ fn collection_form_has_no_body() {
 }
 
 // ── helpers for hand-built AST tests ─────────────────────────────────────
-// (allow `dead_code` because some helpers are introduced ahead of the test
-// that uses them — TDD steps land incrementally.)
 
-#[allow(dead_code)]
 fn dummy_span() -> SourceSpan {
     SourceSpan::new(0, 1)
 }
 
-#[allow(dead_code)]
 fn dummy_hash() -> ContentHash {
     ContentHash(0)
 }
 
-#[allow(dead_code)]
 fn make_param(name: &str) -> MemberDecl {
     MemberDecl::Param(ParamDecl {
         name: name.to_string(),
@@ -94,7 +89,6 @@ fn make_param(name: &str) -> MemberDecl {
     })
 }
 
-#[allow(dead_code)]
 fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
     SubDecl {
         name: name.to_string(),
@@ -109,7 +103,6 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
     }
 }
 
-#[allow(dead_code)]
 fn dummy_expr() -> Expr {
     Expr {
         kind: ExprKind::BoolLiteral(true),
@@ -117,7 +110,6 @@ fn dummy_expr() -> Expr {
     }
 }
 
-#[allow(dead_code)]
 fn make_let(name: &str) -> MemberDecl {
     MemberDecl::Let(LetDecl {
         name: name.to_string(),
@@ -132,7 +124,6 @@ fn make_let(name: &str) -> MemberDecl {
     })
 }
 
-#[allow(dead_code)]
 fn make_constraint() -> MemberDecl {
     MemberDecl::Constraint(ConstraintDecl {
         label: None,
@@ -182,7 +173,6 @@ enum Tag {
     GuardedGroup,
 }
 
-#[allow(dead_code)]
 fn tag_of(member: &MemberDecl) -> Tag {
     match member {
         MemberDecl::Param(_) => Tag::Param,
@@ -233,7 +223,6 @@ fn walker_does_not_recurse_when_nested_sub_body_is_none() {
 
 // ── (d) walker recurses into GuardedGroup branches ──────────────────────
 
-#[allow(dead_code)]
 fn make_guarded_group(
     members: Vec<MemberDecl>,
     else_members: Vec<MemberDecl>,
@@ -265,28 +254,30 @@ fn build_nested_sub_chain(depth: usize) -> SubDecl {
 fn walker_terminates_at_max_depth() {
     // Pathologically deep chain — `MAX_MEMBER_NESTING_DEPTH * 2` levels
     // ensures we exceed the guard. The walker must NOT stack-overflow,
-    // and must visit no more than the bound permits (each guard layer
-    // contributes one Sub member visit before recursion is suppressed).
+    // AND must respect `MAX_MEMBER_NESTING_DEPTH` precisely (one visit
+    // at each depth in `0..=MAX_MEMBER_NESTING_DEPTH` before the next
+    // recursion bails out).
+    //
+    // The chain produced by `build_nested_sub_chain(N)` is `N` outer Sub
+    // levels wrapping a leaf Sub whose body holds a single Param. The
+    // walker enters at depth 0 (visiting the outermost Sub's only child)
+    // and recurses one level per inner Sub. With the chain deeper than
+    // the guard, the leaf Param is unreachable: at every visited depth
+    // `d ∈ 0..=MAX_MEMBER_NESTING_DEPTH` exactly one Sub child is
+    // visited, then `walk_members_depth` is called at depth `d+1` and
+    // returns immediately at `MAX_MEMBER_NESTING_DEPTH + 1`. Total =
+    // `MAX_MEMBER_NESTING_DEPTH + 1`.
     let depth = MAX_MEMBER_NESTING_DEPTH * 2;
     let chain = build_nested_sub_chain(depth);
 
     let mut count = 0usize;
     walk_specialization_scope_members(&chain, &mut |_m| count += 1);
 
-    // Loose upper bound — every Sub layer plus its leaf can produce at
-    // most 2 visits per depth level (one for the Sub member, one for
-    // any leaf descendant). The exact count is implementation-specific;
-    // the regression guard is "did not stack-overflow AND bounded".
-    let max_expected = (MAX_MEMBER_NESTING_DEPTH + 1) * 2;
-    assert!(
-        count <= max_expected,
-        "walker visited {count} members, exceeding the depth-bounded ceiling of {max_expected}"
-    );
-    // Also assert non-zero — a depth-1 visit must always succeed even
-    // under the guard.
-    assert!(
-        count >= 1,
-        "walker should visit at least the outermost Sub's first child"
+    let expected = MAX_MEMBER_NESTING_DEPTH + 1;
+    assert_eq!(
+        count, expected,
+        "walker must visit exactly one member per allowed depth level \
+         (0..=MAX_MEMBER_NESTING_DEPTH), giving {expected} visits"
     );
 }
 
