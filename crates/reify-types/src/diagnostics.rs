@@ -661,6 +661,33 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::TraitUserAsserted).unwrap();
         assert_eq!(s, "\"TraitUserAsserted\"");
     }
+
+    // --- TopologyTagStale tests (task 2332 — W_TOPOLOGY_TAG_STALE) ---
+    // Pairs with the resolver `resolve_unique_by_tag` in
+    // `crates/reify-eval/src/topology_selectors.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyTagStale` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"TopologyTagStale"`.
+    /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`; a future
+    /// enum reorganisation that drops `TopologyTagStale` is caught here.
+    #[test]
+    fn diagnostic_code_topology_tag_stale_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::TopologyTagStale);
+        assert_eq!(d.code, Some(DiagnosticCode::TopologyTagStale));
+        assert_eq!(format!("{:?}", DiagnosticCode::TopologyTagStale), "TopologyTagStale");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyTagStale` serializes as
+    /// `"TopologyTagStale"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_tag_stale_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TopologyTagStale).unwrap();
+        assert_eq!(s, "\"TopologyTagStale\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
