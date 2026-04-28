@@ -73,7 +73,7 @@ fn forbidden_kind_name(member: &MemberDecl) -> Option<&'static str> {
     match member {
         MemberDecl::Param(_) => Some("param"),
         MemberDecl::Port(_) => Some("port"),
-        // Sub arm added in step 8.
+        MemberDecl::Sub(_) => Some("sub"),
         _ => None,
     }
 }
