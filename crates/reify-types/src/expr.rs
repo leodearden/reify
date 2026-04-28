@@ -1514,8 +1514,8 @@ mod tests {
             TAG_AD_HOC_SELECTOR, TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE,
             TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
             TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
-            TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_SET_LITERAL,
-            TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+            TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_REFLECTIVE_CELL_LIST,
+            TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
         };
 
         assert_eq!(TAG_LITERAL, 0u8);
@@ -1539,6 +1539,8 @@ mod tests {
         assert_eq!(TAG_RANGE_CONSTRUCTOR, 18u8);
         assert_eq!(TAG_AD_HOC_SELECTOR, 19u8);
         assert_eq!(TAG_MATCH, 24u8);
+        // task-2458: new variant tag byte
+        assert_eq!(TAG_REFLECTIVE_CELL_LIST, 26u8);
 
         // Lock: constructing via the public API and reconstructing via TAG_*
         // must produce the same content hash.
@@ -1729,6 +1731,157 @@ mod tests {
         );
         assert!(expr.collect_value_refs().is_empty());
     }
+
+    // ── step-1 (task-2458): ReflectiveCellList variant tests ─────────────────
+
+    /// task-2458 step-1: `reflective_cell_list` constructor builds a node with
+    /// the expected kind, result_type, and a non-zero content_hash.
+    ///
+    /// Also verifies the hash is structural: an empty RCL differs from a
+    /// populated one, and an RCL differs from a `ListLiteral` with the same
+    /// elements (tag-byte isolation).
+    ///
+    /// RED before step-2: variant, tag, and constructor do not yet exist.
+    #[test]
+    fn reflective_cell_list_constructs_expected_expr() {
+        use super::TAG_REFLECTIVE_CELL_LIST;
+
+        let cell_x = ValueCellId::new("E", "x");
+        let cell_y = ValueCellId::new("E", "y");
+        let elem_x = CompiledExpr::value_ref(cell_x.clone(), Type::Real);
+        let elem_y = CompiledExpr::value_ref(cell_y.clone(), Type::Real);
+        let result_type = Type::List(Box::new(Type::Real));
+
+        let rcl = CompiledExpr::reflective_cell_list(
+            vec![elem_x.clone(), elem_y.clone()],
+            result_type.clone(),
+        );
+
+        match &rcl.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => {
+                assert_eq!(elements.len(), 2, "should have 2 elements");
+                assert!(
+                    matches!(&elements[0].kind, CompiledExprKind::ValueRef(id) if *id == cell_x),
+                    "first element should be ValueRef(E.x)"
+                );
+                assert!(
+                    matches!(&elements[1].kind, CompiledExprKind::ValueRef(id) if *id == cell_y),
+                    "second element should be ValueRef(E.y)"
+                );
+            }
+            other => panic!("expected ReflectiveCellList, got {other:?}"),
+        }
+        assert_eq!(rcl.result_type, result_type, "result_type must match");
+        assert_ne!(rcl.content_hash, ContentHash::of(&[0u8; 0]), "content_hash must be non-zero");
+
+        // Empty RCL has a different hash from a populated one.
+        let empty_rcl = CompiledExpr::reflective_cell_list(vec![], result_type.clone());
+        assert_ne!(
+            rcl.content_hash, empty_rcl.content_hash,
+            "empty RCL must differ from populated RCL"
+        );
+
+        // RCL must differ from ListLiteral with the same elements (tag-byte isolation).
+        let ll = CompiledExpr::list_literal(
+            vec![
+                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+            ],
+            result_type.clone(),
+        );
+        assert_ne!(
+            rcl.content_hash, ll.content_hash,
+            "RCL tag byte must distinguish hash from ListLiteral with same elements"
+        );
+        assert_ne!(TAG_REFLECTIVE_CELL_LIST, TAG_LIST_LITERAL, "tag bytes must differ");
+    }
+
+    /// task-2458 step-1: `walk` visits the RCL root plus all element nodes.
+    ///
+    /// An RCL with 3 ValueRef elements must report 4 visited nodes (root + 3).
+    ///
+    /// RED before step-2.
+    #[test]
+    fn reflective_cell_list_walk_traverses_elements() {
+        let elements: Vec<CompiledExpr> = (0..3)
+            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", &format!("c{i}")), Type::Real))
+            .collect();
+        let rcl =
+            CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let mut count = 0;
+        rcl.walk(&mut |_| count += 1);
+        assert_eq!(count, 4, "walk must visit root + 3 element nodes");
+    }
+
+    /// task-2458 step-1: `collect_value_refs` on an RCL returns all element
+    /// cell IDs in order.
+    ///
+    /// RED before step-2.
+    #[test]
+    fn reflective_cell_list_collect_value_refs_includes_all_elements() {
+        let cell_a = ValueCellId::new("E", "a");
+        let cell_b = ValueCellId::new("E", "b");
+        let rcl = CompiledExpr::reflective_cell_list(
+            vec![
+                CompiledExpr::value_ref(cell_a.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+            ],
+            Type::List(Box::new(Type::Real)),
+        );
+        let refs = rcl.collect_value_refs();
+        assert_eq!(refs, vec![cell_a, cell_b], "collect_value_refs must return both cell IDs in order");
+    }
+
+    /// task-2458 step-1: `remap_entity` recurses into RCL elements and rewrites
+    /// matching entity names.
+    ///
+    /// RED before step-2.
+    #[test]
+    fn reflective_cell_list_remap_entity_recurses_into_elements() {
+        let cell_x = ValueCellId::new("E", "x");
+        let cell_y = ValueCellId::new("E", "y");
+        let mut rcl = CompiledExpr::reflective_cell_list(
+            vec![
+                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+            ],
+            Type::List(Box::new(Type::Real)),
+        );
+        rcl.remap_entity("E", "F");
+
+        let refs = rcl.collect_value_refs();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].entity, "F", "first element entity must be rewritten to F");
+        assert_eq!(refs[1].entity, "F", "second element entity must be rewritten to F");
+        assert_eq!(refs[0].member, "x", "member must be unchanged");
+        assert_eq!(refs[1].member, "y", "member must be unchanged");
+    }
+
+    /// task-2458 step-1: `remap_cell` recurses into RCL elements and rewrites
+    /// matching cell IDs.
+    ///
+    /// RED before step-2.
+    #[test]
+    fn reflective_cell_list_remap_cell_recurses_into_elements() {
+        let cell_x = ValueCellId::new("E", "x");
+        let cell_y = ValueCellId::new("E", "y");
+        let cell_new = ValueCellId::new("E2", "x_new");
+        let mut rcl = CompiledExpr::reflective_cell_list(
+            vec![
+                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+            ],
+            Type::List(Box::new(Type::Real)),
+        );
+        rcl.remap_cell(&cell_x, &cell_new);
+
+        let refs = rcl.collect_value_refs();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0], cell_new, "first element must be rewritten to cell_new");
+        assert_eq!(refs[1], cell_y, "second element must remain cell_y");
+    }
+
+    // ── end task-2458 step-1 tests ────────────────────────────────────────────
 
     /// step-3 (task-2289): structurally-equal placeholders share content_hash;
     /// structurally-different placeholders (different `query_kind`) differ.
