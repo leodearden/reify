@@ -4562,64 +4562,6 @@ mod tests {
         );
     }
 
-    /// Test-local wrapper around `MockGeometryKernel` that increments a
-    /// counter on every `query()` call. Used to assert that
-    /// `try_eval_conformance_query` short-circuits *before* consulting
-    /// the kernel along the early-return paths (non-helper name, bad
-    /// arg shape, unresolvable cell name, user-asserted marker trait).
-    struct RecordingMockKernel {
-        inner: reify_test_support::mocks::MockGeometryKernel,
-        query_count: std::sync::atomic::AtomicUsize,
-    }
-
-    impl RecordingMockKernel {
-        fn new(inner: reify_test_support::mocks::MockGeometryKernel) -> Self {
-            Self {
-                inner,
-                query_count: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        fn query_count(&self) -> usize {
-            self.query_count.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl reify_types::GeometryKernel for RecordingMockKernel {
-        fn execute(
-            &mut self,
-            op: &reify_types::GeometryOp,
-        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
-            self.inner.execute(op)
-        }
-
-        fn query(
-            &self,
-            query: &reify_types::GeometryQuery,
-        ) -> Result<reify_types::Value, reify_types::QueryError> {
-            self.query_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.query(query)
-        }
-
-        fn export(
-            &self,
-            handle: reify_types::GeometryHandleId,
-            format: reify_types::ExportFormat,
-            writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_types::ExportError> {
-            self.inner.export(handle, format, writer)
-        }
-
-        fn tessellate(
-            &self,
-            handle: reify_types::GeometryHandleId,
-            tolerance: f64,
-        ) -> Result<reify_types::Mesh, reify_types::TessError> {
-            self.inner.tessellate(handle, tolerance)
-        }
-    }
-
     /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
     fn conformance_call_literal_arg(helper_name: &str) -> reify_types::CompiledExpr {
         let arg = reify_types::CompiledExpr::literal(
@@ -4647,7 +4589,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(true));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
@@ -4671,7 +4613,7 @@ mod tests {
             result
         );
         assert_eq!(
-            kernel.query_count(),
+            kernel.total_query_count(),
             0,
             "kernel must NOT be consulted for non-helper names"
         );
@@ -4682,7 +4624,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(true));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
 
@@ -4706,7 +4648,7 @@ mod tests {
             result
         );
         assert_eq!(
-            kernel.query_count(),
+            kernel.total_query_count(),
             0,
             "kernel must NOT be consulted for non-ValueRef args"
         );
@@ -4720,7 +4662,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(false));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
@@ -4742,7 +4684,7 @@ mod tests {
             "user-asserted Watertight must override kernel reply"
         );
         assert_eq!(
-            kernel.query_count(),
+            kernel.total_query_count(),
             0,
             "kernel must NOT be consulted when the structure asserts Watertight"
         );
@@ -4753,7 +4695,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(11);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(false));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
@@ -4770,7 +4712,7 @@ mod tests {
         );
 
         assert_eq!(result, Some(reify_types::Value::Bool(true)));
-        assert_eq!(kernel.query_count(), 0);
+        assert_eq!(kernel.total_query_count(), 0);
     }
 
     #[test]
@@ -4778,7 +4720,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(13);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(false));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
@@ -4795,7 +4737,7 @@ mod tests {
         );
 
         assert_eq!(result, Some(reify_types::Value::Bool(true)));
-        assert_eq!(kernel.query_count(), 0);
+        assert_eq!(kernel.total_query_count(), 0);
     }
 
     #[test]
@@ -4807,7 +4749,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(17);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(false));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
@@ -4829,7 +4771,7 @@ mod tests {
             "is_watertight must NOT be short-circuited by ': Closed'"
         );
         assert_eq!(
-            kernel.query_count(),
+            kernel.total_query_count(),
             1,
             "kernel must be consulted exactly once when no matching marker trait is declared"
         );
@@ -4840,7 +4782,7 @@ mod tests {
         let handle_id = reify_types::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_types::Value::Bool(true));
-        let kernel = RecordingMockKernel::new(inner);
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         // `named_steps` contains "body" but the call references "ghost",
         // which is not present. The dispatch must return None and never
@@ -4865,7 +4807,7 @@ mod tests {
             result
         );
         assert_eq!(
-            kernel.query_count(),
+            kernel.total_query_count(),
             0,
             "kernel must NOT be consulted when the cell-member name is absent"
         );

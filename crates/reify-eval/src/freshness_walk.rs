@@ -241,7 +241,8 @@ mod tests {
     use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
     use crate::deps::{DependencyTrace, ReverseDependencyIndex};
     use reify_types::{
-        ContentHash, DeterminacyState, ErrorRef, Freshness, ResultRef, Value, ValueCellId, VersionId,
+        ContentHash, DeterminacyState, ErrorRef, Freshness, GeometryHandleId, RealizationNodeId,
+        ResultRef, Value, ValueCellId, VersionId,
     };
     use std::collections::HashSet;
 
@@ -971,5 +972,235 @@ mod tests {
             b_cause_after_first,
             "b's pending_cause must be byte-identical between successive walks"
         );
+    }
+
+    /// U1 — Realization-Failed-skip invariant: when a `NodeId::Realization(_)`
+    /// dependent has `Failed` freshness, the walk must skip it as a write target
+    /// AND must NOT push it onto the BFS frontier.
+    ///
+    /// Realization sinks match the `dirty.rs:33` convention: only Value variants
+    /// propagate via `frontier.push_back`. The `if let NodeId::Value(vcid)` guard
+    /// at `freshness_walk.rs:131` does not match for Realization variants, so a
+    /// Failed Realization both (a) is skipped as a write target (the `continue`
+    /// at line 134 fires before derivation) and (b) is not pushed onto the
+    /// frontier (the `push_back` at line 132 is guarded by the `NodeId::Value`
+    /// arm). This means the walk dead-ends at R without attempting to propagate
+    /// from it.
+    ///
+    /// Contrast with the Value-Failed case
+    /// (`failed_node_is_terminal_and_skipped_during_walk`, lines 693-795): a
+    /// Failed Value node DOES push onto the frontier so that downstream c
+    /// becomes Pending. The Realization case is the opposite — no push, no
+    /// downstream propagation.
+    ///
+    /// Topology:
+    /// - `a: ValueCellId` seeded `Intermediate { generation: 1 }` (no reads).
+    /// - `R: RealizationNodeId` inserted via `cache.put(Realization(R), …)`
+    ///   with `Freshness::Intermediate { generation: 1 }` and
+    ///   `dependency_trace.reads = [a]`, then transitioned to `Failed` via
+    ///   `mark_failed`. `GeometryHandle(0)` is the standard synthetic result
+    ///   (cache.rs:102-107).
+    /// - `reverse_index: a → {Realization(R)}`.
+    ///
+    /// Walk: flip `a` to `Final` →
+    /// `propagate_freshness_only(&mut cache, &reverse_index, &{a}, 1)`.
+    ///
+    /// Pins `freshness_walk.rs:130-135` (Failed-skip + Realization-no-push).
+    /// Pins `mark_failed`'s contract at `cache.rs:545-566` (clears pending_cause).
+    #[test]
+    fn failed_realization_dependent_is_skipped_and_not_pushed() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let rid = RealizationNodeId::new(e, 0);
+        let r_node = NodeId::Realization(rid.clone());
+
+        let mut cache = CacheStore::new();
+        // Seed `a` with Intermediate so the walk has something to propagate from.
+        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+
+        // Insert the Realization entry directly via cache.put. No test-instrumentation
+        // feature needed — this is inside the in-crate mod tests block.
+        // GeometryHandle(0) is the standard synthetic handle for unit tests (cache.rs:102-107).
+        cache.put(
+            r_node.clone(),
+            NodeCache::new(
+                CachedResult::GeometryHandle(GeometryHandleId(0)),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace { reads: vec![a.clone()] },
+                VersionId(1),
+            ),
+        );
+
+        // Transition R to Failed via the canonical writer.
+        let r_error = ErrorRef::new("synthetic");
+        assert!(
+            cache.mark_failed(&r_node, r_error.clone()),
+            "mark_failed must succeed — R is in the cache"
+        );
+
+        // Sanity: R is Failed and has no pending_cause (mark_failed clears it,
+        // per cache.rs:561).
+        assert_eq!(
+            cache.freshness(&r_node),
+            Freshness::Failed { error: r_error.clone() },
+            "sanity: R must be Failed before the walk"
+        );
+        assert_eq!(
+            cache.pending_cause(&r_node),
+            None,
+            "sanity: mark_failed clears pending_cause (cache.rs:561)"
+        );
+
+        // Wire the reverse dependency: a → Realization(R).
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), r_node.clone());
+
+        // Flip a to Final — the edge that triggers the walk.
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        // (i) R's freshness must STILL be Failed — the walk must skip it as a
+        //     write target (re-derivation would silently flip Failed → Final,
+        //     destroying the chain-root invariant; freshness_walk.rs:130-135).
+        assert_eq!(
+            cache.freshness(&r_node),
+            Freshness::Failed { error: r_error },
+            "R must STILL be Failed — walk must not re-derive a Failed Realization"
+        );
+
+        // (ii) R's pending_cause must remain None — Failed nodes are chain roots,
+        //      never forwarders (arch §9.2 + mark_failed contract).
+        assert_eq!(
+            cache.pending_cause(&r_node),
+            None,
+            "R's pending_cause must remain None — Failed is a chain root, not a forwarder"
+        );
+
+        // (iii) R must NOT appear in the updated set — Realizations are not write
+        //       targets in the freshness-only walk (only Value variants are pushed
+        //       onto the frontier at freshness_walk.rs:131-133).
+        assert!(
+            !updated.contains(&r_node),
+            "R must NOT be in the updated set — it is not a write target, got: {:?}",
+            updated
+        );
+
+        // (iv) Walk terminates without panic (implicit: assertions above are reached).
+    }
+
+    /// U2 — True-diamond convergence: BFS from `a` in the diamond topology
+    /// `a→b`, `a→c`, `b→d`, `c→d` must propagate Final to all of b, c, d,
+    /// and the `updated` set must contain exactly those three nodes (d appears
+    /// at most once — no double-write despite two convergence paths).
+    ///
+    /// The early-cutoff at `freshness_walk.rs:171` is the load-bearing guard
+    /// in this all-Intermediate scenario: when `d` is processed as a dependent
+    /// of `c` (the second convergence path), its freshness is already Final
+    /// (written on the `b→d` path), so `new == current == Final` fires the
+    /// cutoff and `d` is NOT pushed again. The `visited` guard at lines 103/108
+    /// is belt-and-suspenders (d is never pushed a second time in this topology
+    /// because the cutoff prevents the second `frontier.push_back`). The
+    /// `updated.len() == 3` assertion pins "d appears at most once" regardless
+    /// of which guard is load-bearing.
+    ///
+    /// Topology (all four cells seeded `Intermediate { generation: 1 }`):
+    /// - `a.reads = []`, `b.reads = [a]`, `c.reads = [a]`, `d.reads = [b, c]`
+    /// - `reverse_index`: `a → {Value(b), Value(c)}`, `b → {Value(d)}`,
+    ///   `c → {Value(d)}`
+    ///
+    /// Walk: flip `a` to `Final` →
+    /// `propagate_freshness_only(&mut cache, &reverse_index, &{a}, 1)`.
+    #[test]
+    fn true_diamond_convergence_visits_d_at_most_once() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let c = ValueCellId::new(e, "c");
+        let d = ValueCellId::new(e, "d");
+
+        let mut cache = CacheStore::new();
+        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &b,
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+        );
+        put_value_entry(
+            &mut cache,
+            &c,
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+        );
+        put_value_entry(
+            &mut cache,
+            &d,
+            Freshness::Intermediate { generation: 1 },
+            vec![b.clone(), c.clone()],
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+        reverse_index.add(a.clone(), NodeId::Value(c.clone()));
+        reverse_index.add(b.clone(), NodeId::Value(d.clone()));
+        reverse_index.add(c.clone(), NodeId::Value(d.clone()));
+
+        // Flip a to Final — both b and c will derive Final, then d derives Final.
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        // (i) b, c, d must all be Final after the walk.
+        assert_eq!(
+            cache.freshness(&NodeId::Value(b.clone())),
+            Freshness::Final,
+            "b must be Final (a=Final → b derives Final)"
+        );
+        assert_eq!(
+            cache.freshness(&NodeId::Value(c.clone())),
+            Freshness::Final,
+            "c must be Final (a=Final → c derives Final)"
+        );
+        assert_eq!(
+            cache.freshness(&NodeId::Value(d.clone())),
+            Freshness::Final,
+            "d must be Final (b=Final and c=Final → d derives Final)"
+        );
+
+        // (ii) Updated must contain exactly b, c, d — d appears at most once
+        //      despite two convergence paths (b→d and c→d).
+        assert_eq!(
+            updated.len(),
+            3,
+            "updated must have exactly 3 entries (b, c, d — not 4 from double-counting d), \
+             got: {:?}",
+            updated
+        );
+        assert!(
+            updated.contains(&NodeId::Value(b.clone())),
+            "updated must contain Value(b), got: {:?}",
+            updated
+        );
+        assert!(
+            updated.contains(&NodeId::Value(c.clone())),
+            "updated must contain Value(c), got: {:?}",
+            updated
+        );
+        assert!(
+            updated.contains(&NodeId::Value(d.clone())),
+            "updated must contain Value(d), got: {:?}",
+            updated
+        );
+
+        // (iii) Walk terminates (implicit: assertions above are reached).
     }
 }

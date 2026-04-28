@@ -2172,6 +2172,22 @@ impl Default for Freshness {
     }
 }
 
+impl Freshness {
+    /// Returns `true` iff this freshness tag is `Final` — the only state in
+    /// which a cached value is authoritative and safe for a downstream
+    /// `OnlyRunOnFinalInputs` node to consume.
+    ///
+    /// Single audit point for the canonical "is final?" check.  Any future
+    /// addition of a fifth `Freshness` variant (e.g. a `Provisional` state,
+    /// see arch §7.1 lines 716–728) only needs to be handled here rather than
+    /// at every `matches!(f, Freshness::Final)` call site.
+    ///
+    /// See arch §7.1 lines 716–728 and §7.3 lines 762–767.
+    pub const fn is_final(&self) -> bool {
+        matches!(self, Freshness::Final)
+    }
+}
+
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
 fn sorted_captures(captures: &ValueMap) -> Vec<(&ValueCellId, &Value)> {
     let mut caps: Vec<_> = captures.iter().collect();
@@ -7222,6 +7238,29 @@ mod tests {
             v.format_hover(),
             "25 USD",
             "format_hover() on a Money scalar should render \"25 USD\", not \"25 SI\""
+        );
+    }
+
+    // --- Freshness::is_final tests (task #2356) ---
+
+    #[test]
+    fn freshness_is_final_returns_true_only_for_final() {
+        // is_final() must return true ONLY for Freshness::Final.
+        assert!(
+            Freshness::Final.is_final(),
+            "Final.is_final() must be true"
+        );
+        assert!(
+            !Freshness::Intermediate { generation: 1 }.is_final(),
+            "Intermediate.is_final() must be false"
+        );
+        assert!(
+            !Freshness::Pending { last_substantive: ResultRef::none() }.is_final(),
+            "Pending.is_final() must be false"
+        );
+        assert!(
+            !Freshness::Failed { error: ErrorRef::new("e") }.is_final(),
+            "Failed.is_final() must be false"
         );
     }
 
