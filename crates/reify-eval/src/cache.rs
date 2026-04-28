@@ -3439,4 +3439,149 @@ mod tests {
             "mark_pending must clear pending_cause — the bulk dirty-pass helper cannot leak a stale chain across rounds (task #2330 §9.2)"
         );
     }
+
+    // --- S3 agreement: no-cause variants == .0 of with_cause variants (task #2451 step-3) ---
+
+    /// Pins the invariant that the no-cause cache methods return exactly `.0` of
+    /// their `_with_cause` cousins across the §7.2/§9.2 truth-table input scenarios.
+    /// This test passes before the step-4 refactor (both sides implement the same
+    /// loop) and will continue to pass after the refactor makes the no-cause methods
+    /// thin wrappers over `_with_cause`.
+    #[test]
+    fn derive_output_freshness_no_cause_variants_agree_with_with_cause() {
+        use reify_types::{DeterminacyState, ErrorRef, Freshness, Value, VersionId};
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+        let out_id = ValueCellId::new("T", "out");
+        let cause_id = ValueCellId::new("T", "cause_root");
+
+        // Helper: build a fresh store with `out` having trace = [a, b].
+        let make_store = |a_fresh: Freshness, b_fresh: Freshness| -> CacheStore {
+            let mut store = CacheStore::new();
+            store.put(
+                NodeId::Value(a_id.clone()),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+                    a_fresh,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            store.put(
+                NodeId::Value(b_id.clone()),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(2), DeterminacyState::Determined),
+                    b_fresh,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            let mut out_trace = DependencyTrace::default();
+            out_trace.reads.push(a_id.clone());
+            out_trace.reads.push(b_id.clone());
+            store.put(
+                NodeId::Value(out_id.clone()),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(3), DeterminacyState::Determined),
+                    Freshness::Final,
+                    out_trace,
+                    VersionId(1),
+                ),
+            );
+            store
+        };
+
+        let out = NodeId::Value(out_id.clone());
+        let sr = false;
+        let g = 5u64;
+
+        // Macro to assert both method pairs agree for a given store + trace.
+        macro_rules! assert_agree {
+            ($store:expr, $trace:expr, $sr:expr, $g:expr, $label:expr) => {{
+                let for_node = $store.derive_output_freshness_for_node(&out, $sr, $g);
+                let for_node_cause = $store.derive_output_freshness_for_node_with_cause(&out, $sr, $g).0;
+                assert_eq!(
+                    for_node, for_node_cause,
+                    "derive_output_freshness_for_node vs _with_cause disagree for {}",
+                    $label
+                );
+                let from_trace = $store.derive_output_freshness_from_trace($trace, $sr, $g);
+                let from_trace_cause = $store.derive_output_freshness_from_trace_with_cause($trace, $sr, $g).0;
+                assert_eq!(
+                    from_trace, from_trace_cause,
+                    "derive_output_freshness_from_trace vs _with_cause disagree for {}",
+                    $label
+                );
+            }};
+        }
+
+        // Row 1: all-Final
+        {
+            let store = make_store(Freshness::Final, Freshness::Final);
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "all-Final");
+        }
+
+        // Row 2: one Intermediate
+        {
+            let store = make_store(Freshness::Final, Freshness::Intermediate { generation: 3 });
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "one-Intermediate");
+        }
+
+        // Row 3: one Pending (via mark_pending)
+        {
+            let mut store = make_store(Freshness::Final, Freshness::Final);
+            store.mark_pending(&NodeId::Value(b_id.clone()));
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "one-Pending");
+        }
+
+        // Row 4: one Failed
+        {
+            let mut store = make_store(Freshness::Final, Freshness::Final);
+            store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("boom"));
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "one-Failed");
+        }
+
+        // Row 5: mixed Pending + Failed
+        {
+            let mut store = make_store(Freshness::Final, Freshness::Final);
+            store.mark_pending_with_cause(
+                &NodeId::Value(a_id.clone()),
+                NodeId::Value(cause_id.clone()),
+            );
+            store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("type error"));
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "mixed-Pending+Failed");
+        }
+
+        // Row 6: still_refining=true, all-Final (must yield Intermediate)
+        {
+            let store = make_store(Freshness::Final, Freshness::Final);
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, true, g, "still_refining=true, all-Final");
+        }
+
+        // Row 7: absent-node fallback — no cache entry for `out`
+        {
+            let store = make_store(Freshness::Final, Freshness::Final);
+            let absent = NodeId::Value(ValueCellId::new("T", "no_such_node"));
+            let empty_trace = DependencyTrace::default();
+            let for_node = store.derive_output_freshness_for_node(&absent, sr, g);
+            let for_node_cause = store.derive_output_freshness_for_node_with_cause(&absent, sr, g).0;
+            assert_eq!(
+                for_node, for_node_cause,
+                "absent-node: for_node vs _with_cause must agree"
+            );
+            let from_trace = store.derive_output_freshness_from_trace(&empty_trace, sr, g);
+            let from_trace_cause = store.derive_output_freshness_from_trace_with_cause(&empty_trace, sr, g).0;
+            assert_eq!(
+                from_trace, from_trace_cause,
+                "absent-node (empty trace): from_trace vs _with_cause must agree"
+            );
+        }
+    }
 }
