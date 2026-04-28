@@ -29,7 +29,10 @@
 //! the rest of reify's geometry kernel — see `revolve` / `rotate_shape`
 //! which also take `angle_rad`).
 
-use reify_types::{FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
+use reify_types::{
+    Diagnostic, DiagnosticCode, DiagnosticLabel, FeatureTag, FeatureTagTable, GeometryHandleId,
+    GeometryKernel, GeometryQuery, QueryError, SourceSpan, Value,
+};
 
 /// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
 /// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
@@ -471,6 +474,57 @@ pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
         }
     }
     Ok(out)
+}
+
+/// Resolve a `FeatureTag` to a unique candidate geometry handle.
+///
+/// Filters `candidates` to those whose recorded tag in `table` equals `target`
+/// (full `FeatureTag` equality via the `PartialEq` derive). Returns `Some(handle)`
+/// iff exactly one match is found.
+///
+/// If zero or more than one candidates match, returns `None` and pushes a
+/// [`DiagnosticCode::TopologyTagStale`] warning onto `diagnostics` with:
+/// - a primary label at `selector_span` (`"selector call"`), and
+/// - a secondary label at `target.source_span` (`"feature originally produced here"`).
+///
+/// The match count is embedded in the message so callers can distinguish the
+/// zero-match (sub-shape lost) from the multi-match (topology split) case.
+///
+/// # Scope
+/// This is a pure building-block helper: it does not call into the geometry kernel
+/// and does not require any `&mut dyn GeometryKernel` reference. Callers are
+/// expected to have already extracted the candidate handles (via
+/// `kernel.extract_edges` / `kernel.extract_faces`) and populated the table
+/// (via `edges_at_height_with_tags` or equivalent) before calling this resolver.
+pub fn resolve_unique_by_tag(
+    table: &FeatureTagTable,
+    candidates: &[GeometryHandleId],
+    target: FeatureTag,
+    selector_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<GeometryHandleId> {
+    let matches: Vec<GeometryHandleId> = candidates
+        .iter()
+        .copied()
+        .filter(|id| table.lookup(*id) == Some(&target))
+        .collect();
+    match matches.len() {
+        1 => Some(matches[0]),
+        n => {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "feature-tag selector matched {n} sub-shapes (expected exactly 1; topology may have changed)"
+                ))
+                .with_code(DiagnosticCode::TopologyTagStale)
+                .with_label(DiagnosticLabel::new(selector_span, "selector call"))
+                .with_label(DiagnosticLabel::new(
+                    target.source_span,
+                    "feature originally produced here",
+                )),
+            );
+            None
+        }
+    }
 }
 
 /// Parse a `Value::String` that the kernel formatted as JSON
