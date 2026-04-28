@@ -184,6 +184,117 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
 
+        "transform_exp" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            let angular_val = match map.get(&Value::String("angular".to_string())) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            let linear_val = match map.get(&Value::String("linear".to_string())) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Extract angular: must be Vector3<DIMENSIONLESS>.
+            let (ang_comps, ang_dim) = match tensor_components_f64(angular_val) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Some(Value::Undef),
+            };
+            if ang_dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let wx = ang_comps[0];
+            let wy = ang_comps[1];
+            let wz = ang_comps[2];
+            if !wx.is_finite() || !wy.is_finite() || !wz.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Extract linear: must be Vector3 (preserve dimension; for now, accept LENGTH or DIMENSIONLESS).
+            // Spec: linear must be LENGTH (or DIMENSIONLESS for unit-less twists).
+            let (lin_items, _lin_dim_first) = match linear_val {
+                Value::Vector(items) if items.len() == 3 => {
+                    let dim0 = items[0].dimension();
+                    if items[1].dimension() != dim0 || items[2].dimension() != dim0 {
+                        return Some(Value::Undef);
+                    }
+                    (items.clone(), dim0)
+                }
+                _ => return Some(Value::Undef),
+            };
+            let lin_dim = lin_items[0].dimension();
+            // Permit LENGTH or DIMENSIONLESS (test expects strict LENGTH for typed cases; ANGLE is rejected).
+            if lin_dim != DimensionVector::LENGTH && lin_dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let (lx, ly, lz) = match (
+                lin_items[0].as_f64(),
+                lin_items[1].as_f64(),
+                lin_items[2].as_f64(),
+            ) {
+                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+                _ => return Some(Value::Undef),
+            };
+            // Compute R = orient_exp(angular).
+            let theta_sq = wx * wx + wy * wy + wz * wz;
+            let theta = theta_sq.sqrt();
+            const EPS: f64 = 1e-12;
+            let r_val = if theta < EPS {
+                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+            } else {
+                let half = theta / 2.0;
+                let s = half.sin() / theta;
+                match normalize_quaternion(half.cos(), s * wx, s * wy, s * wz) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                }
+            };
+            // Compute V * linear, where V is the SE(3) left Jacobian:
+            //   V = I + ((1−cos|ω|)/|ω|²) [ω]× + ((|ω|−sin|ω|)/|ω|³) [ω]×²
+            // For |ω| ≈ 0, use Taylor: V ≈ I + 0.5*[ω]× + (1/6)*[ω]×² + ...
+            let (a_coef, b_coef) = if theta < 1.0e-4 {
+                // Taylor series:
+                //   (1 − cos|ω|)/|ω|² ≈ 1/2 − |ω|²/24 + |ω|⁴/720 − ...
+                //   (|ω| − sin|ω|)/|ω|³ ≈ 1/6 − |ω|²/120 + ...
+                (
+                    0.5 - theta_sq / 24.0,
+                    1.0 / 6.0 - theta_sq / 120.0,
+                )
+            } else {
+                ((1.0 - theta.cos()) / theta_sq, (theta - theta.sin()) / (theta_sq * theta))
+            };
+            // [ω]× linear = ω × linear.
+            let cx = wy * lz - wz * ly;
+            let cy = wz * lx - wx * lz;
+            let cz = wx * ly - wy * lx;
+            // [ω]×² linear = ω × (ω × linear).
+            let ccx = wy * cz - wz * cy;
+            let ccy = wz * cx - wx * cz;
+            let ccz = wx * cy - wy * cx;
+            let tx = lx + a_coef * cx + b_coef * ccx;
+            let ty = ly + a_coef * cy + b_coef * ccy;
+            let tz = lz + a_coef * cz + b_coef * ccz;
+            if !tx.is_finite() || !ty.is_finite() || !tz.is_finite() {
+                return Some(Value::Undef);
+            }
+            let dim = lin_dim;
+            let make_t = |v: f64| -> Value {
+                if dim.is_dimensionless() {
+                    Value::Real(v)
+                } else {
+                    Value::Scalar { si_value: v, dimension: dim }
+                }
+            };
+            Value::Transform {
+                rotation: Box::new(r_val),
+                translation: Box::new(Value::Vector(vec![make_t(tx), make_t(ty), make_t(tz)])),
+            }
+        }
+
         "transform_log" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
