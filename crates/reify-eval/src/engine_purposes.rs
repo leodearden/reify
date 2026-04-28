@@ -390,18 +390,9 @@ fn expand_purpose_reflective_placeholders(
                 })
                 .collect();
 
-            // Invariant (task-2544): every element produced above is a ValueRef —
-            // guaranteed by the `CompiledExpr::value_ref(cell_id, elem_type)` call
-            // on line 389. The split no-op arm in the match below relies on this.
-            debug_assert!(
-                elements
-                    .iter()
-                    .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_))),
-                "expand_purpose_reflective_placeholders: RCL elements must be \
-                 ValueRefs by construction; an emission-site change broke the \
-                 invariant that the ReflectiveCellList(_) no-op arm relies on \
-                 (task-2544)"
-            );
+            // Invariant: every element above is a `ValueRef` — enforced by
+            // `CompiledExpr::reflective_cell_list` (task-2552, follow-up to task-2544).
+            // The `ReflectiveCellList(_)` no-op arm below relies on this.
 
             // Outer ReflectiveCellList type: inherit first element's type when
             // populated; default to Type::Real on empty (anti-cascade).
