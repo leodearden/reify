@@ -709,3 +709,38 @@ fn persistent_view_state_ipc_contract() {
     use crate::types::PersistentViewState;
     super::assert_ipc_contract::<PersistentViewState>();
 }
+
+/// `format_freshness` must return lowercase wire strings matching the
+/// pattern already established by `format_determinacy`. The frontend reads
+/// these strings as CSS `data-freshness` attribute values (task #2337
+/// design decision: tag-only string collapse).
+#[test]
+fn format_freshness_returns_lowercase_strings() {
+    use crate::types::format_freshness;
+    use reify_types::{ErrorRef, Freshness, ResultRef};
+
+    // Final → "final"
+    assert_eq!(format_freshness(&Freshness::Final), "final");
+
+    // Intermediate (generation ignored at wire layer) → "intermediate"
+    assert_eq!(
+        format_freshness(&Freshness::Intermediate { generation: 7 }),
+        "intermediate"
+    );
+
+    // Pending (last_substantive ignored at wire layer) → "pending"
+    assert_eq!(
+        format_freshness(&Freshness::Pending {
+            last_substantive: ResultRef::none()
+        }),
+        "pending"
+    );
+
+    // Failed (error payload ignored at wire layer) → "failed"
+    assert_eq!(
+        format_freshness(&Freshness::Failed {
+            error: ErrorRef::new("test-error-x")
+        }),
+        "failed"
+    );
+}
