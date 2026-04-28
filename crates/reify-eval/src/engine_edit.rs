@@ -638,6 +638,11 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// LRU clock — the entry returns to the pool with the same age it had when it
     /// was originally checked out.
     ///
+    /// When the safety net fires (non-empty map), a single `WARN`-level event is
+    /// emitted with the entry count.  This makes panic-induced re-donations
+    /// observable in production logs, distinguishing them from the normal
+    /// (silent) success path.
+    ///
     /// # Double-panic note
     ///
     /// `pool.donate_preserving_lru` routes through `insert_entry` →
@@ -649,6 +654,17 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// buffer would need to be saturated before the first panic — but is
     /// documented here for completeness.
     fn drop(&mut self) {
+        let len = self.map.len();
+        if len == 0 {
+            return;
+        }
+        tracing::warn!(
+            target: "reify_eval::engine_edit",
+            count = len,
+            "PendingWarmSeedsGuard safety-net fired: re-donating staged \
+             warm-pool entries from Drop (likely panic / early-return \
+             between edit_source steps 4c and 14b)"
+        );
         for (nid, (state, stamp)) in self.map.drain() {
             self.pool.donate_preserving_lru(nid, state, stamp);
         }
