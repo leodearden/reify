@@ -268,7 +268,7 @@ impl fmt::Display for KernelId {
 
 /// Returned by `KernelId::from_str` when the string is not a canonical
 /// kernel id. Currently only used internally; consumers see the typed
-/// `ManifestError::UnknownKernel` variant (added in step-6).
+/// `ManifestError::UnknownKernel` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownKernelId;
 
