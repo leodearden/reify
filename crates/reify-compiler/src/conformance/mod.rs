@@ -2,6 +2,7 @@ pub(super) mod checker;
 use checker::*;
 
 use super::*;
+use std::cell::RefCell;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
 };
@@ -485,7 +486,8 @@ fn walk_param_against_arg_type(
 /// their compiled op-arrays in the parent template's `realizations` list.
 ///
 /// For non-geometry lets (`ValueCellKind::Let` with a `default_expr`), falls
-/// back to the env-less `infer_traits_for_expr` on the resolved `CompiledExpr`.
+/// back to `infer_traits_for_expr_in_env` on the resolved `CompiledExpr`,
+/// threading `self` through so chained `ValueRef` lets are resolved recursively.
 /// For any id that doesn't match a known let or realization, returns `None`
 /// (safe-default: the caller falls back to `InferredTraits::all()`).
 ///
@@ -505,8 +507,26 @@ fn walk_param_against_arg_type(
 /// recursively compiles `h`'s init expression and emits the SAME op array
 /// under `realization.name = Some("g")`. No chained-ValueRef walk is needed
 /// here.
+///
+/// # Cycle guard
+///
+/// The value_cells fallback calls `infer_traits_for_expr_in_env(expr, self)`,
+/// which recurses back into `lookup` for any nested `ValueRef`. Malformed or
+/// forward-referencing IR can produce cycles (`let g = ValueRef(g)`).  Rather
+/// than stack-overflowing, the `in_flight` visited set detects re-entry and
+/// returns `None`; the caller's `unwrap_or(InferredTraits::all())` mechanism
+/// safe-defaults the result.  The realization arm does NOT recurse through
+/// the env (it calls `infer_traits_for_op` instead), so `in_flight` is only
+/// checked on the value_cells path.
 struct RealizationLetEnv<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
+    /// In-flight visited set used to terminate cycles in the value_cells fallback.
+    ///
+    /// `RefCell` is required because `LetBindingEnv::lookup` takes `&self`;
+    /// changing the trait to `&mut self` would cascade to all other impls.
+    /// `Vec` (not `HashSet`) because typical recursion depth is 1–4; a linear
+    /// scan is faster than hash overhead at this size, and avoids a new dep.
+    in_flight: RefCell<Vec<ValueCellId>>,
 }
 
 impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
@@ -527,6 +547,16 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
         // above (entity is already narrowed by `templates.get(id.entity.as_str())`,
         // but the explicit check makes the intent self-documenting and adds a
         // cheap guard against any future refactor that reuses cells across templates).
+
+        // Cycle guard: if `id` is already being resolved on the current call stack,
+        // return None.  The caller's `unwrap_or(InferredTraits::all())` in
+        // `infer_traits_for_expr_in_env` converts None into the safe default, so
+        // cycles in malformed or forward-referencing IR yield `all()` rather than
+        // a stack overflow.
+        if self.in_flight.borrow().iter().any(|p| p == id) {
+            return None;
+        }
+
         if let Some(cell) = template.value_cells.iter().find(|vc| {
             vc.id.entity == id.entity
                 && vc.id.member == id.member
@@ -536,11 +566,14 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
             // Thread the env through the resolved CompiledExpr so that any
             // ValueRef nested inside a non-geometry let (e.g. a chained let
             // whose default_expr references a geometry binding) is resolved via
-            // the env rather than silently safe-defaulting to all(). Recursion
-            // is bounded by the number of distinct ValueCellIds; self-reference
-            // is impossible in well-formed compiled IR.
+            // the env rather than silently safe-defaulting to all(). The
+            // in-flight guard above terminates any cycle in well-formed or
+            // malformed IR before a stack overflow can occur.
             let expr = cell.default_expr.as_ref()?;
-            return Some(infer_traits_for_expr_in_env(expr, self));
+            self.in_flight.borrow_mut().push(id.clone());
+            let result = infer_traits_for_expr_in_env(expr, self);
+            self.in_flight.borrow_mut().pop();
+            return Some(result);
         }
 
         None
@@ -615,7 +648,10 @@ fn check_leaf_trait_conformance(
             _ => None,
         };
         if let Some(trait_kind) = geom_trait {
-            let env = RealizationLetEnv { templates: ctx.templates };
+            let env = RealizationLetEnv {
+                templates: ctx.templates,
+                in_flight: RefCell::new(Vec::new()),
+            };
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
                 if matches!(trait_kind, GeometryTrait::Bounded) {
