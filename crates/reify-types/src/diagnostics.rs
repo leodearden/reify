@@ -332,6 +332,24 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
+    /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
+    ///
+    /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
+    /// directly inside a specialization-scope body (`sub name : T { … }`).
+    /// Specialization scopes (spec §8.7) permit only `let`, `constraint`, `connect`,
+    /// `chain`, and similar override/binding forms — they may not introduce new
+    /// structural members.
+    ///
+    /// Canonical message form:
+    /// `"'<kind>' declaration '<name>' is not permitted in a specialization scope (spec §8.7)"`
+    /// where `<kind>` is one of `param`, `port`, or `sub`.
+    ///
+    /// A single label accompanies the error at the offending declaration's span:
+    /// `"forbidden in specialization scope"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SPECIALIZATION_FORBIDDEN_DECL`
+    /// (see `docs/prds/specialization-scope.md` and spec §8.7).
+    SpecializationForbiddenDecl,
 }
 
 /// A diagnostic message with location and optional labels.
