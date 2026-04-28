@@ -292,7 +292,6 @@ fn find_annotation<'a>(
     anns.iter().find(|a| a.name == name)
 }
 
-
 /// Render a single `ItemDoc` to `out`.
 ///
 /// Emits the H2 heading with explicit anchor, optional annotation callouts,
@@ -864,5 +863,47 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{AnnotationDoc, ItemDoc};
 
+    /// `@deprecated("first" + "second")` — pathological multi-quote concat arg —
+    /// must NOT have the outer quotes stripped by `unquote`. The naïve strip would
+    /// yield `> **Deprecated:** first" + "second` (outer `"` eaten); the
+    /// escape-aware `crate::util::unquote` returns the arg unchanged so the callout
+    /// reads `> **Deprecated:** "first" + "second"`.
+    ///
+    /// This test confirms that `fmt_markdown::render_item` delegates to
+    /// `crate::util::unquote` rather than any local naive helper.
+    #[test]
+    fn deprecated_annotation_pathological_concat_arg_renders_unchanged() {
+        let item = ItemDoc::Structure {
+            name: "OldThing".into(),
+            doc: None,
+            is_pub: true,
+            annotations: vec![AnnotationDoc {
+                name: "deprecated".into(),
+                args: vec!["\"first\" + \"second\"".into()],
+            }],
+            pragmas: vec![],
+            params: vec![],
+            ports: vec![],
+            constraints: vec![],
+            sub_components: vec![],
+            realizations: vec![],
+            meta: vec![],
+        };
+        let mut out = String::new();
+        render_item(&mut out, &item, None, &|n| format!("#{n}"));
+
+        // POSITIVE: arg appears verbatim — unquote returned it unchanged.
+        assert!(
+            out.contains("> **Deprecated:** \"first\" + \"second\""),
+            "expected verbatim arg in deprecated callout; got:\n{out}"
+        );
+        // NEGATIVE: naive unquote strip would eat the leading `"`, placing
+        // `first"` right after `Deprecated:`.
+        assert!(
+            !out.contains("> **Deprecated:** first\""),
+            "naive unquote strip detected in markdown rendering; got:\n{out}"
+        );
+    }
 }

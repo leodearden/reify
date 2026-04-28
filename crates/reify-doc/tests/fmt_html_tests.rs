@@ -531,6 +531,44 @@ fn parameters_table_renders() {
         "expected length doc in description cell; got:\n{out}");
 }
 
+/// `@solver_hint("first" + "second")` on a parameter — pathological multi-quote
+/// concat arg — must NOT have the outer quotes stripped by `unquote`.  The naïve
+/// strip would yield `<em>hint: first&quot; + &quot;second</em>` (outer `"`
+/// eaten); the escape-aware `crate::util::unquote` returns the arg unchanged so
+/// `escape_into` encodes all four `"` chars as `&quot;`.
+///
+/// This test covers the third `unquote` call site in `render_params_table`
+/// (`fmt_html.rs:490`), complementing the `@deprecated` and `@optimized` tests.
+#[test]
+fn solver_hint_annotation_pathological_concat_arg_renders_unchanged() {
+    let item = structure_with_params(
+        "Widget",
+        vec![ParamDoc {
+            name: "strategy".into(),
+            doc: Some("Solver strategy.".into()),
+            type_repr: "String".into(),
+            default_repr: None,
+            annotations: vec![AnnotationDoc {
+                name: "solver_hint".into(),
+                args: vec!["\"first\" + \"second\"".into()],
+            }],
+        }],
+    );
+    let out = render_one_item(item);
+
+    // POSITIVE: all four `"` chars are encoded — unquote left the arg untouched.
+    assert!(
+        out.contains("<em>hint: &quot;first&quot; + &quot;second&quot;</em>"),
+        "expected all four `\"` chars as `&quot;` in hint; got:\n{out}"
+    );
+    // NEGATIVE: naive unquote would strip the leading `"`, producing
+    // `hint: first&quot;` at the start of the hint text.
+    assert!(
+        !out.contains("<em>hint: first&quot;"),
+        "naive unquote strip detected — leading `\"` was incorrectly eaten; got:\n{out}"
+    );
+}
+
 /// Empty params list must produce no `<h3>Parameters</h3>` and no `<table>`.
 #[test]
 fn parameters_table_omitted_when_empty() {

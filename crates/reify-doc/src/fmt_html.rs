@@ -440,7 +440,6 @@ fn find_annotation<'a>(
     anns.iter().find(|a| a.name == name)
 }
 
-
 /// Render the `<h3>Parameters</h3>` table.  No-op when `params` is empty.
 ///
 /// Columns: Name | Type | Dimension | Default | Description.  Name and Type
