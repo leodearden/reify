@@ -127,12 +127,149 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_syntax::ParsedModule;
-    use reify_types::{Diagnostic, ModulePath};
+    use reify_syntax::{
+        ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl,
+        SubDecl, StructureDef,
+    };
+    use reify_types::{
+        ContentHash, Diagnostic, DiagnosticCode, ModulePath, PortDirection, Severity, SourceSpan,
+        SpannedIdent,
+    };
 
     fn parse_module(source: &str) -> ParsedModule {
         reify_syntax::parse(source, ModulePath::single("test"))
     }
+
+    // ── AST helpers ──────────────────────────────────────────────────────────
+
+    fn dummy_span() -> SourceSpan {
+        SourceSpan::new(10, 20)
+    }
+
+    fn param_span() -> SourceSpan {
+        SourceSpan::new(30, 50)
+    }
+
+    fn port_span() -> SourceSpan {
+        SourceSpan::new(60, 80)
+    }
+
+    fn sub_span() -> SourceSpan {
+        SourceSpan::new(90, 110)
+    }
+
+    fn dummy_hash() -> ContentHash {
+        ContentHash(0)
+    }
+
+    fn dummy_expr() -> Expr {
+        Expr {
+            kind: ExprKind::BoolLiteral(true),
+            span: dummy_span(),
+        }
+    }
+
+    fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
+        MemberDecl::Param(ParamDecl {
+            name: name.to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: Vec::new(),
+            span,
+            content_hash: dummy_hash(),
+        })
+    }
+
+    fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
+        MemberDecl::Port(PortDecl {
+            name: name.to_string(),
+            direction: None,
+            type_name: "SomePort".to_string(),
+            members: Vec::new(),
+            frame_expr: None,
+            span,
+            content_hash: dummy_hash(),
+        })
+    }
+
+    fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
+        MemberDecl::Sub(SubDecl {
+            name: name.to_string(),
+            structure_name: "Foo".to_string(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            where_clause: None,
+            body: None,
+            span,
+            content_hash: dummy_hash(),
+        })
+    }
+
+    fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::Sub(SubDecl {
+            name: name.to_string(),
+            structure_name: "Foo".to_string(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            where_clause: None,
+            body: Some(body),
+            span,
+            content_hash: dummy_hash(),
+        })
+    }
+
+    fn make_let(name: &str) -> MemberDecl {
+        MemberDecl::Let(LetDecl {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None,
+            value: dummy_expr(),
+            where_clause: None,
+            annotations: Vec::new(),
+            span: dummy_span(),
+            content_hash: dummy_hash(),
+        })
+    }
+
+    fn make_constraint() -> MemberDecl {
+        MemberDecl::Constraint(ConstraintDecl {
+            label: None,
+            expr: dummy_expr(),
+            where_clause: None,
+            span: dummy_span(),
+            content_hash: dummy_hash(),
+        })
+    }
+
+    /// Build a ParsedModule with a single Structure whose top-level members
+    /// are the supplied `members` slice.
+    fn parsed_module_with_structure_members(members: Vec<MemberDecl>) -> ParsedModule {
+        ParsedModule {
+            path: ModulePath::single("test"),
+            declarations: vec![Declaration::Structure(StructureDef {
+                name: "S".to_string(),
+                doc: None,
+                is_pub: false,
+                type_params: Vec::new(),
+                trait_bounds: Vec::new(),
+                members,
+                span: dummy_span(),
+                content_hash: dummy_hash(),
+                pragmas: Vec::new(),
+                annotations: Vec::new(),
+            })],
+            errors: Vec::new(),
+            content_hash: dummy_hash(),
+            pragmas: Vec::new(),
+        }
+    }
+
+    // ── existing regression test ─────────────────────────────────────────────
 
     #[test]
     fn validate_module_emits_no_diagnostics_on_currently_parseable_module() {
@@ -154,6 +291,54 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "validate_module should emit no diagnostics on a currently-parseable module, got: {diagnostics:?}"
+        );
+    }
+
+    // ── step-3: Param inside specialization scope ────────────────────────────
+
+    /// A `param` declaration directly inside a specialization-scope body must
+    /// produce exactly one Error diagnostic with code=SpecializationForbiddenDecl,
+    /// a message containing `'param'` and the decl name, and a label whose span
+    /// equals the ParamDecl's span.
+    #[test]
+    fn validate_module_emits_forbidden_decl_diagnostic_for_param_inside_specialization_scope() {
+        let p_span = param_span();
+        // Structure S { sub scope : Foo { param x } }  (hand-built)
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_param("x", p_span)],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got: {diagnostics:?}");
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error, "diagnostic must be Error severity");
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::SpecializationForbiddenDecl),
+            "code must be SpecializationForbiddenDecl"
+        );
+        assert!(
+            d.message.contains("'param'"),
+            "message must contain \"'param'\", got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'x'"),
+            "message must contain \"'x'\", got: {:?}",
+            d.message
+        );
+        assert!(!d.labels.is_empty(), "diagnostic must have at least one label");
+        assert_eq!(
+            d.labels[0].span,
+            p_span,
+            "primary label span must equal the ParamDecl's span"
+        );
+        assert!(
+            !d.labels[0].message.is_empty(),
+            "primary label message must be non-empty"
         );
     }
 }
