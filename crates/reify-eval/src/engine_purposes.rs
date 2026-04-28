@@ -446,14 +446,19 @@ fn expand_purpose_reflective_placeholders(
         CompiledExprKind::Lambda { body, .. } => {
             expand_purpose_reflective_placeholders(body, queries, entity_ref, value_cells);
         }
-        CompiledExprKind::ListLiteral(elements)
-        | CompiledExprKind::SetLiteral(elements)
-        | CompiledExprKind::ReflectiveCellList(elements) => {
-            // ReflectiveCellList: idempotent — elements are ValueRefs by construction,
-            // never placeholders. Included for completeness (task-2458).
+        CompiledExprKind::ListLiteral(elements) | CompiledExprKind::SetLiteral(elements) => {
             for elem in elements {
                 expand_purpose_reflective_placeholders(elem, queries, entity_ref, value_cells);
             }
+        }
+        CompiledExprKind::ReflectiveCellList(_) => {
+            // Invariant (task-2544): RCL elements are `ValueRef`s by construction —
+            // the only emission site is `CompiledExpr::reflective_cell_list(...)`
+            // built from `CompiledExpr::value_ref(cell_id, elem_type)` in this same
+            // function. Recursion would be a guaranteed no-op (`ValueRef` arm above
+            // is empty), so we elide the loop and document the trust explicitly.
+            // Originally task-2458 grouped RCL with the list/set traversal "for
+            // completeness"; task-2544 reverted that conflation after review.
         }
         CompiledExprKind::MapLiteral(entries) => {
             for (key, val) in entries {
