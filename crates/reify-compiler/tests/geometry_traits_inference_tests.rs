@@ -627,6 +627,77 @@ fn inline_intersection_of_boxes_at_connected_param_emits_diagnostic() {
     );
 }
 
+// ─── E2E: let-bound rejection (soundness gap fix) ───────────────────────────
+
+/// RED test: let-bound `intersection(box, box)` at a `Connected` param must
+/// emit the same `TypeNotConformingToTrait` diagnostic as the inline form.
+///
+/// Currently fails (no diagnostic) because `ValueRef` falls through
+/// `_ => InferredTraits::all()` in the env-less `infer_traits_for_expr`.
+/// Becomes green after step-8 wires `infer_traits_for_expr_in_env` with a
+/// `RealizationLetEnv` in the conformance walker.
+#[test]
+fn let_bound_intersection_at_connected_param_emits_same_diagnostic_as_inline_form() {
+    let source = r#"
+        structure def Foo {
+            param g : Connected
+        }
+        structure def Top {
+            let g = intersection(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+            sub x = Foo(g: g)
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+
+    let conformance_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .filter(|d| d.message.contains("'g'") || d.message.contains("Connected"))
+        .collect();
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly one TypeNotConformingToTrait for let-bound \
+         intersection(box,box) at a Connected slot — parity with inline form; \
+         currently no diagnostic because ValueRef falls through to all() \
+         (soundness gap fixed by step-8). Got: {:?}",
+        conformance_errors
+    );
+}
+
+/// Positive companion: `let g = box(...); sub x = Foo(g: g)` with
+/// `param g : Bounded` must NOT emit any diagnostic — the env resolves the
+/// let to a box (all traits) and the Bounded check passes.
+#[test]
+fn let_bound_box_at_bounded_param_emits_no_diagnostic() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let g = box(10mm, 10mm, 10mm)
+            sub x = Foo(g: g)
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+
+    let geometry_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::GeometryUnbounded)
+                || d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+        })
+        .collect();
+    assert!(
+        geometry_errors.is_empty(),
+        "expected no geometry diagnostics for let-bound box at a Bounded slot, \
+         got: {:?}",
+        geometry_errors
+    );
+}
+
 // ─── GEOMETRY_FUNCTION_NAMES ↔ infer_traits_for_function_call coverage ──────
 
 // ─── infer_traits_for_op — op-array walker unit tests ───────────────────────
