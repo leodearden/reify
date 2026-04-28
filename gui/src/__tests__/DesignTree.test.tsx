@@ -964,3 +964,54 @@ describe('DesignTree — stale path rendering', () => {
     expect(row.className).toMatch(/stale/);
   });
 });
+
+describe('DesignTree — freshness badge', () => {
+  it('final freshness renders no freshness badge on the row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A', freshness: 'final' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    expect(screen.queryByTestId('row-freshness-Root.A')).toBeNull();
+  });
+
+  it('intermediate freshness renders badge with data-freshness="intermediate"', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A', freshness: 'intermediate' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const badge = screen.getByTestId('row-freshness-Root.A');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-freshness')).toBe('intermediate');
+    expect(badge.getAttribute('aria-label')).toBe('freshness intermediate');
+  });
+
+  it('pending freshness renders badge with data-freshness="pending"', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A', freshness: 'pending' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const badge = screen.getByTestId('row-freshness-Root.A');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-freshness')).toBe('pending');
+    expect(badge.getAttribute('aria-label')).toBe('freshness pending');
+  });
+
+  it('failed freshness renders badge with data-freshness="failed"', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A', freshness: 'failed' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const badge = screen.getByTestId('row-freshness-Root.A');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-freshness')).toBe('failed');
+    expect(badge.getAttribute('aria-label')).toBe('freshness failed');
+  });
+
+  it('freshness badge does not interfere with row onSelect click', () => {
+    const onSelect = vi.fn();
+    const nodes = [makeNode({ entity_path: 'Root.A', freshness: 'failed' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelect={onSelect} />
+    ));
+    // Click the row (not the badge itself) — onSelect should still fire
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    expect(onSelect).toHaveBeenCalledWith('Root.A', expect.objectContaining({ ctrl: false, shift: false }));
+  });
+});

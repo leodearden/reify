@@ -29,6 +29,7 @@ fn sample_value(cell_id: &str, value: &str) -> ValueData {
         determinacy: "determined".to_string(),
         entity_path: cell_id.split('.').next().unwrap_or("").to_string(),
         kind: "Param".to_string(),
+        freshness: "final".to_string(),
     }
 }
 

@@ -2,13 +2,14 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_with_width,
-    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
+    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_violating,
+    bracket_source_with_width, warn_source_with_unknown_port_type,
+    warn_source_with_unknown_port_type_with_width,
 };
 use reify_compiler::find_template;
 use reify_types::ExportFormat;
 
-use reify_types::{DiagnosticInfo, SourceLocationInfo};
+use reify_types::{DiagnosticInfo, SourceLocationInfo, ValueCellId};
 
 use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder};
 
@@ -2238,6 +2239,7 @@ fn entity_tree_node_serialization_roundtrip() {
         has_mesh: false,
         trait_geometry: false,
         children: vec![],
+        freshness: "final".to_string(),
     };
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
@@ -2254,6 +2256,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         has_mesh: false,
         trait_geometry: false,
         children: vec![],
+        freshness: "final".to_string(),
     };
     let root = EntityTreeNode {
         entity_path: "Bracket".to_string(),
@@ -2263,6 +2266,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         has_mesh: true,
         trait_geometry: false,
         children: vec![child],
+        freshness: "final".to_string(),
     };
     let json = serde_json::to_string(&root).expect("serialize should succeed");
     assert!(json.contains("\"entity_path\":\"Bracket.width\""));
@@ -2285,6 +2289,7 @@ fn entity_tree_node_default_type_name_is_none() {
         has_mesh: false,
         trait_geometry: false,
         children: vec![],
+        freshness: "final".to_string(),
     };
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
@@ -3038,7 +3043,7 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
-    let node = build_template_node(a_template, "A", &compiled);
+    let node = build_template_node(a_template, "A", &compiled, None);
 
     let sub_x = node
         .children
@@ -3082,8 +3087,8 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
-    let node_a = build_template_node(a_template, "A", &compiled);
-    let node_b = build_template_node(b_template, "B", &compiled);
+    let node_a = build_template_node(a_template, "A", &compiled, None);
+    let node_b = build_template_node(b_template, "B", &compiled, None);
 
     let sub_b = node_a
         .children
@@ -3139,7 +3144,7 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
     // recursive A) has empty children instead of expanding A.
-    let node = build_template_node(container_template, "Container", &compiled);
+    let node = build_template_node(container_template, "Container", &compiled, None);
 
     // Container should have exactly one sub child
     let sub_a = node
@@ -3621,6 +3626,321 @@ fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
             Some("unresolved-source".to_owned()),
             "unresolved-source diagnostic must have code == Some(\"unresolved-source\"), got {:?}",
             diag.code
+        );
+    }
+}
+
+// --- Freshness wiring through build_gui_state (step-7 / step-8) ---
+
+/// End-to-end freshness wiring test: forced panic on a `let` cell must surface
+/// as `freshness == "failed"` on the corresponding `ValueData`, every other
+/// value must stay at `"final"`, and cells that participate in a violated
+/// constraint must NOT be reported as `"failed"` (arch §9.3 separation).
+///
+/// This test is intentionally RED in step-7 (before the engine ref is threaded
+/// through `build_values` in step-8): assertion (a) fails because `build_values`
+/// currently hardcodes `freshness: "final"` for all cells.  Once step-8 wires
+/// `engine.freshness()` through, all three assertions pass.
+#[test]
+fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
+    // Use the violating source so there is a real Violated constraint entry
+    // in the GuiState — this lets us check the constraint-vs-Failed separation
+    // (assertion c) as well as the basic failed-freshness wiring (assertions a, b).
+    let source = bracket_source_violating();
+
+    let checker = SimpleConstraintChecker;
+    // No geometry kernel — freshness wiring is independent of tessellation.
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    session
+        .load_from_source(&source, "bracket")
+        .expect("bracket_source_violating should compile and load");
+
+    // Force `Bracket.volume` (the only `let` in bracket_source) to panic on
+    // the next eval cycle.
+    let volume_id = ValueCellId::new("Bracket", "volume");
+    session.set_panic_on_eval_for_test(volume_id.clone());
+
+    // Re-run evaluation so the forced panic takes effect.
+    session.recheck_for_test();
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed even after forced panic");
+
+    // --- (a) Failed cell must report freshness == "failed" ---
+    let volume = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Bracket.volume")
+        .expect("should have a 'Bracket.volume' ValueData");
+
+    assert_eq!(
+        volume.freshness, "failed",
+        "volume must have freshness='failed' after forced panic; \
+         this assertion is RED in step-7 and turns GREEN in step-8"
+    );
+
+    // --- (b) No leakage: all other cells stay at "final" ---
+    for v in &state.values {
+        if v.cell_id == "Bracket.volume" {
+            continue; // already checked above
+        }
+        assert_eq!(
+            v.freshness, "final",
+            "value '{}' must have freshness='final' (no leakage from forced panic), got '{}'",
+            v.name, v.freshness
+        );
+    }
+
+    // --- (c) Constraint-violated cells must NOT appear in the failed set ---
+    //
+    // bracket_source_violating() sets thickness=1mm, violating `thickness > 2mm`.
+    // The `thickness` param is Satisfaction::Violated but its Freshness must
+    // remain Final (it was set successfully; the violation is a logical check,
+    // not a computation failure — arch §9.3).
+    let violated_constraints: Vec<_> = state
+        .constraints
+        .iter()
+        .filter(|c| c.status == "Violated")
+        .collect();
+
+    assert!(
+        !violated_constraints.is_empty(),
+        "expected at least one Violated constraint from bracket_source_violating; \
+         got {} constraints: {:?}",
+        state.constraints.len(),
+        state.constraints.iter().map(|c| &c.status).collect::<Vec<_>>()
+    );
+
+    // For every cell referenced by a violated constraint, check that its
+    // freshness is NOT "failed" (constraint violation ≠ Freshness::Failed).
+    for vc in &violated_constraints {
+        for param_id in &vc.parameter_ids {
+            let cell_data = state.values.iter().find(|v| v.cell_id == *param_id);
+            if let Some(cell) = cell_data {
+                assert_ne!(
+                    cell.freshness, "failed",
+                    "cell '{}' is referenced by violated constraint '{}' but must NOT \
+                     have freshness='failed' — constraint violations stay on the \
+                     Satisfaction::Violated channel (arch §9.3)",
+                    param_id, vc.node_id
+                );
+            }
+        }
+    }
+}
+
+// --- Freshness wiring through get_entity_tree (step-19) ---
+
+/// Helper: recursively collect all nodes from a tree into a flat vec.
+fn collect_all_nodes<'a>(nodes: &'a [EntityTreeNode], out: &mut Vec<&'a EntityTreeNode>) {
+    for n in nodes {
+        out.push(n);
+        collect_all_nodes(&n.children, out);
+    }
+}
+
+/// End-to-end freshness wiring test for the entity-tree realization channel.
+///
+/// Forces a realization to fail via the build path (not the tessellate path,
+/// which does NOT propagate kernel errors into `Freshness::Failed` — see
+/// arch §9.1 and `engine_build.rs` comment "Tessellate paths do not propagate
+/// kernel errors into `Freshness::Failed` today").
+///
+/// After `build_for_freshness_test()` calls `engine.build()`, the engine cache
+/// should have `NodeId::Realization(rnid)` marked as `Freshness::Failed`.
+/// `get_entity_tree()` → `build_template_node()` reads realization freshness via
+/// `engine.freshness(&NodeId::Realization(real.id.clone()))` (wired in step-8).
+///
+/// Assertions:
+/// (a) Exactly one node in the full tree has `freshness == "failed"`.
+/// (b) That node has `kind == "realization"` and `entity_path == "Bracket#realization[0]"`.
+/// (c) Every other node has `freshness == "final"` (no leakage to params/lets/root).
+#[test]
+fn freshness_wires_through_get_entity_tree_for_realization_failure() {
+    let checker = SimpleConstraintChecker;
+    // FailingMockGeometryKernel causes all geometry operations to fail, which
+    // makes engine.build() call mark_realization_failed on the realization.
+    let kernel = FailingMockGeometryKernel;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even with failing kernel \
+                 (tessellation errors are captured, not returned as Err)");
+
+    // tessellate_snapshot (called inside build_gui_state / load_from_source)
+    // does NOT propagate kernel errors into Freshness::Failed — that is wired
+    // on the build path only (arch §9.1 / engine_build.rs).
+    // Call build_for_freshness_test() to trigger engine.build() which marks
+    // the realization as Freshness::Failed in the engine cache.
+    session.build_for_freshness_test();
+
+    let tree = session.get_entity_tree();
+    assert_eq!(tree.len(), 1, "bracket has one root template");
+
+    // Flatten the full tree for inspection.
+    let mut all_nodes = Vec::new();
+    collect_all_nodes(&tree, &mut all_nodes);
+
+    // --- (a) Exactly one node is failed ---
+    let failed_nodes: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| n.freshness == "failed")
+        .collect();
+
+    assert_eq!(
+        failed_nodes.len(),
+        1,
+        "exactly one node must have freshness='failed' after a kernel-error build; \
+         got {} failed node(s): {:?}",
+        failed_nodes.len(),
+        failed_nodes
+            .iter()
+            .map(|n| (&n.entity_path, &n.kind))
+            .collect::<Vec<_>>()
+    );
+
+    // --- (b) The failed node is the realization whose kernel call failed ---
+    let failed_node = failed_nodes[0];
+    assert_eq!(
+        failed_node.kind, "realization",
+        "the failed node must have kind='realization'; got kind='{}'",
+        failed_node.kind
+    );
+    assert_eq!(
+        failed_node.entity_path, "Bracket#realization[0]",
+        "the failed realization path must be 'Bracket#realization[0]'; \
+         got '{}'",
+        failed_node.entity_path
+    );
+
+    // --- (c) All other nodes stay at freshness="final" (no leakage) ---
+    for node in &all_nodes {
+        if node.entity_path == "Bracket#realization[0]" {
+            continue; // already checked above
+        }
+        assert_eq!(
+            node.freshness, "final",
+            "node '{}' (kind='{}') must have freshness='final' after a \
+             single-realization kernel failure; got '{}'",
+            node.entity_path, node.kind, node.freshness
+        );
+    }
+}
+
+/// Verify that `get_entity_tree()` correctly surfaces `Freshness::Failed` for
+/// a sub-component value-cell node.
+///
+/// # Why this test exists
+///
+/// Inside `build_template_node`, the freshness lookup for value cells must use
+/// the **instance-scoped** `ValueCellId` (e.g. `Parent.rib.half_h`) rather than
+/// the template-level cell ID (e.g. `Child.half_h`).  The engine cache stores
+/// sub-component cells under `scoped_entity = "{parent}.{sub_name}"` (set by
+/// `elaborate_child_instance` / `elaborate_child_params_only` in unfold.rs),
+/// so querying with the template name always returns the default `Final`.
+///
+/// This test drives `Parent.rib.half_h` (a let binding on a sub-component `rib`
+/// of type `Child`) to `Freshness::Failed` via the `mark_value_cell_failed_for_test`
+/// helper (direct cache injection, since `set_panic_on_eval` does not reach the
+/// `elaborate_child_lets_only` evaluation path), then asserts that
+/// `get_entity_tree()` surfaces `freshness == "failed"` on that node.
+///
+/// The `set_panic_on_eval` mechanism only fires for cells evaluated through
+/// `evaluate_let_bindings` (engine_eval.rs) — sub-component lets go through
+/// `elaborate_child_lets_only` (unfold.rs) which evaluates them directly via
+/// `eval_expr`, bypassing the panic-injection hook.
+#[test]
+fn freshness_wires_through_get_entity_tree_for_sub_component_cell() {
+    // A minimal two-structure module: Parent has a sub-component `rib` of type
+    // `Child`.  Child has a param `height` and a let binding `half_h`.
+    let source = r#"structure Child {
+    param height: Scalar = 10mm
+    let half_h = height / 2
+}
+structure Parent {
+    param width: Scalar = 80mm
+    sub rib = Child(height: width * 0.5)
+}"#;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "parent_child")
+        .expect("load_from_source should succeed");
+
+    // After evaluation, the cache has entries keyed by the instance-scoped path:
+    //   ValueCellId { entity: "Parent.rib", member: "half_h" }
+    // Inject Failed directly — set_panic_on_eval cannot reach this cell because
+    // elaborate_child_lets_only bypasses the panic_on_eval_cells gate.
+    session.mark_value_cell_failed_for_test(
+        ValueCellId::new("Parent.rib", "half_h"),
+        "test-forced failure on sub-component let",
+    );
+
+    // get_entity_tree builds the tree for each root template.
+    // For "Parent", it recurses into "Child" via the "rib" sub-component with
+    // entity_path = "Parent.rib".  The fix ensures that value cells use
+    // ValueCellId::new(entity_path, &cell.id.member) so the lookup
+    // hits "Parent.rib.half_h" (not "Child.half_h").
+    let tree = session.get_entity_tree();
+
+    // Flatten all nodes for inspection.
+    let mut all_nodes = Vec::new();
+    collect_all_nodes(&tree, &mut all_nodes);
+
+    // --- (a) Exactly the injected cell reports freshness="failed" ---
+    let failed_nodes: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| n.freshness == "failed")
+        .collect();
+
+    assert_eq!(
+        failed_nodes.len(),
+        1,
+        "exactly one node must have freshness='failed' after injecting \
+         failure on Parent.rib.half_h; got {} failed node(s): {:?}",
+        failed_nodes.len(),
+        failed_nodes
+            .iter()
+            .map(|n| (&n.entity_path, &n.kind))
+            .collect::<Vec<_>>()
+    );
+
+    // --- (b) The failed node is the sub-component let cell ---
+    let failed_node = failed_nodes[0];
+    assert_eq!(
+        failed_node.entity_path, "Parent.rib.half_h",
+        "the failed node must be 'Parent.rib.half_h'; got '{}'",
+        failed_node.entity_path
+    );
+
+    // --- (c) All other nodes stay at "final" or "aggregate" (no leakage) ---
+    //
+    // Sub-component container nodes ("kind == sub") emit "aggregate" — they
+    // have no individual freshness and their children must be inspected
+    // separately.  All leaf/cell nodes must be "final".
+    for node in &all_nodes {
+        if node.entity_path == "Parent.rib.half_h" {
+            continue; // the failed cell — already checked above
+        }
+        if node.kind == "sub" {
+            assert_eq!(
+                node.freshness, "aggregate",
+                "sub-component container node '{}' must have freshness='aggregate' \
+                 (no individual freshness; see children); got '{}'",
+                node.entity_path, node.freshness
+            );
+            continue;
+        }
+        assert_eq!(
+            node.freshness, "final",
+            "node '{}' (kind='{}') must have freshness='final'; got '{}'",
+            node.entity_path, node.kind, node.freshness
         );
     }
 }

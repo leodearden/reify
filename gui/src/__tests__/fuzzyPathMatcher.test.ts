@@ -17,7 +17,7 @@ import type { StalePathMetadata } from '../stores/fuzzyPathMatcher';
 
 /** Build a leaf node with no children. */
 function leaf(entity_path: string): EntityTreeNode {
-  return { entity_path, kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] };
+  return { entity_path, kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] };
 }
 
 /**
@@ -32,6 +32,7 @@ function node(entity_path: string, childSegments: string[], type_name: string | 
     type_name,
     has_mesh: false,
     trait_geometry: false,
+    freshness: 'final',
     children: childSegments.map(seg => leaf(`${entity_path}.${seg}`)),
   };
 }
@@ -57,6 +58,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.bolt_flange',
@@ -64,6 +66,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
             type_name: 'Flange',
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
               leaf('Assembly.bolt_flange.geometry'),
             ],
@@ -88,6 +91,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.new_parent',
@@ -95,6 +99,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
             type_name: null,
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
               {
                 entity_path: 'Assembly.new_parent.bolt',
@@ -102,6 +107,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
                 type_name: null,
                 has_mesh: false,
                 trait_geometry: false,
+                freshness: 'final',
                 children: [
                   leaf('Assembly.new_parent.bolt.geometry'),
                 ],
@@ -128,6 +134,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.part1',
@@ -135,6 +142,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
             type_name: null,
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [leaf('Assembly.part1.geometry')],
           },
           {
@@ -143,6 +151,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
             type_name: null,
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [leaf('Assembly.part2.geometry')],
           },
         ],
@@ -171,6 +180,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.flange',
@@ -178,6 +188,7 @@ describe('suffixMatch — suffix-only matching (step-13)', () => {
             type_name: null,
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [leaf('Assembly.flange.geometry')],
           },
         ],
@@ -216,6 +227,7 @@ describe('structuralMatch — structural heuristic (step-15)', () => {
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.bolt_flange',
@@ -223,10 +235,11 @@ describe('structuralMatch — structural heuristic (step-15)', () => {
             type_name: 'Flange',
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.bolt_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
-              { entity_path: 'Assembly.bolt_flange.width',    kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
-              { entity_path: 'Assembly.bolt_flange.depth',    kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.bolt_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
+              { entity_path: 'Assembly.bolt_flange.width',    kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
+              { entity_path: 'Assembly.bolt_flange.depth',    kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
           {
@@ -235,9 +248,10 @@ describe('structuralMatch — structural heuristic (step-15)', () => {
             type_name: 'Different',
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.different_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
-              { entity_path: 'Assembly.different_flange.width',    kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.different_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
+              { entity_path: 'Assembly.different_flange.width',    kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
         ],
@@ -312,6 +326,7 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.part1',
@@ -319,8 +334,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: null,
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.part1.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.part1.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
           {
@@ -329,8 +345,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: null,
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.part2.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.part2.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
         ],
@@ -349,6 +366,7 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.bolt_flange',
@@ -356,8 +374,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: 'Flange',
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.bolt_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.bolt_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
         ],
@@ -382,6 +401,7 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.part1',
@@ -389,8 +409,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: 'Washer', // wrong type
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.part1.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.part1.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
           {
@@ -399,8 +420,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: 'Washer', // wrong type
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.part2.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.part2.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
         ],
@@ -421,6 +443,7 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
         type_name: null,
         has_mesh: false,
         trait_geometry: false,
+        freshness: 'final',
         children: [
           {
             entity_path: 'Assembly.bolt_flange',
@@ -428,8 +451,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: 'Flange', // matches metadata
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.bolt_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.bolt_flange.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
           {
@@ -438,8 +462,9 @@ describe('findFuzzyCandidate — combined suffix + structural ranking (step-15)'
             type_name: 'Washer', // doesn't match
             has_mesh: false,
             trait_geometry: false,
+            freshness: 'final',
             children: [
-              { entity_path: 'Assembly.other_part.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, children: [] },
+              { entity_path: 'Assembly.other_part.geometry', kind: 'occurrence', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] },
             ],
           },
         ],
