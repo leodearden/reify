@@ -271,8 +271,7 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
     out.push_str("<nav>\n");
     out.push_str("<h2>Contents</h2>\n");
     for &group in GROUPS {
-        let mut in_group: Vec<&&ItemDoc> =
-            items.iter().filter(|i| i.group() == group).collect();
+        let mut in_group: Vec<&&ItemDoc> = items.iter().filter(|i| i.group() == group).collect();
         if in_group.is_empty() {
             continue;
         }
@@ -319,7 +318,11 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     // first to the reader.  Mirrors `fmt_markdown::render_item`'s ordering.
     let anns = item.annotations();
     if let Some(dep) = find_annotation(anns, "deprecated") {
-        let msg = dep.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
+        let msg = dep
+            .args
+            .first()
+            .map(|s| crate::util::unquote(s))
+            .unwrap_or("");
         out.push_str("<aside class=\"deprecated\"><strong>Deprecated:</strong>");
         if !msg.is_empty() {
             out.push(' ');
@@ -328,7 +331,11 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         out.push_str("</aside>\n");
     }
     if let Some(opt) = find_annotation(anns, "optimized") {
-        let target = opt.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
+        let target = opt
+            .args
+            .first()
+            .map(|s| crate::util::unquote(s))
+            .unwrap_or("");
         out.push_str("<p class=\"optimized\"><em>Optimized: <code>");
         escape_into(out, target);
         out.push_str("</code></em></p>\n");
@@ -341,8 +348,20 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
 
     // Kind-specific body.
     match &item.kind {
-        ItemKind::Structure { params, ports, constraints, meta, .. }
-        | ItemKind::Occurrence { params, ports, constraints, meta, .. } => {
+        ItemKind::Structure {
+            params,
+            ports,
+            constraints,
+            meta,
+            ..
+        }
+        | ItemKind::Occurrence {
+            params,
+            ports,
+            constraints,
+            meta,
+            ..
+        } => {
             render_params_table(out, params);
             render_ports_table(out, ports);
             render_constraints(out, constraints);
@@ -357,10 +376,16 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         ItemKind::Enum { variants } => {
             render_enum_variants(out, variants);
         }
-        ItemKind::Field { type_repr, default_repr } => {
+        ItemKind::Field {
+            type_repr,
+            default_repr,
+        } => {
             render_field_body(out, type_repr, default_repr.as_deref());
         }
-        ItemKind::Purpose { direction, expr_repr } => {
+        ItemKind::Purpose {
+            direction,
+            expr_repr,
+        } => {
             render_purpose_body(out, direction, expr_repr);
         }
         ItemKind::Unit { base_unit, scale } => {
@@ -433,10 +458,7 @@ fn render_cross_refs(out: &mut String, name: &str, xrefs: Option<&CrossRefIndex<
 
 /// Find the first annotation matching `name` in `anns`. Returns `None` if no
 /// such annotation exists.  Mirrors `fmt_markdown::find_annotation`.
-fn find_annotation<'a>(
-    anns: &'a [AnnotationDoc],
-    name: &str,
-) -> Option<&'a AnnotationDoc> {
+fn find_annotation<'a>(anns: &'a [AnnotationDoc], name: &str) -> Option<&'a AnnotationDoc> {
     anns.iter().find(|a| a.name == name)
 }
 
@@ -455,7 +477,9 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
     out.push_str("<h3>Parameters</h3>\n");
     out.push_str("<table>\n");
     out.push_str("<thead><tr>");
-    out.push_str("<th>Name</th><th>Type</th><th>Dimension</th><th>Default</th><th>Description</th>");
+    out.push_str(
+        "<th>Name</th><th>Type</th><th>Dimension</th><th>Default</th><th>Description</th>",
+    );
     out.push_str("</tr></thead>\n");
     out.push_str("<tbody>\n");
     for p in params {
@@ -486,7 +510,11 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
             escape_into(out, doc_text);
         }
         if let Some(hint) = find_annotation(&p.annotations, "solver_hint") {
-            let hint_arg = hint.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
+            let hint_arg = hint
+                .args
+                .first()
+                .map(|s| crate::util::unquote(s))
+                .unwrap_or("");
             if !doc_text.is_empty() {
                 out.push(' ');
             }

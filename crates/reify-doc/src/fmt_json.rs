@@ -51,7 +51,13 @@ mod tests {
                 path: "m".to_string(),
                 doc: None,
                 items: vec![ItemDoc {
-                    header: ItemHeader { name: "T".to_string(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+                    header: ItemHeader {
+                        name: "T".to_string(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
                     kind: ItemKind::Trait { members: vec![] },
                 }],
                 annotations: vec![],
@@ -116,12 +122,28 @@ mod tests {
                 doc: None,
                 items: vec![
                     ItemDoc {
-                        header: ItemHeader { name: "Meters".to_string(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
-                        kind: ItemKind::TypeAlias { type_repr: "f64".to_string() },
+                        header: ItemHeader {
+                            name: "Meters".to_string(),
+                            doc: None,
+                            is_pub: true,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::TypeAlias {
+                            type_repr: "f64".to_string(),
+                        },
                     },
                     ItemDoc {
-                        header: ItemHeader { name: "voltage_safe".to_string(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
-                        kind: ItemKind::ConstraintDef { expr_repr: "v <= 5.5 V".to_string() },
+                        header: ItemHeader {
+                            name: "voltage_safe".to_string(),
+                            doc: None,
+                            is_pub: true,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::ConstraintDef {
+                            expr_repr: "v <= 5.5 V".to_string(),
+                        },
                     },
                 ],
                 annotations: vec![],

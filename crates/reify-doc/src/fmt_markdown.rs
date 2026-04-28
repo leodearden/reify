@@ -226,8 +226,7 @@ fn render_toc_groups(
         "Constants",
     ];
     for &group in GROUPS {
-        let mut in_group: Vec<&&ItemDoc> =
-            items.iter().filter(|i| i.group() == group).collect();
+        let mut in_group: Vec<&&ItemDoc> = items.iter().filter(|i| i.group() == group).collect();
         if in_group.is_empty() {
             continue;
         }
@@ -254,11 +253,7 @@ fn render_toc_groups(
 /// string — use a fragment resolver (`|item| format!("#{}", item.name())`)
 /// for single-file mode, or a filename resolver for split-mode index pages.
 /// No-op when `items` is empty.
-fn render_toc(
-    out: &mut String,
-    items: &[&ItemDoc],
-    resolve_link: &dyn Fn(&ItemDoc) -> String,
-) {
+fn render_toc(out: &mut String, items: &[&ItemDoc], resolve_link: &dyn Fn(&ItemDoc) -> String) {
     if items.is_empty() {
         return;
     }
@@ -285,10 +280,7 @@ fn emit_paragraphs(out: &mut String, doc: &str) {
 
 /// Find the first annotation matching `name` in `anns`. Returns `None` if no
 /// such annotation exists.
-fn find_annotation<'a>(
-    anns: &'a [AnnotationDoc],
-    name: &str,
-) -> Option<&'a AnnotationDoc> {
+fn find_annotation<'a>(anns: &'a [AnnotationDoc], name: &str) -> Option<&'a AnnotationDoc> {
     anns.iter().find(|a| a.name == name)
 }
 
@@ -325,7 +317,11 @@ fn render_item(
     // first to the reader.
     let anns = item.annotations();
     if let Some(dep) = find_annotation(anns, "deprecated") {
-        let msg = dep.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
+        let msg = dep
+            .args
+            .first()
+            .map(|s| crate::util::unquote(s))
+            .unwrap_or("");
         out.push_str("> **Deprecated:**");
         if !msg.is_empty() {
             out.push(' ');
@@ -334,7 +330,11 @@ fn render_item(
         out.push_str("\n\n");
     }
     if let Some(opt) = find_annotation(anns, "optimized") {
-        let target = opt.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
+        let target = opt
+            .args
+            .first()
+            .map(|s| crate::util::unquote(s))
+            .unwrap_or("");
         out.push_str("*Optimized: `");
         out.push_str(target);
         out.push_str("`*\n\n");
@@ -349,10 +349,18 @@ fn render_item(
     // language surface (members list, signature fence, type/default lines, …).
     match &item.kind {
         ItemKind::Structure {
-            params, ports, constraints, meta, ..
+            params,
+            ports,
+            constraints,
+            meta,
+            ..
         }
         | ItemKind::Occurrence {
-            params, ports, constraints, meta, ..
+            params,
+            ports,
+            constraints,
+            meta,
+            ..
         } => {
             render_params_table(out, params);
             render_ports_table(out, ports);
@@ -368,10 +376,16 @@ fn render_item(
         ItemKind::Enum { variants } => {
             render_enum_variants(out, variants);
         }
-        ItemKind::Field { type_repr, default_repr } => {
+        ItemKind::Field {
+            type_repr,
+            default_repr,
+        } => {
             render_field_body(out, type_repr, default_repr.as_deref());
         }
-        ItemKind::Purpose { direction, expr_repr } => {
+        ItemKind::Purpose {
+            direction,
+            expr_repr,
+        } => {
             render_purpose_body(out, direction, expr_repr);
         }
         ItemKind::Unit { base_unit, scale } => {
@@ -607,7 +621,11 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         // Description = doc text + optional `*hint: <solver_hint arg>*` suffix.
         let mut description = p.doc.as_deref().unwrap_or("").trim().to_string();
         if let Some(hint) = find_annotation(&p.annotations, "solver_hint") {
-            let hint_arg = hint.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
+            let hint_arg = hint
+                .args
+                .first()
+                .map(|s| crate::util::unquote(s))
+                .unwrap_or("");
             if !description.is_empty() {
                 description.push(' ');
             }
@@ -775,12 +793,7 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             // directly from the ItemDoc — no name-index lookup needed.
             let current_module = module.path.as_str();
             render_toc_groups(&mut index_body, &items_for_toc, &|item: &ItemDoc| {
-                format!(
-                    "{}/{}-{}.md",
-                    current_module,
-                    item.kind_slug(),
-                    item.name()
-                )
+                format!("{}/{}-{}.md", current_module, item.kind_slug(), item.name())
             });
         } else {
             // Single-module: keep the existing H1 + `## Contents` shape.
@@ -817,7 +830,11 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             // Back-link to the TOC index.  Path is relative to the per-item
             // file, so single-module flat layout uses `index.md` directly and
             // multi-module nested layout walks up one directory.
-            let back = if multi_module { "../index.md" } else { "index.md" };
+            let back = if multi_module {
+                "../index.md"
+            } else {
+                "index.md"
+            };
             body.push_str("[← Index](");
             body.push_str(back);
             body.push_str(")\n\n");
@@ -834,23 +851,23 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             // - Ambiguous or missing → `#{name}` fallback (as before).
             if multi_module {
                 let current_module = module.path.as_str();
-                render_item(&mut body, item, xrefs, &|name: &str| {
-                    match name_index.unique_resolve(name) {
-                        Some((kind, mod_path)) if mod_path == current_module => {
-                            format!("{kind}-{name}.md")
-                        }
-                        Some((kind, mod_path)) => {
-                            format!("../{mod_path}/{kind}-{name}.md")
-                        }
-                        None => format!("#{name}"),
+                render_item(&mut body, item, xrefs, &|name: &str| match name_index
+                    .unique_resolve(name)
+                {
+                    Some((kind, mod_path)) if mod_path == current_module => {
+                        format!("{kind}-{name}.md")
                     }
+                    Some((kind, mod_path)) => {
+                        format!("../{mod_path}/{kind}-{name}.md")
+                    }
+                    None => format!("#{name}"),
                 });
             } else {
-                render_item(&mut body, item, xrefs, &|name: &str| {
-                    match name_index.unique_resolve(name) {
-                        Some((kind, _)) => format!("{kind}-{name}.md"),
-                        None => format!("#{name}"),
-                    }
+                render_item(&mut body, item, xrefs, &|name: &str| match name_index
+                    .unique_resolve(name)
+                {
+                    Some((kind, _)) => format!("{kind}-{name}.md"),
+                    None => format!("#{name}"),
                 });
             }
             files.push((item_filename(item, module_prefix), body));
