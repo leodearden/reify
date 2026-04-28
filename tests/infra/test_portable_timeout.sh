@@ -66,6 +66,19 @@ echo "=== portable_timeout unit tests ==="
 assert "KILL_CMD_PID_RE variable is declared (shared by Test 22 structural assertion and Test 22b meta-assertions)" \
     env KILL_CMD_PID_RE="${KILL_CMD_PID_RE:-}" bash -c '[ -n "$KILL_CMD_PID_RE" ]'
 
+# -- Meta: per-instance sentinel variables use $$ arithmetic ------------------
+# Verifies that _SENT_16 and _SENT_21 are defined at the top of this script
+# using per-instance $$ arithmetic (task #2556: fix concurrent-verify race).
+# All three assertions FAIL until step-2 adds the variable definitions.
+assert "_SENT_16 sentinel variable defined with \$\$ arithmetic" \
+    bash -c 'grep -qE "^_SENT_16=.*\$\$" "$1"' _ "${BASH_SOURCE[0]}"
+
+assert "_SENT_21 sentinel variable defined with \$\$ arithmetic" \
+    bash -c 'grep -qE "^_SENT_21=.*\$\$" "$1"' _ "${BASH_SOURCE[0]}"
+
+assert "_SENT_16 and _SENT_21 are distinct in the live shell (cross-test collision-free)" \
+    env _SENT_16="${_SENT_16:-}" _SENT_21="${_SENT_21:-}" bash -c '[ -n "$_SENT_16" ] && [ -n "$_SENT_21" ] && [ "$_SENT_16" -ne "$_SENT_21" ]'
+
 # -- Test 1: portable_timeout is defined after sourcing -----------------------
 echo ""
 echo "--- Test 1: portable_timeout function defined ---"
