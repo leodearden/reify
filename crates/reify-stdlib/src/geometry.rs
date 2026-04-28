@@ -2647,4 +2647,137 @@ mod tests {
         assert!(eval_builtin("transform_inverse", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("transform_inverse", &[make_identity_orientation()]).is_undef());
     }
+
+    // ── transform_log tests (step-19) ────────────────────────────────────────
+
+    /// Helper: extract a Vector3's three f64 components from a Map's value at `key`.
+    fn map_vec3_components(map: &Value, key: &str) -> [f64; 3] {
+        let map_inner = match map {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        let v = map_inner
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("missing key {:?}", key));
+        match v {
+            Value::Vector(items) if items.len() == 3 => [
+                items[0].as_f64().unwrap(),
+                items[1].as_f64().unwrap(),
+                items[2].as_f64().unwrap(),
+            ],
+            other => panic!("expected Vector3 at key {:?}, got {:?}", key, other),
+        }
+    }
+
+    /// Helper: dimension of a Map's vector value at `key`.
+    fn map_vec3_dim(map: &Value, key: &str) -> DimensionVector {
+        let map_inner = match map {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        let v = map_inner
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("missing key {:?}", key));
+        match v {
+            Value::Vector(items) if items.len() == 3 => items[0].dimension(),
+            other => panic!("expected Vector3 at key {:?}, got {:?}", key, other),
+        }
+    }
+
+    /// transform_log(identity) == Map { angular=[0,0,0] DIMENSIONLESS, linear=[0,0,0] LENGTH }.
+    #[test]
+    fn transform_log_identity_is_zero_twist() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let result = eval_builtin("transform_log", &[id]);
+        let ang = map_vec3_components(&result, "angular");
+        let lin = map_vec3_components(&result, "linear");
+        for (i, v) in ang.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "angular[{i}] = {v}, expected 0");
+        }
+        for (i, v) in lin.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
+        }
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::DIMENSIONLESS);
+        assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
+    }
+
+    /// Pure translation: T=(identity, [1,2,3] m) → angular=[0,0,0], linear=[1,2,3].
+    /// (When ω=0, V=I, so V_inv*t = t.)
+    #[test]
+    fn transform_log_pure_translation() {
+        let t = make_transform(make_identity_orientation(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        let lin = map_vec3_components(&result, "linear");
+        for (i, v) in ang.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "angular[{i}] = {v}, expected 0");
+        }
+        assert!((lin[0] - 1.0).abs() < 1e-12, "linear[0] = {}, expected 1", lin[0]);
+        assert!((lin[1] - 2.0).abs() < 1e-12, "linear[1] = {}, expected 2", lin[1]);
+        assert!((lin[2] - 3.0).abs() < 1e-12, "linear[2] = {}, expected 3", lin[2]);
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::DIMENSIONLESS);
+        assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
+    }
+
+    /// Pure 90°z rotation, no translation: angular=[0,0,π/2], linear=[0,0,0].
+    #[test]
+    fn transform_log_pure_rotation() {
+        let t = make_transform(make_rot90z(), 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        let lin = map_vec3_components(&result, "linear");
+        let expected_z = std::f64::consts::FRAC_PI_2;
+        assert!(ang[0].abs() < 1e-12, "angular[0] = {}, expected 0", ang[0]);
+        assert!(ang[1].abs() < 1e-12, "angular[1] = {}, expected 0", ang[1]);
+        assert!(
+            (ang[2] - expected_z).abs() < 1e-12,
+            "angular[2] = {}, expected π/2",
+            ang[2]
+        );
+        for (i, v) in lin.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
+        }
+    }
+
+    /// Small-rotation transform: angular components match rotation vector linearly.
+    /// For a small angle ε about axis (0,0,1) with no translation, angular ≈ [0, 0, ε].
+    #[test]
+    fn transform_log_small_rotation() {
+        let eps: f64 = 1e-6;
+        // Build a small-z rotation manually: q = (cos(eps/2), 0, 0, sin(eps/2)).
+        let half = eps / 2.0;
+        let q = Value::Orientation {
+            w: half.cos(),
+            x: 0.0,
+            y: 0.0,
+            z: half.sin(),
+        };
+        let t = make_transform(q, 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        // angular[2] should be ≈ eps within ~1e-12.
+        assert!(ang[0].abs() < 1e-10, "angular[0] = {}, expected ~0", ang[0]);
+        assert!(ang[1].abs() < 1e-10, "angular[1] = {}, expected ~0", ang[1]);
+        assert!(
+            (ang[2] - eps).abs() < 1e-12,
+            "angular[2] = {}, expected {}",
+            ang[2],
+            eps
+        );
+    }
+
+    /// transform_log with wrong arg count → Undef.
+    #[test]
+    fn transform_log_wrong_arg_count_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_log", &[]).is_undef());
+        assert!(eval_builtin("transform_log", &[t.clone(), t]).is_undef());
+    }
+
+    /// transform_log with non-Transform arg → Undef.
+    #[test]
+    fn transform_log_non_transform_arg_returns_undef() {
+        assert!(eval_builtin("transform_log", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("transform_log", &[make_identity_orientation()]).is_undef());
+    }
 }
