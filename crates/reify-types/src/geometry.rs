@@ -1516,4 +1516,103 @@ mod tests {
         let b = a.clone();
         assert_eq!(a, b);
     }
+
+    #[test]
+    fn topology_attribute_full_construction_pattern_match() {
+        let attr = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Cap(CapKind::Top),
+            local_index: 4,
+            user_label: Some("top_face".to_string()),
+            mod_history: vec![ModEntry {
+                splitting_feature_id: FeatureId::new("Slot#realization[0]"),
+                split_index: 1,
+            }],
+        };
+        let TopologyAttribute {
+            feature_id,
+            role,
+            local_index,
+            user_label,
+            mod_history,
+        } = &attr;
+        assert_eq!(*feature_id, FeatureId::new("Boss#realization[0]"));
+        assert_eq!(*role, Role::Cap(CapKind::Top));
+        assert_eq!(*local_index, 4);
+        assert_eq!(user_label.as_deref(), Some("top_face"));
+        assert_eq!(mod_history.len(), 1);
+    }
+
+    #[test]
+    fn topology_attribute_default_no_label_no_history() {
+        let attr = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn topology_attribute_equality_field_by_field() {
+        let baseline = TopologyAttribute {
+            feature_id: FeatureId::new("X#realization[0]"),
+            role: Role::Side,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let same = baseline.clone();
+        assert_eq!(baseline, same);
+
+        let mut diff_feature = baseline.clone();
+        diff_feature.feature_id = FeatureId::new("Y#realization[0]");
+        assert_ne!(baseline, diff_feature);
+
+        let mut diff_role = baseline.clone();
+        diff_role.role = Role::NewEdge;
+        assert_ne!(baseline, diff_role);
+
+        let mut diff_idx = baseline.clone();
+        diff_idx.local_index = 2;
+        assert_ne!(baseline, diff_idx);
+
+        let mut diff_label = baseline.clone();
+        diff_label.user_label = Some("foo".into());
+        assert_ne!(baseline, diff_label);
+
+        let mut diff_history = baseline.clone();
+        diff_history.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("S#realization[0]"),
+            split_index: 0,
+        }];
+        assert_ne!(baseline, diff_history);
+    }
+
+    #[test]
+    fn topology_attribute_clone_preserves_label_and_history() {
+        let attr = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Cap(CapKind::Bottom),
+            local_index: 2,
+            user_label: Some("bottom".to_string()),
+            mod_history: vec![
+                ModEntry {
+                    splitting_feature_id: FeatureId::new("S1#realization[0]"),
+                    split_index: 0,
+                },
+                ModEntry {
+                    splitting_feature_id: FeatureId::new("S2#realization[0]"),
+                    split_index: 1,
+                },
+            ],
+        };
+        let cloned = attr.clone();
+        assert_eq!(attr, cloned);
+        assert_eq!(cloned.user_label.as_deref(), Some("bottom"));
+        assert_eq!(cloned.mod_history.len(), 2);
+    }
 }
