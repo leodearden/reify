@@ -177,51 +177,13 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 }
 
 // --- BRepAlgoAPI history records (v0.2 persistent-naming-v2, task 2590) ---
-
-/// One BRepAlgoAPI Modified or Generated record: a parent sub-shape (face
-/// or edge) at index `parent_subshape_index` of parent `parent_index`
-/// gives rise to a result sub-shape at index `result_subshape_index` in
-/// the fused result. All indices are 0-based and follow the canonical
-/// `TopExp::MapShapes(.., TopAbs_FACE | TopAbs_EDGE, ..)` order
-/// (deduplicated by `IsSame`).
-///
-/// `parent_index` is `0` for the left operand, `1` for the right operand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HistoryRecord {
-    pub parent_index: u8,
-    pub parent_subshape_index: u32,
-    pub result_subshape_index: u32,
-}
-
-/// One BRepAlgoAPI Deleted record: a parent sub-shape at
-/// `parent_subshape_index` of parent `parent_index` was consumed by the
-/// boolean operation and has no analogue in the result.
-///
-/// `parent_index` is `0` for the left operand, `1` for the right operand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeletedRecord {
-    pub parent_index: u8,
-    pub parent_subshape_index: u32,
-}
-
-/// All BRepAlgoAPI history records for a single boolean operation,
-/// split by sub-shape kind (face / edge) and by record kind
-/// (Modified / Generated / Deleted).
-///
-/// Returned by [`OcctKernel::boolean_fuse_with_history`] and
-/// [`OcctKernelHandle::boolean_fuse_with_history`]. Consumed by
-/// `reify_eval::propagate_attributes_via_brepalgoapi_history` to copy
-/// parent topology attributes onto the result handles after a
-/// constructive boolean.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BooleanOpHistoryRecords {
-    pub face_modified: Vec<HistoryRecord>,
-    pub face_generated: Vec<HistoryRecord>,
-    pub face_deleted: Vec<DeletedRecord>,
-    pub edge_modified: Vec<HistoryRecord>,
-    pub edge_generated: Vec<HistoryRecord>,
-    pub edge_deleted: Vec<DeletedRecord>,
-}
+//
+// The record types live in `reify-types` so that consumers (notably
+// `reify_eval::propagate_attributes_via_brepalgoapi_history`) can use them
+// without taking a normal-dep on `reify-kernel-occt`. Re-exported here for
+// callers that already import from this crate; new call sites should prefer
+// `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
+pub use reify_types::{BooleanOpHistoryRecords, DeletedRecord, HistoryRecord};
 
 #[cfg(has_occt)]
 /// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,

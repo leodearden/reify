@@ -868,6 +868,64 @@ impl TopologyAttributeTable {
     }
 }
 
+// --- BRepAlgoAPI history records (v0.2 persistent-naming-v2, task 2590) ---
+//
+// These records describe the parent-to-child mapping produced by a constructive
+// boolean operation (currently `BRepAlgoAPI_Fuse`; Cut/Common in task 8). The
+// records are pure data — they do not depend on any kernel-specific type — and
+// live in `reify-types` rather than `reify-kernel-occt` so that consumers
+// (notably `reify_eval::propagate_attributes_via_brepalgoapi_history`) can
+// reference them without taking a normal-dep on `reify-kernel-occt`. Pulling
+// `reify-kernel-occt` into `reify-eval`'s normal compile graph would
+// transitively drag it into every workspace member that dev-depends on
+// `reify-test-support` (via its `eval-helpers` feature), defeating the OCCT
+// gating defined in `scripts/occt-touching-crates.txt`.
+
+/// One BRepAlgoAPI Modified or Generated record: a parent sub-shape (face
+/// or edge) at index `parent_subshape_index` of parent `parent_index`
+/// gives rise to a result sub-shape at index `result_subshape_index` in
+/// the fused result. All indices are 0-based and follow the canonical
+/// `TopExp::MapShapes(.., TopAbs_FACE | TopAbs_EDGE, ..)` order
+/// (deduplicated by `IsSame`).
+///
+/// `parent_index` is `0` for the left operand, `1` for the right operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryRecord {
+    pub parent_index: u8,
+    pub parent_subshape_index: u32,
+    pub result_subshape_index: u32,
+}
+
+/// One BRepAlgoAPI Deleted record: a parent sub-shape at
+/// `parent_subshape_index` of parent `parent_index` was consumed by the
+/// boolean operation and has no analogue in the result.
+///
+/// `parent_index` is `0` for the left operand, `1` for the right operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletedRecord {
+    pub parent_index: u8,
+    pub parent_subshape_index: u32,
+}
+
+/// All BRepAlgoAPI history records for a single boolean operation,
+/// split by sub-shape kind (face / edge) and by record kind
+/// (Modified / Generated / Deleted).
+///
+/// Returned by `OcctKernel::boolean_fuse_with_history` and
+/// `OcctKernelHandle::boolean_fuse_with_history`. Consumed by
+/// `reify_eval::propagate_attributes_via_brepalgoapi_history` to copy
+/// parent topology attributes onto the result handles after a
+/// constructive boolean.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BooleanOpHistoryRecords {
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

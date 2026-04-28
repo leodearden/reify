@@ -25,8 +25,9 @@
 //! generated faces always carry Role::NewEdge") are deferred to tasks
 //! 5-8, which will add per-op variants of this helper.
 
-use reify_kernel_occt::{BooleanOpHistoryRecords, HistoryRecord};
-use reify_types::{GeometryHandleId, QueryError, TopologyAttributeTable};
+use reify_types::{
+    BooleanOpHistoryRecords, GeometryHandleId, HistoryRecord, QueryError, TopologyAttributeTable,
+};
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
 /// boolean operation, using the Modified / Generated / Deleted records the
