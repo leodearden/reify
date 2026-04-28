@@ -223,8 +223,13 @@ pub fn propagate_freshness_only(
                     frontier.push_back(vcid.clone());
                 }
             }
-            // If the writer returns false the entry is absent — nothing
-            // to write and nothing to propagate from a non-cached node.
+            // Absent-entry guard is actually the early-cutoff branch above:
+            // `freshness()` returns Final by default for absent nodes
+            // (cache.rs:617-621), the §7.2/§9.2 helper returns (Final, None)
+            // when iterating zero inputs, so `new == current == Final` fires
+            // the cutoff before any writer is invoked. This `if wrote` arm is
+            // belt-and-suspenders defense in case a future code path bypasses
+            // that cutoff for an absent dependent.
         }
     }
 
