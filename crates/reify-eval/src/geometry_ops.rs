@@ -4362,4 +4362,67 @@ mod tests {
             warnings
         );
     }
+
+    // ── try_eval_conformance_query unit tests (task 2320) ────────────────────
+    //
+    // These tests pin the contract of `try_eval_conformance_query`, the
+    // kernel-aware eval-time dispatch surface for the `is_watertight`,
+    // `is_manifold`, `is_orientable` stdlib helpers. Architecture rationale
+    // is captured in the task 2320 plan; the function lives in this module
+    // (rather than `eval_expr`) because the build pipeline owns both the
+    // kernel and the per-realization name → handle map (`named_steps`).
+
+    /// Build a `CompiledExpr` for `is_watertight(<entity>.<member>)`.
+    fn conformance_call(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+    ) -> reify_types::CompiledExpr {
+        let arg = reify_types::CompiledExpr::value_ref(
+            reify_types::ValueCellId::new(entity, member),
+            reify_types::Type::Geometry,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_types::Type::Bool,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn try_eval_conformance_query_kernel_reply_true() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let handle_id = reify_types::GeometryHandleId(7);
+        let kernel = MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "is_watertight(body) with kernel returning Bool(true) must produce Some(Bool(true))"
+        );
+    }
 }
