@@ -973,6 +973,26 @@ fn fn_body_let_shadows_fn_param() {
         body_let_x,
         l0.span
     );
+
+    // Regression-lock: the canonical fn-body-let-shadow source must produce
+    // zero Severity::Error diagnostics.  A future compiler pass that adds a
+    // duplicate-decl error (or any other error) for the same site will trip
+    // this assertion and force a deliberate suppress-or-document choice rather
+    // than silently doubling up.  Using `module.diagnostics` (not
+    // `warnings_only`) because we are explicitly checking the error band that
+    // `warnings_only` filters out.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "fn-body-let-shadow source must NOT produce any Severity::Error \
+         diagnostics — the Shadowing warning is the only signal for this \
+         canonical case.  Got errors: {:?}",
+        errors
+    );
 }
 
 /// A purpose-body `let` whose name matches a purpose-param shadows the param.
@@ -1040,6 +1060,138 @@ purpose mfg(subject : Structure) {
          got {:?}",
         body_let_subject,
         l0.span
+    );
+}
+
+/// Regression-lock (task 2501): the purpose-body-let-shadow warning and the
+/// "let bindings in purpose bodies are not yet supported" error BOTH fire at
+/// the same span, and that is **intentional**.
+///
+/// ## Design rationale
+///
+/// When `purpose mfg(subject : Structure) { let subject = 1 ; constraint
+/// subject > 0 }` is compiled today, two diagnostics are emitted:
+///
+/// 1. **`Shadowing` Warning** (from `shadow_lint.rs` Purpose arm): body `let
+///    subject` hides purpose-param `subject`.  This is the shadow-lint
+///    contract.
+///
+/// 2. **`Severity::Error`** from `compile_purpose`
+///    (`crates/reify-compiler/src/traits.rs`): "let bindings in purpose bodies
+///    are not yet supported: 'subject'".  This is an *unsupported-feature*
+///    error, not a *duplicate-decl* error — `DiagnosticCode` has no
+///    `DuplicateDecl` variant.
+///
+/// Both diagnostics fire at the body's `let subject` span.  We choose the
+/// **document-as-intentional** branch rather than suppressing one:
+///
+/// * The error is the actionable signal: it tells the user to remove the `let`.
+///   Once removed, the shadow disappears too — both signals become vacuous.
+/// * Suppressing the Shadowing warning would couple `shadow_lint` to a
+///   transient implementation detail of `compile_purpose` and would silently
+///   discard information once purpose-let support lands.
+/// * The task's narrow concern ("no Severity::Error *duplicate-decl* at same
+///   site") does not require suppression because the existing error has a
+///   distinct user-facing meaning (unsupported feature, not name collision).
+///
+/// This characterization test locks that coexistence.  If a future change
+/// suppresses either diagnostic, this test will fail and force a deliberate,
+/// reviewed decision rather than a silent regression.
+#[test]
+fn purpose_body_let_shadow_coexists_with_unsupported_let_error_intentional() {
+    let source = r#"
+purpose mfg(subject : Structure) {
+    let subject = 1
+    constraint subject > 0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    // (1) Exactly one Shadowing warning for the body `let subject`.
+    let shadow_warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::Shadowing) && d.severity == Severity::Warning
+        })
+        .collect();
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing Warning (body `let subject` vs purpose \
+         param `subject`), got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    // (2) At least one Severity::Error whose message is the unsupported-let
+    //     error.  This error fires at the same body-let span — intentional.
+    let unsupported_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message
+                    .contains("let bindings in purpose bodies are not yet supported")
+        })
+        .collect();
+    assert!(
+        !unsupported_errors.is_empty(),
+        "expected at least one Severity::Error with message containing \
+         'let bindings in purpose bodies are not yet supported', got none. \
+         Full diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    // (3) The Shadowing warning's child-site label and the unsupported-let
+    //     error's first label must both point at the body `let subject` span
+    //     (i.e., they overlap the body-let token).
+    let body_let_subject = source
+        .find("let subject")
+        .expect("source must contain `let subject`");
+
+    let shadow_child_span = &shadow_warnings[0].labels[0].span;
+    assert!(
+        (shadow_child_span.start as usize) >= body_let_subject,
+        "Shadowing warning child-site label must point at body `let subject` \
+         (>= byte {}), got {:?}",
+        body_let_subject,
+        shadow_child_span
+    );
+
+    let error_first_label_span = &unsupported_errors[0]
+        .labels
+        .first()
+        .expect("unsupported-let error must have at least one label")
+        .span;
+    assert!(
+        (error_first_label_span.start as usize) >= body_let_subject,
+        "unsupported-let error first label must point at body `let subject` \
+         (>= byte {}), got {:?}",
+        body_let_subject,
+        error_first_label_span
+    );
+
+    // (4) The two spans must overlap — both diagnostics point at the body-let
+    //     site.  We require overlap rather than byte-identical equality so that
+    //     a future, harmless refactor (e.g. shadow-lint narrowing to just
+    //     `subject` while the unsupported-let error spans `let subject = 1`)
+    //     does not fail the test even though the design intent ("both fire at
+    //     the body-let site") is preserved.
+    let sc_start = shadow_child_span.start as usize;
+    let sc_end = shadow_child_span.end as usize;
+    let ef_start = error_first_label_span.start as usize;
+    let ef_end = error_first_label_span.end as usize;
+    assert!(
+        sc_start < ef_end && ef_start < sc_end,
+        "Shadowing warning child-site span [{sc_start}, {sc_end}) and \
+         unsupported-let error first-label span [{ef_start}, {ef_end}) must \
+         overlap (both point at the body `let subject` token). \
+         Shadow span: {:?}, Error span: {:?}",
+        shadow_child_span, error_first_label_span
     );
 }
 
