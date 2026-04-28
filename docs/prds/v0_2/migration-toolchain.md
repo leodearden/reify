@@ -1,6 +1,7 @@
 # PRD: `reify migrate` and `#version` Migration Toolchain
 
 Status: deferred to v0.2+ per 2026-04-26 decision.
+2026-04-28 review: v0.2 has shaped up as runtime/architecture changes (multi-kernel dispatch, per-purpose tolerance, persistent-naming v2) with **no language-surface breaks**. Likely no first migration step needed until v0.3+ ships a breaking change. PRD remains a placeholder; the two open questions (grammar-dispatch infra, migration ownership) are easier to answer when a concrete breaking change is on the table, so we defer resolving them until then.
 
 ## Goal
 

@@ -1,6 +1,7 @@
 # PRD: Multi-Kernel Geometry Dispatch
 
 Status: deferred to v0.2 per 2026-04-26 decision.
+Design resolved 2026-04-28 — see "Resolved design decisions" below.
 
 ## Goal
 
@@ -34,9 +35,31 @@ The patchwork pattern (§10.5 — heterogeneous reps in one assembly) requires t
 ## Pre-conditions for activating
 
 - v0.1 alpha has shipped and OCCT-only operation is stable in production use.
-- Per-purpose tolerance contract (`per-purpose-tolerance.md`) is at least at design-spec stage; without per-purpose tolerance, conversion budgets across kernels cannot be allocated.
-- Kernel registration mechanism (open question §16 #8) is resolved.
-- A concrete user need for one of: Manifold mesh Booleans, Fidget SDFs, OpenVDB voxels, or Truck B-rep is documented (don't add kernels speculatively).
+- A concrete user need for one of: Manifold mesh Booleans, Fidget SDFs, OpenVDB voxels is documented (don't add kernels speculatively).
+
+## Resolved design decisions (2026-04-28)
+
+**ReprKind enum.** `BRep | Mesh | Sdf | Voxel` — four entries, semantic only, no kernel-discriminator suffix. Extensible in a non-breaking minor.
+
+**Cache key.** `(entity_id, repr_kind, tol: f64)`. Kernel identity is **not** in the key — the cache is in-memory only and lives for the life of one `Engine` (one loaded module, one process), so kernel selection per `ReprKind` is fixed for the life of the cache by compile-time features + project pin. See `per-purpose-tolerance.md` for tolerance lookup semantics (partial-order `<=`, not equality).
+
+**Capability descriptor.** Minimal for v0.2 — feasibility table only:
+```
+CapabilityDescriptor {
+    supports: Vec<(Operation, ReprKind)>,
+}
+```
+No `cost_hint`, no `error_factor` — both were speculation without telemetry. The dispatcher ranks candidate chains by conversion-stage count alone. Cost and error-weight extensions can be added later as non-breaking descriptor fields once telemetry shows where they would help.
+
+**Kernel registration mechanism (resolves arch §16 open Q #8).** Compile-time only. Each kernel adapter lives in a separate crate (`reify-kernel-occt`, `reify-kernel-manifold`, `reify-kernel-fidget`, `reify-kernel-openvdb`) gated by Cargo features. All implemented kernels default-on; opt-out via feature flag. Adapters register through a static linker-collection mechanism (`inventory` or equivalent) read once at engine startup. No dylib loading, no runtime plugin discovery for v0.2 — those are v0.3+ concerns if they materialise.
+
+**Project pin.** `reify.toml` declares which kernels the project requires and pins versions. Determinism follows from the pin; the cache does not need to know about kernel versions because a version change forces a process restart.
+
+**Long-chain diagnostic.** When the dispatcher selects a chain longer than 2 conversion stages **and** elapsed realization time for the chain exceeds 500 ms wall (configurable), emit a diagnostic naming the chain so users can see budget pressure. Short-chain pain is not worth nagging about.
+
+**Integration sequence.** Manifold → Fidget → OpenVDB. Manifold first (highest-frequency OCCT pain at smallest scope). Fidget unblocks `field def`-as-geometry (§10.6). OpenVDB unblocks the `imported` field source (`imported-field-source.md`). The sequence is best-first-attention order, not a serial constraint — the three are parallelisable and have no integration-order dependency on each other.
+
+**Truck dropped from v0.2.** Truck's pitches are Rust-native + Apache-2.0 + WASM target; its weaknesses (Booleans less robust than OCCT, fillets at prototyping stage per §10.8) overlap exactly with the gaps OCCT covers. No v0.2 use case is bottlenecked on Truck. WASM-Reify or LGPL-aversion is a v0.3+ motivator.
 
 ## Out of scope for this PRD
 
@@ -44,3 +67,5 @@ The patchwork pattern (§10.5 — heterogeneous reps in one assembly) requires t
 - SolveSpace `libslvs` constraint solver — that's the v0.1 constraint kernel, separate concern.
 - GPU offload of geometry kernels (post-v0.2).
 - `@optimized` user-source registration (live in v0.1 for stdlib, exposed at user level later).
+- Truck B-rep alternative (deferred past v0.2; revisit if WASM or licence story becomes load-bearing).
+- Dylib / runtime plugin loading for kernels (v0.3+).

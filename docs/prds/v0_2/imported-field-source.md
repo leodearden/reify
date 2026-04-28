@@ -1,6 +1,7 @@
 # PRD: `imported` Field Source (OpenVDB / CSV / HDF5)
 
 Status: deferred to v0.2 per 2026-04-26 decision.
+Design resolved 2026-04-28 — see "Resolved design decisions" below. **v0.2 scope narrowed to OpenVDB only**; HDF5 and CSV deferred to a follow-on PRD.
 
 ## Goal
 
@@ -57,12 +58,34 @@ Caching: imported data is content-hashed on file contents (not path) so the eval
 
 - v0.1 alpha has shipped and field-using examples are stable.
 - OpenVDB kernel work is in scope or already underway (`multi-kernel.md`).
-- A concrete user need for imported field data has been documented (FEA round-trip, scan-to-CAD, etc.).
-- Host-language integration story is settled — imported files are read at evaluation time, which means I/O happens in the runtime, with all the failure modes that implies (file not found, schema mismatch, unit conflicts).
+
+## Resolved design decisions (2026-04-28)
+
+**v0.2 scope narrowed to OpenVDB only.** The original PRD listed three formats (OpenVDB, HDF5, CSV); v0.2 ships only OpenVDB. Reasoning: OpenVDB's semantics align natively with Reify's field type (sparse volumetric grids, embedded coordinate transform, embedded grid metadata — no schema declaration needed). HDF5 and CSV require explicit schema-declaration design surface (column-to-axis mapping, unit annotation syntax, interpolation policy for irregular sample sets, error reporting on schema mismatch) that isn't worth designing speculatively. Deferred to a follow-on PRD when concrete user demand emerges.
+
+**Unit handling for OpenVDB.** OpenVDB grids carry user metadata; Reify reads any unit annotation and validates against the field declaration's type (`Length`, `Pressure`, etc.). Mismatch → error at ingestion. No new syntax in the `field def` block.
+
+**Interpolation.** OpenVDB grids declare their own interpolation implicitly (linear / quadratic / staggered, depending on grid type). Reify uses the grid's declared interpolation; no override knob for v0.2.
+
+**Provenance via Input occurrence (§14.5).** Imported fields participate in the existing Input boundary contract. Provenance fields recorded: file path, format, content hash, ingestion timestamp, declared tolerance. Mechanical extension of existing infrastructure — no new design.
+
+**Cache invalidation by content hash.** The source file is content-hashed on read; the hash is part of the realization cache key. File-content change → cache invalidation; file-path change with same content → cache hit. Standard pattern; no surprises.
+
+**Lowering to internal `sampled` representation.** Once ingested, an `imported` field is indistinguishable from a `sampled` field at the field-machinery level (interpolation, gradient, composition all work the same). The distinction lives at the source-declaration level only.
+
+## Decomposition plan (5 tasks, gated on 2295's OpenVDB sub-kernel)
+
+1. **`imported` source-kind grammar + parsing** — extends the `field def` source enum with the variant, parses `path` / `format = OpenVDB` / `grid = "..."` block.
+2. **OpenVDB ingestion** — file read, sample-buffer allocation, unit metadata validation, lowering to internal `sampled` representation.
+3. **Provenance recording on Input occurrence** — adds file path, content hash, ingestion timestamp, declared tolerance fields.
+4. **Cache invalidation on file content change** — content-hash the source file; integrate hash into the realization cache key.
+5. **End-to-end smoke test + diagnostic coverage** — file-not-found, grid-not-in-file, unit mismatch, malformed file, etc.
 
 ## Out of scope for this PRD
 
+- HDF5 and CSV imported fields — deferred to a follow-on PRD with v0.3+ priority. Tracker filed separately.
 - Streaming/lazy loading for very large grids (post-v0.2 optimization).
 - Write-back to imported formats (Reify is the consumer, not the producer, of these files).
-- Format auto-detection from file extension (v0.2 requires explicit `format = ...`).
+- Format auto-detection from file extension (v0.2 requires explicit `format = OpenVDB`).
 - Network-fetched fields (file:// only for v0.2).
+- Scattered-sample interpolation (kriging, RBF, etc.) — separate feature when CSV/HDF5 land.

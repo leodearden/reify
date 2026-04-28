@@ -1,6 +1,7 @@
 # PRD: Persistent Topology Naming v2 (Solvespace-Style)
 
 Status: deferred to v0.2 per 2026-04-26 decision.
+Design resolved 2026-04-28 — see "Resolved design decisions" below.
 
 ## Goal
 
@@ -41,11 +42,72 @@ The interaction with multi-kernel dispatch (`multi-kernel.md`) is significant: e
 
 - v0.1 alpha has shipped and real users have documented persistent-naming pain (likely common).
 - Multi-kernel dispatch design is locked — naming has to span kernel boundaries.
-- Decision made on replace-vs-augment.
-- A reference implementation in a similar parametric system (Solvespace, OpenSCAD-CSG, FreeCAD's "Topological Naming Problem" project) has been studied.
+
+## Resolved design decisions (2026-04-28)
+
+Backed by the 2026-04-28 reference-implementation study covering Solvespace, FreeCAD-RealThunder, OpenSCAD-CSG, CadQuery / build123d, OnShape, Parasolid, and the academic literature (Kripac 1995, Bidarra 2005, Kim et al. 2016, Marcheix & Pebay 2018, Manifold's MeshGL pattern).
+
+**Replace, not augment.** Pre-release means no source files to break. v0.2 absorbs the v0.1 `name = "..."` syntax as an additional attribute slot rather than maintaining a parallel scheme. One mechanism, one mental model.
+
+**Attribute shape.** Each face/edge/vertex emitted by a constructive operation carries:
+```
+TopologyAttribute {
+    feature_id: FeatureId,           // path-based node identity (§6.5), already stable
+    role: Role,                       // per-op enum (Cap(top), Side, NewEdge, ...)
+    local_index: u32,                 // deterministic geometric ordering, construction-order tiebreak
+    user_label: Option<String>,       // absorbs v0.1 `name = "top"` syntax
+    mod_history: Vec<ModEntry>,       // lineage postfix; see below
+}
+```
+Selector resolution prefers `user_label` matches over `(role, local_index)` matches when both apply.
+
+**Modification-history postfix.** When a downstream feature splits a face — fillet bisecting an edge, Boolean cutting a face — children inherit the parent's `(feature_id, role, local_index)` plus a `ModEntry { splitting_feature_id, split_index }` appended to `mod_history`. Selectors that resolved to the parent return the *set* of children, surfacing ambiguity for the user to disambiguate rather than silently rebinding. Pattern from FreeCAD-RealThunder (`;:M2`/`;:G3` postfix), Kim et al. 2016 (`[n:total]` SFI), OnShape (`qSplitBy`).
+
+**Local-index ordering.** Deterministic geometric ordering (centroid, normal, principal axis, etc.) with construction-order tiebreak only for genuine geometric ties. Symmetric splits (e.g. fillet of full circular edge) are unsolved across the literature; we accept arbitrary tiebreak with a diagnostic.
+
+**Selector resolution unified.** Attribute lookup is the only path for native geometry. Computed-selector fallback (`@face(faces_by_normal(...))`) survives only for imported geometry (STEP/STL/etc.) where no construction history exists.
+
+**Multi-kernel propagation via `KernelAttributeHook` trait.** Generic best-effort hook. Manifold (when 2295 lands) provides the first concrete impl using its existing `originalID` + per-triangle `faceID` + `MeshGL` merge-vector pattern (one geometric vertex, multiple property-vertices for attribute discontinuities at intersection curves). Fidget/OpenVDB don't implement the trait — selectors over SDF or voxel reps fall through to computed selectors. Heavy remeshing within tolerance discards attributes with a diagnostic; we don't try to preserve them through arbitrary geometric transformations.
+
+**Diagnostic on local_index reassignment.** Emit when an existing selector's resolved topology changes after an edit purely due to ordering shuffle (i.e. not because of a split — splits are handled by mod_history).
+
+**Selector vocabulary v2.** Lifted from CadQuery / build123d / OnShape with project-specific extensions:
+
+- **Direction filters:** `+X`, `-X`, `|Z` (parallel-to-axis), `#X` (perpendicular), `+vec(<vec3>)` (arbitrary direction — required for non-Cartesian use cases like mould-pull alignment for parting-line selection).
+- **Extremal selectors, two flavours:** by-bounds (`>Y`) and by-center (`>>Y`). They differ for non-flat faces; conflating them is a footgun. Both are first-class.
+- **Geometry-type filters:** `%Plane`, `%Cylinder`, `%Cone`, `%Sphere`, `%Torus`, `%Circle`, `%Line`, plus `%Geom` (universal match — any Geometry-implementing type, used as a no-op filter when chaining other predicates).
+- **Boolean combinators:** `and`, `or`, `not`, `except`.
+- **Topological walks:** `adjacent_to(x)`, `owner_body(x)`, `ancestors(x)`, `siblings(x)`.
+- **History-based selectors:** `created_by(feature_id)` (OnShape's `qCreatedBy`), `split_by(feature_id)` (`qSplitBy`).
+- **Attribute primitives:** `has_attribute(key)`, `attribute_eq(key, value)`. These are what makes the auto-attribute scheme directly user-queryable from source.
+
+**OCCT integration notes:**
+
+- `BRepAlgoAPI_*` modify/generated/deleted hooks cover most ops cleanly.
+- Loft (`BRepOffsetAPI_ThruSections`), sweep, and sewing (`BRepBuilderAPI_Sewing`) do **not** expose standard `Modified`/`Generated` maps. Custom history mappers required, following the FreeCAD pattern. Budget extra implementation effort for the Sweeps task.
+
+## Decomposition plan
+
+The PRD decomposes into 10 tasks when activated:
+
+1. **Attribute data model + propagation through OCCT.** Tuple definition, storage on the realization handle, `BRepAlgoAPI_*` modify/generated/deleted hooks, `TopExp_Explorer` walks. The data model and propagation are tightly coupled — single integration test exercises both.
+2. **Selector resolution.** Attribute-lookup primary path; computed-selector fallback (imported geometry only); user-label preference rule.
+3. **Modification-history threading.** Feature-split detection, `mod_history` propagation, set-valued resolution semantics for selectors that hit ambiguity.
+4. **Local-index reassignment diagnostic.** Emit when a selector's resolved topology changes due to ordering shuffle.
+5. **Sweeps.** Extrude, revolve, sweep, loft. Custom OCCT history mappers for loft and sweep (which don't expose standard `Modified`/`Generated` maps). Larger task than the per-op-theme average.
+6. **Primitives.** Box, cylinder, sphere, cone, torus.
+7. **Local features.** Fillet, chamfer.
+8. **Booleans.** Union, intersect, subtract.
+9. **`KernelAttributeHook` trait + Manifold implementation.** Generic hook; Manifold gets the first concrete impl using `originalID`/`faceID`/`MeshGL` merge vectors. Gated on Manifold landing per 2295.
+10. **Selector vocabulary v2.** Direction (incl. `+vec`), extremal (both flavours), geometry-type filter (incl. `%Geom` universal), Boolean combinators, topological walks, history-based selectors, attribute primitives. Splittable into `10a` (cheap: direction, type, combinators) and `10b` (walks, history, attribute queries) if too big for one task.
+
+## Deferred to v0.3+
+
+- **Adjacent-element backup keys.** Kim et al. 2016 propose `FaceName1#FaceName2` for edges and face-triple for vertices, exploiting adjacency as a more robust invariant than direct identity. Deferred because the modification-history postfix handles the most common failure modes; revisit when telemetry shows residual reliability gaps in the primary key.
+- **Hash-compaction of attribute names.** RealThunder's StringHasher trick (FreeCAD hit 22.6 MiB attribute storage on real models, compressed to 3.6 MiB via SHA-1 segment hashing). Our scheme is short by construction; deferred until telemetry shows modification-history postfixes accumulating to memory or perf pain in deeply-stacked feature trees.
 
 ## Out of scope for this PRD
 
 - Full algebraic naming theory (a research direction, not an engineering target).
-- Cross-kernel face identity preservation under heavy remeshing (post-v0.2 if at all).
-- User-facing naming language extensions beyond the existing `@face`, `@edge`, etc. selector vocabulary.
+- Cross-kernel face identity preservation under heavy remeshing (best-effort only; lossy remeshing emits a diagnostic and discards attributes).
+- Cross-tool stability for STEP/IGES round-trips (other kernels assign identity differently; computed-selector fallback handles imported geometry).

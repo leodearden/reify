@@ -1,6 +1,7 @@
 # PRD: Combinatorial `auto` Type-Parameter Resolution Backtracking
 
 Status: deferred to v0.2 per 2026-04-26 decision.
+Design resolved 2026-04-28 — see "Resolved design decisions" below.
 
 ## Goal
 
@@ -35,13 +36,29 @@ Diagnostics: when the search fails completely, the diagnostic reports the parame
 
 ## Pre-conditions for activating
 
-- v0.1 alpha has shipped with per-parameter BFS and at least a handful of cases have been documented where users hit the limitation.
-- The constraint feasibility checker (already used by v0.1 BFS) supports incremental binding well enough to be called inside a search loop without quadratic re-checking.
-- Someone has written down what a reasonable default depth bound is, based on real usage.
+- v0.1 alpha has shipped with per-parameter BFS.
+- The test suite for v0.2 includes documented v0.1 BFS-failure cases (not a gate on real-user-pain telemetry — algorithm shape is correct; documented cases drive test design).
+
+## Resolved design decisions (2026-04-28)
+
+**Default depth bound: 6 parameters.** Above 6, fall back to v0.1 per-parameter BFS with a diagnostic noting the bound was hit. Reasoning: at depth 4 with a typical 4–8 candidates per slot, cross-product is 256–4096; at depth 6, 4096–262k. Sub-second worst case at typical constraint-check cost. Beyond 6, constraint cost dominates and loud failure beats opaque search. Configurable via project metadata for unusual cases.
+
+**Cross-product hard cap: 100k assignments.** Independent guard from depth bound — depth caps parameter count, cap caps search space *given* the bound. When the cross-product would exceed 100k, refuse with a diagnostic naming the parameters and asking the user to constrain further. Falls back to v0.1 BFS like the depth-bound case.
+
+**`auto(free)` under cross-product search: report-all, pick-one.** When multiple cross-product assignments are feasible under `auto(free)`, the diagnostic enumerates all feasible assignments up to a display cap of 16 (further entries elided with a count), and the runtime picks the lexicographically-first one by fully-qualified name. Strictly better than v0.1 per-parameter `auto(free)`, which loses cross-product information.
+
+**Backjumping reuses existing "rejected because" channel.** v0.1 BFS already produces these reasons for diagnostics. v0.2 search just consumes them — when binding parameter K's candidate produces a rejection blamed on parameter J<K, search backjumps to J rather than backtracking K−1. No new infrastructure on the constraint-checker side.
+
+**Constraint-feasibility incremental binding deferred.** PRD originally listed this as a precondition. Re-classified: implement v0.2 search with full re-check at each binding; measure; optimize only if it bites. Tracker for the optimization filed separately as a v0.2.x bookmark task.
+
+**Diagnostic format on search failure.** Reports: parameters considered (in declaration order), candidate counts per parameter, cross-product size, depth/cap-hit flag, and the *smallest infeasibility witness* — the partial assignment that ruled out the most candidates downstream. This last is the most user-actionable piece; everything else is context.
+
+**Determinism.** Candidate enumeration lexicographic by FQN (already specified for v0.1 `auto(free)` per spec §3.9). Search tree therefore deterministic; resulting selection reproducible across runs and machines.
 
 ## Out of scope for this PRD
 
-- General SMT-style constraint propagation (the search is over discrete type choices; constraint feasibility for a fixed assignment is the existing checker).
+- General SMT-style constraint propagation (search is over discrete type choices; constraint feasibility for a fixed assignment is the existing checker).
 - Probabilistic / heuristic selection when many feasible solutions exist (still lexicographic by FQN).
 - Cross-declaration `auto` coordination (each declaration's `auto`s are resolved independently from each other declaration's).
 - Value-parameter `auto` resolution scheme — that's the scope-level coupled solver in arch §11.4–§11.5, separate concern.
+- Constraint-feasibility incremental-binding optimization (separate v0.2.x bookmark task; revisit when telemetry shows quadratic-re-check cost is the bottleneck).
