@@ -165,4 +165,67 @@ mod tests {
             updated
         );
     }
+
+    /// Step-3: BFS frontier carries propagation past the immediate dependents.
+    ///
+    /// 3-cell chain `a → b → c` with all three Intermediate{generation: 1};
+    /// `b.reads = [a]`, `c.reads = [b]`. Reverse-index has
+    /// `a → {Value(b)}` and `b → {Value(c)}`. After flipping `a` to Final
+    /// and walking from `{a}`, both `b` and `c` must end up Final and
+    /// appear in the returned `updated` set.
+    #[test]
+    fn propagates_through_three_cell_chain_via_frontier() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let c = ValueCellId::new(e, "c");
+
+        let mut cache = CacheStore::new();
+        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &b,
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+        );
+        put_value_entry(
+            &mut cache,
+            &c,
+            Freshness::Intermediate { generation: 1 },
+            vec![b.clone()],
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+        reverse_index.add(b.clone(), NodeId::Value(c.clone()));
+
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        assert_eq!(
+            cache.freshness(&NodeId::Value(b.clone())),
+            Freshness::Final,
+            "b should be Final after walking from a=Final"
+        );
+        assert_eq!(
+            cache.freshness(&NodeId::Value(c.clone())),
+            Freshness::Final,
+            "c should be Final once b's flip propagates through the BFS frontier"
+        );
+        assert!(
+            updated.contains(&NodeId::Value(b.clone())),
+            "updated should contain Value(b), got: {:?}",
+            updated
+        );
+        assert!(
+            updated.contains(&NodeId::Value(c.clone())),
+            "updated should contain Value(c), got: {:?}",
+            updated
+        );
+    }
 }
