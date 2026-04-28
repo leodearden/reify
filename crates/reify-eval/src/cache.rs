@@ -2709,6 +2709,30 @@ mod tests {
         );
     }
 
+    // --- set_freshness precondition: Failed is forbidden (task #2592, step-1) ---
+
+    /// Pins the `set_freshness` precondition guard (S1): passing `Freshness::Failed`
+    /// must panic in all builds. Callers must use `mark_failed` instead, which also
+    /// clears `pending_cause` (ensuring Failed nodes are chain roots per arch §9.2).
+    /// Tasks #2451 + #2592.
+    #[test]
+    #[should_panic(expected = "Failed")]
+    fn set_freshness_panics_when_passed_failed() {
+        use reify_types::{ErrorRef, Freshness};
+
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(1, 1));
+
+        // Must panic — set_freshness must not accept Failed.
+        let _ = store.set_freshness(
+            &node,
+            Freshness::Failed {
+                error: ErrorRef::new("boom"),
+            },
+        );
+    }
+
     // --- derive_output_freshness tests (task #2328, step-1) ---
 
     /// Arch §7.2 (lines 730-749) truth table:
