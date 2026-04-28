@@ -217,6 +217,43 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let p = quat_mul(a, b);
             sanitize_value(normalize_quaternion(p.0, p.1, p.2, p.3).unwrap_or(Value::Undef))
         }
+        "orient_exp" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (comps, dim) = match tensor_components_f64(&args[0]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Some(Value::Undef),
+            };
+            if dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let vx = comps[0];
+            let vy = comps[1];
+            let vz = comps[2];
+            if !vx.is_finite() || !vy.is_finite() || !vz.is_finite() {
+                return Some(Value::Undef);
+            }
+            // exp(omega) = quaternion (cos(|omega|/2), sin(|omega|/2)/|omega| * omega)
+            // For |omega| ≈ 0, return identity (sin(half)/angle → 1/2 limit, but we
+            // shortcut to avoid 0/0).
+            let angle = (vx * vx + vy * vy + vz * vz).sqrt();
+            const EPS: f64 = 1e-12;
+            if angle < EPS {
+                return Some(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                });
+            }
+            let half = angle / 2.0;
+            let s = half.sin() / angle;
+            sanitize_value(
+                normalize_quaternion(half.cos(), s * vx, s * vy, s * vz)
+                    .unwrap_or(Value::Undef),
+            )
+        }
         "orient_axis_angle" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
