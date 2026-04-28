@@ -1,5 +1,6 @@
 mod annotations;
 mod arg_check;
+pub mod auto_type_param;
 mod compile_builder;
 mod conformance;
 mod connect;
