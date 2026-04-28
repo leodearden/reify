@@ -1222,4 +1222,51 @@ mod tests {
             "labels must include target tag source_span"
         );
     }
+
+    /// Multi-match path: THREE candidates all carry the same target tag (ambiguous/split topology).
+    /// Resolver must return `None`, push exactly ONE diagnostic (not one per duplicate),
+    /// the message must name the count "3", and labels include both spans.
+    #[test]
+    fn resolve_unique_by_tag_multiple_matches_emits_warning_and_returns_none() {
+        use reify_types::{
+            Diagnostic, DiagnosticCode, FeatureTag, FeatureTagTable, Severity, SourceSpan, StepKind,
+        };
+
+        let id1 = GeometryHandleId(20);
+        let id2 = GeometryHandleId(21);
+        let id3 = GeometryHandleId(22);
+
+        // All three handles carry the SAME target tag — ambiguous split scenario.
+        let tag_source_span = SourceSpan::new(50, 60);
+        let target_tag = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Sweep, sub_index: 7 };
+
+        let mut table = FeatureTagTable::default();
+        table.record(id1, target_tag);
+        table.record(id2, target_tag);
+        table.record(id3, target_tag);
+
+        let selector_span = SourceSpan::new(300, 310);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = resolve_unique_by_tag(&table, &[id1, id2, id3], target_tag, selector_span, &mut diagnostics);
+
+        assert!(result.is_none(), "multiple matches should return None");
+        assert_eq!(diagnostics.len(), 1, "must fire exactly one diagnostic regardless of match count");
+
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, Severity::Warning, "should be a warning");
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyTagStale), "must carry TopologyTagStale code");
+        assert!(
+            diag.message.contains('3'),
+            "message must contain the match count '3', got: {:?}",
+            diag.message,
+        );
+        assert!(
+            diag.labels.iter().any(|l| l.span == selector_span),
+            "labels must include selector_span"
+        );
+        assert!(
+            diag.labels.iter().any(|l| l.span == target_tag.source_span),
+            "labels must include target tag source_span"
+        );
+    }
 }
