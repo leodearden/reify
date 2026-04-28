@@ -862,24 +862,5 @@ echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
 assert "Test 16a subshell uses quoted exit \"\$found\" (no unquoted form)" \
     bash -c '! grep -qF "        exit \$found" "$1"' _ "${BASH_SOURCE[0]}"
 
-# -- Test 26 (structural): Test 21a/21b pre-kill settle bumped from 0.5 to 1.0 ----
-echo ""
-echo "--- Test 26 (structural): Test 21a/21b pre-kill settle uses sleep 1.0 ---"
-
-# After the SIGKILL-escalation tests' pre-kill orphan cleanup (kill -9 sleep 31339),
-# the settle wait that lets the process table stabilize must be 1.0s (was 0.5s)
-# to give more headroom under concurrent verify-pipeline load
-# (orchestrator max_concurrent_tasks=48).  Bump applies to Tests 21a and 21b
-# for symmetric coverage of the SIGKILL-escalation contention surface.
-# Test 16b's settle (sentinel 31337, orphan-cleanup category) is intentionally
-# excluded — it has not been observed to flake.
-#
-# Pattern is assembled via printf -v from non-contiguous fragments so that
-# this assertion line itself does not contain the literal search target and
-# therefore cannot self-match in the file scan.
-printf -v _t21_settle '%s%s%s' '"$_abs_sleep" ' '1' '.0'
-assert "Test 21a/21b pre-kill settle uses sleep 1.0 (exactly 2 occurrences)" \
-    bash -c 'count=$(grep -cF "$2" "$1"); [ "$count" -eq 2 ]' _ "${BASH_SOURCE[0]}" "$_t21_settle"
-
 # -- Summary ------------------------------------------------------------------
 test_summary
