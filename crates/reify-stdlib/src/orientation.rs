@@ -1711,6 +1711,127 @@ mod tests {
         assert!(eval_builtin("orient_log", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── orient_exp tests (step-7) ──────────────────────────────────────────
+
+    #[test]
+    fn orient_exp_zero_vector_is_identity() {
+        let zero = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert_orientation_approx!(eval_builtin("orient_exp", &[zero]), 1.0, 0.0, 0.0, 0.0);
+    }
+
+    /// exp([0,0,π/2]) = (cos(π/4), 0, 0, sin(π/4)) — 90°z rotation.
+    #[test]
+    fn orient_exp_z_pi_half_is_90deg_z_quaternion() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_exp", &[v]),
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
+        );
+    }
+
+    /// log(exp(v)) ≈ v for several non-trivial rotation vectors.
+    #[test]
+    fn orient_exp_then_log_round_trip() {
+        let cases: [[f64; 3]; 4] = [
+            [0.1, 0.2, 0.3],
+            [1.0, 0.0, 0.0],
+            [0.0, std::f64::consts::FRAC_PI_2, 0.0],
+            [-0.5, 0.7, -0.3],
+        ];
+        for case in cases.iter() {
+            let v = Value::Vector(vec![
+                Value::Real(case[0]),
+                Value::Real(case[1]),
+                Value::Real(case[2]),
+            ]);
+            let q = eval_builtin("orient_exp", &[v.clone()]);
+            let v_back = eval_builtin("orient_log", &[q]);
+            match v_back {
+                Value::Vector(items) if items.len() == 3 => {
+                    let v0 = items[0].as_f64().unwrap();
+                    let v1 = items[1].as_f64().unwrap();
+                    let v2 = items[2].as_f64().unwrap();
+                    assert!(
+                        (v0 - case[0]).abs() < 1e-10,
+                        "round-trip x: expected {} got {}",
+                        case[0],
+                        v0
+                    );
+                    assert!(
+                        (v1 - case[1]).abs() < 1e-10,
+                        "round-trip y: expected {} got {}",
+                        case[1],
+                        v1
+                    );
+                    assert!(
+                        (v2 - case[2]).abs() < 1e-10,
+                        "round-trip z: expected {} got {}",
+                        case[2],
+                        v2
+                    );
+                }
+                other => panic!("expected Vector(3), got {:?}", other),
+            }
+        }
+    }
+
+    /// exp(log(q)) ≈ q for arbitrary q (sign-insensitive).
+    #[test]
+    fn orient_log_then_exp_round_trip() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let v = eval_builtin("orient_log", &[q.clone()]);
+        let q_back = eval_builtin("orient_exp", &[v]);
+        assert_orientation_approx!(q_back, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-12);
+    }
+
+    #[test]
+    fn orient_exp_wrong_arg_count_returns_undef() {
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_exp", &[]).is_undef());
+        assert!(eval_builtin("orient_exp", &[v.clone(), v]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_non_vector_returns_undef() {
+        assert!(eval_builtin("orient_exp", &[Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_non_3d_vector_returns_undef() {
+        let v2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_exp", &[v2]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_nan_component_returns_undef() {
+        let nan_v = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_exp", &[nan_v]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_inf_component_returns_undef() {
+        let inf_v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+        ]);
+        assert!(eval_builtin("orient_exp", &[inf_v]).is_undef());
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
