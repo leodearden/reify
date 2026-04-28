@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
 
@@ -179,6 +179,99 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 None => Value::Undef,
+            }
+        }
+
+        "transform_compose" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (r1_q, t1_items) = match &args[0] {
+                Value::Transform { rotation, translation } => {
+                    match (rotation.as_ref(), translation.as_ref()) {
+                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
+                            ((*w, *x, *y, *z), items.clone())
+                        }
+                        _ => return Some(Value::Undef),
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            let (r2_q, t2_items) = match &args[1] {
+                Value::Transform { rotation, translation } => {
+                    match (rotation.as_ref(), translation.as_ref()) {
+                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
+                            ((*w, *x, *y, *z), items.clone())
+                        }
+                        _ => return Some(Value::Undef),
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(r1_q.0, r1_q.1, r1_q.2, r1_q.3)
+                || !quaternion_is_finite(r2_q.0, r2_q.1, r2_q.2, r2_q.3)
+            {
+                return Some(Value::Undef);
+            }
+            // Extract translation components and shared dimension.
+            if t1_items.len() != 3 || t2_items.len() != 3 {
+                return Some(Value::Undef);
+            }
+            let t1_dim = t1_items[0].dimension();
+            if t1_items[1].dimension() != t1_dim || t1_items[2].dimension() != t1_dim {
+                return Some(Value::Undef);
+            }
+            let t2_dim = t2_items[0].dimension();
+            if t2_items[1].dimension() != t2_dim || t2_items[2].dimension() != t2_dim {
+                return Some(Value::Undef);
+            }
+            if t1_dim != t2_dim {
+                return Some(Value::Undef);
+            }
+            let (t1x, t1y, t1z) = match (t1_items[0].as_f64(), t1_items[1].as_f64(), t1_items[2].as_f64()) {
+                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+                _ => return Some(Value::Undef),
+            };
+            let (t2x, t2y, t2z) = match (t2_items[0].as_f64(), t2_items[1].as_f64(), t2_items[2].as_f64()) {
+                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+                _ => return Some(Value::Undef),
+            };
+            // Normalize R1 (matches operator-level semantics in reify-expr).
+            let r1_norm_sq =
+                r1_q.0 * r1_q.0 + r1_q.1 * r1_q.1 + r1_q.2 * r1_q.2 + r1_q.3 * r1_q.3;
+            if r1_norm_sq < f64::EPSILON {
+                return Some(Value::Undef);
+            }
+            let r1_norm = r1_norm_sq.sqrt();
+            let r1_n = (
+                r1_q.0 / r1_norm,
+                r1_q.1 / r1_norm,
+                r1_q.2 / r1_norm,
+                r1_q.3 / r1_norm,
+            );
+            // R = R1 * R2 (Hamilton product), then normalize.
+            let composed_r = quat_mul(r1_n, r2_q);
+            let r_val = match normalize_quaternion(composed_r.0, composed_r.1, composed_r.2, composed_r.3) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // t = R1 * t2 + t1.
+            let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2x, t2y, t2z);
+            let dim = t1_dim;
+            let make_component = |v: f64| -> Value {
+                if dim.is_dimensionless() {
+                    Value::Real(v)
+                } else {
+                    Value::Scalar { si_value: v, dimension: dim }
+                }
+            };
+            Value::Transform {
+                rotation: Box::new(r_val),
+                translation: Box::new(Value::Vector(vec![
+                    make_component(rt2x + t1x),
+                    make_component(rt2y + t1y),
+                    make_component(rt2z + t1z),
+                ])),
             }
         }
 
