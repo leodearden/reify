@@ -1310,4 +1310,46 @@ mod tests {
         let reply = vec![Value::Real(0.0), Value::Real(0.0)];
         debug_assert_query_many_invariant(&queries, &reply);
     }
+
+    // ------------------------------------------------------------------
+    // v0.2 persistent-naming-v2 — task 1 (#2590) tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn feature_id_constructs_and_displays_round_trip() {
+        let fid = FeatureId::new("Bracket#realization[0]");
+        assert_eq!(format!("{}", fid), "Bracket#realization[0]");
+    }
+
+    #[test]
+    fn feature_id_from_realization_node_id_matches_display() {
+        use crate::identity::RealizationNodeId;
+        let node = RealizationNodeId::new("Bracket", 0);
+        let fid = FeatureId::from(&node);
+        assert_eq!(format!("{}", fid), format!("{}", node));
+    }
+
+    #[test]
+    fn feature_id_equality_and_hash_are_path_based() {
+        use std::collections::HashMap;
+        let a = FeatureId::new("Foo#realization[1]");
+        let b = FeatureId::new("Foo#realization[1]");
+        let c = FeatureId::new("Foo#realization[2]");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        let mut map: HashMap<FeatureId, u32> = HashMap::new();
+        map.insert(a.clone(), 7);
+        // `b` has equal path => should hit the same bucket.
+        assert_eq!(map.get(&b), Some(&7));
+        assert_eq!(map.get(&c), None);
+    }
+
+    #[test]
+    fn feature_id_clone_preserves_value() {
+        let a = FeatureId::new("Bracket#realization[0]");
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_eq!(format!("{}", a), format!("{}", b));
+    }
 }
