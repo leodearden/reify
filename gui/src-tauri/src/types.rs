@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde::ser::Error as SerError;
 
-use reify_types::{DeterminacyState, DiagnosticInfo, Value};
+use reify_types::{DeterminacyState, DiagnosticInfo, Freshness, Value};
 
 /// Custom serializer for `Vec<f32>` that rejects non-finite values.
 ///
@@ -242,6 +242,27 @@ pub fn format_determinacy(d: DeterminacyState) -> String {
         DeterminacyState::Undetermined => "undetermined".to_string(),
         DeterminacyState::Provisional => "provisional".to_string(),
         DeterminacyState::Auto => "auto".to_string(),
+    }
+}
+
+/// Format a [`Freshness`] variant as a lowercase tag string for the GUI wire
+/// protocol.
+///
+/// Returns one of `"final"`, `"intermediate"`, `"pending"`, or `"failed"`.
+/// Payload fields (`generation`, `last_substantive`, `error`) are deliberately
+/// collapsed — the UI surface only needs the variant tag for badge selection.
+/// Human-readable detail for Failed/Pending is carried by the LSP diagnostic
+/// channel per the task #2337 design decision ("Wire format is a single
+/// lowercase tag string").
+///
+/// Mirrors [`format_determinacy`] in naming convention, return type, and
+/// call-site idiom.
+pub fn format_freshness(f: &Freshness) -> &'static str {
+    match f {
+        Freshness::Final => "final",
+        Freshness::Intermediate { .. } => "intermediate",
+        Freshness::Pending { .. } => "pending",
+        Freshness::Failed { .. } => "failed",
     }
 }
 
