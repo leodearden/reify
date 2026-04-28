@@ -4,6 +4,7 @@ pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeRe
 pub mod demand;
 pub mod deps;
 pub mod dirty;
+pub mod freshness_walk;
 mod engine_admin;
 mod engine_build;
 mod engine_constraints;
