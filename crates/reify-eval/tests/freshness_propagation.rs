@@ -8,7 +8,7 @@ use reify_eval::cache::NodeId;
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, ErrorRef, Freshness, ModulePath, Type, Value, ValueCellId};
+use reify_types::{BinOp, ErrorRef, Freshness, ModulePath, ResultRef, Type, Value, ValueCellId};
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.
 fn two_cell_module() -> reify_compiler::CompiledModule {
@@ -135,8 +135,12 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
     );
     restore_a_final(&mut engine);
 
-    // --- Row 5: still_refining=false, a=Pending → Intermediate{generation: 99} ---
-    // Inject via mark_pending (canonical path per task #2326 contract)
+    // --- Row 5: still_refining=false, a=Pending → Pending{none()} (§7.2 line 748) ---
+    // Inject via mark_pending (canonical path per task #2326 contract).
+    // Updated for arch §7.2 line 748 + §9.2 line 890 carve-out (task #2330):
+    // Pending input now produces Pending output (not Intermediate). The pure helper
+    // drops the chain — `(Pending, None)` is the chain-incomplete sentinel; chain
+    // forwarding is exercised by Row 7 and `derive_output_freshness_with_cause`.
     let marked = engine
         .cache_store_mut()
         .mark_pending(&NodeId::Value(a_id.clone()));
@@ -145,12 +149,18 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
         engine
             .cache_store()
             .derive_output_freshness_for_node(&b_node, false, g),
-        Freshness::Intermediate { generation: g },
-        "Row 5: still_refining=false, Pending input → Intermediate (Pending is non-Final per §7.2)"
+        Freshness::Pending { last_substantive: ResultRef::none() },
+        "Row 5: still_refining=false, Pending input → Pending (arch §7.2 line 748: \
+         Pending naturally quiets the downstream subtree)"
     );
     restore_a_final(&mut engine);
 
-    // --- Row 6: still_refining=false, a=Failed → Intermediate{generation: 99} ---
+    // --- Row 6: still_refining=false, a=Failed → Pending{none()} (§9.2 line 890 carve-out) ---
+    // Updated for arch §9.2 line 890 (task #2330): Failed input is carved out of
+    // §7.2's "any non-Final → Intermediate" rule and produces Pending output instead,
+    // so the downstream subtree is naturally quieted. The chain root (the failing
+    // NodeId) is recovered via `derive_output_freshness_for_node_with_cause`
+    // (exercised in Row 7).
     let _ = engine.cache_store_mut().set_freshness(
         &NodeId::Value(a_id.clone()),
         Freshness::Failed {
@@ -161,8 +171,36 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
         engine
             .cache_store()
             .derive_output_freshness_for_node(&b_node, false, g),
-        Freshness::Intermediate { generation: g },
-        "Row 6: still_refining=false, Failed input → Intermediate (Failed is non-Final per §7.2)"
+        Freshness::Pending { last_substantive: ResultRef::none() },
+        "Row 6: still_refining=false, Failed input → Pending (arch §9.2 line 890 carve-out: \
+         downstream of Failed is Pending so the subtree is naturally quieted)"
+    );
+    restore_a_final(&mut engine);
+
+    // --- Row 7: cause-bearing variant returns the failing NodeId ---
+    // Pin the chain semantics: when `a` is Failed, the cause-bearing variant returns
+    // (Pending, Some(NodeId::Value(a))) so the downstream Pending entry can record
+    // the chain root in its `pending_cause` side-table. See arch §9.2 lines 880-890
+    // and the plan #2330 design decision on side-table storage.
+    let a_node = NodeId::Value(a_id.clone());
+    let _ = engine.cache_store_mut().set_freshness(
+        &a_node,
+        Freshness::Failed {
+            error: ErrorRef::new("synthetic failure for chain root"),
+        },
+    );
+    let (fresh, cause) = engine
+        .cache_store()
+        .derive_output_freshness_for_node_with_cause(&b_node, false, g);
+    assert_eq!(
+        fresh,
+        Freshness::Pending { last_substantive: ResultRef::none() },
+        "Row 7: Failed input must produce Pending output (parity with the pure helper)"
+    );
+    assert_eq!(
+        cause,
+        Some(a_node),
+        "Row 7: cause-bearing variant must return the failing NodeId as the chain root"
     );
     restore_a_final(&mut engine);
 }
