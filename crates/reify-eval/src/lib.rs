@@ -397,6 +397,20 @@ pub struct Engine {
     /// Exposed via `Engine::feature_tag_table()` so topology selectors and
     /// GUI consumers can correlate geometry handles back to source locations.
     feature_tag_table: FeatureTagTable,
+    /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
+    /// should be force-panicked just before `reify_expr::eval_expr` runs.
+    /// Populated only via `Engine::set_panic_on_eval` (cfg-gated to test /
+    /// `test-instrumentation` builds); the field itself is always present so
+    /// the struct layout is identical in test and production builds (same
+    /// trick used by `last_guard_phase_group_evals` etc.).
+    ///
+    /// In production builds the set stays empty — the let-binding evaluator's
+    /// hot path costs only a single `HashSet::contains` check per cell. The
+    /// catch_unwind panic boundary in `evaluate_let_bindings` converts any
+    /// panic raised here (or by any other path inside `eval_expr`) into a
+    /// `Freshness::Failed { error }` write plus a single `EventKind::Failed`
+    /// event, per arch §9.1 line 868–877.
+    panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

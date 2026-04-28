@@ -1,14 +1,15 @@
 // Split from lib.rs (task 2032) — eval methods.
 
 use std::collections::{HashMap, HashSet};
+use std::panic;
 use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_types::{
-    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, FIELD_ENTITY_PREFIX, PersistentMap,
-    ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
-    VersionId,
+    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, ErrorRef, FIELD_ENTITY_PREFIX,
+    PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -2019,10 +2020,72 @@ impl Engine {
                 payload: None,
             });
 
-            let val = reify_expr::eval_expr(
-                expr,
-                &eval_ctx_with_meta(values, functions, meta_map).with_determinacy(&snapshot.values),
-            );
+            // Snapshot test-instrumentation panic-injection state for this cell
+            // so the closure does not need to borrow `self`.
+            let force_panic = self.panic_on_eval_cells.contains(cell_id);
+
+            // Arch §9.1 panic boundary (lines 868–877): wrap `reify_expr::eval_expr`
+            // in `catch_unwind` so a panic inside expression evaluation becomes
+            // `Freshness::Failed { error }` on the cell plus a single
+            // `EventKind::Failed` event — rather than crashing the engine.
+            //
+            // The test-instrumentation hook (`panic_on_eval_cells` /
+            // `set_panic_on_eval`) panics with a known sentinel BEFORE calling
+            // `eval_expr`, so the same boundary serves both the production path
+            // (a panic raised inside `eval_expr` itself) and the test path.
+            let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
+                .with_determinacy(&snapshot.values);
+            let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                if force_panic {
+                    panic!(
+                        "test-instrumentation forced panic for {:?}",
+                        cell_id
+                    );
+                }
+                reify_expr::eval_expr(expr, &eval_ctx)
+            }));
+
+            let val = match panic_result {
+                Ok(v) => v,
+                Err(payload) => {
+                    // Downcast the panic payload to a string message — same
+                    // pattern as `invariant_tests::panics_on_unrepresentable_cell_types`
+                    // (engine_eval.rs:2098-2107).
+                    let msg = payload
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                        .unwrap_or("<non-string panic>")
+                        .to_string();
+                    let error = ErrorRef::new(msg);
+                    // Ensure the cache entry exists so `mark_failed` can flip
+                    // its freshness in place. We write a stub Undef result so
+                    // the entry exists; mark_failed then overrides freshness
+                    // to Failed { error }.
+                    let trace = take_trace(
+                        &mut let_traces,
+                        &node_id,
+                        "sorted_lets",
+                        "let_traces",
+                    );
+                    self.cache.record_evaluation_propagating_freshness(
+                        node_id.clone(),
+                        CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                        VersionId(version_id),
+                        trace,
+                        false,
+                    );
+                    let _ = self.cache.mark_failed(&node_id, error.clone());
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id: node_id.clone(),
+                        kind: EventKind::Failed { error },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+                    continue;
+                }
+            };
             values.insert(cell_id.clone(), val.clone());
 
             snapshot

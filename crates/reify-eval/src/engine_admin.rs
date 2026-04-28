@@ -159,6 +159,9 @@ impl Engine {
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
             warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
             feature_tag_table: FeatureTagTable::default(),
+            // Always-empty in production builds; populated only by the
+            // cfg-gated test-instrumentation accessor `set_panic_on_eval`.
+            panic_on_eval_cells: std::collections::HashSet::new(),
         }
     }
 
@@ -597,6 +600,27 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn cache_store_mut(&mut self) -> &mut CacheStore {
         &mut self.cache
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Register a `ValueCellId` whose let-binding evaluation must force a
+    /// panic immediately before `reify_expr::eval_expr` runs, exercising the
+    /// arch §9.1 panic-boundary path in `evaluate_let_bindings`.
+    ///
+    /// The let-binding evaluator wraps `eval_expr` in `catch_unwind`; on
+    /// panic it writes `Freshness::Failed { error }` via
+    /// `CacheStore::mark_failed` and emits a single `EventKind::Failed`
+    /// event, skipping the normal `EventKind::Completed` event. Multiple
+    /// calls accumulate cells into the set.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see
+    /// `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_panic_on_eval(&mut self, cell: reify_types::ValueCellId) {
+        self.panic_on_eval_cells.insert(cell);
     }
 }
 
