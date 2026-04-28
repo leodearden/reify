@@ -26,6 +26,7 @@ pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
 pub use test_runner::{TestResult, TestStatus, run_tests};
+pub use topology_attribute_propagation::propagate_attributes_via_brepalgoapi_history;
 
 use std::collections::HashMap;
 use std::sync::Arc;
