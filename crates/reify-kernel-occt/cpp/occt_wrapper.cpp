@@ -97,9 +97,6 @@
 // OCCT distance
 #include <BRepExtrema_DistShapeShape.hxx>
 
-// OCCT topology iterator (used by shapes_intersect)
-#include <TopoDS_Iterator.hxx>
-
 // OCCT conformance queries
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
