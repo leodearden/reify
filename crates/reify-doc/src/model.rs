@@ -297,6 +297,129 @@ pub enum ItemDoc {
     },
 }
 
+impl ItemDoc {
+    /// Lookup the `name` field of any variant.
+    pub fn name(&self) -> &str {
+        match self {
+            ItemDoc::Structure { name, .. }
+            | ItemDoc::Occurrence { name, .. }
+            | ItemDoc::Trait { name, .. }
+            | ItemDoc::Function { name, .. }
+            | ItemDoc::Field { name, .. }
+            | ItemDoc::Purpose { name, .. }
+            | ItemDoc::Enum { name, .. }
+            | ItemDoc::Unit { name, .. }
+            | ItemDoc::TypeAlias { name, .. }
+            | ItemDoc::ConstraintDef { name, .. } => name,
+        }
+    }
+
+    /// Lookup the `is_pub` field of any variant.
+    pub fn is_pub(&self) -> bool {
+        match self {
+            ItemDoc::Structure { is_pub, .. }
+            | ItemDoc::Occurrence { is_pub, .. }
+            | ItemDoc::Trait { is_pub, .. }
+            | ItemDoc::Function { is_pub, .. }
+            | ItemDoc::Field { is_pub, .. }
+            | ItemDoc::Purpose { is_pub, .. }
+            | ItemDoc::Enum { is_pub, .. }
+            | ItemDoc::Unit { is_pub, .. }
+            | ItemDoc::TypeAlias { is_pub, .. }
+            | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub,
+        }
+    }
+
+    /// Lookup the optional doc-comment of any variant.
+    pub fn doc(&self) -> Option<&str> {
+        match self {
+            ItemDoc::Structure { doc, .. }
+            | ItemDoc::Occurrence { doc, .. }
+            | ItemDoc::Trait { doc, .. }
+            | ItemDoc::Function { doc, .. }
+            | ItemDoc::Field { doc, .. }
+            | ItemDoc::Purpose { doc, .. }
+            | ItemDoc::Enum { doc, .. }
+            | ItemDoc::Unit { doc, .. }
+            | ItemDoc::TypeAlias { doc, .. }
+            | ItemDoc::ConstraintDef { doc, .. } => doc.as_deref(),
+        }
+    }
+
+    /// Lookup the annotations attached to any variant.
+    pub fn annotations(&self) -> &[AnnotationDoc] {
+        match self {
+            ItemDoc::Structure { annotations, .. }
+            | ItemDoc::Occurrence { annotations, .. }
+            | ItemDoc::Trait { annotations, .. }
+            | ItemDoc::Function { annotations, .. }
+            | ItemDoc::Field { annotations, .. }
+            | ItemDoc::Purpose { annotations, .. }
+            | ItemDoc::Enum { annotations, .. }
+            | ItemDoc::Unit { annotations, .. }
+            | ItemDoc::TypeAlias { annotations, .. }
+            | ItemDoc::ConstraintDef { annotations, .. } => annotations,
+        }
+    }
+
+    /// Language keyword displayed in the H2 heading for each variant.
+    ///
+    /// Matches the snake_case kind tag used by `#[serde(tag="kind", rename_all="snake_case")]`
+    /// on `ItemDoc`, except for variants whose Reify-source keyword differs from the
+    /// JSON tag (`Field` → `"let"`, `TypeAlias` → `"type"`, `ConstraintDef` →
+    /// `"constraint"`).
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            ItemDoc::Structure { .. } => "structure",
+            ItemDoc::Occurrence { .. } => "occurrence",
+            ItemDoc::Trait { .. } => "trait",
+            ItemDoc::Function { .. } => "fn",
+            ItemDoc::Field { .. } => "let",
+            ItemDoc::Purpose { .. } => "purpose",
+            ItemDoc::Enum { .. } => "enum",
+            ItemDoc::Unit { .. } => "unit",
+            ItemDoc::TypeAlias { .. } => "type",
+            ItemDoc::ConstraintDef { .. } => "constraint",
+        }
+    }
+
+    /// Stable TOC group label. `"Constants"` buckets the long tail of
+    /// value-like declarations (Field, Unit, TypeAlias, ConstraintDef, Purpose)
+    /// per the PRD's six-group TOC.
+    pub fn group(&self) -> &'static str {
+        match self {
+            ItemDoc::Trait { .. } => "Traits",
+            ItemDoc::Structure { .. } => "Structures",
+            ItemDoc::Occurrence { .. } => "Occurrences",
+            ItemDoc::Enum { .. } => "Enums",
+            ItemDoc::Function { .. } => "Functions",
+            ItemDoc::Field { .. }
+            | ItemDoc::Unit { .. }
+            | ItemDoc::TypeAlias { .. }
+            | ItemDoc::ConstraintDef { .. }
+            | ItemDoc::Purpose { .. } => "Constants",
+        }
+    }
+
+    /// Snake_case kind tag matching `#[serde(tag="kind", rename_all="snake_case")]`.
+    /// Used as the prefix in split-mode filenames so multi-kind name collisions
+    /// (e.g. a trait `Board` vs a structure `Board`) stay distinct.
+    pub fn kind_slug(&self) -> &'static str {
+        match self {
+            ItemDoc::Structure { .. } => "structure",
+            ItemDoc::Occurrence { .. } => "occurrence",
+            ItemDoc::Trait { .. } => "trait",
+            ItemDoc::Function { .. } => "function",
+            ItemDoc::Field { .. } => "field",
+            ItemDoc::Purpose { .. } => "purpose",
+            ItemDoc::Enum { .. } => "enum",
+            ItemDoc::Unit { .. } => "unit",
+            ItemDoc::TypeAlias { .. } => "type_alias",
+            ItemDoc::ConstraintDef { .. } => "constraint_def",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,5 +877,187 @@ mod tests {
         assert!(back.referenced_modules.is_empty());
         assert!(back.referenced_items.is_empty());
         assert!(back.referenced_traits.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for the seven inherent accessor methods on `ItemDoc`.
+    // These are TDD-first: they fail to compile until step 2 adds the methods.
+    // -----------------------------------------------------------------------
+
+    /// Returns one of each `ItemDoc` variant with deterministic minimal fields:
+    /// `is_pub: false`, `doc: None`, `annotations: []`, `pragmas: []`, and
+    /// variant-specific fields set to sensible empty/placeholder values.
+    /// Names are the short identifiers used throughout the accessor tests.
+    fn sample_items() -> Vec<ItemDoc> {
+        vec![
+            ItemDoc::Structure {
+                name: "S".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], params: vec![],
+                ports: vec![], constraints: vec![], sub_components: vec![],
+                realizations: vec![], meta: vec![],
+            },
+            ItemDoc::Occurrence {
+                name: "O".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], params: vec![],
+                ports: vec![], constraints: vec![], sub_components: vec![],
+                realizations: vec![], meta: vec![],
+            },
+            ItemDoc::Trait {
+                name: "T".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], members: vec![],
+            },
+            ItemDoc::Function {
+                name: "F".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                signature: "fn f()".into(),
+            },
+            ItemDoc::Field {
+                name: "x".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                type_repr: "i32".into(), default_repr: None,
+            },
+            ItemDoc::Purpose {
+                name: "P".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                expr_repr: "cost".into(), direction: "minimize".into(),
+            },
+            ItemDoc::Enum {
+                name: "E".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![], variants: vec![],
+            },
+            ItemDoc::Unit {
+                name: "U".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                base_unit: "Meter".into(), scale: "1.0".into(),
+            },
+            ItemDoc::TypeAlias {
+                name: "A".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                type_repr: "f64".into(),
+            },
+            ItemDoc::ConstraintDef {
+                name: "C".into(), doc: None, is_pub: false,
+                annotations: vec![], pragmas: vec![],
+                expr_repr: "x > 0".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn item_doc_name_returns_variant_name() {
+        let expected = ["S", "O", "T", "F", "x", "P", "E", "U", "A", "C"];
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.name(), exp);
+        }
+    }
+
+    #[test]
+    fn item_doc_is_pub_returns_variant_visibility() {
+        // false cases — all sample_items() have is_pub: false
+        for item in &sample_items() {
+            assert!(!item.is_pub());
+        }
+        // true cases — mutate each sample item to set is_pub: true
+        for mut item in sample_items() {
+            match &mut item {
+                ItemDoc::Structure { is_pub, .. }
+                | ItemDoc::Occurrence { is_pub, .. }
+                | ItemDoc::Trait { is_pub, .. }
+                | ItemDoc::Function { is_pub, .. }
+                | ItemDoc::Field { is_pub, .. }
+                | ItemDoc::Purpose { is_pub, .. }
+                | ItemDoc::Enum { is_pub, .. }
+                | ItemDoc::Unit { is_pub, .. }
+                | ItemDoc::TypeAlias { is_pub, .. }
+                | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub = true,
+            }
+            assert!(item.is_pub());
+        }
+    }
+
+    #[test]
+    fn item_doc_doc_returns_variant_doc_comment() {
+        // None cases — all sample_items() have doc: None
+        for item in &sample_items() {
+            assert_eq!(item.doc(), None);
+        }
+        // Some cases — mutate each sample item to set doc: Some("doc")
+        for mut item in sample_items() {
+            match &mut item {
+                ItemDoc::Structure { doc, .. }
+                | ItemDoc::Occurrence { doc, .. }
+                | ItemDoc::Trait { doc, .. }
+                | ItemDoc::Function { doc, .. }
+                | ItemDoc::Field { doc, .. }
+                | ItemDoc::Purpose { doc, .. }
+                | ItemDoc::Enum { doc, .. }
+                | ItemDoc::Unit { doc, .. }
+                | ItemDoc::TypeAlias { doc, .. }
+                | ItemDoc::ConstraintDef { doc, .. } => *doc = Some("doc".into()),
+            }
+            assert_eq!(item.doc(), Some("doc"));
+        }
+    }
+
+    #[test]
+    fn item_doc_annotations_returns_variant_annotations() {
+        // empty cases — all sample_items() have annotations: []
+        for item in &sample_items() {
+            assert!(item.annotations().is_empty());
+        }
+        // one-marker cases — mutate each sample item to add a "marker" annotation
+        let marker = AnnotationDoc { name: "marker".to_string(), args: vec![] };
+        for mut item in sample_items() {
+            match &mut item {
+                ItemDoc::Structure { annotations, .. }
+                | ItemDoc::Occurrence { annotations, .. }
+                | ItemDoc::Trait { annotations, .. }
+                | ItemDoc::Function { annotations, .. }
+                | ItemDoc::Field { annotations, .. }
+                | ItemDoc::Purpose { annotations, .. }
+                | ItemDoc::Enum { annotations, .. }
+                | ItemDoc::Unit { annotations, .. }
+                | ItemDoc::TypeAlias { annotations, .. }
+                | ItemDoc::ConstraintDef { annotations, .. } => {
+                    annotations.push(marker.clone());
+                }
+            }
+            let anns = item.annotations();
+            assert_eq!(anns.len(), 1);
+            assert_eq!(anns[0].name, "marker");
+        }
+    }
+
+    #[test]
+    fn item_doc_keyword_per_variant() {
+        let expected = [
+            "structure", "occurrence", "trait", "fn",
+            "let", "purpose", "enum", "unit", "type", "constraint",
+        ];
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.keyword(), exp);
+        }
+    }
+
+    #[test]
+    fn item_doc_group_per_variant() {
+        let expected = [
+            "Structures", "Occurrences", "Traits", "Functions",
+            "Constants", "Constants", "Enums", "Constants", "Constants", "Constants",
+        ];
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.group(), exp);
+        }
+    }
+
+    #[test]
+    fn item_doc_kind_slug_per_variant() {
+        let expected = [
+            "structure", "occurrence", "trait", "function",
+            "field", "purpose", "enum", "unit", "type_alias", "constraint_def",
+        ];
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.kind_slug(), exp);
+        }
     }
 }

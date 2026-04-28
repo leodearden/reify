@@ -183,7 +183,7 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
         let (non_tests, tests): (Vec<&ItemDoc>, Vec<&ItemDoc>) = module
             .items
             .iter()
-            .partition(|i| find_annotation(item_annotations(i), "test").is_none());
+            .partition(|i| find_annotation(i.annotations(), "test").is_none());
         // Table of contents covers non-tests only.
         render_toc(&mut out, &non_tests);
         for item in &non_tests {
@@ -251,24 +251,6 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-/// Stable group label for the TOC.  "Constants" buckets the long tail of
-/// value-like declarations (Field, Unit, TypeAlias, ConstraintDef, Purpose)
-/// per the PRD's six-group TOC.  Mirrors `fmt_markdown::item_group`.
-fn item_group(item: &ItemDoc) -> &'static str {
-    match item {
-        ItemDoc::Trait { .. } => "Traits",
-        ItemDoc::Structure { .. } => "Structures",
-        ItemDoc::Occurrence { .. } => "Occurrences",
-        ItemDoc::Enum { .. } => "Enums",
-        ItemDoc::Function { .. } => "Functions",
-        ItemDoc::Field { .. }
-        | ItemDoc::Unit { .. }
-        | ItemDoc::TypeAlias { .. }
-        | ItemDoc::ConstraintDef { .. }
-        | ItemDoc::Purpose { .. } => "Constants",
-    }
-}
-
 /// Render the table of contents inside `<nav>` with a `<h2>Contents</h2>`
 /// heading and one `<h3>{Group}</h3>` plus alphabetically-sorted
 /// `<li><a href="#name">name</a></li>` per non-empty group.  No-op when
@@ -290,17 +272,17 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
     out.push_str("<h2>Contents</h2>\n");
     for &group in GROUPS {
         let mut in_group: Vec<&&ItemDoc> =
-            items.iter().filter(|i| item_group(i) == group).collect();
+            items.iter().filter(|i| i.group() == group).collect();
         if in_group.is_empty() {
             continue;
         }
-        in_group.sort_by(|a, b| item_name(a).cmp(item_name(b)));
+        in_group.sort_by(|a, b| a.name().cmp(b.name()));
         out.push_str("<h3>");
         out.push_str(group);
         out.push_str("</h3>\n");
         out.push_str("<ul>\n");
         for it in in_group {
-            let n = item_name(it);
+            let n = it.name();
             let escaped = html_escape(n);
             out.push_str("<li><a href=\"#");
             out.push_str(&escaped);
@@ -316,11 +298,11 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
 /// Render a single `ItemDoc` to `out` as `<section id="{name}">…</section>`.
 ///
 /// Emits the `<h2>` heading using the visibility/keyword/name convention
-/// inherited from `fmt_markdown::item_keyword`.
+/// inherited from `ItemDoc::keyword` in `model.rs`.
 fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_>>) {
-    let name = item_name(item);
-    let kw = item_keyword(item);
-    let vis = if item_is_pub(item) { "pub " } else { "" };
+    let name = item.name();
+    let kw = item.keyword();
+    let vis = if item.is_pub() { "pub " } else { "" };
 
     out.push_str("<section id=\"");
     escape_into(out, name);
@@ -335,7 +317,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     // Annotation-driven prefix sections, emitted BETWEEN the heading and the
     // doc-comment paragraphs so the most operationally significant tags appear
     // first to the reader.  Mirrors `fmt_markdown::render_item`'s ordering.
-    let anns = item_annotations(item);
+    let anns = item.annotations();
     if let Some(dep) = find_annotation(anns, "deprecated") {
         let msg = dep.args.first().map(|s| unquote(s)).unwrap_or("");
         out.push_str("<aside class=\"deprecated\"><strong>Deprecated:</strong>");
@@ -353,7 +335,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     }
 
     // Item-level doc paragraphs (split on blank lines, emitted as `<p>...</p>`).
-    if let Some(doc) = item_doc(item) {
+    if let Some(doc) = item.doc() {
         emit_paragraphs(out, doc);
     }
 
@@ -734,91 +716,6 @@ fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
         out.push_str("</li>\n");
     }
     out.push_str("</ul>\n");
-}
-
-/// Reify-source keyword displayed in the H2 heading for each `ItemDoc` variant.
-///
-/// Matches the conventions in `fmt_markdown::item_keyword` so the two
-/// formatters present the same surface vocabulary.  Differences from the
-/// JSON kind tag: `Field → "let"`, `TypeAlias → "type"`,
-/// `ConstraintDef → "constraint"`.
-fn item_keyword(item: &ItemDoc) -> &'static str {
-    match item {
-        ItemDoc::Structure { .. } => "structure",
-        ItemDoc::Occurrence { .. } => "occurrence",
-        ItemDoc::Trait { .. } => "trait",
-        ItemDoc::Function { .. } => "fn",
-        ItemDoc::Field { .. } => "let",
-        ItemDoc::Purpose { .. } => "purpose",
-        ItemDoc::Enum { .. } => "enum",
-        ItemDoc::Unit { .. } => "unit",
-        ItemDoc::TypeAlias { .. } => "type",
-        ItemDoc::ConstraintDef { .. } => "constraint",
-    }
-}
-
-/// Lookup the `name` field of any `ItemDoc` variant.
-fn item_name(item: &ItemDoc) -> &str {
-    match item {
-        ItemDoc::Structure { name, .. }
-        | ItemDoc::Occurrence { name, .. }
-        | ItemDoc::Trait { name, .. }
-        | ItemDoc::Function { name, .. }
-        | ItemDoc::Field { name, .. }
-        | ItemDoc::Purpose { name, .. }
-        | ItemDoc::Enum { name, .. }
-        | ItemDoc::Unit { name, .. }
-        | ItemDoc::TypeAlias { name, .. }
-        | ItemDoc::ConstraintDef { name, .. } => name,
-    }
-}
-
-/// Lookup the `is_pub` field of any `ItemDoc` variant.
-fn item_is_pub(item: &ItemDoc) -> bool {
-    match item {
-        ItemDoc::Structure { is_pub, .. }
-        | ItemDoc::Occurrence { is_pub, .. }
-        | ItemDoc::Trait { is_pub, .. }
-        | ItemDoc::Function { is_pub, .. }
-        | ItemDoc::Field { is_pub, .. }
-        | ItemDoc::Purpose { is_pub, .. }
-        | ItemDoc::Enum { is_pub, .. }
-        | ItemDoc::Unit { is_pub, .. }
-        | ItemDoc::TypeAlias { is_pub, .. }
-        | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub,
-    }
-}
-
-/// Lookup the optional doc-comment of any `ItemDoc` variant.
-fn item_doc(item: &ItemDoc) -> Option<&str> {
-    match item {
-        ItemDoc::Structure { doc, .. }
-        | ItemDoc::Occurrence { doc, .. }
-        | ItemDoc::Trait { doc, .. }
-        | ItemDoc::Function { doc, .. }
-        | ItemDoc::Field { doc, .. }
-        | ItemDoc::Purpose { doc, .. }
-        | ItemDoc::Enum { doc, .. }
-        | ItemDoc::Unit { doc, .. }
-        | ItemDoc::TypeAlias { doc, .. }
-        | ItemDoc::ConstraintDef { doc, .. } => doc.as_deref(),
-    }
-}
-
-/// Lookup the annotations attached to any `ItemDoc` variant.
-fn item_annotations(item: &ItemDoc) -> &[AnnotationDoc] {
-    match item {
-        ItemDoc::Structure { annotations, .. }
-        | ItemDoc::Occurrence { annotations, .. }
-        | ItemDoc::Trait { annotations, .. }
-        | ItemDoc::Function { annotations, .. }
-        | ItemDoc::Field { annotations, .. }
-        | ItemDoc::Purpose { annotations, .. }
-        | ItemDoc::Enum { annotations, .. }
-        | ItemDoc::Unit { annotations, .. }
-        | ItemDoc::TypeAlias { annotations, .. }
-        | ItemDoc::ConstraintDef { annotations, .. } => annotations,
-    }
 }
 
 /// Mirrors the iteration logic of [`crate::fmt_markdown::emit_paragraphs`].
