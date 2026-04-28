@@ -1115,6 +1115,134 @@ mod tests {
         );
     }
 
+    // ── joint_ratio accessor ────────────────────────────────────────────────
+
+    #[test]
+    fn joint_ratio_prismatic_coupling_2arg_returns_ratio() {
+        // 2-arg prismatic coupling: ratio stored as Value::Real(-1.0)
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(-1.0)]);
+        assert_eq!(
+            eval_builtin("joint_ratio", &[c]),
+            Value::Real(-1.0),
+            "joint_ratio should return the stored ratio Value::Real(-1.0)"
+        );
+    }
+
+    #[test]
+    fn joint_ratio_prismatic_coupling_3arg_returns_ratio() {
+        // 3-arg prismatic coupling: ratio = 2.0
+        let c = eval_builtin("couple", &[
+            prismatic_x_joint(),
+            Value::Real(2.0),
+            Value::length(0.5),
+        ]);
+        assert_eq!(
+            eval_builtin("joint_ratio", &[c]),
+            Value::Real(2.0),
+            "joint_ratio should return Value::Real(2.0)"
+        );
+    }
+
+    #[test]
+    fn joint_offset_prismatic_coupling_default_returns_length_zero() {
+        // 2-arg form: default offset is Value::length(0.0)
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert_eq!(
+            eval_builtin("joint_offset", &[c]),
+            Value::length(0.0),
+            "joint_offset default for prismatic should be Value::length(0.0)"
+        );
+    }
+
+    #[test]
+    fn joint_offset_prismatic_coupling_explicit_returns_stored_offset() {
+        let c = eval_builtin("couple", &[
+            prismatic_x_joint(),
+            Value::Real(1.0),
+            Value::length(0.5),
+        ]);
+        assert_eq!(
+            eval_builtin("joint_offset", &[c]),
+            Value::length(0.5),
+            "joint_offset should return Value::length(0.5)"
+        );
+    }
+
+    #[test]
+    fn joint_offset_revolute_coupling_returns_angle_offset() {
+        let pi = std::f64::consts::PI;
+        let c = eval_builtin("couple", &[
+            revolute_z_joint(),
+            Value::Real(1.0),
+            Value::angle(pi / 4.0),
+        ]);
+        assert_eq!(
+            eval_builtin("joint_offset", &[c]),
+            Value::angle(pi / 4.0),
+            "joint_offset should return Value::angle(PI/4)"
+        );
+    }
+
+    #[test]
+    fn joint_ratio_prismatic_joint_returns_undef() {
+        // Prismatic has no "ratio" key → Undef
+        assert!(
+            eval_builtin("joint_ratio", &[prismatic_x_joint()]).is_undef(),
+            "joint_ratio of prismatic should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_offset_prismatic_joint_returns_undef() {
+        // Prismatic has no "offset" key → Undef
+        assert!(
+            eval_builtin("joint_offset", &[prismatic_x_joint()]).is_undef(),
+            "joint_offset of prismatic should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_ratio_non_map_returns_undef() {
+        assert!(
+            eval_builtin("joint_ratio", &[Value::Real(1.0)]).is_undef(),
+            "joint_ratio of non-Map should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_ratio_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("joint_ratio", &[]).is_undef(),
+            "joint_ratio with 0 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_offset_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("joint_offset", &[]).is_undef(),
+            "joint_offset with 0 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_ratio_two_args_returns_undef() {
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("joint_ratio", &[c, Value::Real(0.0)]).is_undef(),
+            "joint_ratio with 2 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_offset_two_args_returns_undef() {
+        let c = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("joint_offset", &[c, Value::Real(0.0)]).is_undef(),
+            "joint_offset with 2 args should return Undef"
+        );
+    }
+
     // ── joint_axis accessor ──────────────────────────────────────────────────
 
     #[test]
