@@ -27,7 +27,9 @@ pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 pub enum WarmPoolEvent {
     /// A warm state was donated to the pool (insertion).
     Donated { node_id: NodeId, size_bytes: usize },
-    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    /// A warm-state pool entry was evicted — either because LRU eviction kicked in
+    /// to free budget, OR because the same key was overwritten by a subsequent donate
+    /// call (the prior entry is the victim whose state was discarded).
     Evicted { node_id: NodeId, size_bytes: usize },
 }
 
@@ -302,8 +304,16 @@ impl WarmStatePool {
         // Capture a clone for telemetry emission after the move into pool.insert.
         let node_id_for_event = node_id.clone();
 
-        // If this node already has an entry, remove the old one first
+        // If this node already has an entry, remove the old one first and emit an
+        // Evicted event for the displaced entry so byte-accounting consumers can
+        // maintain the invariant Σ Donated.size − Σ Evicted.size = used_bytes.
+        // The emit must happen BEFORE the LRU loop so the drained sequence reads
+        // "overwrite-victim evicted → optional LRU pressure evictions → donation".
         if let Some(old) = self.pool.remove(&node_id) {
+            self.push_event(WarmPoolEvent::Evicted {
+                node_id: node_id.clone(),
+                size_bytes: old.size_bytes,
+            });
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
