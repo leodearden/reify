@@ -21,6 +21,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if validate_range(&args[1], DimensionVector::LENGTH).is_none() {
                 return Some(Value::Undef);
             }
+            // The axis is stored as the raw (potentially unnormalized) input.
+            // `transform_at` normalizes it to unit length at evaluation time.
+            // `joint_axis` returns this raw value — see its doc-comment.
             make_joint("prismatic", args[0].clone(), args[1].clone())
         }
         "revolute" => {
@@ -33,6 +36,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if validate_range(&args[1], DimensionVector::ANGLE).is_none() {
                 return Some(Value::Undef);
             }
+            // The axis is stored as the raw (potentially unnormalized) input.
+            // `transform_at` normalizes it to unit length at evaluation time.
+            // `joint_axis` returns this raw value — see its doc-comment.
             make_joint("revolute", args[0].clone(), args[1].clone())
         }
         "transform_at" => {
@@ -66,6 +72,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         Some(d) => d,
                         None => return Some(Value::Undef),
                     };
+                    // length_input already enforces finiteness for the Scalar/Real
+                    // branches; the Int branch yields finite f64 by construction.
+                    // This guard is defense-in-depth against future changes to
+                    // length_input.
                     if !dist.is_finite() {
                         return Some(Value::Undef);
                     }
@@ -91,14 +101,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         Some(t) => t,
                         None => return Some(Value::Undef),
                     };
+                    // trig_input already enforces finiteness for the Scalar/Real
+                    // branches; the Int branch yields finite f64 by construction.
+                    // This guard is defense-in-depth against future changes to
+                    // trig_input (parallel to the same guard in the prismatic arm).
                     if !theta.is_finite() {
                         return Some(Value::Undef);
                     }
-                    let half = theta / 2.0;
-                    let c = half.cos();
-                    let s = half.sin();
-                    let rotation = normalize_quaternion(c, s * nax, s * nay, s * naz)
-                        .unwrap_or(Value::Undef);
+                    let rotation = axis_angle_quaternion(nax, nay, naz, theta);
                     let translation = Value::Vector(vec![
                         Value::length(0.0),
                         Value::length(0.0),
@@ -116,6 +126,11 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 1 {
                 return Some(Value::Undef);
             }
+            // Returns the axis as stored at construction — the raw, potentially
+            // unnormalized input vector.  `transform_at` normalizes to unit
+            // length when computing the resulting Transform; this accessor
+            // preserves the original value so callers can inspect what was
+            // passed to `prismatic`/`revolute`.
             match &args[0] {
                 Value::Map(m) => {
                     m.get(&Value::String("axis".to_string()))
@@ -217,6 +232,25 @@ fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
     m.insert(Value::String("axis".to_string()), axis);
     m.insert(Value::String("range".to_string()), range);
     Value::Map(m)
+}
+
+/// Build a quaternion `Value::Orientation` from a **pre-normalized** unit axis
+/// `(nax, nay, naz)` and a rotation angle `theta` in radians.
+///
+/// Delegates to [`normalize_quaternion`] for a final unit-norm check to absorb
+/// floating-point drift from the sin/cos computation.  Returns `Value::Undef`
+/// only if inputs are non-finite or the computed norm underflows — both
+/// unreachable in practice for finite, unit-magnitude axis inputs.
+///
+/// This mirrors the axis-angle path in `orientation::eval_orientation`
+/// (`orient_axis_angle`).  A future scope expansion to `orientation.rs` can
+/// lift this to `orientation::axis_angle_quaternion` and share it from both
+/// call sites, eliminating the remaining duplication.
+fn axis_angle_quaternion(nax: f64, nay: f64, naz: f64, theta: f64) -> Value {
+    let half = theta / 2.0;
+    let c = half.cos();
+    let s = half.sin();
+    normalize_quaternion(c, s * nax, s * nay, s * naz).unwrap_or(Value::Undef)
 }
 
 #[cfg(test)]
@@ -524,6 +558,29 @@ mod tests {
         assert!(
             eval_builtin("revolute", &[axis_z_unit(), length_range_0_to_1m()]).is_undef(),
             "Length-dimensioned range for revolute should return Undef"
+        );
+    }
+
+    // ── validate_range: inverted range is intentionally permissive ───────────
+
+    #[test]
+    fn prismatic_with_inverted_range_constructs_ok() {
+        // validate_range only checks that both bounds are present and
+        // dimensionally consistent; ordering (lo > up) is intentionally
+        // permissive.  The range field is informational metadata used by
+        // callers (e.g. a sweep step), not validated for geometric sense at
+        // construction time.  This test pins that permissive behaviour so
+        // any future tightening is a deliberate, visible change.
+        let inverted = Value::Range {
+            lower: Some(Box::new(Value::length(5.0))),
+            upper: Some(Box::new(Value::length(0.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let result = eval_builtin("prismatic", &[axis_x_unit(), inverted]);
+        assert!(
+            matches!(result, Value::Map(_)),
+            "inverted-range prismatic should construct successfully, got {:?}", result
         );
     }
 
