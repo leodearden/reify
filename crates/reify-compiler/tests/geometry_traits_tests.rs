@@ -12,6 +12,7 @@
 
 use reify_compiler::*;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_types::Type;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,4 +104,85 @@ fn marker_trait_resolves_from_prelude_in_user_source() {
 #[test]
 fn watertight_resolves_from_prelude_with_multi_refinement() {
     assert_trait_resolves_from_prelude("Watertight", "Shell");
+}
+
+// ─── Conformance query helpers (task 2320 step-3) ────────────────────────────
+//
+// `is_watertight(g) -> Bool`, `is_manifold(g) -> Bool`, `is_orientable(g) ->
+// Bool` are dispatched by name in the compiler (`is_geometry_query_helper` in
+// `units.rs`) and force the let-binding's compiled cell type to `Type::Bool`
+// in `expr.rs`'s `OverloadResolution::NoUserFunctions` arm. Without that
+// branch, the cell would be typed `Type::Geometry` from the first-arg
+// fallback and trip `assert_value_cell_types_representable`.
+
+/// Compile a structure that names a single conformance helper as a let
+/// binding's RHS, assert no compile errors, and return the compiled module
+/// for further inspection.
+fn assert_helper_let_compiles(helper: &str, cell_name: &str) -> CompiledModule {
+    let source = format!(
+        r#"
+structure def Bracket {{
+    let body = box(10mm, 10mm, 10mm)
+    let {cell_name} = {helper}(body)
+}}
+"#
+    );
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "structure with `{helper}(body)` should compile cleanly, got errors: {:#?}",
+        errors
+    );
+    compiled
+}
+
+/// Find the value cell named `cell_name` in the compiled `Bracket` template
+/// and assert its `cell_type` equals `Type::Bool`. Returns the cell type so
+/// the caller can produce a richer assertion error if the type is wrong.
+fn assert_helper_cell_typed_bool(compiled: &CompiledModule, cell_name: &str) {
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("compiled module should contain `Bracket` template");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "template `Bracket` should contain a `{cell_name}` value cell, got: {:?}",
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        cell.cell_type,
+        Type::Bool,
+        "cell `{cell_name}` must be typed Bool (not the first-arg Geometry \
+         fallback), got: {:?}",
+        cell.cell_type
+    );
+}
+
+#[test]
+fn is_watertight_let_binding_compiles_with_bool_type() {
+    let compiled = assert_helper_let_compiles("is_watertight", "watertight");
+    assert_helper_cell_typed_bool(&compiled, "watertight");
+}
+
+#[test]
+fn is_manifold_let_binding_compiles_with_bool_type() {
+    let compiled = assert_helper_let_compiles("is_manifold", "manifold");
+    assert_helper_cell_typed_bool(&compiled, "manifold");
+}
+
+#[test]
+fn is_orientable_let_binding_compiles_with_bool_type() {
+    let compiled = assert_helper_let_compiles("is_orientable", "orientable");
+    assert_helper_cell_typed_bool(&compiled, "orientable");
 }
