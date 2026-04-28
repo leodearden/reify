@@ -7,6 +7,7 @@ use tracing::warn;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
+use reify_eval::cache::NodeId;
 use reify_types::{
     ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
     ModulePath, Satisfaction, Severity, Value, ValueCellId,
@@ -16,7 +17,7 @@ use reify_types::{Diagnostic, DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
     ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData,
-    SourceSpanInfo, ValueData, format_determinacy, format_value,
+    SourceSpanInfo, ValueData, format_determinacy, format_freshness, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -413,7 +414,7 @@ impl EngineSession {
 
         // Build values and constraints via shared helpers (also used by
         // build_preview_gui_state) so both paths stay in sync.
-        let values = build_values(compiled, check);
+        let values = build_values(compiled, check, Some(&self.engine));
         let constraints = build_constraints(compiled, check);
 
         // Build meshes (from tessellation of realizations) and capture any
@@ -525,7 +526,7 @@ impl EngineSession {
         compiled
             .templates
             .iter()
-            .map(|t| build_template_node(t, &t.name, compiled))
+            .map(|t| build_template_node(t, &t.name, compiled, Some(&self.engine)))
             .collect()
     }
 
@@ -800,9 +801,24 @@ fn cell_kind_tree_str(kind: ValueCellKind) -> &'static str {
 /// determinacy state, and returns one `ValueData` per cell.  Extracting this
 /// logic ensures that changes to value formatting are applied consistently to
 /// both the live GUI state and the def-preview state.
+///
+/// # Freshness
+///
+/// When `engine` is `Some`, each cell's freshness is read via
+/// `Engine::freshness(&NodeId::Value(cell.id))` — the stable always-public
+/// accessor (arch §7.1 lines 716-728).  `CacheStore::freshness` returns
+/// `Freshness::Final` for unknown nodes, so the default is safe.
+///
+/// When `engine` is `None` (preview path — `build_preview_gui_state` passes
+/// `None` because the preview engine is a throwaway instance that is not
+/// retained beyond the `get_def_preview` call), all cells default to
+/// `"final"`.  The preview surface only shows values and constraints;
+/// freshness badges are not meaningful for a single-definition preview
+/// evaluated in isolation.
 fn build_values(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
+    engine: Option<&Engine>,
 ) -> Vec<ValueData> {
     let mut values = Vec::new();
     for template in &compiled.templates {
@@ -819,6 +835,12 @@ fn build_values(
                 }
                 _ => DeterminacyState::Determined,
             };
+            let freshness = engine
+                .map(|e| {
+                    let node = NodeId::Value(cell.id.clone());
+                    format_freshness(&e.freshness(&node)).to_string()
+                })
+                .unwrap_or_else(|| "final".to_string());
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -827,8 +849,7 @@ fn build_values(
                 determinacy: format_determinacy(determinacy),
                 entity_path: cell.id.entity.clone(),
                 kind: cell_kind_gui_str(cell.kind).to_string(),
-                // Populated with real freshness in step-8 when engine ref is threaded through.
-                freshness: "final".to_string(),
+                freshness,
             });
         }
     }
@@ -889,9 +910,14 @@ fn build_preview_gui_state(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
 ) -> GuiState {
+    // Pass `None` for the engine: the preview engine is a throwaway instance
+    // that is not retained beyond the `get_def_preview` call, and freshness
+    // badges are not meaningful for single-definition previews evaluated in
+    // isolation.  All cells default to `"final"` on the preview surface
+    // (see `build_values` doc comment for the full rationale).
     GuiState {
         meshes: Vec::new(),
-        values: build_values(compiled, check),
+        values: build_values(compiled, check, None),
         constraints: build_constraints(compiled, check),
         files: Vec::new(),
         tessellation_diagnostics: Vec::new(),
@@ -908,6 +934,18 @@ fn build_preview_gui_state(
 /// that sub node rather than recursing — preventing infinite recursion for
 /// self-referential and mutually-recursive structure definitions.
 ///
+/// # Freshness
+///
+/// When `engine` is `Some`, each value cell's freshness is read via
+/// `Engine::freshness(&NodeId::Value(cell.id))` and each realization's
+/// freshness via `Engine::freshness(&NodeId::Realization(real.id))`.
+/// Both delegate to `CacheStore::freshness` which returns `Freshness::Final`
+/// for unknown nodes, so the default is always safe (arch §7.1).
+///
+/// When `engine` is `None` (test helpers that call `build_template_node`
+/// directly without a live session), all nodes default to `"final"`.
+/// Tests that specifically exercise freshness pass the engine explicitly.
+///
 /// # Preconditions
 /// Caller must ensure `compiled.templates` has no duplicate names — the compiler
 /// guarantees this for well-formed modules. `get_entity_tree` performs a runtime
@@ -917,6 +955,7 @@ pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
+    engine: Option<&Engine>,
 ) -> EntityTreeNode {
 
     let kind = template.entity_kind.as_label();
@@ -930,6 +969,12 @@ pub(crate) fn build_template_node(
         let cell_path = format!("{}.{}", entity_path, member);
         let is_geometry_member = member == "geometry";
         let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+        let freshness = engine
+            .map(|e| {
+                let node = NodeId::Value(cell.id.clone());
+                format_freshness(&e.freshness(&node)).to_string()
+            })
+            .unwrap_or_else(|| "final".to_string());
         children.push(EntityTreeNode {
             entity_path: cell_path,
             kind: cell_kind.to_string(),
@@ -938,8 +983,7 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: is_geometry_member && parent_has_physical,
             children: vec![],
-            // Populated with real freshness in step-8 when engine ref is threaded through.
-            freshness: "final".to_string(),
+            freshness,
         });
     }
 
@@ -959,6 +1003,12 @@ pub(crate) fn build_template_node(
     for real in &template.realizations {
         let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
         let display_name = real.name.clone();
+        let freshness = engine
+            .map(|e| {
+                let node = NodeId::Realization(real.id.clone());
+                format_freshness(&e.freshness(&node)).to_string()
+            })
+            .unwrap_or_else(|| "final".to_string());
         children.push(EntityTreeNode {
             entity_path: real_path,
             kind: "realization".to_string(),
@@ -967,8 +1017,7 @@ pub(crate) fn build_template_node(
             has_mesh: true,
             trait_geometry: false,
             children: vec![],
-            // Populated with real freshness in step-8 when engine ref is threaded through.
-            freshness: "final".to_string(),
+            freshness,
         });
     }
 
@@ -995,11 +1044,16 @@ pub(crate) fn build_template_node(
             if child_template.is_recursive {
                 vec![]
             } else {
-                build_template_node(child_template, &sub_path, compiled).children
+                build_template_node(child_template, &sub_path, compiled, engine).children
             }
         } else {
             vec![]
         };
+        // Sub-component container nodes aggregate their children; their own
+        // freshness defaults to "final" — per-child freshness is visible on
+        // the children themselves, and aggregate freshness roll-up is out of
+        // scope for this task (a future task can add a parent-level summary
+        // by walking children recursively).
         children.push(EntityTreeNode {
             entity_path: sub_path,
             kind: "sub".to_string(),
@@ -1008,7 +1062,6 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: false,
             children: sub_children,
-            // Populated with real freshness in step-8 when engine ref is threaded through.
             freshness: "final".to_string(),
         });
     }
@@ -1024,7 +1077,6 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: false,
             children: vec![],
-            // Populated with real freshness in step-8 when engine ref is threaded through.
             freshness: "final".to_string(),
         });
     }
@@ -1037,7 +1089,6 @@ pub(crate) fn build_template_node(
         has_mesh: !template.realizations.is_empty(),
         trait_geometry: false,
         children,
-        // Populated with real freshness in step-8 when engine ref is threaded through.
         freshness: "final".to_string(),
     }
 }
