@@ -793,12 +793,14 @@ purpose weight_target(subject : Structure) {
 ///   1. The compiler emits a `PurposeReflectiveAggregation` placeholder in
 ///      place of the legacy empty `ListLiteral` (task-2289 step-7).
 ///   2. `activate_purpose` walks the constraint expression and rewrites the
-///      placeholder into `ListLiteral([ValueRef(Bracket, x)])` using the
-///      bound entity's resolved param queries (task-2289 step-11).
-///   3. The quantifier evaluator detects the all-`ValueRef` collection and
+///      placeholder into `ReflectiveCellList([ValueRef(Bracket, x)])` using the
+///      bound entity's resolved param queries (task-2289 step-11, variant
+///      narrowed to `ReflectiveCellList` in task-2458).
+///   3. The quantifier evaluator detects the `ReflectiveCellList` variant and
 ///      iterates over cell IDs, calling `remap_cell` per iteration so
 ///      `determined(p)` is rewritten to `determined(Bracket.x)` rather than
-///      `determined($loop_var)` (task-2289 step-9).
+///      `determined($loop_var)` (task-2289 step-9, trigger narrowed to
+///      `ReflectiveCellList` in task-2458).
 ///
 /// `Bracket.x` is declared with no default and no auto, so it is
 /// `Undetermined` at runtime → `determined(Bracket.x)` is `false` →
@@ -881,20 +883,22 @@ purpose manufacturing_ready(subject : Structure) {
 //
 // `activate_purpose` walks each constraint's expression tree (and the objective)
 // and rewrites every `CompiledExprKind::PurposeReflectiveAggregation` placeholder
-// into a populated `ListLiteral([ValueRef(entity_ref, member), ...])` sourced
-// from the active purpose's `resolved_queries`. Element `result_type` is
-// inherited from the looked-up `ValueCellNode.cell_type` (cell-type lockstep).
+// into a populated `ReflectiveCellList([ValueRef(entity_ref, member), ...])` sourced
+// from the active purpose's `resolved_queries` (task-2458 — distinguished from
+// user-written `ListLiteral`s for eval_quantifier's cell-iteration trigger).
+// Element `result_type` is inherited from the looked-up `ValueCellNode.cell_type`
+// (cell-type lockstep).
 
 /// Verifies that activating `purpose check(subject : Structure) {
 /// constraint forall p in subject.params: determined(p) }` against a
 /// `Bracket` with two `Real` params expands the placeholder into a
-/// concrete `ListLiteral` of `ValueRef`s pointing at `Bracket.x` and
-/// `Bracket.y`.
+/// concrete `ReflectiveCellList` of `ValueRef`s pointing at `Bracket.x` and
+/// `Bracket.y` (task-2458).
 ///
-/// Acceptance criteria (task-2289 step-10):
-///  (a) collection.kind is `CompiledExprKind::ListLiteral` (no longer the
-///      `PurposeReflectiveAggregation` marker).
-///  (b) the ListLiteral has exactly two elements, each a `ValueRef`.
+/// Acceptance criteria (task-2289 step-10, updated in task-2458):
+///  (a) collection.kind is `CompiledExprKind::ReflectiveCellList` (no longer the
+///      `PurposeReflectiveAggregation` marker, and not a `ListLiteral`).
+///  (b) the ReflectiveCellList has exactly two elements, each a `ValueRef`.
 ///  (c) the elements' cell IDs are `{Bracket.x, Bracket.y}` (any order).
 ///  (d) each element's `result_type` is `Type::Real` (cell-type lockstep —
 ///      `Bracket.x` / `Bracket.y` are declared as `Real`).
@@ -944,7 +948,7 @@ purpose check(subject : Structure) {
         );
 
     // The constraint expression is `forall p in subject.params: determined(p)` →
-    // a Quantifier whose collection should now be the expanded ListLiteral.
+    // a Quantifier whose collection should now be the expanded ReflectiveCellList.
     let collection = match &injected.expr.kind {
         CompiledExprKind::Quantifier { collection, .. } => collection,
         other => panic!(
@@ -953,15 +957,18 @@ purpose check(subject : Structure) {
         ),
     };
 
-    // (a) collection.kind is ListLiteral (no longer the placeholder marker).
+    // (a) collection.kind is ReflectiveCellList (no longer the placeholder marker).
+    // task-2458: must be ReflectiveCellList, not ListLiteral.
     let elements = match &collection.kind {
-        CompiledExprKind::ListLiteral(elements) => elements,
+        CompiledExprKind::ReflectiveCellList(elements) => elements,
         CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
-            "post-activation: collection is still the PurposeReflectiveAggregation \
-             placeholder; activate_purpose must expand it into a populated ListLiteral"
+            "post-activation: collection is still the `PurposeReflectiveAggregation` \
+             placeholder; activate_purpose must expand it into a populated \
+             `ReflectiveCellList` (task-2458)"
         ),
         other => panic!(
-            "post-activation: expected ListLiteral in Quantifier collection, got {:?}",
+            "post-activation: expected `ReflectiveCellList` in Quantifier collection \
+             (task-2458), got {:?}",
             other
         ),
     };
@@ -979,7 +986,8 @@ purpose check(subject : Structure) {
         match &element.kind {
             CompiledExprKind::ValueRef(id) => element_cells.push(id.clone()),
             other => panic!(
-                "expected ValueRef element at index {} of expanded ListLiteral, got {:?}",
+                "expected ValueRef element at index {} of expanded ReflectiveCellList, \
+                 got {:?}",
                 i, other
             ),
         }
@@ -1012,13 +1020,13 @@ purpose check(subject : Structure) {
 /// (only `params` is populated by `compile_purpose` in `traits.rs`) and no
 /// activation-time fallback heuristic (task-1904 territory). The expansion
 /// helper's no-resolved-query branch must therefore replace the placeholder
-/// with an empty `ListLiteral`, preserving today's vacuous-true semantics
-/// for `forall p in subject.geometric_params: ...`.
+/// with an empty `ReflectiveCellList` (task-2458), preserving today's
+/// vacuous-true semantics for `forall p in subject.geometric_params: ...`.
 ///
-/// Acceptance criteria (task-2289 step-12):
-///   (a) collection.kind is `CompiledExprKind::ListLiteral` (no longer the
-///       `PurposeReflectiveAggregation` placeholder).
-///   (b) the ListLiteral is empty.
+/// Acceptance criteria (task-2289 step-12, updated in task-2458):
+///   (a) collection.kind is `CompiledExprKind::ReflectiveCellList` (no longer the
+///       `PurposeReflectiveAggregation` placeholder, and not a `ListLiteral`).
+///   (b) the ReflectiveCellList is empty.
 ///
 /// Should PASS immediately given step-11's no-matching-query branch.
 #[test]
@@ -1072,24 +1080,26 @@ purpose check(subject : Structure) {
         ),
     };
 
-    // (a) collection.kind is ListLiteral (not the placeholder).
+    // (a) collection.kind is ReflectiveCellList (not the placeholder).
+    // task-2458: must be ReflectiveCellList, not ListLiteral.
     let elements = match &collection.kind {
-        CompiledExprKind::ListLiteral(elements) => elements,
+        CompiledExprKind::ReflectiveCellList(elements) => elements,
         CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
-            "post-activation: collection is still the PurposeReflectiveAggregation \
+            "post-activation: collection is still the `PurposeReflectiveAggregation` \
              placeholder; activate_purpose must expand the geometric_params \
-             placeholder into an empty ListLiteral"
+             placeholder into an empty `ReflectiveCellList` (task-2458)"
         ),
         other => panic!(
-            "post-activation: expected ListLiteral in Quantifier collection, got {:?}",
+            "post-activation: expected `ReflectiveCellList` in Quantifier collection \
+             (task-2458), got {:?}",
             other
         ),
     };
 
-    // (b) the ListLiteral is empty.
+    // (b) the ReflectiveCellList is empty.
     assert!(
         elements.is_empty(),
-        "expected expanded geometric_params ListLiteral to be empty (no resolved \
+        "expected expanded geometric_params ReflectiveCellList to be empty (no resolved \
          query and no fallback heuristic for geometric_params yet — task-1904), \
          got {} elements",
         elements.len()

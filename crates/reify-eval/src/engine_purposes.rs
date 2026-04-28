@@ -223,8 +223,10 @@ impl Engine {
 
 /// Walk the given expression tree and rewrite every
 /// `CompiledExprKind::PurposeReflectiveAggregation` placeholder into a
-/// populated `CompiledExprKind::ListLiteral` of `ValueRef(entity_ref, member)`
-/// elements sourced from the bound entity. Element `result_type` is taken
+/// populated `CompiledExprKind::ReflectiveCellList` of `ValueRef(entity_ref,
+/// member)` elements sourced from the bound entity (task-2458 — distinguishes
+/// placeholder-derived lists from user-written `ListLiteral`s for
+/// `eval_quantifier`'s cell-iteration trigger). Element `result_type` is taken
 /// from the looked-up `ValueCellNode.cell_type` (cell-type lockstep, task-1904
 /// cross-reference); the outer list `result_type` adopts
 /// `Type::List(Box::new(first_element_type))` when populated, falling back to
@@ -271,7 +273,7 @@ impl Engine {
 /// `catch_unwind` caller can still read the counter.
 ///
 /// CONTRACT — content-hash staleness: replacing a placeholder node updates
-/// that node's `content_hash` (via `CompiledExpr::list_literal`), but
+/// that node's `content_hash` (via `CompiledExpr::reflective_cell_list`), but
 /// **does not** rebuild ancestor hashes (e.g. the enclosing `Quantifier`
 /// still carries the pre-rewrite hash). This is the same posture as
 /// `CompiledExpr::remap_entity` (also called above). Today this is safe
@@ -388,13 +390,18 @@ fn expand_purpose_reflective_placeholders(
                 })
                 .collect();
 
-            // Outer ListLiteral type: inherit first element's type when
+            // Outer ReflectiveCellList type: inherit first element's type when
             // populated; default to Type::Real on empty (anti-cascade).
+            // task-2458: emit ReflectiveCellList (not ListLiteral) so that
+            // eval_quantifier's cell-iteration trigger fires only on this
+            // placeholder-derived shape, not on user-written all-ValueRef
+            // ListLiterals that share the same surface structure.
             let element_type = elements
                 .first()
                 .map(|e| e.result_type.clone())
                 .unwrap_or(Type::Real);
-            *expr = CompiledExpr::list_literal(elements, Type::List(Box::new(element_type)));
+            *expr =
+                CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)));
         }
         CompiledExprKind::ValueRef(_)
         | CompiledExprKind::Literal(_)
@@ -548,8 +555,11 @@ mod tests {
         expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
 
         let elements = match &expr.kind {
-            CompiledExprKind::ListLiteral(elements) => elements,
-            other => panic!("expected ListLiteral, got {:?}", other),
+            CompiledExprKind::ReflectiveCellList(elements) => elements,
+            other => panic!(
+                "task-2458: expected ReflectiveCellList after expansion, got {:?}",
+                other
+            ),
         };
         let expanded_order: Vec<&str> = elements
             .iter()
@@ -679,9 +689,10 @@ mod tests {
         #[cfg(not(debug_assertions))]
         {
             let elements = match &expr.kind {
-                CompiledExprKind::ListLiteral(elements) => elements,
+                CompiledExprKind::ReflectiveCellList(elements) => elements,
                 other => panic!(
-                    "anti-cascade contract: expected ListLiteral after expansion, got {:?}",
+                    "anti-cascade contract: expected ReflectiveCellList after expansion \
+                     (task-2458), got {:?}",
                     other
                 ),
             };
@@ -825,8 +836,11 @@ mod tests {
         expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
 
         let elements = match &expr.kind {
-            CompiledExprKind::ListLiteral(elements) => elements,
-            other => panic!("expected ListLiteral, got {:?}", other),
+            CompiledExprKind::ReflectiveCellList(elements) => elements,
+            other => panic!(
+                "task-2458: expected ReflectiveCellList after expansion, got {:?}",
+                other
+            ),
         };
         let expanded_order: Vec<&str> = elements
             .iter()
