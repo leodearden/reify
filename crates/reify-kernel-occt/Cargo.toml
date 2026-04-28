@@ -11,10 +11,15 @@ reify-types.workspace = true
 cxx = "1"
 tokio = { workspace = true }
 
+[features]
+test-fixtures = []
+
 [build-dependencies]
 cxx-build = "1"
 cc = "1"
 
 [dev-dependencies]
+# Self-dev-dep enables `test-fixtures`-gated helpers (the `store_*_for_test` methods) in integration tests; see src/lib.rs
+reify-kernel-occt = { path = ".", features = ["test-fixtures"] }
 reify-test-support.workspace = true
 serde_json = { workspace = true }
