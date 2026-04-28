@@ -38,6 +38,21 @@ use reify_types::ValueCellId;
 /// Returns the set of [`NodeId`]s whose freshness was actually updated; nodes
 /// pruned by early cutoff (or with no cache entry) are not included.
 ///
+/// # Touch-list
+///
+/// **Touches:** `freshness`, and (transitively, via `mark_pending_with_cause`
+/// once routed in step-10) `pending_cause`.
+///
+/// **Does NOT touch:** `result`, `result_hash`, `dependency_trace`,
+/// `basis_version`, `warm_state`. The walk also never calls `record_evaluation`
+/// or `put` — only `set_freshness` / `mark_pending_with_cause` / `mark_pending`
+/// (the canonical freshness writers in `cache.rs`).
+///
+/// This pins arch §3.5 line 432: "the input hash for downstream nodes is
+/// unchanged, so no value recomputation occurs." The
+/// `walk_does_not_recompute_values_or_bump_basis_version` unit test (step-7)
+/// asserts this byte-by-byte.
+///
 /// # Scope of writes
 ///
 /// Subsequent task #2335 steps refine the write site to use the cause-bearing
