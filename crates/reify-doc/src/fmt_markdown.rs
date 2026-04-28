@@ -74,8 +74,8 @@ impl<'a> NameIndex<'a> {
         let mut by_name: BTreeMap<&'a str, Vec<(&'static str, &'a str)>> = BTreeMap::new();
         for module in &model.modules {
             for item in &module.items {
-                let name = item_name(item);
-                let kind = item_kind_slug(item);
+                let name = item.name();
+                let kind = item.kind_slug();
                 by_name
                     .entry(name)
                     .or_default()
@@ -169,7 +169,7 @@ fn render_single(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> String 
         let (non_tests, tests): (Vec<&ItemDoc>, Vec<&ItemDoc>) = module
             .items
             .iter()
-            .partition(|i| find_annotation(item_annotations(i), "test").is_none());
+            .partition(|i| find_annotation(i.annotations(), "test").is_none());
         // Table of contents — sits between the H1/doc and the first item H2.
         // Single-file mode: all items live in the same document so fragment
         // links (`#Name`) are correct and stable.
@@ -179,7 +179,7 @@ fn render_single(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> String 
         // derive the kind without a name-index lookup), while `xref_resolver`
         // receives a bare `&str` name (render_cross_refs has only the name of
         // the referenced item, not its ItemDoc).
-        let toc_resolver = |item: &ItemDoc| format!("#{}", item_name(item));
+        let toc_resolver = |item: &ItemDoc| format!("#{}", item.name());
         let xref_resolver = |name: &str| format!("#{name}");
         render_toc(&mut out, &non_tests, &toc_resolver);
         for item in &non_tests {
@@ -193,27 +193,6 @@ fn render_single(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> String 
         }
     }
     out
-}
-
-/// Stable group label for the TOC. Returns `None` if the item should not
-/// appear in the TOC (currently nothing is hidden, but the option leaves
-/// room for future filtering).
-///
-/// "Constants" buckets the long tail of value-like declarations (Field,
-/// Unit, TypeAlias, ConstraintDef, Purpose) per the PRD's six-group TOC.
-fn item_group(item: &ItemDoc) -> &'static str {
-    match item {
-        ItemDoc::Trait { .. } => "Traits",
-        ItemDoc::Structure { .. } => "Structures",
-        ItemDoc::Occurrence { .. } => "Occurrences",
-        ItemDoc::Enum { .. } => "Enums",
-        ItemDoc::Function { .. } => "Functions",
-        ItemDoc::Field { .. }
-        | ItemDoc::Unit { .. }
-        | ItemDoc::TypeAlias { .. }
-        | ItemDoc::ConstraintDef { .. }
-        | ItemDoc::Purpose { .. } => "Constants",
-    }
 }
 
 /// Render only the `### {Kind}` groups with their bullet link lists.
@@ -248,16 +227,16 @@ fn render_toc_groups(
     ];
     for &group in GROUPS {
         let mut in_group: Vec<&&ItemDoc> =
-            items.iter().filter(|i| item_group(i) == group).collect();
+            items.iter().filter(|i| i.group() == group).collect();
         if in_group.is_empty() {
             continue;
         }
-        in_group.sort_by(|a, b| item_name(a).cmp(item_name(b)));
+        in_group.sort_by(|a, b| a.name().cmp(b.name()));
         out.push_str("### ");
         out.push_str(group);
         out.push_str("\n\n");
         for it in in_group {
-            let n = item_name(it);
+            let n = it.name();
             out.push_str("- [`");
             out.push_str(n);
             out.push_str("`](");
@@ -272,7 +251,7 @@ fn render_toc_groups(
 /// [`render_toc_groups`] for the kind-grouped bullet lists.
 ///
 /// `resolve_link` receives the full `&ItemDoc` and returns the link target
-/// string — use a fragment resolver (`|item| format!("#{}", item_name(item))`)
+/// string — use a fragment resolver (`|item| format!("#{}", item.name())`)
 /// for single-file mode, or a filename resolver for split-mode index pages.
 /// No-op when `items` is empty.
 fn render_toc(
@@ -301,91 +280,6 @@ fn emit_paragraphs(out: &mut String, doc: &str) {
         }
         out.push_str(p);
         out.push_str("\n\n");
-    }
-}
-
-/// Language keyword displayed in the H2 heading for each `ItemDoc` variant.
-///
-/// Matches the snake_case kind tag used by `#[serde(tag="kind", rename_all="snake_case")]`
-/// on `ItemDoc`, except for variants whose Reify-source keyword differs from the
-/// JSON tag (e.g. `Field` → `let`, `TypeAlias` → `type`, `ConstraintDef` →
-/// `constraint`).
-fn item_keyword(item: &ItemDoc) -> &'static str {
-    match item {
-        ItemDoc::Structure { .. } => "structure",
-        ItemDoc::Occurrence { .. } => "occurrence",
-        ItemDoc::Trait { .. } => "trait",
-        ItemDoc::Function { .. } => "fn",
-        ItemDoc::Field { .. } => "let",
-        ItemDoc::Purpose { .. } => "purpose",
-        ItemDoc::Enum { .. } => "enum",
-        ItemDoc::Unit { .. } => "unit",
-        ItemDoc::TypeAlias { .. } => "type",
-        ItemDoc::ConstraintDef { .. } => "constraint",
-    }
-}
-
-/// Lookup the `name` field of any `ItemDoc` variant.
-fn item_name(item: &ItemDoc) -> &str {
-    match item {
-        ItemDoc::Structure { name, .. }
-        | ItemDoc::Occurrence { name, .. }
-        | ItemDoc::Trait { name, .. }
-        | ItemDoc::Function { name, .. }
-        | ItemDoc::Field { name, .. }
-        | ItemDoc::Purpose { name, .. }
-        | ItemDoc::Enum { name, .. }
-        | ItemDoc::Unit { name, .. }
-        | ItemDoc::TypeAlias { name, .. }
-        | ItemDoc::ConstraintDef { name, .. } => name,
-    }
-}
-
-/// Lookup the `is_pub` field of any `ItemDoc` variant.
-fn item_is_pub(item: &ItemDoc) -> bool {
-    match item {
-        ItemDoc::Structure { is_pub, .. }
-        | ItemDoc::Occurrence { is_pub, .. }
-        | ItemDoc::Trait { is_pub, .. }
-        | ItemDoc::Function { is_pub, .. }
-        | ItemDoc::Field { is_pub, .. }
-        | ItemDoc::Purpose { is_pub, .. }
-        | ItemDoc::Enum { is_pub, .. }
-        | ItemDoc::Unit { is_pub, .. }
-        | ItemDoc::TypeAlias { is_pub, .. }
-        | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub,
-    }
-}
-
-/// Lookup the optional doc-comment of any `ItemDoc` variant.
-fn item_doc(item: &ItemDoc) -> Option<&str> {
-    match item {
-        ItemDoc::Structure { doc, .. }
-        | ItemDoc::Occurrence { doc, .. }
-        | ItemDoc::Trait { doc, .. }
-        | ItemDoc::Function { doc, .. }
-        | ItemDoc::Field { doc, .. }
-        | ItemDoc::Purpose { doc, .. }
-        | ItemDoc::Enum { doc, .. }
-        | ItemDoc::Unit { doc, .. }
-        | ItemDoc::TypeAlias { doc, .. }
-        | ItemDoc::ConstraintDef { doc, .. } => doc.as_deref(),
-    }
-}
-
-/// Lookup the annotations attached to any `ItemDoc` variant.
-fn item_annotations(item: &ItemDoc) -> &[AnnotationDoc] {
-    match item {
-        ItemDoc::Structure { annotations, .. }
-        | ItemDoc::Occurrence { annotations, .. }
-        | ItemDoc::Trait { annotations, .. }
-        | ItemDoc::Function { annotations, .. }
-        | ItemDoc::Field { annotations, .. }
-        | ItemDoc::Purpose { annotations, .. }
-        | ItemDoc::Enum { annotations, .. }
-        | ItemDoc::Unit { annotations, .. }
-        | ItemDoc::TypeAlias { annotations, .. }
-        | ItemDoc::ConstraintDef { annotations, .. } => annotations,
     }
 }
 
@@ -428,9 +322,9 @@ fn render_item(
     xrefs: Option<&CrossRefIndex<'_>>,
     resolve_link: &dyn Fn(&str) -> String,
 ) {
-    let name = item_name(item);
-    let kw = item_keyword(item);
-    let vis = if item_is_pub(item) { "pub " } else { "" };
+    let name = item.name();
+    let kw = item.keyword();
+    let vis = if item.is_pub() { "pub " } else { "" };
 
     out.push_str("## `");
     out.push_str(vis);
@@ -444,7 +338,7 @@ fn render_item(
     // Annotation-driven prefix sections, emitted BETWEEN the heading and the
     // doc-comment paragraphs so the most operationally significant tags appear
     // first to the reader.
-    let anns = item_annotations(item);
+    let anns = item.annotations();
     if let Some(dep) = find_annotation(anns, "deprecated") {
         let msg = dep.args.first().map(|s| unquote(s)).unwrap_or("");
         out.push_str("> **Deprecated:**");
@@ -461,7 +355,7 @@ fn render_item(
         out.push_str("`*\n\n");
     }
 
-    if let Some(doc) = item_doc(item) {
+    if let Some(doc) = item.doc() {
         emit_paragraphs(out, doc);
     }
 
@@ -830,29 +724,11 @@ fn render_ports_table(out: &mut String, ports: &[PortDoc]) {
     out.push('\n');
 }
 
-/// Snake_case kind tag matching `#[serde(tag="kind", rename_all="snake_case")]`
-/// on `ItemDoc`.  Used as the prefix in split-mode filenames so multi-kind name
-/// collisions (e.g. trait `Board` vs structure `Board`) stay distinct.
-fn item_kind_slug(item: &ItemDoc) -> &'static str {
-    match item {
-        ItemDoc::Structure { .. } => "structure",
-        ItemDoc::Occurrence { .. } => "occurrence",
-        ItemDoc::Trait { .. } => "trait",
-        ItemDoc::Function { .. } => "function",
-        ItemDoc::Field { .. } => "field",
-        ItemDoc::Purpose { .. } => "purpose",
-        ItemDoc::Enum { .. } => "enum",
-        ItemDoc::Unit { .. } => "unit",
-        ItemDoc::TypeAlias { .. } => "type_alias",
-        ItemDoc::ConstraintDef { .. } => "constraint_def",
-    }
-}
-
 /// Build the per-item filename for split-mode output: `{kind_slug}-{name}.md`,
 /// optionally prefixed by the module path when more than one module is being
 /// rendered (so cross-module name clashes resolve to distinct files).
 fn item_filename(item: &ItemDoc, module_prefix: Option<&str>) -> String {
-    let base = format!("{}-{}.md", item_kind_slug(item), item_name(item));
+    let base = format!("{}-{}.md", item.kind_slug(), item.name());
     match module_prefix {
         Some(p) => format!("{p}/{base}"),
         None => base,
@@ -898,7 +774,7 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
         let items_for_toc: Vec<&ItemDoc> = module
             .items
             .iter()
-            .filter(|i| find_annotation(item_annotations(i), "test").is_none())
+            .filter(|i| find_annotation(i.annotations(), "test").is_none())
             .collect();
         if multi_module {
             // H2 per module — reader sees the module path as the section
@@ -917,8 +793,8 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
                 format!(
                     "{}/{}-{}.md",
                     current_module,
-                    item_kind_slug(item),
-                    item_name(item)
+                    item.kind_slug(),
+                    item.name()
                 )
             });
         } else {
@@ -933,7 +809,7 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
             // the same flat directory.  Kind is taken directly from the
             // ItemDoc — no name-index lookup needed.
             render_toc(&mut index_body, &items_for_toc, &|item: &ItemDoc| {
-                format!("{}-{}.md", item_kind_slug(item), item_name(item))
+                format!("{}-{}.md", item.kind_slug(), item.name())
             });
         }
     }

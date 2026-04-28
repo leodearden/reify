@@ -253,7 +253,7 @@ fn html_escape(s: &str) -> String {
 
 /// Stable group label for the TOC.  "Constants" buckets the long tail of
 /// value-like declarations (Field, Unit, TypeAlias, ConstraintDef, Purpose)
-/// per the PRD's six-group TOC.  Mirrors `fmt_markdown::item_group`.
+/// per the PRD's six-group TOC.  Mirrors `ItemDoc::group` in `model.rs`.
 fn item_group(item: &ItemDoc) -> &'static str {
     match item {
         ItemDoc::Trait { .. } => "Traits",
@@ -316,7 +316,7 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
 /// Render a single `ItemDoc` to `out` as `<section id="{name}">…</section>`.
 ///
 /// Emits the `<h2>` heading using the visibility/keyword/name convention
-/// inherited from `fmt_markdown::item_keyword`.
+/// inherited from `ItemDoc::keyword` in `model.rs`.
 fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_>>) {
     let name = item_name(item);
     let kw = item_keyword(item);
@@ -738,7 +738,7 @@ fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
 
 /// Reify-source keyword displayed in the H2 heading for each `ItemDoc` variant.
 ///
-/// Matches the conventions in `fmt_markdown::item_keyword` so the two
+/// Matches the conventions in `ItemDoc::keyword` (model.rs) so the two
 /// formatters present the same surface vocabulary.  Differences from the
 /// JSON kind tag: `Field → "let"`, `TypeAlias → "type"`,
 /// `ConstraintDef → "constraint"`.
