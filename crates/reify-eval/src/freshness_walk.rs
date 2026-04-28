@@ -139,6 +139,10 @@ pub fn propagate_freshness_only(
             // `cause` through `mark_pending_with_cause` so the §9.2
             // diagnostic chain is preserved across freshness-only walks
             // (matching `evaluate_let_bindings`'s pre-eval Pending gate).
+            // still_refining=false: this walk runs after the value-mode
+            // refinement pass has settled, so derivation must consult actual
+            // input freshnesses, not the §7.2 refinement gate that
+            // short-circuits to Intermediate{generation}.
             let (new, cause) =
                 cache.derive_output_freshness_for_node_with_cause(&dependent, false, generation);
 
