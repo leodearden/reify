@@ -1063,6 +1063,149 @@ purpose mfg(subject : Structure) {
     );
 }
 
+/// Symmetry regression-lock: the fn-body and purpose-body arms of
+/// `walk_declaration` emit structurally analogous Shadowing warnings for
+/// analogous sources.
+///
+/// This test pins the helper's centralizing contract (introduced in task 2499):
+/// the two arms must produce the same *shape* of diagnostic for a body-let
+/// that shadows a param. If a future maintainer modifies one arm without the
+/// other, this test fails.
+///
+/// Sources:
+/// - fn:      `fn f(x: Scalar) -> Scalar { let x = 2.0 ; x }` (mirror of
+///            `fn_body_let_shadows_fn_param`)
+/// - purpose: `purpose mfg(subject : Structure) { let subject = 1\n
+///            constraint subject > 0 }` (mirror of
+///            `purpose_body_let_shadows_purpose_param`)
+///
+/// Structural assertions (per arm):
+/// * Exactly 1 Shadowing warning.
+/// * Warning has exactly 2 labels (child site + original-decl site).
+/// * Warning message matches the canonical form
+///   `"declaration of '<name>' shadows enclosing declaration"`.
+/// * Child-site label starts AFTER the body `let` keyword.
+/// * Original-decl label starts BEFORE the body `let` keyword (in the
+///   params signature).
+#[test]
+fn fn_and_purpose_body_arm_emit_analogous_shadow_warnings() {
+    // ── fn arm ──────────────────────────────────────────────────────────────
+    let fn_source = r#"fn f(x: Scalar) -> Scalar { let x = 2.0 ; x }"#;
+    let fn_module = compile_source(fn_source);
+    let fn_shadow_warnings: Vec<_> = fn_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        fn_shadow_warnings.len(),
+        1,
+        "fn arm: expected exactly 1 Shadowing warning, got {}: {:?}",
+        fn_shadow_warnings.len(),
+        fn_shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+    let fn_warn = fn_shadow_warnings[0];
+    assert_eq!(
+        fn_warn.labels.len(),
+        2,
+        "fn arm: Shadowing warning must carry 2 labels, got {:?}",
+        fn_warn.labels
+    );
+    assert!(
+        fn_warn.message.contains("'x'")
+            && fn_warn
+                .message
+                .contains("shadows enclosing declaration"),
+        "fn arm: unexpected message {:?}",
+        fn_warn.message
+    );
+    let fn_param_x = fn_source
+        .find("(x:")
+        .expect("fn source must contain `(x:`");
+    let fn_body_let_x = fn_source
+        .find("let x")
+        .expect("fn source must contain `let x`");
+    // labels[0] = child site, labels[1] = original-decl site
+    assert!(
+        (fn_warn.labels[1].span.start as usize) >= fn_param_x
+            && (fn_warn.labels[1].span.start as usize) < fn_body_let_x,
+        "fn arm: original-decl span must be in param signature (byte {} ..< {}), got {:?}",
+        fn_param_x,
+        fn_body_let_x,
+        fn_warn.labels[1].span
+    );
+    assert!(
+        (fn_warn.labels[0].span.start as usize) >= fn_body_let_x,
+        "fn arm: child-site span must be at or after body `let x` (byte {}), got {:?}",
+        fn_body_let_x,
+        fn_warn.labels[0].span
+    );
+
+    // ── purpose arm ─────────────────────────────────────────────────────────
+    let purpose_source = r#"
+purpose mfg(subject : Structure) {
+    let subject = 1
+    constraint subject > 0
+}
+"#;
+    let purpose_module = compile_source_with_stdlib(purpose_source);
+    let purpose_shadow_warnings: Vec<_> = purpose_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        purpose_shadow_warnings.len(),
+        1,
+        "purpose arm: expected exactly 1 Shadowing warning, got {}: {:?}",
+        purpose_shadow_warnings.len(),
+        purpose_shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+    let purpose_warn = purpose_shadow_warnings[0];
+    assert_eq!(
+        purpose_warn.labels.len(),
+        2,
+        "purpose arm: Shadowing warning must carry 2 labels, got {:?}",
+        purpose_warn.labels
+    );
+    assert!(
+        purpose_warn.message.contains("'subject'")
+            && purpose_warn
+                .message
+                .contains("shadows enclosing declaration"),
+        "purpose arm: unexpected message {:?}",
+        purpose_warn.message
+    );
+    let purpose_param = purpose_source
+        .find("(subject :")
+        .expect("purpose source must contain `(subject :`");
+    let purpose_body_let = purpose_source
+        .find("let subject")
+        .expect("purpose source must contain `let subject`");
+    assert!(
+        (purpose_warn.labels[1].span.start as usize) >= purpose_param
+            && (purpose_warn.labels[1].span.start as usize) < purpose_body_let,
+        "purpose arm: original-decl span must be in param signature (byte {} ..< {}), got {:?}",
+        purpose_param,
+        purpose_body_let,
+        purpose_warn.labels[1].span
+    );
+    assert!(
+        (purpose_warn.labels[0].span.start as usize) >= purpose_body_let,
+        "purpose arm: child-site span must be at or after body `let subject` (byte {}), got {:?}",
+        purpose_body_let,
+        purpose_warn.labels[0].span
+    );
+}
+
 /// Regression-lock (task 2501): the purpose-body-let-shadow warning and the
 /// "let bindings in purpose bodies are not yet supported" error BOTH fire at
 /// the same span, and that is **intentional**.
