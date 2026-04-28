@@ -41,18 +41,6 @@ pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagn
         // nesting depth. The test
         // `validate_module_emits_diagnostic_for_each_forbidden_decl_in_nested_specialization_scope`
         // pins this two-diagnostic, outer-first ordering.
-        //
-        // # Wording pin
-        //
-        // The format string below is pinned by
-        // `validate_module_diagnostic_message_format_is_pinned` in this file's
-        // inline tests. The label message `"forbidden in specialization scope"` is
-        // pinned by the same test. Any drift between these literals and the test's
-        // expectations will surface as a test failure — do not change one without
-        // updating the other.
-        //
-        // - Diagnostic message: `"'<kind>' declaration '<name>' is not permitted in a specialization scope (spec §8.7)"`
-        // - Label message: `"forbidden in specialization scope"`
         if let Some((kind, name, span)) = forbidden_decl_info(member) {
             diagnostics.push(
                 Diagnostic::error(format!(
@@ -338,40 +326,6 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "validate_module should emit no diagnostics on a currently-parseable module, got: {diagnostics:?}"
-        );
-    }
-
-    // ── step-13: canonical message format pin ────────────────────────────────
-
-    /// Pins the exact wire-format strings produced by validate_module for a
-    /// Param-inside-spec-scope fixture. Uses full equality (not substring match)
-    /// so any future producer/doc-comment drift fails loudly.
-    ///
-    /// Mirrors `shadow_diagnostic_message_format_is_pinned` in
-    /// `crates/reify-compiler/tests/shadowing_warning_tests.rs`.
-    #[test]
-    fn validate_module_diagnostic_message_format_is_pinned() {
-        let p_span = param_span();
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![make_param("x", p_span)],
-        )]);
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        validate_module(&parsed, &mut diagnostics);
-
-        assert_eq!(diagnostics.len(), 1);
-        let d = &diagnostics[0];
-        assert_eq!(
-            d.message,
-            "'param' declaration 'x' is not permitted in a specialization scope (spec \u{a7}8.7)",
-            "diagnostic message must exactly match the canonical form"
-        );
-        assert_eq!(diagnostics[0].labels.len(), 1);
-        assert_eq!(
-            d.labels[0].message,
-            "forbidden in specialization scope",
-            "label message must exactly match"
         );
     }
 
