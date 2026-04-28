@@ -193,3 +193,45 @@ structure def Mike : Seal {
         diagnostics
     );
 }
+
+// ─── step-7: trait refinement chain ───────────────────────────────────────
+
+/// A structure declaring conformance to trait `OilSeal` (which refines
+/// `Seal`) must satisfy a required bound of `Seal` via the transitive
+/// refinement chain. This pins reuse of `entity::satisfies_trait_bound`
+/// (which delegates to `trait_satisfies` recursively at
+/// `entity.rs:2146-2166`) and prevents future refactors from accidentally
+/// bypassing the recursive walk with a flat string-equality check.
+#[test]
+fn enumerate_includes_candidate_via_trait_refinement_chain() {
+    let source = r#"
+trait Seal {}
+trait OilSeal : Seal {}
+
+structure def NitrileOilSeal : OilSeal {
+    param x : Real = 1.0
+}
+"#;
+    let module = compile_source(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        CandidateEnumeration::Found(vec!["NitrileOilSeal".to_string()]),
+        "expected NitrileOilSeal to satisfy Seal via OilSeal refinement chain"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "Found path with refinement should emit no diagnostics, got: {:?}",
+        diagnostics
+    );
+}
