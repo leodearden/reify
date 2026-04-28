@@ -2817,4 +2817,153 @@ mod tests {
             "freshness() must return the stored Freshness variant for a present node"
         );
     }
+
+    // --- pending_cause / mark_failed / mark_pending_with_cause tests (task #2330 step-3) ---
+    //
+    // These pin the diagnostic-chain side-table on `NodeCache` and the new
+    // mark_failed / mark_pending_with_cause helpers. The chain is stored as a
+    // `pending_cause: Option<NodeId>` field on `NodeCache` (NOT on
+    // `Freshness::Pending` — see plan §1 design decision).
+
+    fn make_seed_entry() -> NodeCache {
+        NodeCache::new(
+            CachedResult::Value(
+                reify_types::Value::Int(42),
+                reify_types::DeterminacyState::Determined,
+            ),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        )
+    }
+
+    #[test]
+    fn node_cache_new_defaults_pending_cause_to_none() {
+        let entry = make_seed_entry();
+        assert_eq!(
+            entry.pending_cause, None,
+            "NodeCache::new must default pending_cause to None"
+        );
+    }
+
+    #[test]
+    fn cache_store_pending_cause_returns_none_for_absent_and_reflects_set() {
+        let mut store = CacheStore::new();
+        let leaf = NodeId::Value(ValueCellId::new("T", "leaf"));
+        let mid = NodeId::Value(ValueCellId::new("T", "mid"));
+
+        // (a) Absent → None.
+        assert_eq!(
+            store.pending_cause(&mid),
+            None,
+            "pending_cause on absent node must return None"
+        );
+
+        // (b) Present but not chained → None.
+        store.put(mid.clone(), make_seed_entry());
+        assert_eq!(
+            store.pending_cause(&mid),
+            None,
+            "pending_cause on a present-but-unchained entry must return None"
+        );
+
+        // (c) After set, reflects the cause NodeId.
+        // Use mark_pending_with_cause as the canonical writer.
+        let leaf_id = ValueCellId::new("T", "leaf");
+        let mid_id = ValueCellId::new("T", "mid");
+        // Insert leaf so it has a state to drive the chain (its presence isn't required by
+        // mark_pending_with_cause but mirrors realistic call sites).
+        store.put(NodeId::Value(leaf_id.clone()), make_seed_entry());
+        let _ = leaf;
+        let _ = mid;
+        let mid_node = NodeId::Value(mid_id);
+        let leaf_node = NodeId::Value(leaf_id);
+        assert!(
+            store.mark_pending_with_cause(&mid_node, leaf_node.clone()),
+            "mark_pending_with_cause must return true for an existing entry"
+        );
+        assert_eq!(
+            store.pending_cause(&mid_node),
+            Some(leaf_node),
+            "pending_cause must reflect the cause NodeId after mark_pending_with_cause"
+        );
+    }
+
+    #[test]
+    fn mark_failed_sets_failed_freshness_and_returns_true_only_for_existing() {
+        use reify_types::ErrorRef;
+
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "boom"));
+
+        // Absent entry → returns false, no state mutation.
+        assert!(
+            !store.mark_failed(&node, ErrorRef::new("boom")),
+            "mark_failed on absent node must return false"
+        );
+
+        // Present entry → flips freshness to Failed and returns true.
+        store.put(node.clone(), make_seed_entry());
+        assert!(
+            store.mark_failed(&node, ErrorRef::new("boom")),
+            "mark_failed on existing node must return true"
+        );
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Failed {
+                error: ErrorRef::new("boom"),
+            },
+            "mark_failed must set freshness to Failed { error }"
+        );
+    }
+
+    #[test]
+    fn mark_pending_with_cause_sets_pending_freshness_cause_and_bumps_counter() {
+        use reify_types::ResultRef;
+
+        let mut store = CacheStore::new();
+        let mid_node = NodeId::Value(ValueCellId::new("T", "mid"));
+        let leaf_node = NodeId::Value(ValueCellId::new("T", "leaf"));
+
+        // Absent entry → returns false, no counter bump.
+        let before = store.pending_transition_count();
+        assert!(
+            !store.mark_pending_with_cause(&mid_node, leaf_node.clone()),
+            "mark_pending_with_cause on absent node must return false"
+        );
+        assert_eq!(
+            store.pending_transition_count(),
+            before,
+            "absent-node call must not bump pending_transition_count"
+        );
+
+        // Present entry → flips freshness, sets cause, bumps counter.
+        store.put(mid_node.clone(), make_seed_entry());
+        let entry = store
+            .get(&mid_node)
+            .expect("seeded entry must be present");
+        let prev_hash = entry.result_hash;
+
+        assert!(
+            store.mark_pending_with_cause(&mid_node, leaf_node.clone()),
+            "mark_pending_with_cause on existing node must return true"
+        );
+        assert_eq!(
+            store.freshness(&mid_node),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(prev_hash),
+            },
+            "freshness must be Pending with last_substantive derived from prior result_hash"
+        );
+        assert_eq!(
+            store.pending_cause(&mid_node),
+            Some(leaf_node),
+            "pending_cause must equal the cause NodeId passed in"
+        );
+        assert_eq!(
+            store.pending_transition_count(),
+            before + 1,
+            "mark_pending_with_cause must bump pending_transition_count by 1"
+        );
+    }
 }
