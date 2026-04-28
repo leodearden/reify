@@ -89,6 +89,19 @@ impl Engine {
                         );
                     }
                 }
+                // Task 2320: post-process conformance-query helpers
+                // (is_watertight / is_manifold / is_orientable) for cells in
+                // this template, now that `named_steps` has been populated by
+                // the realization loop above.  Patches `Value::Bool(_)` into
+                // the `ValueMap` for cells whose `default_expr` is a recognised
+                // conformance call; leaves all other cells untouched.
+                Engine::post_process_conformance_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
             }
 
             if step_handles.is_empty() {
@@ -128,6 +141,11 @@ impl Engine {
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        // Task 2320: `values` is moved out of `check_result` here so the
+        // per-template post-process can patch conformance-query results
+        // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
+        // before it is moved into the returned `BuildResult` below.
+        let mut values = check_result.values;
 
         let version_id = VersionId(self.next_version_id);
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
@@ -152,7 +170,7 @@ impl Engine {
                         kernel.as_mut(),
                         &realization.operations,
                         &realization.feature_tags,
-                        &check_result.values,
+                        &values,
                         &self.functions,
                         &self.meta_map,
                         &mut step_handles,
@@ -177,6 +195,19 @@ impl Engine {
                         );
                     }
                 }
+                // Task 2320: post-process conformance-query helpers
+                // (is_watertight / is_manifold / is_orientable) for cells in
+                // this template, now that `named_steps` has been populated by
+                // the realization loop above.  Patches `Value::Bool(_)` into
+                // the `ValueMap` for cells whose `default_expr` is a recognised
+                // conformance call; leaves all other cells untouched.
+                Engine::post_process_conformance_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
             }
 
             if step_handles.is_empty() {
@@ -207,7 +238,7 @@ impl Engine {
         };
 
         BuildResult {
-            values: check_result.values,
+            values,
             constraint_results: check_result.constraint_results,
             geometry_output,
             diagnostics,
@@ -519,6 +550,50 @@ impl Engine {
             version,
             payload: None,
         });
+    }
+
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`.
+    ///
+    /// For each `ValueCellDecl` in `template.value_cells` whose `default_expr`
+    /// is a recognised conformance-query helper (`is_watertight`,
+    /// `is_manifold`, `is_orientable`), this writes the kernel-resolved
+    /// `Value::Bool(_)` answer (or the user-assertion override) into
+    /// `values`, overwriting the `Value::Undef` left behind by the pure
+    /// `eval_expr` path. Cells whose `default_expr` is `None` or whose
+    /// dispatch returns `None` (literal arg, unresolvable cell-member name,
+    /// non-helper function call) are left untouched — see
+    /// [`crate::geometry_ops::try_eval_conformance_query`]'s `None`-return
+    /// contract.
+    ///
+    /// Called once per template from `build` and `build_snapshot` after the
+    /// per-realization loop has populated `named_steps`. Not called from
+    /// `tessellate_*` paths because tessellation does not consume value
+    /// cells and the conformance-query result wouldn't be observable.
+    ///
+    /// Pinned by `tests/conformance_runtime.rs::*` (task 2320 step-11).
+    fn post_process_conformance_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_conformance_query(
+                default_expr,
+                &template.trait_bounds,
+                named_steps,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
     }
 
     /// Tessellate realizations from the current snapshot values, without
