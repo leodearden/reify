@@ -266,6 +266,17 @@ impl Engine {
     /// same three-step "take-messages / rewrite / extend / push entry" pattern;
     /// centralising it keeps the rewrite invariants (see `labeled_diagnostics`)
     /// in one place.
+    ///
+    /// **Arch §9.3 separation (Failed vs. Violated).** This helper deliberately
+    /// keeps constraint satisfaction (`Satisfaction::Violated` plus
+    /// `DiagnosticCode::ConstraintViolated`) on the `ConstraintCheckEntry` /
+    /// diagnostics channels and never touches `Freshness::Failed` or emits
+    /// `EventKind::Failed`. `Freshness::Failed` is reserved for evaluation-
+    /// pipeline failures (panic boundary, kernel error — arch §9.1–§9.2);
+    /// folding constraint violations into it would silently merge two
+    /// orthogonal channels. The §9.3 separation is regression-tested at
+    /// `crates/reify-eval/tests/failed_propagation.rs::
+    /// constraint_violation_does_not_produce_failed_freshness_or_error_event`.
     fn push_constraint_result(
         diagnostics: &mut Vec<Diagnostic>,
         constraint_results: &mut Vec<ConstraintCheckEntry>,
