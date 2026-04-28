@@ -4870,4 +4870,116 @@ mod tests {
             "kernel must NOT be consulted when the cell-member name is absent"
         );
     }
+
+    /// Failure-mode contract (amend, task 2320): when the kernel returns
+    /// `Ok(value)` with a non-`Bool` value (e.g. a stray `Value::Real`),
+    /// `try_eval_conformance_query` must defensively downgrade to
+    /// `Some(Value::Undef)` and emit exactly one Warning diagnostic naming
+    /// the helper. Pins the `Ok(other)` arm in the source so a regression
+    /// that swaps the downgrade for a panic (or drops the diagnostic)
+    /// would be caught.
+    #[test]
+    fn try_eval_conformance_query_kernel_returns_non_bool_downgrades_with_warning() {
+        let handle_id = reify_types::GeometryHandleId(23);
+        // Seed a non-Bool kernel reply for the IsWatertight query.
+        let kernel = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Real(1.0));
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "non-Bool kernel reply must downgrade to Some(Value::Undef), got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool kernel reply must emit exactly one diagnostic, got {}",
+            diagnostics.len()
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "non-Bool kernel reply must emit a Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("is_watertight"),
+            "diagnostic must mention the helper name, got: {}",
+            diag.message
+        );
+    }
+
+    /// Failure-mode contract (amend, task 2320): when the kernel returns
+    /// `Err(QueryError)`, `try_eval_conformance_query` must defensively
+    /// downgrade to `Some(Value::Undef)` and emit exactly one Warning
+    /// diagnostic naming the helper and surfacing the error message. Pins
+    /// the `Err(err)` arm so a regression swapping the downgrade for a
+    /// panic (or losing the error context in the diagnostic) would fail.
+    #[test]
+    fn try_eval_conformance_query_kernel_query_error_downgrades_with_warning() {
+        let handle_id = reify_types::GeometryHandleId(29);
+        // No `with_query_result` seeding → MockGeometryKernel.query() returns
+        // `Err(QueryError::QueryFailed("no mock result for …"))` for any handle.
+        let kernel = reify_test_support::mocks::MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_manifold", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "kernel Err must downgrade to Some(Value::Undef), got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one diagnostic, got {}",
+            diagnostics.len()
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "kernel Err must emit a Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("is_manifold"),
+            "diagnostic must mention the helper name, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
 }
