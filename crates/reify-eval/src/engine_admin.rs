@@ -159,6 +159,10 @@ impl Engine {
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
             warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
             feature_tag_table: FeatureTagTable::default(),
+            // v0.2 persistent-naming-v2 attribute store. Always empty after
+            // construction — task 2590 added the field + accessor as the
+            // foundation; tasks 5-8 wire per-op auto-population.
+            topology_attribute_table: TopologyAttributeTable::default(),
             // Always-empty in production builds; populated only by the
             // cfg-gated test-instrumentation accessor `set_panic_on_eval`.
             panic_on_eval_cells: std::collections::HashSet::new(),
@@ -173,6 +177,21 @@ impl Engine {
     /// array on `RealizationDecl`. See task 2323 for full design rationale.
     pub fn feature_tag_table(&self) -> &FeatureTagTable {
         &self.feature_tag_table
+    }
+
+    /// Return a reference to the v0.2 persistent-naming-v2 attribute table on
+    /// this engine.
+    ///
+    /// Maps each `GeometryHandleId` to a `TopologyAttribute` record
+    /// (`feature_id`, `role`, `local_index`, optional `user_label`,
+    /// `mod_history`). Per the task-2590 plan, the table is always empty
+    /// after construction; tasks 5-8 wire per-op auto-population during
+    /// `execute_realization_ops`, and task 2 (#2570) wires selector lookup
+    /// against this table. Once the attribute path covers all selector
+    /// vocabulary (tasks 9-10), `feature_tag_table` is retired and this
+    /// becomes the only naming store.
+    pub fn topology_attribute_table(&self) -> &TopologyAttributeTable {
+        &self.topology_attribute_table
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
