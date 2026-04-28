@@ -3096,4 +3096,72 @@ mod tests {
         let result = kernel.query(&GeometryQuery::FaceNormal(handle)).unwrap();
         assert_eq!(result, normal);
     }
+
+    // ── CountingMockKernel tests ──────────────────────────────────────────────
+
+    #[test]
+    fn counting_mock_kernel_total_increments_per_query() {
+        use std::sync::Arc;
+        let handle = GeometryHandleId(1);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+
+        assert_eq!(kernel.total_query_count(), 3);
+        assert_eq!(kernel.counts().total(), 3);
+    }
+
+    #[test]
+    fn counting_mock_kernel_per_variant_counters_track_only_their_variant() {
+        use std::sync::Arc;
+        let handle = GeometryHandleId(2);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsManifold(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsOrientable(handle)).unwrap();
+        kernel.query(&GeometryQuery::Volume(handle)).unwrap();
+
+        let counts = kernel.counts();
+        assert_eq!(counts.is_watertight(), 1);
+        assert_eq!(counts.is_manifold(), 1);
+        assert_eq!(counts.is_orientable(), 1);
+        assert_eq!(counts.total(), 4, "Volume contributes to total but not to any per-variant counter");
+    }
+
+    #[test]
+    fn counting_mock_kernel_query_proxies_inner_result() {
+        use std::sync::Arc;
+        let handle = GeometryHandleId(3);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        let result = kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        assert_eq!(result, Value::Bool(true), "CountingMockKernel must not change the inner kernel's result");
+    }
+
+    #[test]
+    fn counting_mock_kernel_counts_arc_survives_kernel_move_into_box() {
+        use std::sync::Arc;
+        let handle = GeometryHandleId(4);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+        let counts = kernel.counts();
+
+        // Move the kernel into a Box<dyn GeometryKernel>, simulating the
+        // integration-test use case (Engine::new consumes the kernel).
+        let boxed: Box<dyn GeometryKernel> = Box::new(kernel);
+        boxed.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+
+        // The Arc<QueryCounts> captured before the move should still see the increment.
+        assert_eq!(counts.is_watertight(), 1);
+    }
 }
