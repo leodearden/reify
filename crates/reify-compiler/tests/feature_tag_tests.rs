@@ -6,7 +6,7 @@
 //!   step-9: parallel-array invariant held for all representative inputs
 
 use reify_compiler::compile_with_stdlib;
-use reify_types::{FeatureTag, SourceSpan, StepKind};
+use reify_types::{FeatureTag, StepKind};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

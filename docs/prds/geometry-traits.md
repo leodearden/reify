@@ -115,8 +115,10 @@ structure def TrustedShell : Watertight {
    `is_watertight(shape) → bool`, `is_manifold(shape) → bool`,
    `is_orientable(shape) → bool`. Wire to `BRepCheck_Analyzer` /
    `ShapeAnalysis_Shell` / `ShapeAnalysis_Wire` in `kernel-occt/cpp`. Expose
-   via a `conforms<T : Geometry, R : Trait>(g : T, _ : Type<R>) → Bool`
-   stdlib function (or per-trait helpers `is_watertight`, etc.).
+   via three monomorphic per-trait helpers `is_watertight(g) → Bool`,
+   `is_manifold(g) → Bool`, `is_orientable(g) → Bool` in the prelude.
+   The generic `conforms<T : Geometry, R : Trait>(g, Type<R>) → Bool` form
+   is deferred to v0.2 — see *Out of scope* and *Design notes for task 2320*.
 5. **Specialization escape hatch** — when a structure declares `:
    Watertight` (or any of the seven) explicitly, the compiler treats this as
    a user assertion, skips the runtime check, and surfaces a
@@ -148,6 +150,99 @@ structure def TrustedShell : Watertight {
 - Solvespace-style attribute-persistent conformance attestations — v0.2 (ties
   to feature-tag work in `topology-selectors.md`).
 - `imported` field source kind, multi-kernel — v0.2.
+- Generic `conforms<T : Geometry, R : Trait>(g, Type<R>) → Bool` — deferred
+  to v0.2. Requires type-as-value support that Reify's type system lacks
+  today (no `Value::TraitTag`, bare trait names don't resolve as values).
+  v0.1 ships only the three monomorphic helpers `is_watertight` /
+  `is_manifold` / `is_orientable`. The generic form can be added later as
+  syntactic sugar over the helpers without breaking source — call sites
+  written as `is_watertight(g)` are forward-compatible.
+
+## Design notes for task 2320
+
+These are PRD-author rulings (2026-04-28) made after the architect's first
+attempt timed out at 121 turns. Implementers should treat them as locked.
+
+### Decision 1 — preserve the value-representability invariant
+
+`Type::Geometry` has no `Value` variant; `is_representable_cell_type`
+(`crates/reify-eval/src/engine_eval.rs:61`) and `value_type_kind_matches`
+(`crates/reify-eval/src/lib.rs:124`) jointly enforce that no `ValueCellDecl`
+ever carries `Type::Geometry`. **Do not relax this invariant.** It is
+load-bearing for the snapshot/journal/content-hash architecture: a
+`Value::Geometry(GeometryHandleId)` would have to participate in
+`ContentHash`, `Journal` replay, and `BTreeSet`/`BTreeMap` ordering, but
+handle ids are per-realization, per-kernel, non-persistent cookies — none
+of those round-trips are well-defined.
+
+Instead, route `is_watertight(g)` / `is_manifold(g)` / `is_orientable(g)`
+through a **lookup-by-cell-id** sideband: at the FunctionCall arm, resolve
+`g`'s `ValueCellId` to a `GeometryHandleId` via the realization handle
+table (`step_handles` / `named_steps` in
+`crates/reify-eval/src/engine_build.rs`), submit the kernel query, and
+materialize the `Value::Bool` result. The handle never lands in `ValueMap`.
+
+### Decision 2 — per-trait helpers, no generic `conforms<T,R>`
+
+The v0.1 prelude exposes exactly three names: `is_watertight`,
+`is_manifold`, `is_orientable`. The generic `conforms<T : Geometry, R :
+Trait>(g, Type<R>) → Bool` form requires type-as-value plumbing
+(`Value::TraitTag` or equivalent, plus a new identifier-resolution rule for
+bare trait names) that Reify's type system lacks today. The seven marker
+traits are a closed set in v0.1, so generic dispatch buys nothing
+concrete. Generic `conforms` can be added in v0.2 as syntactic sugar over
+the helpers without breaking call sites.
+
+### Decision 3 — escape-hatch ships in v0.1, asymmetric per-marker match
+
+Task 2321 ships the compile-time `W_TRAIT_USER_ASSERTED` warning
+(`crates/reify-compiler/src/entity.rs:624-635`). Task 2320 ships the
+runtime side: `try_eval_conformance_query` short-circuits
+`is_watertight(g) → Bool(true)` (and the manifold/orientable peers) when
+`g`'s owning template declares the matching marker as a `trait_bound`,
+without invoking OCCT.
+
+The match is **asymmetric and per-marker**: declaring `: Watertight`
+short-circuits `is_watertight` only — it does NOT short-circuit
+`is_manifold` or `is_orientable`. Symmetrically, declaring `: Closed`
+does NOT short-circuit `is_watertight`, even though
+`Watertight : Closed + Manifold`. Refinement is **not** propagated. This
+is the conservative reading: the user's assertion is exactly the trait
+they named, no more. Pinned by
+`is_watertight_closed_bound_does_not_short_circuit` in
+`crates/reify-eval/tests/conformance_runtime.rs`.
+
+**Originally this was deferred to v0.1.1** (no v0.1 motivating case, since
+`imported` is out-of-scope and there's no perf-sensitive procedural shape
+in current examples). The implementing agent shipped it anyway because
+the runtime hook is cheap (~10 LoC, single `template.trait_bounds.iter()`
+scan inside the existing post-process pass) and the asymmetry test
+materially clarifies the semantics. Accepting the work as-shipped.
+
+### Implementation as shipped
+
+Task 2320 was implemented in a single pass (commit `e091990a6`) after the
+PRD-author rulings landed. The shipped surface:
+
+| File | Change |
+|---|---|
+| `crates/reify-compiler/src/units.rs` | `GEOMETRY_QUERY_HELPER_NAMES` const + `is_geometry_query_helper` classifier |
+| `crates/reify-compiler/src/expr.rs` | NoUserFunctions arm forces `Type::Bool` for the three names |
+| `crates/reify-compiler/stdlib/geometry_traits.ri` | Doc-only block describing the helpers (name-based dispatch — no `fn` stubs needed) |
+| `crates/reify-eval/src/geometry_ops.rs` | `try_eval_conformance_query` free fn — resolves `ValueRef(cell_id)` → `GeometryHandleId` via `named_steps`, dispatches kernel query, applies user-asserted-trait short-circuit |
+| `crates/reify-eval/src/engine_build.rs` | Post-processes value cells via `post_process_conformance_queries` after `execute_realization_ops` populates `named_steps`, in both `build()` and `build_snapshot()` |
+| `crates/reify-eval/tests/conformance_runtime.rs` | 6 integration tests: kernel-reply true/false, manifold, orientable, user-assertion short-circuit, asymmetry vs `Closed` |
+
+**Why the original A-E split wasn't used:** the implementing agent
+correctly identified that the dispatch surface was small enough (~220
+LoC across 6 files) to land atomically with the locked decisions in hand,
+making sub-task overhead net-negative. The 121-turn architect failure
+was rooted in *missing decisions*, not task size — once the PRD locked
+Decisions 1-3, the path through the codebase was straightforward.
+
+The original `metadata.files` listed `crates/reify-stdlib/src/geometry.rs`
+in error (that's the pure-`Value` `eval_builtin` path with no kernel
+access). The correct file list is the table above.
 
 ## Acceptance criteria
 
@@ -157,13 +252,19 @@ structure def TrustedShell : Watertight {
   per-op table, Boolean propagation, and the unbounded-flow diagnostic.
 - `cargo test -p reify-kernel-occt -- conformance` covers
   `is_watertight`/`is_manifold`/`is_orientable` against fixture shapes.
-- `cargo test -p reify-eval -- conformance_runtime` covers the
-  `conforms(g, Watertight)` end-to-end path.
+- `cargo test -p reify-eval -- conformance_runtime` covers the per-trait
+  helper end-to-end path: `is_watertight(g)` / `is_manifold(g)` /
+  `is_orientable(g)` for known-good (`box(10mm,10mm,10mm)` → all `true`)
+  and known-bad (open-shell BRep → `is_watertight == false`) shapes.
 - Specialization escape hatch warning (`W_TRAIT_USER_ASSERTED` /
   `DiagnosticCode::TraitUserAsserted`) fires exactly once per
-  `(structure_def, geometry_marker_bound)` pair at compile time; eval-time
-  suppression of the runtime conformance check is deferred until the OCCT
-  runtime hook (PRD tasks 4/5) is wired into eval.
+  `(structure_def, geometry_marker_bound)` pair at compile time. Eval-time
+  short-circuit is asymmetric and per-marker: declaring `: Watertight`
+  short-circuits `is_watertight` only — `: Closed` does not, despite
+  `Watertight : Closed + Manifold`. Pinned by
+  `is_watertight_user_assertion_short_circuits_to_true` and
+  `is_watertight_closed_bound_does_not_short_circuit` in
+  `crates/reify-eval/tests/conformance_runtime.rs`.
 
 ## Task breakdown (queueing aim: 6 tasks)
 
@@ -182,9 +283,27 @@ structure def TrustedShell : Watertight {
 4. **OCCT FFI: `is_watertight`/`is_manifold`/`is_orientable`** with
    `BRepCheck_Analyzer`/`ShapeAnalysis_*` backing. Following #319's FFI
    pattern. Fixture-based tests in `reify-kernel-occt`.
-5. **Stdlib `conforms` function + per-trait helpers**, wiring runtime queries
-   from task 4 into eval. Tests: known-good/known-bad shapes.
-6. **Specialization escape hatch + `W_TRAIT_USER_ASSERTED` warning**. When
-   `: Watertight` (or sibling) is user-declared on a structure, suppress
-   runtime check, emit warning once. Test: warning count == 1 across
-   repeated determinations.
+5. **Per-trait stdlib helpers** `is_watertight(g) → Bool`,
+   `is_manifold(g) → Bool`, `is_orientable(g) → Bool`, wiring runtime
+   queries from task 4 into eval. **First query-style user-callable stdlib
+   functions in Reify** — this task introduces the dispatch surface. See
+   *Design notes for task 2320* below for the architectural decisions
+   already made (lookup-by-cell-id over `Value::Geometry`, per-trait over
+   generic `conforms<T,R>`, escape-hatch deferred). Tests: known-good
+   (`box(10mm,10mm,10mm)` → true on all three) and known-bad (open shell
+   built via direct BRep — see fixture pattern in
+   `crates/reify-kernel-occt/tests/conformance_integration.rs`) shapes.
+6. **Specialization escape hatch — compile-time warning + runtime
+   short-circuit.** Compile-time: emit `W_TRAIT_USER_ASSERTED` once per
+   `(structure_def, geometry_marker_bound)` pair when `: Watertight` (or
+   sibling) is user-declared (task 2321). Runtime: when evaluating
+   `is_watertight(g)` / `is_manifold(g)` / `is_orientable(g)` against a `g`
+   whose owning template declares the matching marker as a `trait_bound`,
+   short-circuit to `Bool(true)` without invoking the kernel. The match is
+   **asymmetric and per-marker**: `: Closed` does NOT short-circuit
+   `is_watertight`, even though `Watertight : Closed + Manifold` —
+   refinement does not propagate to the helper. Implementation: see
+   `try_eval_conformance_query` in `crates/reify-eval/src/geometry_ops.rs`;
+   pinned by `is_watertight_user_assertion_short_circuits_to_true` and
+   `is_watertight_closed_bound_does_not_short_circuit` in
+   `crates/reify-eval/tests/conformance_runtime.rs`.
