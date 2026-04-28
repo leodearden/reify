@@ -220,6 +220,50 @@ fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
 ```
 
+#### SO(3) and SE(3) operations (v0.2)
+
+Added to support the closed-chain kinematic loop-closure solver — see
+[`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). All
+operations validate inputs and return `Undef` on shape mismatch, wrong
+argument count, dimensional mismatch, or non-finite components.
+
+```
+// SO(3) — quaternion algebra on Orientation<3>
+fn orient_compose(a: Orientation<3>, b: Orientation<3>) -> Orientation<3>
+fn orient_inverse(q: Orientation<3>) -> Orientation<3>
+fn orient_log(q: Orientation<3>) -> Vector3<Dimensionless>           // axis * angle (rotation vector)
+fn orient_exp(rot_vec: Vector3<Dimensionless>) -> Orientation<3>     // inverse of orient_log
+fn orient_slerp(a: Orientation<3>, b: Orientation<3>, t: Real) -> Orientation<3>
+fn orient_to_axis_angle(q: Orientation<3>) -> Map { axis: Vector3<Dimensionless>, angle: Angle }
+fn orient_to_euler(convention: EulerConvention, q: Orientation<3>) -> List<Angle>  // 3 elements
+
+// SE(3) — rigid-body transforms on Transform<3>
+fn transform_compose(a: Transform<3>, b: Transform<3>) -> Transform<3>   // bit-equal to a * b
+fn transform_inverse(t: Transform<3>) -> Transform<3>
+fn transform_log(t: Transform<3>) -> Twist
+fn transform_exp(twist: Twist) -> Transform<3>                            // inverse of transform_log
+```
+
+`orient_slerp` uses the canonical shortest-path slerp (antipodal flip if
+`dot(a, b) < 0`) with a linear-interpolation fallback near `theta = 0`.
+`orient_compose` and `transform_compose` are the named-function spellings of
+the `Orientation * Orientation` and `Transform * Transform` operators
+respectively, and produce bit-identical results to the operator path.
+
+**Twist representation.** SE(3) twists are encoded as a `Map` keyed by
+`"angular"` (a `Vector3<Dimensionless>` holding `axis * angle` in radians) and
+`"linear"` (a `Vector3<Length>` holding the translational component):
+
+```
+type Twist = Map { angular: Vector3<Dimensionless>, linear: Vector3<Length> }
+```
+
+A `Map` shape (rather than a 6-component `Vector`) is required because
+`Vector` enforces a single shared dimension across components; a twist mixes
+dimensionless rotation and `Length` translation. The same `Map` shape is
+returned by `joint_jacobian` (§13.1) so that solver code can compose twists
+and Jacobian columns uniformly.
+
 ### 3.2 `std.geometry.primitive`
 
 **3D solids:**
@@ -1128,6 +1172,25 @@ fn transform_at(j: Prismatic, v: Length) -> Transform<3>
 fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: MotionValue<P>) -> Transform<3>
 ```
+
+**Jacobian (v0.2).** `joint_jacobian` returns the analytic SE(3) twist column
+for a single joint, used by the closed-chain loop-closure solver — see
+[`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
+returned `Twist` shape (`Map { angular, linear }`) is the same one used by
+`transform_log` / `transform_exp` (§3.1), so solver code can compose joint
+Jacobian columns and twists uniformly.
+
+```
+fn joint_jacobian(j: Prismatic) -> Twist          // angular = 0,        linear  = unit(axis)
+fn joint_jacobian(j: Revolute)  -> Twist          // angular = unit(axis), linear = 0
+fn joint_jacobian(j: Coupling<P>) -> Twist        // ratio * joint_jacobian(parent)
+```
+
+The axis is unit-normalized in the return value (matching `transform_at`'s
+normalization). For `Coupling<P>`, the result is the parent's Jacobian
+componentwise multiplied by the coupling ratio. Finite-difference Jacobians
+for new joint types (cylindrical, planar, spherical) are deferred to v0.2's
+joint-type-expansion task and are not part of this stdlib surface.
 
 **Motion-variable units.** Each joint type has an associated motion-variable unit, exposed as the type family `MotionValue<J>`:
 
