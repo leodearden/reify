@@ -115,33 +115,36 @@ corresponds to a task bookmark that survives in source control alongside this PR
 
 ### Hash-compaction of attribute storage (task #2561)
 
-> **Assumption:** this bookmark presumes the v0.2 implementation introduces a
-> modification-history postfix on attribute names (e.g. `:mod_history=…`) that grows with
-> edit depth. That postfix is not yet described in the "Sketch of approach" section above.
-> If v0.2 does not adopt such a postfix this bookmark is moot.
+**Applicability.** This bookmark applies if the v0.2 implementation (or a subsequent
+iteration) introduces any attribute-name component that grows unboundedly with edit depth —
+for example a modification-history postfix such as `:mod_history=…`. The v0.2 "Sketch of
+approach" describes a fixed-width `(feature_id, role, local_index)` tuple and does not yet
+specify such a component; if that remains true through release this bookmark is dormant.
 
 **Idea.** Apply the RealThunder StringHasher pattern from the FreeCAD Topological Naming
-project: segment-hash long modification-history postfixes into fixed-width digests and
-persist them alongside a digest → original-substring sidecar table. Attribute storage shrinks
-dramatically because the postfix, which grows with edit depth, is replaced by a short hash.
-The sidecar allows lossless round-trip when the full string is needed.
+project: segment-hash any unbounded attribute-name component into a fixed-width digest and
+persist it alongside a digest → original-substring sidecar table. Attribute storage shrinks
+because the variable-length component is replaced by a short hash. The sidecar allows
+lossless round-trip when the full string is needed.
 
-**Published numbers** (RealThunder, real-model benchmark, 2026-04-28 reference study):
-- Attribute storage: 22.6 MiB → 3.6 MiB (~6× reduction).
-- Recompute time: 40 s → 52 s (+30% — hashing is not free).
+**Published numbers** (RealThunder FreeCAD implementation, studied 2026-04-28; see reference
+below for source): order-of-magnitude reduction in attribute storage size, at the cost of a
+modest recompute overhead (~30% in the reported benchmark) because hashing is not free.
 
 **Why deferred.**
 - The v0.2 attribute tuple `(feature_id, role, local_index)` is fixed-width by construction;
-  the modification-history postfix is the only growth surface.
-- Postfix length grows with edit depth, not model complexity — most designs stay shallow.
+  any future variable-length component is the only growth surface.
+- Variable-length component length would grow with edit depth, not model complexity — most
+  designs stay shallow.
 - The hash sidecar adds debugging and round-trip overhead: `:H7af3b2c1:` is opaque without
   the sidecar, complicating error messages and serialized diagnostics.
 
 **When to action.**
 - Telemetry shows per-realization attribute storage exceeding ~10 MiB.
-- Serde overhead becomes a perceptible UX pause during realization.
-- A downstream kernel (e.g. Manifold via `KernelAttributeHook`) must round-trip attributes
-  across an FFI boundary where string length has a hard or soft limit.
+- Per-realization serde wall-time exceeds 50 ms attributable to attribute handling, confirmed
+  by profile evidence.
+- A connected kernel rejects or truncates attribute names above a documented byte limit (e.g.
+  Manifold via `KernelAttributeHook`; substitute the actual limit when known).
 
 **Reference.** RealThunder Topological Naming Algorithm wiki, StringHasher section:
 <https://github.com/realthunder/FreeCAD_assembly3/wiki/Topological-Naming-Algorithm>
