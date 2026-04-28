@@ -3,14 +3,14 @@
 //! Tests for `@solver_hint` annotations on param/let members compiling into
 //! `SolverHint` entries on `ValueCellDecl`.
 
-use reify_test_support::{compile_source, errors_only, warnings_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 
 // ── Step 7: @solver_hint("discrete_set", ...) on param compiles ─────────────
 
 #[test]
 fn solver_hint_discrete_set_compiles() {
-    let source = r#"structure S { @solver_hint("discrete_set", bolt_lengths) param length : Length = auto }"#;
-    let module = compile_source(source);
+    let source = r#"structure S { @solver_hint("discrete_set", standard_bolt_lengths) param length : Length = auto }"#;
+    let module = compile_source_with_stdlib(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -34,15 +34,15 @@ fn solver_hint_discrete_set_compiles() {
         cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::DiscreteSet
     );
-    assert_eq!(cell.solver_hints[0].collection, "bolt_lengths");
+    assert_eq!(cell.solver_hints[0].collection, "standard_bolt_lengths");
 }
 
 // ── Step 9: @solver_hint("prefer_stock", ...) on param compiles ─────────────
 
 #[test]
 fn solver_hint_prefer_stock_compiles() {
-    let source = r#"structure S { @solver_hint("prefer_stock", sheet_thicknesses) param width : Length = auto }"#;
-    let module = compile_source(source);
+    let source = r#"structure S { @solver_hint("prefer_stock", standard_sheet_thicknesses) param width : Length = auto }"#;
+    let module = compile_source_with_stdlib(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -61,15 +61,15 @@ fn solver_hint_prefer_stock_compiles() {
         cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::PreferStock
     );
-    assert_eq!(cell.solver_hints[0].collection, "sheet_thicknesses");
+    assert_eq!(cell.solver_hints[0].collection, "standard_sheet_thicknesses");
 }
 
 // ── Step 11: @solver_hint on let member compiles ────────────────────────────
 
 #[test]
 fn solver_hint_on_let_compiles() {
-    let source = r#"structure S { @solver_hint("discrete_set", gauges) let t : Length = 5mm }"#;
-    let module = compile_source(source);
+    let source = r#"structure S { @solver_hint("discrete_set", standard_bolt_lengths) let t : Length = 5mm }"#;
+    let module = compile_source_with_stdlib(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -94,7 +94,7 @@ fn solver_hint_on_let_compiles() {
         let_cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::DiscreteSet
     );
-    assert_eq!(let_cell.solver_hints[0].collection, "gauges");
+    assert_eq!(let_cell.solver_hints[0].collection, "standard_bolt_lengths");
 }
 
 // ── Step 13: invalid solver hint kind emits warning ────────────────────────
@@ -195,11 +195,11 @@ fn solver_hint_in_guarded_block_compiles() {
     let source = r#"structure S {
         param x : Real = 1
         where x > 0 {
-            @solver_hint("discrete_set", sizes)
+            @solver_hint("discrete_set", standard_bolt_lengths)
             param width : Length = auto
         }
     }"#;
-    let module = compile_source(source);
+    let module = compile_source_with_stdlib(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -225,7 +225,7 @@ fn solver_hint_in_guarded_block_compiles() {
         width_cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::DiscreteSet
     );
-    assert_eq!(width_cell.solver_hints[0].collection, "sizes");
+    assert_eq!(width_cell.solver_hints[0].collection, "standard_bolt_lengths");
 }
 
 // ── Step 19: multiple @solver_hint on same param ───────────────────────────
@@ -233,11 +233,11 @@ fn solver_hint_in_guarded_block_compiles() {
 #[test]
 fn solver_hint_multiple_on_same_param() {
     let source = r#"structure S {
-        @solver_hint("discrete_set", a)
-        @solver_hint("prefer_stock", b)
+        @solver_hint("discrete_set", standard_bolt_lengths)
+        @solver_hint("prefer_stock", standard_sheet_thicknesses)
         param length : Length = auto
     }"#;
-    let module = compile_source(source);
+    let module = compile_source_with_stdlib(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -256,12 +256,12 @@ fn solver_hint_multiple_on_same_param() {
         cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::DiscreteSet
     );
-    assert_eq!(cell.solver_hints[0].collection, "a");
+    assert_eq!(cell.solver_hints[0].collection, "standard_bolt_lengths");
     assert_eq!(
         cell.solver_hints[1].kind,
         reify_compiler::SolverHintKind::PreferStock
     );
-    assert_eq!(cell.solver_hints[1].collection, "b");
+    assert_eq!(cell.solver_hints[1].collection, "standard_sheet_thicknesses");
 }
 
 // ── Task 2339: preferred_strategy accepts any ident — table-driven ──────────
