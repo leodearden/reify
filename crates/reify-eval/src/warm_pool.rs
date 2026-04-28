@@ -1562,6 +1562,77 @@ mod tests {
 
     // --- Task 2456: emit Evicted on same-key overwrite ---
 
+    /// All three donate variants emit overwrite-Evicted symmetrically via `insert_entry`.
+    ///
+    /// (a) `donate_with_cost`: donate X(100, cost=0.5), drain, donate X(200, cost=1.5) —
+    ///     assert `[Evicted{X,100}, Donated{X,200}]`.
+    ///
+    /// (b) `donate_preserving_lru`: donate Y(50), drain, call
+    ///     `donate_preserving_lru(Y, state2, some_stamp)` directly (without checkout)
+    ///     to trigger the overwrite path — assert `[Evicted{Y,50}, Donated{Y,80}]`.
+    ///
+    /// Guards the design decision "localize the change to insert_entry" — all three
+    /// donate variants funnel through the shared core so the overwrite-Evicted fires
+    /// symmetrically regardless of which public API is used.
+    #[test]
+    fn donate_with_cost_and_donate_preserving_lru_also_emit_overwrite_evicted() {
+        // (a) donate_with_cost overwrite
+        {
+            let mut pool = WarmStatePool::new(1024);
+            let node_x = NodeId::Value(ValueCellId::new("T", "x"));
+
+            pool.donate_with_cost(node_x.clone(), OpaqueState::new(0u8, 100), 0.5);
+            pool.drain_events(); // clear setup
+
+            pool.donate_with_cost(node_x.clone(), OpaqueState::new(0u8, 200), 1.5);
+            let events = pool.drain_events();
+
+            assert_eq!(
+                events,
+                vec![
+                    WarmPoolEvent::Evicted {
+                        node_id: node_x.clone(),
+                        size_bytes: 100,
+                    },
+                    WarmPoolEvent::Donated {
+                        node_id: node_x,
+                        size_bytes: 200,
+                    },
+                ],
+                "donate_with_cost same-key overwrite must emit Evicted then Donated"
+            );
+        }
+
+        // (b) donate_preserving_lru overwrite (direct call without prior checkout)
+        {
+            let mut pool = WarmStatePool::new(1024);
+            let node_y = NodeId::Value(ValueCellId::new("T", "y"));
+            let stamp = std::time::Instant::now();
+
+            pool.donate(node_y.clone(), OpaqueState::new(0u8, 50));
+            pool.drain_events(); // clear setup
+
+            // Call donate_preserving_lru directly on an already-present key.
+            pool.donate_preserving_lru(node_y.clone(), OpaqueState::new(0u8, 80), stamp);
+            let events = pool.drain_events();
+
+            assert_eq!(
+                events,
+                vec![
+                    WarmPoolEvent::Evicted {
+                        node_id: node_y.clone(),
+                        size_bytes: 50,
+                    },
+                    WarmPoolEvent::Donated {
+                        node_id: node_y,
+                        size_bytes: 80,
+                    },
+                ],
+                "donate_preserving_lru same-key overwrite must emit Evicted then Donated"
+            );
+        }
+    }
+
     /// Same-key overwrite combined with LRU pressure: ordering invariant and accounting.
     ///
     /// Setup: budget=200, donate A(100) + B(100) → used=200 (at budget). Drain.
