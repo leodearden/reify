@@ -919,6 +919,164 @@ impl GeometryKernel for FailingMockGeometryKernel {
     }
 }
 
+/// Per-variant call counters for [`CountingMockKernel`].
+///
+/// Holds an `AtomicUsize` for each tracked `GeometryQuery` variant plus a
+/// grand `total` counter that increments on every `query()` call. Counters
+/// are exposed as plain `usize` via read-only accessor methods so callers
+/// never need to import `Ordering`.
+///
+/// Held behind `Arc<QueryCounts>` so the test can clone the Arc *before*
+/// moving the kernel into a `Box<dyn GeometryKernel>` and inspect the counts
+/// after the move.
+#[derive(Default)]
+pub struct QueryCounts {
+    total: AtomicUsize,
+    is_watertight: AtomicUsize,
+    is_manifold: AtomicUsize,
+    is_orientable: AtomicUsize,
+}
+
+impl QueryCounts {
+    /// Total number of `query()` calls across all variants.
+    pub fn total(&self) -> usize {
+        self.total.load(Ordering::SeqCst)
+    }
+
+    /// Number of `GeometryQuery::IsWatertight` calls.
+    pub fn is_watertight(&self) -> usize {
+        self.is_watertight.load(Ordering::SeqCst)
+    }
+
+    /// Number of `GeometryQuery::IsManifold` calls.
+    pub fn is_manifold(&self) -> usize {
+        self.is_manifold.load(Ordering::SeqCst)
+    }
+
+    /// Number of `GeometryQuery::IsOrientable` calls.
+    pub fn is_orientable(&self) -> usize {
+        self.is_orientable.load(Ordering::SeqCst)
+    }
+}
+
+/// A [`MockGeometryKernel`] wrapper that counts every `query()` round-trip.
+///
+/// ## Purpose
+///
+/// Wraps a fully-configured [`MockGeometryKernel`] and intercepts every
+/// `GeometryKernel::query` call to:
+///
+/// 1. Increment the grand `total` counter.
+/// 2. Increment a per-variant counter for the conformance-helper trio
+///    (`IsWatertight`, `IsManifold`, `IsOrientable`).
+/// 3. Forward the call to the inner kernel and return its result unchanged.
+///
+/// ## Arc-sharing contract
+///
+/// The counters live in an `Arc<QueryCounts>`. Call [`CountingMockKernel::counts`]
+/// to clone the Arc *before* moving the kernel into `Box<dyn GeometryKernel>`.
+/// After the move the test can still read the counters from the saved Arc —
+/// this is the pattern used by integration tests that pass the kernel to
+/// `Engine::new`.
+///
+/// ## `query_many` is NOT overridden
+///
+/// The trait default for `query_many` forwards per-element to `query()`.
+/// Overriding it to delegate to `self.inner.query_many` would bypass our
+/// counting intercept. By leaving the default in place each element routes
+/// through our override and is counted.
+pub struct CountingMockKernel {
+    inner: MockGeometryKernel,
+    counts: Arc<QueryCounts>,
+}
+
+impl CountingMockKernel {
+    /// Wrap `inner` in a counting kernel with fresh zero counters.
+    pub fn new(inner: MockGeometryKernel) -> Self {
+        Self {
+            inner,
+            counts: Arc::new(QueryCounts::default()),
+        }
+    }
+
+    /// Clone the shared counter view.
+    ///
+    /// The returned `Arc` remains valid after `self` is moved into a
+    /// `Box<dyn GeometryKernel>`, making it safe to capture before passing
+    /// the kernel to `Engine::new`.
+    pub fn counts(&self) -> Arc<QueryCounts> {
+        Arc::clone(&self.counts)
+    }
+
+    /// Convenience accessor — equivalent to `self.counts().total()`.
+    ///
+    /// Preferred by unit tests that only need the grand total and don't
+    /// need to hold an Arc across a kernel move.
+    pub fn total_query_count(&self) -> usize {
+        self.counts.total()
+    }
+}
+
+impl GeometryKernel for CountingMockKernel {
+    fn execute(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<GeometryHandle, GeometryError> {
+        self.inner.execute(op)
+    }
+
+    fn query(
+        &self,
+        query: &GeometryQuery,
+    ) -> Result<Value, QueryError> {
+        self.counts.total.fetch_add(1, Ordering::SeqCst);
+        match query {
+            GeometryQuery::IsWatertight(_) => {
+                self.counts.is_watertight.fetch_add(1, Ordering::SeqCst);
+            }
+            GeometryQuery::IsManifold(_) => {
+                self.counts.is_manifold.fetch_add(1, Ordering::SeqCst);
+            }
+            GeometryQuery::IsOrientable(_) => {
+                self.counts.is_orientable.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        self.inner.query(query)
+    }
+
+    fn extract_edges(
+        &mut self,
+        h: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_edges(h)
+    }
+
+    fn extract_faces(
+        &mut self,
+        h: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_faces(h)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+
+    fn tessellate(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        self.inner.tessellate(handle, tolerance)
+    }
+}
+
 /// Spy constraint solver that captures the last `ResolutionProblem` passed to it.
 ///
 /// Use this in tests where you need to assert what the engine sent to the solver,
@@ -3101,7 +3259,6 @@ mod tests {
 
     #[test]
     fn counting_mock_kernel_total_increments_per_query() {
-        use std::sync::Arc;
         let handle = GeometryHandleId(1);
         let inner = MockGeometryKernel::new()
             .with_query_result(handle, Value::Bool(true));
@@ -3117,7 +3274,6 @@ mod tests {
 
     #[test]
     fn counting_mock_kernel_per_variant_counters_track_only_their_variant() {
-        use std::sync::Arc;
         let handle = GeometryHandleId(2);
         let inner = MockGeometryKernel::new()
             .with_query_result(handle, Value::Bool(true));
@@ -3137,7 +3293,6 @@ mod tests {
 
     #[test]
     fn counting_mock_kernel_query_proxies_inner_result() {
-        use std::sync::Arc;
         let handle = GeometryHandleId(3);
         let inner = MockGeometryKernel::new()
             .with_query_result(handle, Value::Bool(true));
@@ -3149,7 +3304,6 @@ mod tests {
 
     #[test]
     fn counting_mock_kernel_counts_arc_survives_kernel_move_into_box() {
-        use std::sync::Arc;
         let handle = GeometryHandleId(4);
         let inner = MockGeometryKernel::new()
             .with_query_result(handle, Value::Bool(true));
