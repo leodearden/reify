@@ -57,6 +57,15 @@ _build_posix_fallback_env() {
 # literal dollar sign (matching the unquoted $cmd_pid in the shell text).
 KILL_CMD_PID_RE='kill[[:space:]]+--[[:space:]]+"?-\$cmd_pid'
 
+# Per-instance sentinels for Tests 16 and 21 to avoid cross-instance grep
+# collisions under concurrent verify (see task #2556). The $$ * 10 + N
+# encoding guarantees: (a) different instances yield different sentinels
+# (different $$), AND (b) Test 16 (suffix 7) and Test 21 (suffix 9) can
+# never collide across instances regardless of PID delta — any collision
+# would require a non-integer PID difference.
+_SENT_16=$(($$ * 10 + 7))
+_SENT_21=$(($$ * 10 + 9))
+
 echo "=== portable_timeout unit tests ==="
 
 # -- Meta: KILL_CMD_PID_RE shared-setup constant is declared ------------------
