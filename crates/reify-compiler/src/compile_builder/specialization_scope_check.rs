@@ -356,6 +356,81 @@ mod tests {
         );
     }
 
+    // ── step-11: nested specialization scope ─────────────────────────────────
+
+    /// An inner `sub` with its own body (nested specialization scope) inside an
+    /// outer specialization scope must produce TWO diagnostics:
+    ///   1. One for the inner Sub itself (forbidden `sub` declaration).
+    ///   2. One for the leaf Param inside the inner Sub's body.
+    ///
+    /// Order is outer-first per `walk_members_depth`'s parent-before-children
+    /// traversal. Locks in the "applies anywhere a specialization scope appears"
+    /// PRD clause.
+    #[test]
+    fn validate_module_emits_diagnostic_for_each_forbidden_decl_in_nested_specialization_scope() {
+        let inner_sub_span = sub_span();
+        let leaf_param_span = param_span();
+        // Structure S { sub outer : Foo { sub inner : Foo { param x } } }
+        let inner_sub = make_sub_with_body(
+            "inner",
+            inner_sub_span,
+            vec![make_param("x", leaf_param_span)],
+        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "outer",
+            dummy_span(),
+            vec![inner_sub],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected two diagnostics (inner Sub + leaf Param), got: {diagnostics:?}"
+        );
+
+        // First diagnostic: the inner Sub itself
+        let d0 = &diagnostics[0];
+        assert_eq!(d0.severity, Severity::Error);
+        assert_eq!(d0.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
+        assert!(
+            d0.message.contains("'sub'"),
+            "first diagnostic must be for 'sub', got: {:?}",
+            d0.message
+        );
+        assert!(
+            d0.message.contains("'inner'"),
+            "first diagnostic must name 'inner', got: {:?}",
+            d0.message
+        );
+        assert_eq!(
+            d0.labels[0].span,
+            inner_sub_span,
+            "first diagnostic span must equal inner SubDecl's span"
+        );
+
+        // Second diagnostic: the leaf Param inside the inner Sub's body
+        let d1 = &diagnostics[1];
+        assert_eq!(d1.severity, Severity::Error);
+        assert_eq!(d1.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
+        assert!(
+            d1.message.contains("'param'"),
+            "second diagnostic must be for 'param', got: {:?}",
+            d1.message
+        );
+        assert!(
+            d1.message.contains("'x'"),
+            "second diagnostic must name 'x', got: {:?}",
+            d1.message
+        );
+        assert_eq!(
+            d1.labels[0].span,
+            leaf_param_span,
+            "second diagnostic span must equal leaf ParamDecl's span"
+        );
+    }
+
     // ── step-9: permitted decls must not fire ────────────────────────────────
 
     /// `let` and `constraint` declarations inside a specialization-scope body
