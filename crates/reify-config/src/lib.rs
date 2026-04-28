@@ -283,6 +283,48 @@ mod tests {
     }
 
     #[test]
+    fn kernel_id_round_trips_for_all_four_v0_2_kernels() {
+        let cases: &[(KernelId, &str)] = &[
+            (KernelId::Occt, "occt"),
+            (KernelId::Manifold, "manifold"),
+            (KernelId::Fidget, "fidget"),
+            (KernelId::OpenVdb, "openvdb"),
+        ];
+        for &(id, canonical) in cases {
+            let displayed = format!("{}", id);
+            assert_eq!(
+                displayed, canonical,
+                "Display for {:?} must be canonical lowercase",
+                id
+            );
+            let parsed: KernelId = displayed.parse().expect("Display output must parse back");
+            assert_eq!(parsed, id, "round-trip must yield the original KernelId");
+        }
+    }
+
+    #[test]
+    fn kernel_id_from_str_rejects_unknown_strings() {
+        let invalid = [
+            "",       // empty
+            " occt",  // leading whitespace
+            "occt ",  // trailing whitespace
+            "Occt",   // capitalised
+            "OCCT",   // upper-case
+            "Fidget", // capitalised
+            "truck",  // dropped from v0.2
+            "open_vdb",
+            "open-vdb",
+        ];
+        for s in invalid {
+            assert!(
+                s.parse::<KernelId>().is_err(),
+                "expected '{}' to be rejected by KernelId::from_str",
+                s
+            );
+        }
+    }
+
+    #[test]
     fn malformed_toml_returns_parse_error_with_diagnostic_text() {
         // Unclosed [kernels — never reaches the kernels-walk; toml::from_str
         // surfaces a syntax error.
