@@ -27,6 +27,13 @@
 //! openvdb = "11.0.0"
 //! ```
 //!
+//! The schema is strict: unknown top-level sections (e.g. a typo
+//! `[kernel]` for `[kernels]`) and unknown keys inside a `[kernels.<id>]`
+//! table are rejected at parse time so silent misconfiguration cannot
+//! ship. Version strings have any surrounding whitespace trimmed before
+//! storage; a version that is empty after trimming surfaces as
+//! [`ManifestError::EmptyVersion`].
+//!
 //! # Usage
 //!
 //! Use [`Manifest::from_toml_str`] for in-memory documents and
@@ -182,7 +189,15 @@ impl std::error::Error for ManifestError {
 }
 
 /// Internal serde shape for the on-disk reify.toml document.
+///
+/// `deny_unknown_fields` is intentional: a typo at the top level (e.g.
+/// `[kernel]` for `[kernels]`, or a stray `[project]` table) would
+/// otherwise parse silently to an empty manifest and the project pin
+/// would be a no-op. Since the manifest is the determinism load-bearer
+/// for v0.2 kernel selection, silent misconfiguration is the wrong
+/// default — surface a parse error instead.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ManifestRaw {
     #[serde(default)]
     kernels: BTreeMap<String, KernelPinRaw>,
@@ -192,20 +207,30 @@ struct ManifestRaw {
 ///
 /// Accepts either an inline string scalar (`occt = "7.7.0"`) or a table
 /// (`[kernels.occt]\nversion = "7.7.0"`). The inline form is the
-/// recommended spelling; the table form is accepted for forward
-/// compatibility with future per-kernel options.
+/// recommended spelling; the table form exists so future per-kernel
+/// options can be added without breaking the inline form. Today the
+/// table accepts only `version` — unknown keys are rejected at parse
+/// time via `deny_unknown_fields` on [`KernelPinTable`], so authoring a
+/// future-only option (e.g. `tolerance = ...`) on the current schema is
+/// a loud error rather than a silently-ignored field.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum KernelPinRaw {
     Inline(String),
-    Table { version: String },
+    Table(KernelPinTable),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KernelPinTable {
+    version: String,
 }
 
 impl KernelPinRaw {
     fn into_version(self) -> String {
         match self {
             KernelPinRaw::Inline(v) => v,
-            KernelPinRaw::Table { version } => version,
+            KernelPinRaw::Table(KernelPinTable { version }) => version,
         }
     }
 }
@@ -355,6 +380,36 @@ mod tests {
                 "expected '{}' to be rejected by KernelId::from_str",
                 s
             );
+        }
+    }
+
+    #[test]
+    fn unknown_top_level_section_rejected() {
+        // `[kernel]` is a typo for `[kernels]`. Without `deny_unknown_fields`
+        // the document would parse to an empty manifest and the project pin
+        // would be a silent no-op; that is the wrong default for the v0.2
+        // determinism load-bearer.
+        let err = Manifest::from_toml_str("[kernel]\nocct = \"7.7.0\"\n")
+            .expect_err("unknown top-level section should be rejected");
+        match err {
+            ManifestError::Parse(_) => {}
+            other => panic!("expected ManifestError::Parse(_), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn table_form_unknown_field_rejected() {
+        // The table form accepts only `version` today; future per-kernel
+        // options (e.g. `tolerance`) must extend the schema explicitly.
+        // Silently accepting and discarding unknown keys would be worse than
+        // rejecting them.
+        let err = Manifest::from_toml_str(
+            "[kernels.occt]\nversion = \"7.7.0\"\nfeature = \"foo\"\n",
+        )
+        .expect_err("unknown fields in pin table should be rejected");
+        match err {
+            ManifestError::Parse(_) => {}
+            other => panic!("expected ManifestError::Parse(_), got {:?}", other),
         }
     }
 
