@@ -234,4 +234,79 @@ mod tests {
             updated
         );
     }
+
+    /// Step-5: Freshness early cutoff fires when a node's derived freshness
+    /// equals its current freshness, halting propagation along that branch.
+    ///
+    /// 4-cell graph: `a → b`, `c → b`, `b → d`. All four start as
+    /// `Intermediate { generation: 1 }`; `b.reads = [a, c]` and
+    /// `d.reads = [b]`. After flipping `a` to Final (with `c` left
+    /// Intermediate), the walk visits `b`'s derivation:
+    /// - `still_refining = false`
+    /// - inputs: a=Final, c=Intermediate{1}
+    /// - §7.2 derivation: any non-Final input → Intermediate{generation: 1}
+    /// - current: Intermediate{1} == derived → freshness early cutoff fires
+    ///
+    /// Pins arch §3.5 line 434: "If not (e.g. another input is still
+    /// Intermediate), freshness early cutoff fires and propagation stops."
+    /// `b` must remain Intermediate{1}, `d` must NOT be in the updated set,
+    /// and `d`'s freshness must remain Intermediate{1}.
+    #[test]
+    fn freshness_early_cutoff_stops_walk_when_node_freshness_unchanged() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let c = ValueCellId::new(e, "c");
+        let d = ValueCellId::new(e, "d");
+
+        let mut cache = CacheStore::new();
+        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(&mut cache, &c, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &b,
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone(), c.clone()],
+        );
+        put_value_entry(
+            &mut cache,
+            &d,
+            Freshness::Intermediate { generation: 1 },
+            vec![b.clone()],
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+        reverse_index.add(c.clone(), NodeId::Value(b.clone()));
+        reverse_index.add(b.clone(), NodeId::Value(d.clone()));
+
+        // Flip ONLY a to Final; leave c as Intermediate.
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        assert_eq!(
+            cache.freshness(&NodeId::Value(b.clone())),
+            Freshness::Intermediate { generation: 1 },
+            "b should stay Intermediate{{1}} (c is still Intermediate, so b derives back to Intermediate)"
+        );
+        assert!(
+            !updated.contains(&NodeId::Value(d.clone())),
+            "d must NOT be in updated set — early cutoff at b stops the walk, got: {:?}",
+            updated
+        );
+        assert_eq!(
+            cache.freshness(&NodeId::Value(d.clone())),
+            Freshness::Intermediate { generation: 1 },
+            "d's freshness must be untouched (early cutoff at b prevents propagation to d)"
+        );
+        assert!(
+            !updated.contains(&NodeId::Value(b.clone())),
+            "b must NOT be in updated set — its freshness derived back to the same value"
+        );
+    }
 }
