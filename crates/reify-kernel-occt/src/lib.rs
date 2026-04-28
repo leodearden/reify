@@ -5598,6 +5598,60 @@ mod tests {
         }
     }
 
+    /// Parity lock-in: `CenterOfMass` output is bit-equal to `Centroid` output for a
+    /// uniform-density solid.
+    ///
+    /// The `CenterOfMass` kernel arm ignores `density` (bound to `_`) and delegates to
+    /// the same OCCT volume-centroid path as `Centroid` (see `geometry.rs:365–376` for the
+    /// documented bit-equality invariant: "the result is identical to `Centroid(handle)`").
+    ///
+    /// This test guards two things simultaneously:
+    /// 1. The helper-extraction refactor in step-2 (both arms must produce the same string
+    ///    before and after calling `centroid_json`).
+    /// 2. Any future contributor who bypasses the helper and copies an inline `format!` into
+    ///    one arm but not the other — the test will catch any format divergence.
+    ///
+    /// A translated box (dx=5, dy=-3, dz=7) is used so the expected centroid is at (5, -3, 7):
+    /// an origin-centred box would pass even if one arm hardcoded the origin.
+    #[test]
+    fn center_of_mass_output_matches_centroid_for_uniform_density() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .expect("Box creation must succeed");
+        let translated = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 5.0,
+                dy: -3.0,
+                dz: 7.0,
+            })
+            .expect("Translate must succeed");
+
+        let centroid = kernel
+            .query(&GeometryQuery::Centroid(translated.id))
+            .expect("Centroid query must not return Err");
+        let center_of_mass = kernel
+            .query(&GeometryQuery::CenterOfMass {
+                handle: translated.id,
+                density: 1.0,
+            })
+            .expect("CenterOfMass query must not return Err");
+
+        // Bit-equal string equality — not just numeric closeness — to lock in that both arms
+        // use exactly the same JSON encoder (geometry.rs:365–376 documents this invariant).
+        assert_eq!(
+            centroid, center_of_mass,
+            "CenterOfMass and Centroid must produce bit-equal Value outputs for a uniform-density \
+             solid (documented invariant: geometry.rs:365–376). Got Centroid={centroid:?}, \
+             CenterOfMass={center_of_mass:?}"
+        );
+    }
+
     /// Document the density edge-case behavior of `InertiaTensor`.
     ///
     /// The C++ `query_inertia_tensor` implementation multiplies every entry of OCCT's
