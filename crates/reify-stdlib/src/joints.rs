@@ -278,6 +278,36 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 _ => Value::Undef,
             }
         }
+        "joint_ratio" => {
+            // Returns the ratio stored in a coupling Map, or Undef for any other
+            // input (including prismatic/revolute joints which have no ratio key).
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    m.get(&Value::String("ratio".to_string()))
+                        .cloned()
+                        .unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
+        "joint_offset" => {
+            // Returns the offset stored in a coupling Map, or Undef for any other
+            // input (including prismatic/revolute joints which have no offset key).
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    m.get(&Value::String("offset".to_string()))
+                        .cloned()
+                        .unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
         _ => return None,
     })
 }
