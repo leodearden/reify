@@ -422,7 +422,6 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
 /// prelude.  Remove the `#[ignore]` attribute once the parser fix in task 2525
 /// lands — the test will then pass without modification.
 #[test]
-#[ignore = "blocked on task 2525: parser known_enums must consult prelude/stdlib (see crates/reify-syntax/src/ts_parser.rs:58)"]
 fn titanium_implant_conforms_without_inline_enum_redeclarations() {
     let source = r#"
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
