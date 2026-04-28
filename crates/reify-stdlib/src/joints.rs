@@ -122,6 +122,57 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 _ => Value::Undef,
             }
         }
+        "couple" => {
+            // Validate arg count: 2 or 3
+            if args.len() != 2 && args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Validate parent: must be a Map with kind in {"prismatic", "revolute"}
+            let parent_map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            let parent_kind = match parent_map.get(&Value::String("kind".to_string())) {
+                Some(Value::String(s)) => s.as_str(),
+                _ => return Some(Value::Undef),
+            };
+            let is_prismatic = match parent_kind {
+                "prismatic" => true,
+                "revolute" => false,
+                // Rejects "coupling" and any other kind
+                _ => return Some(Value::Undef),
+            };
+            // Extract ratio from args[1]: accept Real or Int.
+            // NaN/Inf not yet rejected here — step-4 adds ratio_input for that.
+            let ratio_f64 = match &args[1] {
+                Value::Real(r) => *r,
+                Value::Int(i) => *i as f64,
+                _ => return Some(Value::Undef),
+            };
+            // Extract offset: use parent-dimension-keyed helper (length_input / trig_input)
+            // so bare Real/Int is accepted in addition to correctly-dimensioned Scalar.
+            let offset_si = if args.len() == 3 {
+                if is_prismatic {
+                    match length_input(&args[2]) {
+                        Some(d) => d,
+                        None => return Some(Value::Undef),
+                    }
+                } else {
+                    match trig_input(&args[2]) {
+                        Some(r) => r,
+                        None => return Some(Value::Undef),
+                    }
+                }
+            } else {
+                0.0
+            };
+            let offset = if is_prismatic {
+                Value::length(offset_si)
+            } else {
+                Value::angle(offset_si)
+            };
+            make_coupling(args[0].clone(), Value::Real(ratio_f64), offset)
+        }
         "joint_axis" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
@@ -222,6 +273,21 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
         }
         _ => None,
     }
+}
+
+/// Build a coupling `Value::Map` with the four-key layout:
+/// `"kind"`, `"offset"`, `"parent"`, `"ratio"`.
+///
+/// Keys are in alphabetical order as `BTreeMap` sorts them, matching the
+/// pattern of `make_joint`.  `ratio` is stored as `Value::Real` (already
+/// extracted to f64 by the caller).
+fn make_coupling(parent: Value, ratio: Value, offset: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+    m.insert(Value::String("offset".to_string()), offset);
+    m.insert(Value::String("parent".to_string()), parent);
+    m.insert(Value::String("ratio".to_string()), ratio);
+    Value::Map(m)
 }
 
 /// Build a joint `Value::Map` with the standard three-key layout:
