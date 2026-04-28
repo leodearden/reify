@@ -643,6 +643,11 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// observable in production logs, distinguishing them from the normal
     /// (silent) success path.
     ///
+    /// **Diagnostic:** when fired from inside `edit_source`, this WARN typically
+    /// indicates a panic or early-return between steps (4c) and (14b).  Other
+    /// call sites that drop without draining (e.g. unit tests) trigger the same
+    /// WARN benignly.
+    ///
     /// # Double-panic note
     ///
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
@@ -666,10 +671,6 @@ impl Drop for PendingWarmSeedsGuard<'_> {
         tracing::warn!(
             target: "reify_eval::engine_edit",
             count = len,
-            hint = "if fired from inside edit_source this typically indicates \
-                    a panic or early-return between steps (4c) and (14b); \
-                    other call sites that drop without draining (e.g. unit \
-                    tests) trigger the same WARN benignly",
             "PendingWarmSeedsGuard safety-net fired: re-donating staged \
              warm-pool entries from Drop"
         );
@@ -4381,19 +4382,17 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Dropping a guard with a non-empty staging map emits a WARN event whose
-    /// structured-field schema includes both `hint` (contextual diagnostic,
-    /// new in S6) and `count` (entry count, regression-locked from earlier
-    /// work).
+    /// structured-field schema includes `count` (entry count, regression-locked).
     ///
     /// This test pins the *schema* — which fields are present — but does **not**
     /// assert the message-body wording (per the pattern established by
     /// `auto_trim_warn_omits_invariant_current_len_field` in `warm_pool.rs`,
     /// which uses `contains_key` rather than string matching).
     ///
-    /// Structured fields are the unit of log-aggregator queries; body wording
-    /// is verified by code review.
+    /// Structured fields with actionable, varying values are the unit of
+    /// log-aggregator queries; body wording is verified by code review.
     #[test]
-    fn pending_warm_seeds_guard_drop_warn_emits_hint_field() {
+    fn pending_warm_seeds_guard_drop_warn_emits_count_field() {
         use crate::warm_pool::WarmStatePool;
         use crate::cache::NodeId;
         use reify_test_support::warn_capturing_subscriber;
@@ -4404,7 +4403,7 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let mut pool = WarmStatePool::new(1024);
-            let nid = NodeId::Value(ValueCellId::new("T", "hint_field_test"));
+            let nid = NodeId::Value(ValueCellId::new("T", "count_field_test"));
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
             pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
             // Drop fires with a non-empty map → safety-net WARN must fire.
@@ -4415,13 +4414,6 @@ mod tests {
 
         let all_fields = capture.fields_by_event();
         let event_fields = &all_fields[0];
-
-        // Schema assertion: `hint` (new S6 field) must be present.
-        assert!(
-            event_fields.contains_key("hint"),
-            "safety-net WARN must include a `hint` structured field; \
-             got fields: {event_fields:?}"
-        );
 
         // Regression-lock: `count` (established actionable field) must be present.
         assert!(
