@@ -83,7 +83,12 @@ impl CliToolContext {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+        // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
+        // see task 2525.
+        let parsed = reify_compiler::parse_with_stdlib(
+            &source,
+            reify_types::ModulePath::single(module_name),
+        );
 
         if !parsed.errors.is_empty() {
             let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
@@ -406,7 +411,12 @@ impl ReifyToolContext for CliToolContext {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let parsed = reify_syntax::parse(content, reify_types::ModulePath::single(module_name));
+        // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
+        // see task 2525.
+        let parsed = reify_compiler::parse_with_stdlib(
+            content,
+            reify_types::ModulePath::single(module_name),
+        );
 
         if !parsed.errors.is_empty() {
             // Parse failed — return failure WITHOUT modifying any state.
@@ -538,7 +548,12 @@ impl ReifyToolContext for CliToolContext {
                 .and_then(|s| s.to_str())
                 .unwrap_or("unnamed");
 
-            let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+            // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
+            // see task 2525.
+            let parsed = reify_compiler::parse_with_stdlib(
+                &source,
+                reify_types::ModulePath::single(module_name),
+            );
 
             if parsed.errors.is_empty() {
                 Some(reify_compiler::compile(&parsed))
