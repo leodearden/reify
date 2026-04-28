@@ -1390,4 +1390,42 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(format!("{}", a), format!("{}", b));
     }
+
+    #[test]
+    fn role_cap_top_and_bottom_are_distinct() {
+        assert_ne!(Role::Cap(CapKind::Top), Role::Cap(CapKind::Bottom));
+    }
+
+    #[test]
+    fn role_side_and_new_edge_are_distinct() {
+        assert_ne!(Role::Side, Role::NewEdge);
+    }
+
+    #[test]
+    fn role_cap_top_differs_from_side() {
+        assert_ne!(Role::Cap(CapKind::Top), Role::Side);
+    }
+
+    #[test]
+    fn role_debug_includes_variant_name() {
+        let dbg_top = format!("{:?}", Role::Cap(CapKind::Top));
+        let dbg_side = format!("{:?}", Role::Side);
+        let dbg_new_edge = format!("{:?}", Role::NewEdge);
+        assert!(dbg_top.contains("Cap"), "expected Cap in {dbg_top}");
+        assert!(dbg_top.contains("Top"), "expected Top in {dbg_top}");
+        assert!(dbg_side.contains("Side"), "expected Side in {dbg_side}");
+        assert!(
+            dbg_new_edge.contains("NewEdge"),
+            "expected NewEdge in {dbg_new_edge}"
+        );
+    }
+
+    #[test]
+    fn role_clone_preserves_identity() {
+        let r = Role::Cap(CapKind::Bottom);
+        let s = r;
+        assert_eq!(r, s);
+        let copy = r.clone();
+        assert_eq!(r, copy);
+    }
 }
