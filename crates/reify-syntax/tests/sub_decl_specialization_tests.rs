@@ -16,10 +16,7 @@
 //! (2369: diagnostic emission; 2370: comprehensive forbidden/permitted
 //! coverage) build on this AST contract.
 
-use reify_syntax::{
-    Declaration, MemberDecl, ParamDecl, SubDecl, walk_specialization_scope_members,
-    MAX_MEMBER_NESTING_DEPTH,
-};
+use reify_syntax::{Declaration, MemberDecl, ParamDecl, SubDecl};
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
 // ── (a) AST regression: parsed sub forms have body == None ───────────────
@@ -67,15 +64,20 @@ fn collection_form_has_no_body() {
 }
 
 // ── helpers for hand-built AST tests ─────────────────────────────────────
+// (allow `dead_code` because some helpers are introduced ahead of the test
+// that uses them — TDD steps land incrementally.)
 
+#[allow(dead_code)]
 fn dummy_span() -> SourceSpan {
     SourceSpan::new(0, 1)
 }
 
+#[allow(dead_code)]
 fn dummy_hash() -> ContentHash {
     ContentHash(0)
 }
 
+#[allow(dead_code)]
 fn make_param(name: &str) -> MemberDecl {
     MemberDecl::Param(ParamDecl {
         name: name.to_string(),
@@ -89,6 +91,7 @@ fn make_param(name: &str) -> MemberDecl {
     })
 }
 
+#[allow(dead_code)]
 fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
     SubDecl {
         name: name.to_string(),

@@ -1604,6 +1604,9 @@ impl<'a> Lowering<'a> {
             args,
             is_collection,
             where_clause,
+            // Grammar does not yet produce specialization-scope bodies; see
+            // SubDecl docs and task 2368 plan.
+            body: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })

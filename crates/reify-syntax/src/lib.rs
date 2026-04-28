@@ -165,6 +165,11 @@ pub struct ConstraintInstDecl {
 }
 
 /// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
+///
+/// Specialization-scope body (`sub motor : T { ... }`) is represented by
+/// `body: Some(...)`; `None` means a bare instantiation or collection form.
+/// The `Some(_)` discriminator IS the spec §8.7 specialization-scope flag —
+/// see `walk_specialization_scope_members` for the traversal contract.
 #[derive(Debug, Clone)]
 pub struct SubDecl {
     pub name: String,
@@ -173,6 +178,11 @@ pub struct SubDecl {
     pub args: Vec<(String, Expr)>,
     pub is_collection: bool,
     pub where_clause: Option<WhereClause>,
+    /// Members of a specialization-scope body, when this `sub` opens one.
+    /// `None` for bare instantiation or collection forms (the only forms
+    /// the current grammar produces; the `{ body }` form is reserved for a
+    /// future grammar update).
+    pub body: Option<Vec<MemberDecl>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
