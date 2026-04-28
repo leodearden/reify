@@ -754,4 +754,33 @@ mod tests {
         engine.clear_panic_on_eval();
         assert!(engine.panic_on_eval_cells.is_empty());
     }
+
+    /// `Engine::topology_attribute_table` returns a borrow of the v0.2
+    /// attribute table on the engine. After construction (both
+    /// `Engine::new` and `Engine::with_prelude`), the table must be empty.
+    /// The accessor returns a borrow (not a clone) — calling it twice
+    /// must yield the same address.
+    #[test]
+    fn topology_attribute_table_starts_empty_on_new_and_with_prelude() {
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        // Engine::new path.
+        let engine_new = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let table_new = engine_new.topology_attribute_table();
+        assert!(table_new.is_empty());
+        assert_eq!(table_new.len(), 0);
+
+        // Engine::with_prelude path (empty prelude).
+        let engine_wp = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let table_wp = engine_wp.topology_attribute_table();
+        assert!(table_wp.is_empty());
+        assert_eq!(table_wp.len(), 0);
+
+        // The accessor returns a borrow into the engine — calling it
+        // twice must yield the same address. We use `with_prelude` here
+        // because we already hold its handle.
+        let first = engine_wp.topology_attribute_table() as *const _;
+        let second = engine_wp.topology_attribute_table() as *const _;
+        assert!(std::ptr::eq(first, second));
+    }
 }
