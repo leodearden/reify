@@ -2355,6 +2355,199 @@ mod tests {
         assert!(eval_builtin("orient_to_axis_angle", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── orient_to_euler tests (step-13) ────────────────────────────────────
+
+    /// Helper: extract three Angle Scalars (radians) from a List<Angle> result.
+    fn euler_extract(v: &Value) -> Option<[f64; 3]> {
+        let items = match v {
+            Value::List(items) if items.len() == 3 => items,
+            _ => return None,
+        };
+        let mut out = [0.0; 3];
+        for (i, item) in items.iter().enumerate() {
+            match item {
+                Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => {
+                    out[i] = *si_value;
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    #[test]
+    fn orient_to_euler_identity_xyz_zero_angles() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), id],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        assert!(angles[0].abs() < 1e-12);
+        assert!(angles[1].abs() < 1e-12);
+        assert!(angles[2].abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_euler_xyz_round_trip() {
+        let a = std::f64::consts::FRAC_PI_4;
+        let b = std::f64::consts::FRAC_PI_6;
+        let c = std::f64::consts::FRAC_PI_3;
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(a),
+                Value::Real(b),
+                Value::Real(c),
+            ],
+        );
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), q],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        assert!(
+            (angles[0] - a).abs() < 1e-10,
+            "xyz a: in={} out={}",
+            a,
+            angles[0]
+        );
+        assert!(
+            (angles[1] - b).abs() < 1e-10,
+            "xyz b: in={} out={}",
+            b,
+            angles[1]
+        );
+        assert!(
+            (angles[2] - c).abs() < 1e-10,
+            "xyz c: in={} out={}",
+            c,
+            angles[2]
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_zyx_round_trip_three_nonzero() {
+        let a = 0.3;
+        let b = 0.5;
+        let c = -0.7;
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("zyx".to_string()),
+                Value::Real(a),
+                Value::Real(b),
+                Value::Real(c),
+            ],
+        );
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("zyx".to_string()), q],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        assert!((angles[0] - a).abs() < 1e-10);
+        assert!((angles[1] - b).abs() < 1e-10);
+        assert!((angles[2] - c).abs() < 1e-10);
+    }
+
+    #[test]
+    fn orient_to_euler_invalid_convention_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin(
+                "orient_to_euler",
+                &[Value::String("abc".to_string()), q]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_euler", &[]).is_undef());
+        assert!(
+            eval_builtin("orient_to_euler", &[Value::String("xyz".to_string())]).is_undef()
+        );
+        assert!(
+            eval_builtin(
+                "orient_to_euler",
+                &[Value::String("xyz".to_string()), q.clone(), q]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_non_string_convention_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_euler", &[Value::Real(1.0), q]).is_undef());
+    }
+
+    /// Gimbal-lock case for "xyz" Tait-Bryan: middle angle b = π/2.
+    /// At this singularity the decomposition is non-unique; the implementation
+    /// must return a deterministic triple whose recomposition equals the
+    /// original quaternion (sign-insensitive).
+    #[test]
+    fn orient_to_euler_xyz_gimbal_lock_deterministic_recomposition() {
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(0.3),
+                Value::Real(pi_2),
+                Value::Real(0.7),
+            ],
+        );
+        // Capture quaternion components for later comparison.
+        let (qw, qx, qy, qz) = match q.clone() {
+            Value::Orientation { w, x, y, z } => (w, x, y, z),
+            other => panic!("expected Orientation, got {:?}", other),
+        };
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), q],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        // Recompose and verify equivalence to the original quaternion.
+        let q_back = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(angles[0]),
+                Value::Real(angles[1]),
+                Value::Real(angles[2]),
+            ],
+        );
+        assert_orientation_approx!(q_back, qw, qx, qy, qz, sign_insensitive = 1e-10);
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
