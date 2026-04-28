@@ -1591,6 +1591,99 @@ mod tests {
         assert!(eval_builtin("orient_inverse", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── orient_log tests (step-5) ──────────────────────────────────────────
+
+    #[test]
+    fn orient_log_identity_is_zero_vector() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_vector3_approx!(Vector, eval_builtin("orient_log", &[id]), [0.0, 0.0, 0.0]);
+    }
+
+    /// log of 90°z = (cos(π/4), 0, 0, sin(π/4)) is [0, 0, π/2].
+    #[test]
+    fn orient_log_90deg_z_returns_z_pi_half() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90z = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        assert_vector3_approx!(
+            Vector,
+            eval_builtin("orient_log", &[q90z]),
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2]
+        );
+    }
+
+    /// log of 180°x = (0, 1, 0, 0) is [π, 0, 0]. Tests the boundary case w=0.
+    #[test]
+    fn orient_log_180deg_x_returns_x_pi() {
+        let q180x = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_vector3_approx!(
+            Vector,
+            eval_builtin("orient_log", &[q180x]),
+            [std::f64::consts::PI, 0.0, 0.0]
+        );
+    }
+
+    /// Near-identity quaternion (small angle) — Taylor fallback should produce
+    /// finite values approximately equal to 2*(x,y,z).
+    #[test]
+    fn orient_log_near_identity_uses_taylor_fallback() {
+        // q ≈ (1, 5e-9, 0, 0) — w stays close to 1, x is tiny but the rotation
+        // vector should be roughly 2*x = 1e-8.
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 5e-9,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("orient_log", &[q]);
+        match result {
+            Value::Vector(items) if items.len() == 3 => {
+                let v0 = items[0].as_f64().unwrap();
+                let v1 = items[1].as_f64().unwrap();
+                let v2 = items[2].as_f64().unwrap();
+                assert!(v0.is_finite() && v1.is_finite() && v2.is_finite(),
+                    "near-identity log must be finite, got [{v0}, {v1}, {v2}]");
+                // Leading-order Taylor: log ≈ 2*(x,y,z); verify within 1% relative tolerance
+                assert!((v0 - 1e-8).abs() < 1e-9,
+                    "near-identity x-component expected ~1e-8 got {v0}");
+                assert!(v1.abs() < 1e-15);
+                assert!(v2.abs() < 1e-15);
+            }
+            other => panic!("expected Vector(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn orient_log_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_log", &[]).is_undef());
+        assert!(eval_builtin("orient_log", &[q.clone(), q]).is_undef());
+    }
+
+    #[test]
+    fn orient_log_non_orientation_returns_undef() {
+        assert!(eval_builtin("orient_log", &[Value::Real(1.0)]).is_undef());
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
