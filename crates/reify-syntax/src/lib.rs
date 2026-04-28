@@ -915,3 +915,21 @@ pub struct ParseError {
 pub fn parse(source: &str, module_path: reify_types::ModulePath) -> ParsedModule {
     ts_parser::parse(source, module_path)
 }
+
+/// Parse a source string into a `ParsedModule`, pre-seeding the lowering's
+/// `known_enums` set with `prelude_enum_names`.
+///
+/// Allows enums declared in a prelude (e.g. stdlib `CorrosionClass`) to
+/// participate in the `EnumAccess` disambiguation pass even though their
+/// declarations are not in the current source file.  See the underlying
+/// [`ts_parser::parse_with_prelude_enums`] for the full contract.
+///
+/// The companion `reify_compiler::parse_with_stdlib` is the typical entry
+/// point — it flattens the stdlib's prelude enum names and delegates here.
+pub fn parse_with_prelude_enums(
+    source: &str,
+    module_path: reify_types::ModulePath,
+    prelude_enum_names: &[&str],
+) -> ParsedModule {
+    ts_parser::parse_with_prelude_enums(source, module_path, prelude_enum_names)
+}

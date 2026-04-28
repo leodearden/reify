@@ -25,7 +25,37 @@ macro_rules! check_and_lower {
 }
 
 /// Parse source text into a `ParsedModule` using tree-sitter.
+///
+/// Equivalent to [`parse_with_prelude_enums(source, module_path, &[])`](parse_with_prelude_enums).
+/// Use this entry when no prelude-supplied enum names need to participate in
+/// the `EnumAccess` disambiguation pass — i.e. the source is self-contained
+/// or will be compiled without a prelude.
 pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
+    parse_with_prelude_enums(source, module_path, &[])
+}
+
+/// Parse source text into a `ParsedModule`, pre-seeding the lowering's
+/// `known_enums` set with the supplied prelude enum names.
+///
+/// The disambiguation in `lower_member_access` resolves `Type.Variant` to
+/// `EnumAccess` when `Type` is in `known_enums`, otherwise to `MemberAccess`.
+/// Pre-seeding from a prelude lets the parser recognise stdlib/prelude enums
+/// (e.g. `CorrosionClass.C5`) as `EnumAccess` even though their declarations
+/// live outside the current source file.
+///
+/// `prelude_enum_names` and the source's own `enum_declaration` nodes are
+/// merged into a single set; overlap between them is silently deduplicated by
+/// `HashSet::insert` and emits no parse error — the parser does not police
+/// name-resolution shadowing.  Compiler-side resolution decides which of the
+/// two definitions wins.
+///
+/// Companion to [`reify_compiler::parse_with_stdlib`], which flattens the
+/// stdlib's prelude enum names and delegates to this entry.
+pub fn parse_with_prelude_enums(
+    source: &str,
+    module_path: ModulePath,
+    prelude_enum_names: &[&str],
+) -> ParsedModule {
     let mut ts_parser = tree_sitter::Parser::new();
     ts_parser
         .set_language(&tree_sitter_reify::language().into())
@@ -34,7 +64,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
     let tree = ts_parser.parse(source, None).expect("Failed to parse");
     let root = tree.root_node();
 
-    let mut lowering = Lowering::new(source);
+    let mut lowering = Lowering::with_prelude_enums(source, prelude_enum_names);
     lowering.lower_source_file(root);
 
     let content_hash = ContentHash::of_str(source);
@@ -62,11 +92,24 @@ struct Lowering<'a> {
 
 impl<'a> Lowering<'a> {
     fn new(source: &'a str) -> Self {
+        Self::with_prelude_enums(source, &[])
+    }
+
+    /// Construct a lowering context whose `known_enums` set is pre-seeded
+    /// with `prelude_enum_names`.  The first-pass collector in
+    /// `lower_source_file` then unions the current source's own enum names
+    /// into the same set.  `HashSet::insert` deduplicates any overlap
+    /// silently — see `parse_with_prelude_enums` for the full contract.
+    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&str]) -> Self {
+        let mut known_enums: HashSet<String> = HashSet::new();
+        for name in prelude_enum_names {
+            known_enums.insert((*name).to_string());
+        }
         Self {
             source,
             declarations: Vec::new(),
             errors: RefCell::new(Vec::new()),
-            known_enums: HashSet::new(),
+            known_enums,
             module_pragmas: Vec::new(),
         }
     }
