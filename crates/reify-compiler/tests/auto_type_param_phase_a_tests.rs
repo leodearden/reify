@@ -410,3 +410,47 @@ fn enumerate_overflows_at_eleven_candidates_emits_diagnostic_with_first_ten() {
         d.message
     );
 }
+
+// ─── step-15: overflow with many extra candidates still terminates ────────
+
+/// With 25 structures `S00..S24` implementing `Seal`, the result is
+/// still `Overflow(["S00".."S09"])` — exactly 10 entries, alphabetically
+/// the first 10 of the entire pool — and exactly one diagnostic is
+/// emitted (not one per excess candidate).
+///
+/// This pins the early-termination correctness from step-14: even with
+/// many extra matches, the diagnostic content is exactly the first 10
+/// alphabetically because of sorted iteration, and the iteration breaks
+/// after the 11th match.
+#[test]
+fn enumerate_overflow_with_many_candidates_still_terminates_at_eleven() {
+    let source = build_n_seal_structures(25);
+    let module = compile_source(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    let expected_first_ten: Vec<String> = (0..MAX_AUTO_TYPE_PARAM_CANDIDATES)
+        .map(|i| format!("S{:02}", i))
+        .collect();
+    assert_eq!(
+        result,
+        CandidateEnumeration::Overflow(expected_first_ten),
+        "with 25 candidates, Overflow vector must contain exactly S00..S09 (NOT S15/S20/etc.)"
+    );
+    // Exactly one diagnostic — emitting one per excess candidate would
+    // flood the diagnostic stream and is explicitly not the contract.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one overflow diagnostic expected (not one per excess candidate), got {}",
+        diagnostics.len()
+    );
+}
