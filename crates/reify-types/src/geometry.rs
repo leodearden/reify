@@ -772,6 +772,21 @@ pub enum CapKind {
     Bottom,
 }
 
+/// One entry in a topology entity's mod-history postfix.
+///
+/// Recorded each time a feature splits a parent topology entity into
+/// children — `splitting_feature_id` is the FeatureId whose op caused
+/// the split, and `split_index` distinguishes the resulting children
+/// (PRD lines 60, 64).
+///
+/// Task 1 keeps `mod_history` empty on propagation; task 3 (#2571)
+/// populates this on splits.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModEntry {
+    pub splitting_feature_id: FeatureId,
+    pub split_index: u32,
+}
+
 /// Role of a topology entity within its originating feature.
 ///
 /// The minimal initial set per PRD line 56. Tasks 5-8 (sweeps, primitives,

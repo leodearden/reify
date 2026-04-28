@@ -41,8 +41,8 @@ pub use expr::{
 };
 pub use geometry::{
     CapKind, ExportError, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
-    ReprKind, Role, StepKind, TessError, debug_assert_query_many_invariant,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, ModEntry,
+    QueryError, ReprKind, Role, StepKind, TessError, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;
