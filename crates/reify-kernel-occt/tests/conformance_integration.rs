@@ -245,7 +245,7 @@ fn vertex_is_not_watertight_but_is_manifold_and_orientable() {
 ///
 /// Uses `OcctKernel::store_circle_face_for_test`, a test-only helper that
 /// wraps `ffi::ffi::make_circle_face` and stores the result in the kernel.
-/// The method is gated by `#[cfg(all(has_occt, any(test, feature = "test-fixtures")))]`.
+/// The method is gated by `#[cfg(all(has_occt, feature = "test-fixtures"))]`.
 /// Integration tests link the library in normal (non-test) build mode, so
 /// `cfg(test)` items are invisible to them; the `test-fixtures` cargo feature
 /// (auto-enabled here via `Cargo.toml`'s self-dev-dep) is what makes these

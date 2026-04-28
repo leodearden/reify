@@ -1442,7 +1442,7 @@ impl OcctKernel {
 ///
 /// Naming: the `_for_test` suffix is retained for self-documentation; the
 /// real isolation comes from the cfg gate above.
-#[cfg(all(has_occt, any(test, feature = "test-fixtures")))]
+#[cfg(all(has_occt, feature = "test-fixtures"))]
 impl OcctKernel {
     /// Create a circle face at the given z-height via the OCCT FFI and store
     /// it in the kernel, returning its `GeometryHandleId`.
