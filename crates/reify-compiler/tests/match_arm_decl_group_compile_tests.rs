@@ -443,3 +443,439 @@ fn match_arm_groups_iteration_order_is_deterministic() {
         order_a, order_b
     );
 }
+
+// ─── Diagnostic-coverage tests (reviewer suggestions 9, 11) ─────────────────
+
+/// suggestion 9a: discriminant param has a non-enum type → diagnostic.
+///
+/// The discriminant `head_type` is declared as `param head_type : HexHead`
+/// where `HexHead` is a structure, not an enum.  The compiler must emit a
+/// "expected an enum" diagnostic and must NOT produce a cluster.
+#[test]
+fn match_arm_decl_group_discriminant_not_enum_emits_diagnostic() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![match_arm_decl("Hex", sub_member("head", "HexHead"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        // head_type is typed as a structure (not an enum)
+        members: vec![param_member("head_type", "HexHead"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_discriminant_not_enum"),
+        declarations: vec![empty_structure("HexHead"), bolt],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_enum_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("expected an enum"));
+    assert!(
+        has_enum_diag,
+        "expected 'expected an enum' diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // No cluster should be registered when discriminant resolution fails.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+    assert!(
+        bolt_template.match_arm_groups.is_empty(),
+        "no cluster should be registered when discriminant is not an enum, got: {:?}",
+        bolt_template.match_arm_groups
+    );
+}
+
+/// suggestion 9b: discriminant name not in scope → "not found in scope" diagnostic.
+///
+/// The match block references `nonexistent` which is never declared.
+#[test]
+fn match_arm_decl_group_discriminant_unresolved_emits_diagnostic() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("nonexistent"),
+        arms: vec![match_arm_decl("Hex", sub_member("head", "HexHead"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_discriminant_unresolved"),
+        declarations: vec![empty_structure("HexHead"), bolt],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_unresolved_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("not found in scope"));
+    assert!(
+        has_unresolved_diag,
+        "expected 'not found in scope' diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// suggestion 11: non-Ident discriminant (MemberAccess) → "simple identifier" diagnostic.
+///
+/// The user wrote `match self.head_type { ... }` — a member-access expression.
+/// This pins the contract: complex discriminants are rejected until task 2373
+/// extends support.
+#[test]
+fn match_arm_decl_group_member_access_discriminant_emits_simple_identifier_diagnostic() {
+    // Construct `self.head_type` as a MemberAccess expr.
+    let member_discriminant = Expr {
+        kind: ExprKind::MemberAccess {
+            object: Box::new(make_ident_expr("self")),
+            member: "head_type".to_string(),
+        },
+        span: zero_span(),
+    };
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: member_discriminant,
+        arms: vec![match_arm_decl("Hex", sub_member("head", "HexHead"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_member_access_discriminant"),
+        declarations: vec![empty_structure("HexHead"), bolt],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_ident_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("simple identifier"));
+    assert!(
+        has_ident_diag,
+        "expected 'simple identifier' diagnostic for MemberAccess discriminant, got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// suggestion 9d / suggestion 6: a Param arm inside a match block is rejected
+/// with an explicit 'only sub declarations are supported' diagnostic.
+///
+/// This pins the pre-pass rejection invariant: Param arms must never be inserted
+/// into scope.names (which would corrupt task 2375's dup-name tightening).
+#[test]
+fn match_arm_decl_group_param_arm_emits_unsupported_diagnostic() {
+    let param_arm = MatchArmDeclArmDecl {
+        patterns: vec!["Hex".to_string()],
+        member: Box::new(param_member("head_width", "Real")),
+        span: zero_span(),
+    };
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![param_arm],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_param_arm_rejected"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_unsupported_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("only 'sub' declarations are supported"));
+    assert!(
+        has_unsupported_diag,
+        "expected 'only sub declarations are supported' diagnostic for Param arm, got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// suggestion 5: an empty match block emits 'must contain at least one arm'.
+#[test]
+fn match_arm_decl_group_empty_arms_emits_diagnostic() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![], // intentionally empty
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_empty_arms"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_empty_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("at least one arm"));
+    assert!(
+        has_empty_diag,
+        "expected 'at least one arm' diagnostic for empty match block, got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// suggestion 4: arms with mismatched logical names emit a diagnostic.
+///
+/// Arm 0 declares `sub head : HexHead` but arm 1 declares `sub foot : SocketHead`.
+/// The compiler must reject this with an 'expected head, found foot' diagnostic.
+#[test]
+fn match_arm_decl_group_mismatched_arm_names_emits_diagnostic() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("foot", "SocketHead")), // name mismatch!
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_mismatched_names"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_mismatch_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("expected 'head'") && d.message.contains("found 'foot'"));
+    assert!(
+        has_mismatch_diag,
+        "expected mismatch diagnostic ('expected head, found foot'), got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// suggestion 8: two match blocks in the same structure declaring the same
+/// logical name → 'duplicate match-arm cluster name' diagnostic.
+#[test]
+fn match_arm_decl_group_duplicate_cluster_name_emits_diagnostic() {
+    // Two separate match blocks, both producing cluster "head".
+    let match_group_1 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("kind_a"),
+        arms: vec![
+            match_arm_decl("A1", sub_member("head", "HeadA1")),
+            match_arm_decl("A2", sub_member("head", "HeadA2")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+    let match_group_2 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("kind_b"),
+        arms: vec![
+            match_arm_decl("B1", sub_member("head", "HeadB1")),
+            match_arm_decl("B2", sub_member("head", "HeadB2")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("kind_a", "KindA"),
+            param_member("kind_b", "KindB"),
+            match_group_1,
+            match_group_2,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_duplicate_cluster"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "KindA".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["A1".to_string(), "A2".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            Declaration::Enum(EnumDecl {
+                name: "KindB".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["B1".to_string(), "B2".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HeadA1"),
+            empty_structure("HeadA2"),
+            empty_structure("HeadB1"),
+            empty_structure("HeadB2"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_dup_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("duplicate match-arm cluster name"));
+    assert!(
+        has_dup_diag,
+        "expected 'duplicate match-arm cluster name' diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+}
