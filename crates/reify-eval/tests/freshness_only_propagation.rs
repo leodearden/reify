@@ -109,11 +109,20 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
         "a must still be in the cache"
     );
 
-    // Clone the reverse_index out of `eval_state()` so the borrow is
-    // released before we hand `cache_store_mut()` to the walk. (The
-    // borrow checker forbids holding `&engine.eval_state()` and
-    // `&mut engine.cache_store_mut()` simultaneously — see plan
-    // design-decision §step-15 in `.task/plan.json`.)
+    // Clone the reverse_index out of `eval_state()` so the immutable
+    // borrow is released before we hand `cache_store_mut()` (a mutable
+    // borrow on the same `Engine`) to the walk. The borrow checker
+    // forbids holding `&engine.eval_state()` and `engine.cache_store_mut()`
+    // simultaneously, so a clone is the simplest way to thread the
+    // reverse_index through to the walk.
+    //
+    // `ReverseDependencyIndex` is `Clone`-able specifically to support
+    // this idiom (see `concurrent.rs:172` for another instance). When
+    // this walk is eventually wired into `engine_edit.rs::edit_param`
+    // (out-of-scope for task #2335 — see plan design-decision #5), the
+    // call site will own both `&mut self.cache` and `&self.eval_state`
+    // through the `Engine` struct's interior fields and the clone won't
+    // be necessary.
     let reverse_index_clone = engine
         .eval_state()
         .expect("eval_state populated by Engine::eval")
