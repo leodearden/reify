@@ -2691,7 +2691,11 @@ mod tests {
     /// must panic in debug/test builds. Callers must use `mark_pending` or
     /// `mark_pending_with_cause` instead, which also derive `last_substantive` and
     /// increment `pending_transition_count`.
+    ///
+    /// Gated on `debug_assertions` because the guard uses `debug_assert!`, which is
+    /// a no-op in release builds — the panic only fires in debug/test profiles.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "Pending")]
     fn set_freshness_panics_when_passed_pending() {
         use reify_types::{ContentHash, Freshness, ResultRef};
