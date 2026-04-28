@@ -17,8 +17,8 @@
 //! coverage) build on this AST contract.
 
 use reify_syntax::{
-    ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MemberDecl, ParamDecl,
-    SubDecl, walk_specialization_scope_members,
+    ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MAX_MEMBER_NESTING_DEPTH,
+    MemberDecl, ParamDecl, SubDecl, walk_specialization_scope_members,
 };
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
@@ -245,6 +245,49 @@ fn make_guarded_group(
         span: dummy_span(),
         content_hash: dummy_hash(),
     })
+}
+
+// ── (e) walker depth-bounded ─────────────────────────────────────────────
+
+/// Build a chain of nested specialization scopes `depth` levels deep.
+/// Each level is a `SubDecl{body: Some([Sub{body: Some([…])}])}`, with a
+/// single `Param` at the innermost level.
+fn build_nested_sub_chain(depth: usize) -> SubDecl {
+    let mut current = make_sub_with_body("leaf", Some(vec![make_param("inner")]));
+    for i in 0..depth {
+        let name = format!("level_{i}");
+        current = make_sub_with_body(&name, Some(vec![MemberDecl::Sub(current)]));
+    }
+    current
+}
+
+#[test]
+fn walker_terminates_at_max_depth() {
+    // Pathologically deep chain — `MAX_MEMBER_NESTING_DEPTH * 2` levels
+    // ensures we exceed the guard. The walker must NOT stack-overflow,
+    // and must visit no more than the bound permits (each guard layer
+    // contributes one Sub member visit before recursion is suppressed).
+    let depth = MAX_MEMBER_NESTING_DEPTH * 2;
+    let chain = build_nested_sub_chain(depth);
+
+    let mut count = 0usize;
+    walk_specialization_scope_members(&chain, &mut |_m| count += 1);
+
+    // Loose upper bound — every Sub layer plus its leaf can produce at
+    // most 2 visits per depth level (one for the Sub member, one for
+    // any leaf descendant). The exact count is implementation-specific;
+    // the regression guard is "did not stack-overflow AND bounded".
+    let max_expected = (MAX_MEMBER_NESTING_DEPTH + 1) * 2;
+    assert!(
+        count <= max_expected,
+        "walker visited {count} members, exceeding the depth-bounded ceiling of {max_expected}"
+    );
+    // Also assert non-zero — a depth-1 visit must always succeed even
+    // under the guard.
+    assert!(
+        count >= 1,
+        "walker should visit at least the outermost Sub's first child"
+    );
 }
 
 #[test]
