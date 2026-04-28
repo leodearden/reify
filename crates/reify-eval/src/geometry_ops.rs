@@ -1223,13 +1223,27 @@ pub(crate) fn try_eval_conformance_query(
     kernel: &dyn reify_types::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
-    // (i) Must be a FunctionCall — anything else is unsupported.
+    // Early-return ordering audit (task 2320 step-8): the kernel is the last
+    // step. Each guard below either short-circuits via `return None` (for
+    // unsupported shapes) or short-circuits via `return Some(Bool(true))`
+    // (for the user-assertion escape hatch). Pinned by the
+    // `try_eval_conformance_query_*_returns_none_no_kernel_call` and
+    // `try_eval_conformance_query_user_assertion_*` tests.
+    //
+    //   1. CompiledExprKind::FunctionCall          (cheapest — pattern match)
+    //   2. recognised helper name                  (string compare)
+    //   3. user-assertion escape hatch             (Vec::any string compare)
+    //   4. single-arg ValueRef shape               (pattern match)
+    //   5. named_steps cell-member lookup          (HashMap::get)
+    //   6. kernel.query(...)                       (the actual round-trip)
+
+    // (1) Must be a FunctionCall — anything else is unsupported.
     let (function, args) = match &expr.kind {
         reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
 
-    // (ii) Must be one of the three recognised helper names. The pairing
+    // (2) Must be one of the three recognised helper names. The pairing
     // with the matching marker trait is fixed.
     let marker_trait = match function.name.as_str() {
         "is_watertight" => "Watertight",
@@ -1238,7 +1252,7 @@ pub(crate) fn try_eval_conformance_query(
         _ => return None,
     };
 
-    // (iii) Escape hatch: if the enclosing structure declared the matching
+    // (3) Escape hatch: if the enclosing structure declared the matching
     // marker trait, skip the kernel query entirely and return Bool(true).
     // This is intentionally checked *before* arg-shape resolution so the
     // user-assertion semantic holds even when the arg is otherwise
@@ -1247,7 +1261,7 @@ pub(crate) fn try_eval_conformance_query(
         return Some(reify_types::Value::Bool(true));
     }
 
-    // (iv) Arg shape: we only resolve `is_watertight(<entity>.<member>)`
+    // (4) Arg shape: we only resolve `is_watertight(<entity>.<member>)`
     // where `<member>` is a let-bound geometry name in `named_steps`.
     // Anything else (literals, nested expressions, cross-template idents)
     // falls through to `None` so the cell stays at its compiled default.
@@ -1258,12 +1272,15 @@ pub(crate) fn try_eval_conformance_query(
         reify_types::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
+
+    // (5) Resolve the cell-member name to a kernel handle. Absent →
+    // `None` (and the kernel is never consulted).
     let handle = match named_steps.get(&cell_id.member) {
         Some(h) => *h,
         None => return None,
     };
 
-    // (v) Build the matching kernel query and dispatch.
+    // (6) All guards passed: build the matching kernel query and dispatch.
     let query = match function.name.as_str() {
         "is_watertight" => reify_types::GeometryQuery::IsWatertight(handle),
         "is_manifold" => reify_types::GeometryQuery::IsManifold(handle),
