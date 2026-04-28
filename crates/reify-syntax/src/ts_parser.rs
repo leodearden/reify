@@ -91,6 +91,10 @@ struct Lowering<'a> {
 }
 
 impl<'a> Lowering<'a> {
+    /// Test-only constructor — equivalent to `with_prelude_enums(source, &[])`.
+    /// Production callers go through `parse` / `parse_with_prelude_enums`,
+    /// which use `with_prelude_enums` directly.
+    #[cfg(test)]
     fn new(source: &'a str) -> Self {
         Self::with_prelude_enums(source, &[])
     }
