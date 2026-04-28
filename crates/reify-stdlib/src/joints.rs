@@ -131,6 +131,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 }
                 "coupling" => {
                     // Extract the four coupling-map fields with explicit guards.
+                    // Guards for all three fields are required: a Map built by a
+                    // trusted `couple` call always has them, but hand-built Maps
+                    // used in tests or future serialisation paths may not.
                     let parent = match map.get(&Value::String("parent".to_string())) {
                         Some(v) => v.clone(),
                         None => return Some(Value::Undef),
