@@ -1854,6 +1854,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transform_at_coupling_nan_ratio_returns_undef() {
+        // Defense-in-depth: hand-built coupling Map with Value::Real(f64::NAN) ratio.
+        // The `couple` constructor rejects NaN ratios via `ratio_input`, but a
+        // hand-built fixture (or future serialisation path) could carry one. The
+        // ratio guard inside the coupling arm of `transform_at` must catch it.
+        let c = make_coupling_fixture(
+            prismatic_x_joint(),
+            Value::Real(f64::NAN),
+            Value::length(0.0),
+        );
+        assert!(
+            eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
+            "coupling with NaN ratio should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_inf_ratio_returns_undef() {
+        // Defense-in-depth: hand-built coupling Map with Value::Real(f64::INFINITY) ratio.
+        // The `couple` constructor rejects Inf ratios via `ratio_input`, but a
+        // hand-built fixture (or future serialisation path) could carry one.
+        let c = make_coupling_fixture(
+            prismatic_x_joint(),
+            Value::Real(f64::INFINITY),
+            Value::length(0.0),
+        );
+        assert!(
+            eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
+            "coupling with Inf ratio should return Undef"
+        );
+    }
+
     // ── transform_at on Coupling: analytic tests ────────────────────────────
 
     #[test]
