@@ -20,6 +20,33 @@
 //! are treated as terminal chain roots: the walk skips them as write
 //! targets but continues propagating from them to their downstream
 //! dependents.
+//!
+//! ## Implementation notes
+//!
+//! ### `visited` allocated per-call, not persisted
+//!
+//! `visited` is allocated fresh on every call — never stashed on
+//! [`CacheStore`] or any persistent collection. This makes the walk
+//! idempotent under repeated invocation (step-13 / step-14): once
+//! propagation has settled, the early-cutoff gate (`new == current`) prunes
+//! every dependent on the second call, returning an empty `updated` set.
+//! Persisting `visited` across calls would incorrectly skip cells that
+//! legitimately need to be re-walked when a new edit triggers a fresh
+//! propagation round.
+//!
+//! ### Dependents snapshotted before cache mutation
+//!
+//! Dependents are collected into a `Vec<NodeId>` before the per-dependent
+//! loop so the immutable borrow on `reverse_index` is released before
+//! `&mut cache` methods are called. Unlike
+//! [`crate::dirty::compute_dirty_cone`] (`dirty.rs:29-38`) — which can
+//! iterate the borrowed set directly because it does NOT mutate the cache
+//! during iteration — this walk calls
+//! `derive_output_freshness_for_node_with_cause`, `set_freshness`, and
+//! `mark_pending_with_cause` per dependent, so the iteration borrow must
+//! drop first. A `SmallVec<[NodeId; 4]>` could shave heap allocations for
+//! the common low-fanout case, but that is a micro-optimization not
+//! observed to matter in profiling today.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -72,43 +99,17 @@ pub fn propagate_freshness_only(
 ) -> HashSet<NodeId> {
     let mut updated: HashSet<NodeId> = HashSet::new();
     let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
-    // `visited` is allocated PER-CALL — never stashed on the CacheStore or
-    // any persistent collection. This is what makes the walk idempotent
-    // under repeated invocation (step-13 / step-14): once propagation has
-    // settled, the early-cutoff gate (`new == current` below) prunes every
-    // dependent on the second call, returning an empty `updated` set.
-    // Persisting `visited` across calls would (incorrectly) skip cells that
-    // legitimately need to be re-walked when a new edit triggers a fresh
-    // propagation round.
+    // Allocated per-call for idempotency — see module doc §"Implementation notes".
     let mut visited: HashSet<ValueCellId> = HashSet::new();
 
     while let Some(cell) = frontier.pop_front() {
-        // Visited-cells guard: a cell can be enqueued multiple times by
-        // different upstream branches; skip its dependents on the second
-        // visit so we never re-process the same cell. This also ensures
-        // step-3's three-cell chain a→b→c terminates correctly under
-        // diamond shapes (where a downstream cell may be reached from
-        // multiple upstreams).
+        // Visited guard: skip a cell already processed this call
+        // (prevents double-processing in diamond-shaped dependency graphs).
         if !visited.insert(cell.clone()) {
             continue;
         }
 
-        // Snapshot the dependent NodeIds before mutating the cache so the
-        // borrow on `reverse_index` is released before we call
-        // `cache.derive_*` / `cache.set_freshness`.
-        //
-        // Performance note: this is an O(fanout) clone per visit, deliberate
-        // and bounded by the dependent count for `cell`. Unlike
-        // `crate::dirty::compute_dirty_cone` (`dirty.rs:29-38`) — which can
-        // iterate the borrowed set directly because it does NOT mutate the
-        // cache during iteration — this walk needs to call `&mut cache`
-        // methods (`derive_output_freshness_for_node_with_cause`,
-        // `set_freshness`, `mark_pending_with_cause`, …) per dependent, so
-        // the iteration borrow on `reverse_index` must be dropped first. The
-        // `Vec<NodeId>` allocation is the simplest way to do that; a
-        // `SmallVec<[NodeId; 4]>` could shave heap allocations for the
-        // common low-fanout case, but that's a micro-optimization not
-        // observed to matter in profiling today.
+        // Snapshot dependents before mutating cache — see module doc §"Implementation notes".
         let dependents: Vec<NodeId> = reverse_index.dependents_of(&cell).iter().cloned().collect();
 
         for dependent in dependents {
