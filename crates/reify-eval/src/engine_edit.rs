@@ -645,14 +645,16 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     ///
     /// # Double-panic note
     ///
-    /// `pool.donate_preserving_lru` routes through `insert_entry` →
-    /// `push_event` → `debug_assert!` (events-buffer capacity check).  In debug
-    /// builds, if this `Drop` fires during stack-unwinding from another panic
-    /// **and** the events buffer happens to be at its cap (65 536 entries), the
-    /// `debug_assert!` itself panics, triggering an unconditional
-    /// `std::process::abort`.  In practice this is essentially impossible — the
-    /// buffer would need to be saturated before the first panic — but is
-    /// documented here for completeness.
+    /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
+    /// **before** calling `pool.donate_preserving_lru`.  Both are on the
+    /// double-panic hot path: if `Drop` fires during stack-unwinding from
+    /// another panic, either the `warn!` dispatch (formatting / subscriber
+    /// routing) or `donate_preserving_lru` could theoretically panic, both
+    /// triggering an unconditional `std::process::abort`.  In practice the
+    /// risk is essentially zero — `tracing::warn!` does not heap-allocate
+    /// when no subscriber matches, and `donate_preserving_lru` only panics
+    /// in debug builds when the events buffer is at its cap (65 536 entries)
+    /// — but both are documented here for completeness.
     fn drop(&mut self) {
         let len = self.map.len();
         if len == 0 {
@@ -4075,7 +4077,7 @@ mod tests {
     /// an entry for a node, the staged warm-state is donated to the cache via
     /// `cache.donate_warm_state`, NOT re-donated to the pool.
     ///
-    /// Pins engine_edit.rs lines 617-618:
+    /// Pins `drain_into_cache_or_repool`'s cache-HIT arm:
     /// ```text
     /// if cache.get(&nid).is_some() { cache.donate_warm_state(&nid, state); }
     /// ```
