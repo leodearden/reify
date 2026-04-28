@@ -484,6 +484,40 @@ pub struct CompiledGuardedGroup {
     pub parent_guard: Option<ValueCellId>,
 }
 
+/// A single arm of a match-block decl group (task 2372).
+///
+/// Produced by desugaring `match head_type { Hex => sub head : HexHead }` at decl
+/// level — see PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
+///
+/// The arm stores just the guard metadata needed for type narrowing (task 2373)
+/// and union-type construction — the actual per-arm decl bodies are emitted into
+/// the existing `value_cells` / `sub_components` collections under disambiguated
+/// `ValueCellId`s and are not duplicated here.
+#[derive(Debug, Clone)]
+pub struct GuardedDeclArm {
+    /// The compiled per-arm guard condition (e.g. `head_type == HeadType.Hex`).
+    pub guard_expr: CompiledExpr,
+    /// Synthetic `__guard_N` `ValueCellId` allocated by `compile_block_guard`.
+    pub guard_value_cell: ValueCellId,
+    /// The declared type of the arm's decl (e.g. `Type::StructureRef("HexHead")`).
+    pub arm_type: Type,
+}
+
+/// A logical cluster of same-name declarations produced by an exhaustive
+/// `match` block at decl level (task 2372).
+///
+/// See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
+/// Stored in `CompilationScope::match_arm_groups` — separate from the regular
+/// `names` map so that future duplicate-name diagnostics (task 2375) cannot
+/// misfire on cluster members.
+#[derive(Debug, Clone)]
+pub struct GuardedDeclGroup {
+    /// The shared logical name of all arms (e.g. `"head"`).
+    pub name: String,
+    /// Per-arm metadata, one entry per `match` arm (or per `|`-pipe-collapsed arm).
+    pub arms: Vec<GuardedDeclArm>,
+}
+
 /// A value cell declaration (param or let).
 #[derive(Debug, Clone)]
 pub struct ValueCellDecl {
@@ -1018,5 +1052,41 @@ mod find_template_tests {
     #[test]
     fn missing_name_returns_none() {
         assert!(find_template(&[], "absent").is_none());
+    }
+}
+
+#[cfg(test)]
+mod guarded_decl_group_tests {
+    //! Tests for `GuardedDeclArm` and `GuardedDeclGroup` structs (task 2372, step-1).
+    //! RED until the structs are added in step-2.
+    use super::*;
+    use reify_types::Value;
+
+    #[test]
+    fn guarded_decl_group_struct_carries_name_and_arms() {
+        let arm0 = GuardedDeclArm {
+            guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            guard_value_cell: ValueCellId::new("Bolt", "__guard_0"),
+            arm_type: Type::StructureRef("HexHead".to_string()),
+        };
+        let arm1 = GuardedDeclArm {
+            guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            guard_value_cell: ValueCellId::new("Bolt", "__guard_1"),
+            arm_type: Type::StructureRef("SocketHead".to_string()),
+        };
+        let g = GuardedDeclGroup {
+            name: "head".to_string(),
+            arms: vec![arm0, arm1],
+        };
+        assert_eq!(g.name, "head");
+        assert_eq!(g.arms.len(), 2);
+        assert_eq!(
+            g.arms[0].guard_value_cell,
+            ValueCellId::new("Bolt", "__guard_0")
+        );
+        assert_eq!(
+            g.arms[1].arm_type,
+            Type::StructureRef("SocketHead".to_string())
+        );
     }
 }
