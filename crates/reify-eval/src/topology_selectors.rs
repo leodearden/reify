@@ -1089,4 +1089,34 @@ mod tests {
             "helper must return values aligned with input ids through a shared reference"
         );
     }
+
+    // ─── resolve_unique_by_tag tests (task 2332 — W_TOPOLOGY_TAG_STALE) ────────
+
+    /// Happy-path: exactly one candidate matches the target tag.
+    /// Resolver must return `Some(matched_handle)` and push no diagnostics.
+    #[test]
+    fn resolve_unique_by_tag_one_match_returns_some_with_no_diagnostics() {
+        use reify_types::{Diagnostic, FeatureTag, FeatureTagTable, SourceSpan, StepKind};
+
+        let id1 = GeometryHandleId(1);
+        let id2 = GeometryHandleId(2);
+        let id3 = GeometryHandleId(3);
+
+        let shared_span = SourceSpan::new(0, 10);
+        let tag1 = FeatureTag { source_span: shared_span, step_kind: StepKind::Primitive, sub_index: 0 };
+        let tag2 = FeatureTag { source_span: shared_span, step_kind: StepKind::Primitive, sub_index: 1 };
+        let tag3 = FeatureTag { source_span: shared_span, step_kind: StepKind::Primitive, sub_index: 2 };
+
+        let mut table = FeatureTagTable::default();
+        table.record(id1, tag1);
+        table.record(id2, tag2);
+        table.record(id3, tag3);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let selector_span = SourceSpan::new(10, 20);
+        let result = resolve_unique_by_tag(&table, &[id1, id2, id3], tag2, selector_span, &mut diagnostics);
+
+        assert_eq!(result, Some(id2), "should return the uniquely-matching handle");
+        assert!(diagnostics.is_empty(), "no diagnostics on a clean unique match");
+    }
 }
