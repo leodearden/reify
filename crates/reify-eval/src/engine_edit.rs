@@ -4203,13 +4203,20 @@ mod tests {
             // Guard drops here with empty map → Drop is a no-op (no double re-donation).
         }
 
-        // (d) Pool must hold exactly one entry — Drop did NOT re-donate (drain emptied the map).
+        // (a) Pool must hold exactly one entry — Drop did NOT re-donate (drain emptied the map).
         assert_eq!(
             pool.len(),
             1,
             "cache-miss: pool must have exactly one entry after drain + Drop \
              (Drop must be inert because drain emptied the staging map; \
               a non-1 count indicates double re-donation by Drop)"
+        );
+
+        // (b) Byte-accounting must reflect the re-donated entry (before checkout drains it).
+        assert_eq!(
+            pool.used_bytes(),
+            SIZE,
+            "cache-miss: re-donated entry must be reflected in pool used_bytes accounting"
         );
 
         // (c) Cache must NOT carry a warm-state for this node — entry went to pool, not cache.
@@ -4219,7 +4226,7 @@ mod tests {
              (cache had no entry, so the MISS branch fired and routed to pool)"
         );
 
-        // (a) + (b) Pool entry must carry the original payload AND the original LRU stamp.
+        // (d) Pool entry must carry the original payload AND the original LRU stamp.
         let (state, recovered_stamp) = pool
             .checkout_with_lru_stamp(&nid)
             .expect("cache-miss: pool must hold the re-donated entry");
