@@ -2343,3 +2343,33 @@ fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
         "Must NOT guess beta module for ambiguous Shared, got:\n{bolt_body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot-helper regression tests
+// ---------------------------------------------------------------------------
+
+/// Regression: `assert_or_update_snapshot` must normalise `\r\n` → `\n` in
+/// `actual` before comparing against the committed LF-only golden.
+///
+/// Background: on a Windows checkout running `UPDATE_SNAPSHOTS=1` the helper
+/// historically wrote CRLF bytes into the golden file, silently breaking the
+/// comparison for every other developer (whose `actual` would be LF).
+/// This test guards against that regression by passing a CRLF-terminated
+/// `actual` to the helper and asserting no panic occurs when compared with
+/// the LF-only golden `crlf_normalization_smoke.txt`.
+///
+/// NOTE: the env-var code path (`UPDATE_SNAPSHOTS=1`) is intentionally NOT
+/// tested here — env-var mutation across concurrent cargo-test threads is
+/// racy and would conflict with other snapshot tests.  The normalisation
+/// `replace()` call covers both branches, so the compare-path test alone
+/// is sufficient to pin the fix.
+#[test]
+fn assert_or_update_snapshot_normalizes_crlf_in_actual() {
+    // CRLF-terminated actual — two lines, each ending with \r\n.
+    let actual = "line1\r\nline2\r\n";
+    // The committed golden (crlf_normalization_smoke.txt) contains
+    // "line1\nline2\n" (LF only).  After normalisation the strings must be
+    // equal; without normalisation the helper panics with a snapshot-mismatch
+    // message.
+    assert_or_update_snapshot("crlf_normalization_smoke.txt", actual);
+}
