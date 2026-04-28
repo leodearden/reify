@@ -235,3 +235,56 @@ structure def NitrileOilSeal : OilSeal {
         diagnostics
     );
 }
+
+// ─── step-9: composite-bound intersection ─────────────────────────────────
+
+/// Composite bounds (`bounds: &["Seal", "Cooled"]`) require a candidate
+/// to satisfy ALL bounds (intersection), not any (union). Three
+/// structures: `OnlySeal : Seal`, `OnlyCooled : Cooled`, and
+/// `Both : Seal + Cooled`. Only `Both` qualifies.
+///
+/// Pins PRD §"Phase A": "Composite (`T: TraitA + TraitB`): intersection."
+/// A regression that introduced `bounds.iter().any(...)` instead of
+/// `bounds.iter().all(...)` would cause this test to fail with all
+/// three structures appearing in the result.
+#[test]
+fn enumerate_returns_intersection_for_composite_bound() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def OnlySeal : Seal {
+    param x : Real = 1.0
+}
+
+structure def OnlyCooled : Cooled {
+    param x : Real = 1.0
+}
+
+structure def Both : Seal + Cooled {
+    param x : Real = 1.0
+}
+"#;
+    let module = compile_source(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string(), "Cooled".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        CandidateEnumeration::Found(vec!["Both".to_string()]),
+        "composite bound 'Seal + Cooled' must intersect — only `Both` qualifies"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "Found path should emit no diagnostics, got: {:?}",
+        diagnostics
+    );
+}
