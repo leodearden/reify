@@ -2086,16 +2086,21 @@ impl Engine {
             // of edit_source. The free function `probe_role_flip` accepts
             // disjoint borrows (`self.eval_state` and `self.last_role_flip_probes`
             // are distinct from `self.warm_pool`), so no whole-self conflict.
+            // `old_groups` is a shared slice borrow from `self.eval_state` whose
+            // lifetime spans both `probe_role_flip` call sites; it does not
+            // conflict with `&mut self.warm_pool` (disjoint fields).
+            let old_groups: &[GuardedGroupInfo] = self
+                .eval_state
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .graph
+                .guarded_groups
+                .as_slice();
             let mut role_flip_memo: Option<bool> = None;
             let has_dirty_guards = sc_dirty || has_added_guard_member || {
                 let result = probe_role_flip(
-                    &self
-                        .eval_state
-                        .as_ref()
-                        .unwrap()
-                        .snapshot
-                        .graph
-                        .guarded_groups,
+                    old_groups,
                     &graph.guarded_groups,
                     &mut self.last_role_flip_probes,
                 );
@@ -2156,13 +2161,7 @@ impl Engine {
                             Some(v) => v,
                             None => {
                                 let result = probe_role_flip(
-                                    &self
-                                        .eval_state
-                                        .as_ref()
-                                        .unwrap()
-                                        .snapshot
-                                        .graph
-                                        .guarded_groups,
+                                    old_groups,
                                     &graph.guarded_groups,
                                     &mut self.last_role_flip_probes,
                                 );
