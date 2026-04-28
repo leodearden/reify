@@ -1278,4 +1278,44 @@ mod tests {
             "labels must include target tag source_span"
         );
     }
+
+    /// Regression: duplicate candidate ids must not inflate the match count to a
+    /// spurious split-topology warning.
+    ///
+    /// If the resolver doesn't deduplicate, passing `&[id1, id1, id1]` for a
+    /// handle that carries the target tag would count `n = 3` and emit a
+    /// `TopologyTagStale` warning — a false positive.  The resolver must treat
+    /// all three slots as one logical match and return `Some(id1)` with zero
+    /// diagnostics.
+    #[test]
+    fn resolve_unique_by_tag_duplicate_candidate_does_not_inflate_match_count() {
+        use reify_types::{Diagnostic, FeatureTag, FeatureTagTable, SourceSpan, StepKind};
+
+        let id1 = GeometryHandleId(50);
+
+        let tag_source_span = SourceSpan::new(400, 410);
+        let target_tag = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Primitive, sub_index: 0 };
+
+        let mut table = FeatureTagTable::default();
+        table.record(id1, target_tag);
+
+        let selector_span = SourceSpan::new(500, 510);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // Pass the SAME id three times — an unguarded resolver would count n=3 and
+        // emit a spurious W_TOPOLOGY_TAG_STALE warning instead of returning Some(id1).
+        let result = resolve_unique_by_tag(&table, &[id1, id1, id1], target_tag, selector_span, &mut diagnostics);
+
+        assert_eq!(
+            result,
+            Some(id1),
+            "duplicate candidate ids must not inflate the match count to a spurious split-topology warning",
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "duplicate candidate ids must not inflate the match count to a spurious split-topology warning; \
+             got diagnostics: {:?}",
+            diagnostics,
+        );
+    }
 }
