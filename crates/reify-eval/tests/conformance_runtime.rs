@@ -281,3 +281,53 @@ fn is_watertight_with_literal_int_arg_falls_through_to_undef() {
         result.values.get(&cell),
     );
 }
+
+// ── Step-17: OCCT-backed end-to-end test ────────────────────────────────────
+
+/// Step-17: OCCT-backed end-to-end smoke test for the conformance dispatch
+/// surface. Gated by `reify_kernel_occt::OCCT_AVAILABLE` so the file always
+/// compiles; the test is a runtime no-op when the OCCT shared lib is absent.
+///
+/// Mirrors the test the task's testStrategy explicitly names:
+///
+///   `cargo test -p reify-eval -- conformance_runtime` …
+///   `box(10mm, 10mm, 10mm)` returns `true` for all three helpers.
+///
+/// Confirms `try_eval_conformance_query` composes correctly with the real
+/// OCCT kernel — the dispatch resolves the geometry-arg ValueRef against the
+/// realisation's named-step handle map, round-trips
+/// `GeometryQuery::IsWatertight | IsManifold | IsOrientable` through OCCT,
+/// and patches the resulting `Bool(true)` into each cell.
+#[test]
+fn box_is_watertight_manifold_orientable_via_occt() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping box_is_watertight_manifold_orientable_via_occt: OCCT not available"
+        );
+        return;
+    }
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let watertight = is_watertight(body)\n    \
+        let manifold = is_manifold(body)\n    \
+        let orientable = is_orientable(body)\n}";
+    let compiled = compile_no_errors(source);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    for cell_name in ["watertight", "manifold", "orientable"] {
+        let cell = ValueCellId::new("Bracket", cell_name);
+        assert_eq!(
+            result.values.get(&cell),
+            Some(&Value::Bool(true)),
+            "Bracket.{} for box(10mm,10mm,10mm) must resolve to Bool(true) via OCCT, got {:?}",
+            cell_name,
+            result.values.get(&cell),
+        );
+    }
+}
