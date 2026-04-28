@@ -156,6 +156,20 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             };
             normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
         }
+        "orient_inverse" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            // For unit quaternion q=(w,x,y,z), inverse equals conjugate (w,-x,-y,-z).
+            sanitize_value(normalize_quaternion(w, -x, -y, -z).unwrap_or(Value::Undef))
+        }
         "orient_compose" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
