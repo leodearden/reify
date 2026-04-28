@@ -1562,6 +1562,59 @@ mod tests {
 
     // --- Task 2456: emit Evicted on same-key overwrite ---
 
+    /// Same-key overwrite combined with LRU pressure: ordering invariant and accounting.
+    ///
+    /// Setup: budget=200, donate A(100) + B(100) → used=200 (at budget). Drain.
+    /// Donate A again with size=200: the overwrite reclaims A's old 100 bytes
+    /// (used drops to 100), then 100+200=300>200 → LRU loop evicts B (used drops to 0),
+    /// then A(200) is inserted (used=200).
+    ///
+    /// Expected drained sequence (exact order):
+    ///   [Evicted{A, 100} (overwrite), Evicted{B, 100} (LRU), Donated{A, 200}]
+    ///
+    /// This pins the design decision "overwrite-Evicted goes BEFORE the LRU loop"
+    /// and verifies accounting balance after both kinds of Evicted fire in one insert.
+    #[test]
+    fn same_key_overwrite_with_lru_pressure_emits_overwrite_evicted_first() {
+        let mut pool = WarmStatePool::new(200);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(0u8, 100));
+        let setup = pool.drain_events();
+        assert_eq!(setup.len(), 2, "setup: 2 Donated events");
+        assert_eq!(pool.used_bytes(), 200, "setup: used=200 at budget");
+
+        // Donate A again with size=200: triggers overwrite-Evicted(A,100) then LRU-Evicted(B,100)
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 200));
+        let events = pool.drain_events();
+
+        assert_eq!(
+            events,
+            vec![
+                WarmPoolEvent::Evicted {
+                    node_id: node_a.clone(),
+                    size_bytes: 100,
+                },
+                WarmPoolEvent::Evicted {
+                    node_id: node_b,
+                    size_bytes: 100,
+                },
+                WarmPoolEvent::Donated {
+                    node_id: node_a,
+                    size_bytes: 200,
+                },
+            ],
+            "overwrite-Evicted must precede LRU-Evicted, which must precede Donated"
+        );
+        assert_eq!(
+            pool.used_bytes(),
+            200,
+            "used_bytes must equal new entry size after both kinds of Evicted"
+        );
+    }
+
     /// Same-key overwrite must emit `Evicted{old_size}` then `Donated{new_size}`.
     ///
     /// The overwrite-evicted event is required for byte-accounting consumers
