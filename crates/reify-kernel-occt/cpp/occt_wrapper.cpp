@@ -280,6 +280,10 @@ bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
         if (!dist.IsDone()) {
             throw std::runtime_error("BRepExtrema_DistShapeShape failed");
         }
+        // BRepExtrema_DistShapeShape::Value() is non-negative by construction; the
+        // `<=` (rather than `==`) is defensive against a future OCCT regression.
+        // Tolerance handling lives at task 2531's stdlib layer per the
+        // kinematic-constraints PRD — this FFI seam stays strict-zero.
         return dist.Value() <= 0.0;
     });
 }
