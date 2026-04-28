@@ -650,6 +650,91 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
     );
 }
 
+/// Regression test pinning the §9.1 kernel-error → `Freshness::Failed`
+/// version tagging on the `build_snapshot` path.
+///
+/// Mirrors the version-assertion logic of
+/// `kernel_execute_error_marks_realization_failed_and_emits_one_error_event`
+/// for `Engine::build_snapshot` (engine_build.rs:45). The buggy code reads
+/// `VersionId(self.next_version_id)` which is ahead of
+/// `state.snapshot.version` after `eval()` + `edit_param()` have both bumped
+/// the counter. Running `edit_param` between `eval` and `build_snapshot`
+/// ensures `snapshot.version != 0`, so a constant-zero miswire is also caught.
+///
+/// Flow:
+///   1. `eval()` → populates eval_state, snapshot.version = 0.
+///   2. `edit_param(width, 90mm)` → snapshot.version = 1, next_version_id = 2.
+///   3. `build_snapshot()` fires the failing kernel.
+///
+/// Assertions: exactly one `EventKind::Failed` scoped to the realization
+/// NodeId, and `event.version == snapshot.version` (1, not 2).
+#[test]
+fn kernel_execute_error_in_build_snapshot_tags_failed_event_with_snapshot_version() {
+    let module = one_realization_box_module();
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let e = "KernelFail";
+    let rnid = RealizationNodeId::new(e, 0);
+    let r_node = NodeId::Realization(rnid.clone());
+
+    // Step 1: eval to populate eval_state (eval does not call kernel.execute).
+    engine.eval(&module);
+
+    // Step 2: edit_param bumps snapshot.version from 0 to 1 and
+    // next_version_id from 1 to 2, so the off-by-one is non-trivial.
+    engine
+        .edit_param(ValueCellId::new(e, "width"), mm(90.0))
+        .expect("edit_param must succeed on a valid param");
+
+    // Step 3: build_snapshot fires the failing kernel → triggers §9.1 path.
+    let _build_result = engine.build_snapshot(&module, ExportFormat::Step);
+
+    // Capture the canonical eval-round version AFTER build_snapshot updates it.
+    let eval_version = engine
+        .snapshot()
+        .expect("eval_state must be populated after eval+edit_param")
+        .version;
+
+    // (c) exactly one EventKind::Failed event.
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count, 1,
+        "(c) §2554: exactly one Failed event must be recorded for the \
+         kernel-error realization in build_snapshot; got {} event(s)",
+        failed_count
+    );
+
+    // (d) the Failed event is scoped to NodeId::Realization(rnid).
+    let r_events = engine.journal().events_for_node(&r_node);
+    let r_failed: Vec<_> = r_events
+        .iter()
+        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
+        .collect();
+    assert_eq!(
+        r_failed.len(),
+        1,
+        "(d) §2554: the Failed event must be scoped to \
+         NodeId::Realization(rnid); got {} event(s) for {:?}",
+        r_failed.len(),
+        r_node
+    );
+
+    // (f) the Failed event is tagged with snapshot.version (eval round 1),
+    //     NOT next_version_id (2). Bug #2554: engine_build.rs:45 read
+    //     `VersionId(self.next_version_id)` which is eval_version + 1.
+    assert_eq!(
+        r_failed[0].version, eval_version,
+        "(f) §2554: build_snapshot Failed event version must match \
+         snapshot.version (the eval round whose values caused the kernel \
+         error); got {:?}, expected {:?}",
+        r_failed[0].version, eval_version
+    );
+}
+
 /// `FAILED_REALIZATION_STUB_HANDLE` is the documented sentinel
 /// that `Engine::mark_realization_failed` embeds inside a cold-start
 /// `NodeCache` when no prior `GeometryHandle` exists. This test pins
