@@ -166,8 +166,8 @@ where
 mod tests {
     use super::*;
     use reify_syntax::{
-        ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl,
-        SubDecl, StructureDef,
+        ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MemberDecl,
+        ParamDecl, PortDecl, SubDecl, StructureDef,
     };
     use reify_types::{ContentHash, Diagnostic, DiagnosticCode, ModulePath, Severity, SourceSpan};
 
@@ -327,6 +327,92 @@ mod tests {
             diagnostics.is_empty(),
             "validate_module should emit no diagnostics on a currently-parseable module, got: {diagnostics:?}"
         );
+    }
+
+    // ── suggestion 2a: GuardedGroup inside specialization scope ─────────────
+
+    /// A `GuardedGroup` (`where cond { … } else { … }`) directly inside a
+    /// specialization-scope body is recursed into by
+    /// `walk_specialization_scope_members`. Forbidden decls in both the
+    /// `members` branch and the `else_members` branch must each fire a
+    /// diagnostic.
+    #[test]
+    fn validate_module_emits_diagnostic_for_forbidden_decl_in_guarded_group_inside_specialization_scope(
+    ) {
+        let members_param_span = param_span();
+        let else_members_port_span = port_span();
+        // Structure S {
+        //   sub scope : Foo {
+        //     where (true) { param x } else { port p : SomePort }
+        //   }
+        // }
+        let guarded = MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr(),
+            members: vec![make_param("x", members_param_span)],
+            else_members: vec![make_port("p", else_members_port_span)],
+            span: dummy_span(),
+            content_hash: dummy_hash(),
+        });
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![guarded],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected two diagnostics (param in members + port in else_members), got: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::SpecializationForbiddenDecl)),
+            "all diagnostics must have code SpecializationForbiddenDecl"
+        );
+        let spans: Vec<_> = diagnostics.iter().map(|d| d.labels[0].span).collect();
+        assert!(
+            spans.contains(&members_param_span),
+            "members param span must appear in diagnostics"
+        );
+        assert!(
+            spans.contains(&else_members_port_span),
+            "else_members port span must appear in diagnostics"
+        );
+    }
+
+    // ── suggestion 2b: multiple sibling forbidden decls ──────────────────────
+
+    /// All three sibling forbidden decls in the same spec-scope body each
+    /// produce their own diagnostic in source order. Pins emission count and
+    /// ordering stability.
+    #[test]
+    fn validate_module_emits_one_diagnostic_per_sibling_forbidden_decl_in_same_body() {
+        let p_span = param_span();
+        let po_span = port_span();
+        let s_span = sub_span();
+        // Structure S { sub scope : Foo { param x; port p; sub child : Foo } }
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_param("x", p_span), make_port("p", po_span), make_sub_bare("child", s_span)],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "expected three diagnostics (param + port + sub), got: {diagnostics:?}"
+        );
+        assert!(diagnostics[0].message.contains("'param'"));
+        assert_eq!(diagnostics[0].labels[0].span, p_span);
+        assert!(diagnostics[1].message.contains("'port'"));
+        assert_eq!(diagnostics[1].labels[0].span, po_span);
+        assert!(diagnostics[2].message.contains("'sub'"));
+        assert_eq!(diagnostics[2].labels[0].span, s_span);
     }
 
     // ── step-11: nested specialization scope ─────────────────────────────────
