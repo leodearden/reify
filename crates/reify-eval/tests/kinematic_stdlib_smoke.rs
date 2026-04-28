@@ -17,7 +17,7 @@
 //! would fail this test.
 
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{Value, ValueCellId, ValueMap};
+use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 
 /// Source: a `Kinematic` structure that exercises every new builtin.
 ///
@@ -110,6 +110,25 @@ fn map_vec3<'a>(actual: &'a Value, key: &str, label: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("{label}: missing key {key:?} in Map"))
 }
 
+/// Assert that a `Value::Vector` of three components carries the expected
+/// dimension on each component. Catches regressions where the eval pipeline
+/// strips dimension tags through compose / inverse / log / exp.
+fn assert_vec3_dim(actual: &Value, expected: DimensionVector, label: &str) {
+    let items = match actual {
+        Value::Vector(v) if v.len() == 3 => v,
+        other => panic!("{label}: expected Vector3, got {other:?}"),
+    };
+    for (i, comp) in items.iter().enumerate() {
+        assert_eq!(
+            comp.dimension(),
+            expected,
+            "{label}: component[{i}] dimension {:?}, expected {:?}",
+            comp.dimension(),
+            expected
+        );
+    }
+}
+
 /// Smoke test: drive every new builtin through compile + eval, assert bindings
 /// have their expected Value variant and analytic component values.
 #[test]
@@ -184,6 +203,15 @@ fn kinematic_stdlib_smoke_e2e() {
         other => panic!("t_composed: expected Transform, got {other:?}"),
     };
     assert_vec3_close(t_co_trans, [2e-3, 0.0, 0.0], 1e-15, "t_composed translation");
+    // Dimension-tag regression guard: compose must preserve LENGTH on the
+    // translation. A regression that silently drops dim tags through the
+    // eval pipeline would make the value-equality assert above pass while
+    // emitting bare Real components.
+    assert_vec3_dim(
+        t_co_trans,
+        DimensionVector::LENGTH,
+        "t_composed translation dim",
+    );
 
     // t_inv = inverse(t_unit_x) → translation [-1mm, 0, 0]
     let t_in = get_value(v, "t_inv");
@@ -192,6 +220,11 @@ fn kinematic_stdlib_smoke_e2e() {
         other => panic!("t_inv: expected Transform, got {other:?}"),
     };
     assert_vec3_close(t_in_trans, [-1e-3, 0.0, 0.0], 1e-15, "t_inv translation");
+    assert_vec3_dim(
+        t_in_trans,
+        DimensionVector::LENGTH,
+        "t_inv translation dim",
+    );
 
     // ── transform_log/exp round-trip on t_unit_x ──────────────────────
     // twist = log(t_unit_x) → Map { angular=[0,0,0], linear=[1mm,0,0] }
@@ -200,6 +233,15 @@ fn kinematic_stdlib_smoke_e2e() {
     let lin = map_vec3(twist, "linear", "twist.linear");
     assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "twist.angular");
     assert_vec3_close(lin, [1e-3, 0.0, 0.0], 1e-15, "twist.linear");
+    // Twist convention: angular=DIMENSIONLESS (axis*angle in radians, but
+    // dimensionless because the angle is implicit), linear=LENGTH because
+    // t_unit_x's translation was LENGTH-typed.
+    assert_vec3_dim(
+        ang,
+        DimensionVector::DIMENSIONLESS,
+        "twist.angular dim",
+    );
+    assert_vec3_dim(lin, DimensionVector::LENGTH, "twist.linear dim");
 
     // t_round = exp(twist) → ≈ t_unit_x (Transform with identity rotation, [1mm,0,0] translation)
     let t_round = get_value(v, "t_round");
