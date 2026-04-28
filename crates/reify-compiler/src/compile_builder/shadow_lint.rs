@@ -473,9 +473,19 @@ fn walk_members_depth(
                 use reify_syntax::ForallConnectBody;
                 // The collection is evaluated in the outer (parent) scope.
                 walk_expr(&f.collection, frames, diagnostics);
+                // Mirrors the ExprKind::Quantifier arm in walk_expr_depth: if
+                // the bound variable matches a name visible from an enclosing
+                // frame, emit a Shadowing warning before pushing the child
+                // frame. The child span is `f.span` (the ForallConnectDecl
+                // span) — analogous to the Quantifier arm's use of `expr.span`,
+                // and consistent with the TODO at shadow_lint.rs:587-593
+                // proposing to migrate both forms together once a separate
+                // `variable_span` field lands on the AST nodes.
+                if let Some(parent_span) = frames.and_then(|fr| fr.lookup(&f.variable)) {
+                    push_shadow_diagnostic(diagnostics, &f.variable, f.span, parent_span);
+                }
                 // Build a child frame containing the bound variable, then walk
                 // the body's expressions with the child frame on the stack.
-                // Mirrors the ExprKind::Quantifier arm in walk_expr_depth.
                 let mut child: Frame = HashMap::new();
                 child.insert(f.variable.clone(), f.span);
                 let forall_stack = FrameStack {
@@ -501,6 +511,14 @@ fn walk_members_depth(
                 use reify_syntax::ForallConstraintBody;
                 // The collection is evaluated in the outer (parent) scope.
                 walk_expr(&f.collection, frames, diagnostics);
+                // Mirrors the ExprKind::Quantifier arm in walk_expr_depth: if
+                // the bound variable matches a name visible from an enclosing
+                // frame, emit a Shadowing warning before pushing the child
+                // frame. See the ForallConnect arm above for the rationale on
+                // the choice of `f.span` as the child span.
+                if let Some(parent_span) = frames.and_then(|fr| fr.lookup(&f.variable)) {
+                    push_shadow_diagnostic(diagnostics, &f.variable, f.span, parent_span);
+                }
                 // Child frame with the bound variable for the body.
                 let mut child: Frame = HashMap::new();
                 child.insert(f.variable.clone(), f.span);
