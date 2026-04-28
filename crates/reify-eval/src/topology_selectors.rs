@@ -1173,4 +1173,53 @@ mod tests {
         assert_eq!(result, Some(id2), "should return the uniquely-matching handle");
         assert!(diagnostics.is_empty(), "no diagnostics on a clean unique match");
     }
+
+    /// Zero-match path: no candidates carry the target tag.
+    /// Resolver must return `None` and push exactly one `TopologyTagStale` warning
+    /// with labels pointing at both the selector call site and the tag origin.
+    #[test]
+    fn resolve_unique_by_tag_zero_matches_emits_warning_and_returns_none() {
+        use reify_types::{
+            Diagnostic, DiagnosticCode, FeatureTag, FeatureTagTable, Severity, SourceSpan, StepKind,
+        };
+
+        let id1 = GeometryHandleId(10);
+        let id2 = GeometryHandleId(11);
+
+        // Both handles carry a non-target tag (sub_index differs from target).
+        let tag_source_span = SourceSpan::new(100, 110);
+        let tag1 = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Boolean, sub_index: 5 };
+        let tag2 = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Boolean, sub_index: 6 };
+
+        let mut table = FeatureTagTable::default();
+        table.record(id1, tag1);
+        table.record(id2, tag2);
+
+        // Target tag is distinct from both (sub_index 99 not present).
+        let target_tag = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Boolean, sub_index: 99 };
+        let selector_span = SourceSpan::new(200, 210);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = resolve_unique_by_tag(&table, &[id1, id2], target_tag, selector_span, &mut diagnostics);
+
+        assert!(result.is_none(), "zero matches should return None");
+        assert_eq!(diagnostics.len(), 1, "exactly one diagnostic on zero matches");
+
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, Severity::Warning, "should be a warning");
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyTagStale), "must carry TopologyTagStale code");
+        assert!(
+            diag.message.contains('0') && (diag.message.contains("sub-shapes") || diag.message.contains("selector")),
+            "message should mention '0' match count and sub-shapes/selector, got: {:?}",
+            diag.message,
+        );
+        assert!(
+            diag.labels.iter().any(|l| l.span == selector_span),
+            "labels must include selector_span"
+        );
+        assert!(
+            diag.labels.iter().any(|l| l.span == target_tag.source_span),
+            "labels must include target tag source_span"
+        );
+    }
 }
