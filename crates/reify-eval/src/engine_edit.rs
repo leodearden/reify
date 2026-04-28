@@ -4185,6 +4185,82 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Task 2523 S4/S5 — Drop safety-net telemetry
+    // -----------------------------------------------------------------------
+
+    /// Dropping a guard with a non-empty staging map (the panic/early-return
+    /// safety-net path) emits exactly one `WARN` from `reify_eval::engine_edit`.
+    ///
+    /// Two arms are tested:
+    ///
+    /// 1. **Safety-net fires** — guard is dropped without calling
+    ///    `drain_into_cache_or_repool`.  Drop re-donates the staged entry and
+    ///    must emit a single `WARN`.
+    ///
+    /// 2. **Inert drop** — `drain_into_cache_or_repool` was called first (success
+    ///    path). Drop fires with an empty map and must emit **zero** `WARN`s.
+    #[test]
+    fn pending_warm_seeds_guard_drop_emits_warn_when_safety_net_fires() {
+        use crate::cache::{CacheStore, NodeId};
+        use crate::warm_pool::WarmStatePool;
+        use reify_test_support::CountingSubscriberBuilder;
+        use reify_types::OpaqueState;
+        use std::sync::atomic::Ordering;
+        use super::PendingWarmSeedsGuard;
+
+        // ---- Arm 1: safety-net fires (non-empty Drop) ----
+        {
+            let (subscriber, counters) = CountingSubscriberBuilder::new()
+                .count_level(tracing::Level::WARN)
+                .target_prefix("reify_eval::engine_edit")
+                .build();
+            let warn_arc = counters[&tracing::Level::WARN].clone();
+
+            tracing::subscriber::with_default(subscriber, || {
+                let mut pool = WarmStatePool::new(1024);
+                let nid = NodeId::Value(ValueCellId::new("T", "safety_net"));
+                let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+                pending.insert(nid, OpaqueState::new(0xABu8, 8), std::time::Instant::now());
+                // Drop fires here with a non-empty map → safety net → must WARN.
+            });
+
+            assert_eq!(
+                warn_arc.load(Ordering::Acquire),
+                1,
+                "safety-net arm: expected exactly one WARN from \
+                 reify_eval::engine_edit when Drop fires with a non-empty map"
+            );
+        }
+
+        // ---- Arm 2: inert drop (drain called first) ----
+        {
+            let (subscriber, counters) = CountingSubscriberBuilder::new()
+                .count_level(tracing::Level::WARN)
+                .target_prefix("reify_eval::engine_edit")
+                .build();
+            let warn_arc = counters[&tracing::Level::WARN].clone();
+
+            tracing::subscriber::with_default(subscriber, || {
+                let mut pool = WarmStatePool::new(1024);
+                let mut cache = CacheStore::new();
+                let nid = NodeId::Value(ValueCellId::new("T", "inert_drop"));
+                let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+                pending.insert(nid, OpaqueState::new(0xCDu8, 8), std::time::Instant::now());
+                // Success path: drain empties the map.
+                pending.drain_into_cache_or_repool(&mut cache);
+                // Drop fires here with an empty map → no WARN.
+            });
+
+            assert_eq!(
+                warn_arc.load(Ordering::Acquire),
+                0,
+                "inert-drop arm: expected zero WARNs when Drop fires with an \
+                 empty map (drain already consumed the entry)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Task 2516 S1 — guard LRU-stamp preservation (step-3 / step-4)
     // -----------------------------------------------------------------------
 
