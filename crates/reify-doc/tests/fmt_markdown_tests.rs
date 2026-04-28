@@ -1605,6 +1605,44 @@ fn snapshot_path(filename: &str) -> std::path::PathBuf {
         .join(filename)
 }
 
+/// Path-taking primitive for snapshot assertions.
+///
+/// Contains the full comparison body (both `actual` and `expected`
+/// CRLF→LF normalisation).  Used directly by regression tests that need to
+/// exercise an arbitrary on-disk golden (e.g. a runtime-created CRLF file)
+/// without polluting `tests/snapshots/`.
+fn assert_or_update_snapshot_at(path: &std::path::Path, actual: &str) {
+    let actual = actual.replace("\r\n", "\n");
+    if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|e| panic!("create_dir_all({parent:?}): {e}"));
+        }
+        std::fs::write(path, actual)
+            .unwrap_or_else(|e| panic!("write({path:?}): {e}"));
+        return;
+    }
+    let expected = match std::fs::read_to_string(path) {
+        Ok(s) => s.replace("\r\n", "\n"),
+        Err(e) => panic!(
+            "snapshot file not found at {path:?}: {e}\n\
+             Re-run with UPDATE_SNAPSHOTS=1 to create it.\n\
+             === Actual output ({} bytes) ===\n{actual}",
+            actual.len()
+        ),
+    };
+    if expected != actual {
+        panic!(
+            "snapshot mismatch for {path:?}; \
+             re-run with UPDATE_SNAPSHOTS=1 to regenerate.\n\
+             === Expected ({} bytes) ===\n{expected}\n\n\
+             === Actual ({} bytes) ===\n{actual}",
+            expected.len(),
+            actual.len(),
+        );
+    }
+}
+
 /// Assert that `actual` matches the committed snapshot at
 /// `tests/snapshots/{filename}`, or — when `UPDATE_SNAPSHOTS=1` is set —
 /// overwrite the snapshot with `actual` so the developer can regenerate
@@ -1621,36 +1659,8 @@ fn snapshot_path(filename: &str) -> std::path::PathBuf {
 ///   on disk, making the on-disk file differ from the LF-only `actual` even
 ///   when the logical content is identical.
 fn assert_or_update_snapshot(filename: &str, actual: &str) {
-    let actual = actual.replace("\r\n", "\n");
     let path = snapshot_path(filename);
-    if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .unwrap_or_else(|e| panic!("create_dir_all({parent:?}): {e}"));
-        }
-        std::fs::write(&path, actual)
-            .unwrap_or_else(|e| panic!("write({path:?}): {e}"));
-        return;
-    }
-    let expected = match std::fs::read_to_string(&path) {
-        Ok(s) => s.replace("\r\n", "\n"),
-        Err(e) => panic!(
-            "snapshot file not found at {path:?}: {e}\n\
-             Re-run with UPDATE_SNAPSHOTS=1 to create it.\n\
-             === Actual output ({} bytes) ===\n{actual}",
-            actual.len()
-        ),
-    };
-    if expected != actual {
-        panic!(
-            "snapshot mismatch for {filename}; \
-             re-run with UPDATE_SNAPSHOTS=1 to regenerate.\n\
-             === Expected ({} bytes) ===\n{expected}\n\n\
-             === Actual ({} bytes) ===\n{actual}",
-            expected.len(),
-            actual.len(),
-        );
-    }
+    assert_or_update_snapshot_at(&path, actual);
 }
 
 /// Build the inline `DocModel` fixture used by the snapshot tests.
