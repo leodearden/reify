@@ -2169,6 +2169,155 @@ mod tests {
         );
     }
 
+    // ── orient_to_axis_angle tests (step-11) ───────────────────────────────
+
+    /// Helper: extract (axis_components, angle_si) from an axis-angle Map.
+    fn axis_angle_extract(v: &Value) -> Option<([f64; 3], f64)> {
+        let m = match v {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        let axis_v = m.get(&Value::String("axis".to_string()))?;
+        let angle_v = m.get(&Value::String("angle".to_string()))?;
+        let comps = match axis_v {
+            Value::Vector(items) | Value::Tensor(items) | Value::Point(items)
+                if items.len() == 3 =>
+            {
+                [
+                    items[0].as_f64()?,
+                    items[1].as_f64()?,
+                    items[2].as_f64()?,
+                ]
+            }
+            _ => return None,
+        };
+        // angle should be Angle Scalar
+        let angle = match angle_v {
+            Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => {
+                *si_value
+            }
+            _ => return None,
+        };
+        Some((comps, angle))
+    }
+
+    #[test]
+    fn orient_to_axis_angle_identity_canonical_fallback() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("orient_to_axis_angle", &[id]);
+        let (axis, angle) = axis_angle_extract(&result)
+            .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+        assert!((axis[0] - 1.0).abs() < 1e-12);
+        assert!(axis[1].abs() < 1e-12);
+        assert!(axis[2].abs() < 1e-12);
+        assert!(angle.abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_axis_angle_90deg_z() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let result = eval_builtin("orient_to_axis_angle", &[q]);
+        let (axis, angle) = axis_angle_extract(&result)
+            .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+        assert!(axis[0].abs() < 1e-12);
+        assert!(axis[1].abs() < 1e-12);
+        assert!((axis[2] - 1.0).abs() < 1e-12);
+        assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_axis_angle_180deg_x_boundary() {
+        // 180°x: q = (0, 1, 0, 0), w=0 boundary
+        let q = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("orient_to_axis_angle", &[q]);
+        let (axis, angle) = axis_angle_extract(&result)
+            .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+        assert!((axis[0] - 1.0).abs() < 1e-12);
+        assert!(axis[1].abs() < 1e-12);
+        assert!(axis[2].abs() < 1e-12);
+        assert!((angle - std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_axis_angle_round_trip() {
+        // For each (axis, angle) input, build q via orient_axis_angle, then decompose
+        // and verify the recovered axis/angle match within tolerance.
+        let cases: [([f64; 3], f64); 4] = [
+            ([0.0, 0.0, 1.0], std::f64::consts::FRAC_PI_2),
+            ([1.0, 0.0, 0.0], std::f64::consts::FRAC_PI_4),
+            ([0.0, 1.0, 0.0], 1.234),
+            (
+                {
+                    // Normalized arbitrary axis (1,2,3)
+                    let n = (1.0_f64.powi(2) + 2.0_f64.powi(2) + 3.0_f64.powi(2)).sqrt();
+                    [1.0 / n, 2.0 / n, 3.0 / n]
+                },
+                0.7,
+            ),
+        ];
+        for (axis_in, angle_in) in cases.iter() {
+            let axis_v = Value::Tensor(vec![
+                Value::Real(axis_in[0]),
+                Value::Real(axis_in[1]),
+                Value::Real(axis_in[2]),
+            ]);
+            let q = eval_builtin(
+                "orient_axis_angle",
+                &[axis_v, Value::Real(*angle_in)],
+            );
+            let result = eval_builtin("orient_to_axis_angle", &[q]);
+            let (axis_out, angle_out) = axis_angle_extract(&result)
+                .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+            assert!(
+                (axis_out[0] - axis_in[0]).abs() < 1e-10
+                    && (axis_out[1] - axis_in[1]).abs() < 1e-10
+                    && (axis_out[2] - axis_in[2]).abs() < 1e-10,
+                "axis round-trip: in={:?} out={:?}",
+                axis_in,
+                axis_out
+            );
+            assert!(
+                (angle_out - angle_in).abs() < 1e-10,
+                "angle round-trip: in={} out={}",
+                angle_in,
+                angle_out
+            );
+        }
+    }
+
+    #[test]
+    fn orient_to_axis_angle_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_axis_angle", &[]).is_undef());
+        assert!(eval_builtin("orient_to_axis_angle", &[q.clone(), q]).is_undef());
+    }
+
+    #[test]
+    fn orient_to_axis_angle_non_orientation_returns_undef() {
+        assert!(eval_builtin("orient_to_axis_angle", &[Value::Real(1.0)]).is_undef());
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
