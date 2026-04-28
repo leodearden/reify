@@ -22,9 +22,10 @@ use reify_compiler::{
     SweepKind, TransformKind,
 };
 use reify_compiler::geometry_traits_inference::{
-    GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_modify,
-    combine_pattern, combine_sweep, combine_transform, combine_union, infer_primitive,
-    infer_traits_for_expr, infer_traits_for_op,
+    EmptyLetEnv, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
+    combine_intersection, combine_modify, combine_pattern, combine_sweep, combine_transform,
+    combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
+    infer_traits_for_op,
 };
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
@@ -754,6 +755,121 @@ fn infer_traits_for_op_geom_ref_sub_defaults_to_all() {
 #[test]
 fn infer_traits_for_op_empty_array_defaults_to_all() {
     assert_eq!(infer_traits_for_op(&[]), InferredTraits::all());
+}
+
+// ─── LetBindingEnv / EmptyLetEnv / infer_traits_for_expr_in_env ─────────────
+//
+// These tests exercise the env API introduced in step-5. They are RED until
+// `LetBindingEnv`, `EmptyLetEnv`, and `infer_traits_for_expr_in_env` are added
+// to `geometry_traits_inference.rs`.
+
+/// `EmptyLetEnv::lookup` must return `None` for any `ValueCellId`.
+#[test]
+fn empty_let_env_returns_none_for_any_id() {
+    let env = EmptyLetEnv;
+    let id = ValueCellId::new("AnyEntity", "any_member");
+    assert!(
+        env.lookup(&id).is_none(),
+        "EmptyLetEnv must return None for every ValueCellId"
+    );
+}
+
+/// `infer_traits_for_expr_in_env` with `EmptyLetEnv` must return `all()` for
+/// a `ValueRef` — same as the env-less `infer_traits_for_expr` wrapper.
+#[test]
+fn infer_traits_for_expr_in_env_with_empty_env_matches_legacy_value_ref_behaviour() {
+    let value_ref = CompiledExpr::value_ref(ValueCellId::new("E", "g"), Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr_in_env(&value_ref, &EmptyLetEnv),
+        InferredTraits::all(),
+        "infer_traits_for_expr_in_env(ValueRef, EmptyLetEnv) must equal \
+         infer_traits_for_expr(ValueRef) = all()"
+    );
+}
+
+/// `infer_traits_for_expr_in_env` with `EmptyLetEnv` must return `all()` for
+/// a box FunctionCall — same as the env-less `infer_traits_for_expr` wrapper.
+#[test]
+fn infer_traits_for_expr_in_env_with_empty_env_matches_legacy_function_call_behaviour() {
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_expr =
+        make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr_in_env(&box_expr, &EmptyLetEnv),
+        InferredTraits::all(),
+        "infer_traits_for_expr_in_env(box(...), EmptyLetEnv) must equal \
+         infer_traits_for_expr(box(...)) = all()"
+    );
+}
+
+/// A custom env that resolves one specific `ValueCellId` to `bounded_only()`.
+/// Used by the next two tests.
+struct FixtureEnv {
+    id: ValueCellId,
+    traits: InferredTraits,
+}
+impl LetBindingEnv for FixtureEnv {
+    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
+        if id == &self.id {
+            Some(self.traits)
+        } else {
+            None
+        }
+    }
+}
+
+/// `infer_traits_for_expr_in_env` resolves a `ValueRef` whose id matches the
+/// env entry, returning the env's answer instead of the safe all() default.
+#[test]
+fn infer_traits_for_expr_in_env_resolves_value_ref_via_custom_env() {
+    let target_id = ValueCellId::new("Top", "g");
+    let env = FixtureEnv {
+        id: target_id.clone(),
+        traits: InferredTraits::bounded_only(),
+    };
+
+    // Matching ValueRef → env answer
+    let matching_ref = CompiledExpr::value_ref(target_id.clone(), Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr_in_env(&matching_ref, &env),
+        InferredTraits::bounded_only(),
+        "infer_traits_for_expr_in_env must return env answer for a matching ValueRef"
+    );
+
+    // Non-matching ValueRef → safe all() default
+    let other_ref = CompiledExpr::value_ref(ValueCellId::new("Top", "h"), Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr_in_env(&other_ref, &env),
+        InferredTraits::all(),
+        "infer_traits_for_expr_in_env must fall back to all() for an unbound ValueRef"
+    );
+}
+
+/// `infer_traits_for_expr_in_env` threads the env through recursive geometry
+/// arg resolution. Build `union(ValueRef(g), box(...))` where the env says
+/// `g` resolves to `none()`. `combine_union(none, all)` = `none()` — the env
+/// propagation through recursive arg traversal is locked.
+#[test]
+fn infer_traits_for_expr_in_env_threads_env_through_function_call_args() {
+    let target_id = ValueCellId::new("Top", "g");
+    let env = FixtureEnv {
+        id: target_id.clone(),
+        traits: InferredTraits::none(),
+    };
+
+    let g_ref = CompiledExpr::value_ref(target_id, Type::Geometry);
+    let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_expr =
+        make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let union_expr = make_function_call("union", vec![g_ref, box_expr], Type::Geometry);
+
+    // combine_union(none(), all()) = none() because both must be bounded
+    assert_eq!(
+        infer_traits_for_expr_in_env(&union_expr, &env),
+        InferredTraits::none(),
+        "infer_traits_for_expr_in_env(union(ValueRef(none), box), env) must thread \
+         env into arg resolution: combine_union(none, all) = none"
+    );
 }
 
 // ─── Tripwire / expectation-pinning: ValueRef safe-default ──────────────────
