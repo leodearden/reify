@@ -101,17 +101,20 @@ The PRD decomposes into 10 tasks when activated:
 9. **`KernelAttributeHook` trait + Manifold implementation.** Generic hook; Manifold gets the first concrete impl using `originalID`/`faceID`/`MeshGL` merge vectors. Gated on Manifold landing per 2295.
 10. **Selector vocabulary v2.** Direction (incl. `+vec`), extremal (both flavours), geometry-type filter (incl. `%Geom` universal), Boolean combinators, topological walks, history-based selectors, attribute primitives. Splittable into `10a` (cheap: direction, type, combinators) and `10b` (walks, history, attribute queries) if too big for one task.
 
-## Deferred to v0.3+
-
-- **Adjacent-element backup keys.** Kim et al. 2016 propose `FaceName1#FaceName2` for edges and face-triple for vertices, exploiting adjacency as a more robust invariant than direct identity. Deferred because the modification-history postfix handles the most common failure modes; revisit when telemetry shows residual reliability gaps in the primary key.
-- **Hash-compaction of attribute names.** RealThunder's StringHasher trick (FreeCAD hit 22.6 MiB attribute storage on real models, compressed to 3.6 MiB via SHA-1 segment hashing). Our scheme is short by construction; deferred until telemetry shows modification-history postfixes accumulating to memory or perf pain in deeply-stacked feature trees.
-
 ## Deferred to v0.3+ (tracker bookmarks)
 
 The items below are tracked future work — concrete extensions with activation triggers and
 references — not active v0.2 scope and not items we rule out. They differ from the "Out of
 scope" list, which records things we explicitly do not plan to implement. Each subsection
 corresponds to a task bookmark that survives in source control alongside this PRD.
+
+### Adjacent-element backup keys (task #2560)
+
+Kim et al. 2016 propose `FaceName1#FaceName2` for edges and face-triple for vertices,
+exploiting adjacency as a more robust invariant than direct identity. Deferred because the
+modification-history postfix handles the most common failure modes; revisit when telemetry
+shows residual reliability gaps in the primary key. Detailed activation triggers and
+reference study to be filled out interactively after v0.2 ships.
 
 ### Hash-compaction of attribute storage (task #2561)
 
