@@ -288,3 +288,58 @@ structure def Both : Seal + Cooled {
         diagnostics
     );
 }
+
+// ─── step-11: exactly 10 candidates (boundary, no overflow) ───────────────
+
+/// Build a Reify source defining `trait Seal {}` and `count` structures
+/// `S00`..`S{count-1}` each declaring `: Seal`. Candidate names are
+/// zero-padded to two digits so alphabetical ordering matches numeric
+/// ordering up to S99.
+fn build_n_seal_structures(count: usize) -> String {
+    assert!(
+        count <= 100,
+        "build_n_seal_structures: zero-pad width is two digits; max count is 100"
+    );
+    let mut src = String::from("trait Seal {}\n");
+    for i in 0..count {
+        src.push_str(&format!(
+            "structure def S{:02} : Seal {{\n    param x : Real = 1.0\n}}\n",
+            i
+        ));
+    }
+    src
+}
+
+/// Boundary semantics: 10 candidates is "ok" (no overflow), 11 is
+/// "overflow" (step-13). With exactly 10 structures `S00..S09`
+/// implementing `Seal`, the result is `Found([S00, .., S09])` and zero
+/// diagnostics.
+#[test]
+fn enumerate_returns_found_at_exactly_max_candidates_no_overflow() {
+    let source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES);
+    let module = compile_source(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    let expected: Vec<String> = (0..MAX_AUTO_TYPE_PARAM_CANDIDATES)
+        .map(|i| format!("S{:02}", i))
+        .collect();
+    assert_eq!(
+        result,
+        CandidateEnumeration::Found(expected),
+        "exactly {MAX_AUTO_TYPE_PARAM_CANDIDATES} candidates must be Found (boundary; not Overflow)"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "boundary case (exactly MAX) must emit no diagnostics, got: {:?}",
+        diagnostics
+    );
+}
