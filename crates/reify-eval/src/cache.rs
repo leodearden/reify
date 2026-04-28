@@ -3334,4 +3334,86 @@ mod tests {
             "mark_pending_with_cause must bump pending_transition_count by 1"
         );
     }
+
+    /// Pin that the in-place freshness mutators reset the side-table
+    /// `pending_cause` so the diagnostic chain cannot leak across
+    /// freshness transitions.
+    ///
+    /// Per arch §9.2: a Failed node is a chain root, not a forwarder —
+    /// the `pending_cause()` reader's documented contract (see
+    /// cache.rs around `pub fn pending_cause(...)`) is that Failed
+    /// entries return `None`. The bulk dirty-pass `mark_pending` helper
+    /// must likewise wipe any stale cause carried over from a prior
+    /// round so the per-node evaluator can decide afresh whether to
+    /// re-attach a cause via `mark_pending_with_cause`.
+    ///
+    /// Regression test for task #2330 step-19/step-20 — guards against
+    /// a §9.2 chain pointing at a node that has already been
+    /// re-evaluated successfully on a later round.
+    #[test]
+    fn mark_pending_and_mark_failed_clear_stale_pending_cause() {
+        use reify_types::ErrorRef;
+
+        let mut store = CacheStore::new();
+        let mid = NodeId::Value(ValueCellId::new("T", "mid"));
+        let leaf_a = NodeId::Value(ValueCellId::new("T", "leaf_a"));
+        let leaf_b = NodeId::Value(ValueCellId::new("T", "leaf_b"));
+
+        // (a) Seed the entry with a real result_hash so mark_pending_with_cause
+        //     has something to derive last_substantive from.
+        store.put(mid.clone(), make_seed_entry());
+
+        // (b) mark_pending_with_cause(mid, leaf_a) → cause == Some(leaf_a).
+        assert!(
+            store.mark_pending_with_cause(&mid, leaf_a.clone()),
+            "mark_pending_with_cause must succeed on existing entry"
+        );
+        assert_eq!(
+            store.pending_cause(&mid),
+            Some(leaf_a.clone()),
+            "pending_cause must be Some(leaf_a) after mark_pending_with_cause(leaf_a)"
+        );
+
+        // (c) mark_failed(mid, "boom") must transition to Failed AND clear
+        //     pending_cause. Failed nodes are chain roots, not forwarders —
+        //     their pending_cause must always read as None per the
+        //     pending_cause() reader contract.
+        assert!(
+            store.mark_failed(&mid, ErrorRef::new("boom")),
+            "mark_failed must succeed on existing entry"
+        );
+        assert!(
+            matches!(store.freshness(&mid), Freshness::Failed { .. }),
+            "freshness must be Failed after mark_failed"
+        );
+        assert_eq!(
+            store.pending_cause(&mid),
+            None,
+            "mark_failed must clear pending_cause — Failed nodes are chain roots, not forwarders (arch §9.2)"
+        );
+
+        // (d) mark_pending_with_cause(mid, leaf_b) re-attaches a fresh cause.
+        assert!(
+            store.mark_pending_with_cause(&mid, leaf_b.clone()),
+            "mark_pending_with_cause must succeed on existing entry"
+        );
+        assert_eq!(
+            store.pending_cause(&mid),
+            Some(leaf_b.clone()),
+            "pending_cause must be Some(leaf_b) after re-attach"
+        );
+
+        // (e) The no-cause bulk-pass helper mark_pending(mid) must wipe
+        //     the stale chain so a later per-node evaluator can decide
+        //     afresh whether to re-attach a cause via mark_pending_with_cause.
+        assert!(
+            store.mark_pending(&mid),
+            "mark_pending must succeed on existing entry"
+        );
+        assert_eq!(
+            store.pending_cause(&mid),
+            None,
+            "mark_pending must clear pending_cause — the bulk dirty-pass helper cannot leak a stale chain across rounds (task #2330 §9.2)"
+        );
+    }
 }
