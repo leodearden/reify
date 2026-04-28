@@ -29,6 +29,8 @@
 //! the rest of reify's geometry kernel — see `revolve` / `rotate_shape`
 //! which also take `angle_rad`).
 
+use std::collections::HashSet;
+
 use reify_types::{
     Diagnostic, DiagnosticCode, DiagnosticLabel, FeatureTag, FeatureTagTable, GeometryHandleId,
     GeometryKernel, GeometryQuery, QueryError, SourceSpan, Value,
@@ -498,8 +500,12 @@ pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
 /// (via `edges_at_height_with_tags` or equivalent) before calling this resolver.
 ///
 /// # Preconditions
-/// `candidates` must be deduplicated; duplicate handles inflate the match count
-/// and produce spurious split-topology warnings.
+/// Callers SHOULD pass a deduplicated `candidates` slice (the OCCT-backed
+/// kernel extractors guarantee this via `TopoDS_Shape::IsSame`). As a
+/// defense-in-depth measure, the resolver internally deduplicates via a
+/// `HashSet<GeometryHandleId>` so that accidental duplicates from a
+/// misbehaving extractor cannot inflate the match count or produce a spurious
+/// `W_TOPOLOGY_TAG_STALE` diagnostic.
 pub fn resolve_unique_by_tag(
     table: &FeatureTagTable,
     candidates: &[GeometryHandleId],
@@ -507,10 +513,11 @@ pub fn resolve_unique_by_tag(
     selector_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<GeometryHandleId> {
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut found: Option<GeometryHandleId> = None;
     let mut n: usize = 0;
     for &id in candidates {
-        if table.lookup(id) == Some(&target) {
+        if seen.insert(id) && table.lookup(id) == Some(&target) {
             n += 1;
             if n == 1 {
                 found = Some(id);
