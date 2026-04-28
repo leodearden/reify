@@ -326,6 +326,14 @@ impl ItemKind {
 /// and a kind-specific `kind` payload.  Both fields are flattened during JSON
 /// serialization so the wire format remains the historical top-level-field shape:
 /// `{"kind":"structure","name":"…","is_pub":…,"annotations":[…],"pragmas":[…],"params":[…],…}`.
+///
+/// # Serde notes
+///
+/// The double `#[serde(flatten)]` (header struct + internally-tagged kind enum) is
+/// JSON-specific: serialization via non-self-describing formats (e.g. bincode) will
+/// fail at runtime.  Field order in the JSON output is not guaranteed by serde's
+/// flatten implementation, so consumers and tests must use field-presence checks
+/// (e.g. `contains("\"kind\":\"structure\"")`) rather than fixed-order comparisons.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemDoc {
     #[serde(flatten)]
@@ -377,7 +385,9 @@ mod tests {
 
     #[test]
     fn doc_model_serde_round_trip() {
-        let model = DocModel { modules: Vec::new() };
+        let model = DocModel {
+            modules: Vec::new(),
+        };
         let json = serde_json::to_string(&model).expect("serialize");
         let back: DocModel = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(model, back);
@@ -388,7 +398,10 @@ mod tests {
     fn annotation_doc_serde_round_trip() {
         let ann = AnnotationDoc {
             name: "deprecated".to_string(),
-            args: vec!["\"use foo instead\"".to_string(), "since = \"1.0\"".to_string()],
+            args: vec![
+                "\"use foo instead\"".to_string(),
+                "since = \"1.0\"".to_string(),
+            ],
         };
         let json = serde_json::to_string(&ann).expect("serialize");
         let back: AnnotationDoc = serde_json::from_str(&json).expect("deserialize");
@@ -523,62 +536,90 @@ mod tests {
                 name: "Board".to_string(),
                 doc: Some("Main PCB board.".to_string()),
                 is_pub: true,
-                annotations: vec![AnnotationDoc { name: "deprecated".to_string(), args: vec![] }],
-                pragmas: vec![PragmaDoc { name: "layout".to_string(), args: vec!["row".to_string()] }],
+                annotations: vec![AnnotationDoc {
+                    name: "deprecated".to_string(),
+                    args: vec![],
+                }],
+                pragmas: vec![PragmaDoc {
+                    name: "layout".to_string(),
+                    args: vec!["row".to_string()],
+                }],
             },
             kind: ItemKind::Structure {
-            params: vec![ParamDoc {
-                name: "width".to_string(),
-                doc: None,
-                type_repr: "Length".to_string(),
-                default_repr: Some("100 mm".to_string()),
-                annotations: vec![],
-            }],
-            ports: vec![PortDoc {
-                name: "pwr".to_string(),
-                direction: "in".to_string(),
-                type_name: "Power".to_string(),
-                members: vec![],
-            }],
-            constraints: vec![ConstraintDoc {
-                label: None,
-                expr_repr: "width > 0 mm".to_string(),
-                annotations: vec![],
-                line: None,
-            }],
-            sub_components: vec![SubComponentDoc {
-                name: "cpu".to_string(),
-                structure_name: "MCU".to_string(),
-                args: vec![],
-                annotations: vec![],
-            }],
-            realizations: vec![RealizationDoc {
-                name: "Schematic".to_string(),
-                op_summaries: vec!["place cpu".to_string()],
-            }],
-            meta: vec![("version".to_string(), "1.0".to_string())],
+                params: vec![ParamDoc {
+                    name: "width".to_string(),
+                    doc: None,
+                    type_repr: "Length".to_string(),
+                    default_repr: Some("100 mm".to_string()),
+                    annotations: vec![],
+                }],
+                ports: vec![PortDoc {
+                    name: "pwr".to_string(),
+                    direction: "in".to_string(),
+                    type_name: "Power".to_string(),
+                    members: vec![],
+                }],
+                constraints: vec![ConstraintDoc {
+                    label: None,
+                    expr_repr: "width > 0 mm".to_string(),
+                    annotations: vec![],
+                    line: None,
+                }],
+                sub_components: vec![SubComponentDoc {
+                    name: "cpu".to_string(),
+                    structure_name: "MCU".to_string(),
+                    args: vec![],
+                    annotations: vec![],
+                }],
+                realizations: vec![RealizationDoc {
+                    name: "Schematic".to_string(),
+                    op_summaries: vec!["place cpu".to_string()],
+                }],
+                meta: vec![("version".to_string(), "1.0".to_string())],
             },
         };
         let json = serde_json::to_string(&structure_item).expect("serialize");
         // Confirm the tagged shape has "kind": "structure"
-        assert!(json.contains("\"kind\":\"structure\""), "tag present in JSON: {json}");
+        assert!(
+            json.contains("\"kind\":\"structure\""),
+            "tag present in JSON: {json}"
+        );
         let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(structure_item, back);
 
         // Function variant — simple
         let fn_item = ItemDoc {
-            header: ItemHeader { name: "compute".to_string(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
-            kind: ItemKind::Function { signature: "fn compute(x: f64) -> f64".to_string() },
+            header: ItemHeader {
+                name: "compute".to_string(),
+                doc: None,
+                is_pub: false,
+                annotations: vec![],
+                pragmas: vec![],
+            },
+            kind: ItemKind::Function {
+                signature: "fn compute(x: f64) -> f64".to_string(),
+            },
         };
         let json = serde_json::to_string(&fn_item).expect("serialize");
-        assert!(json.contains("\"kind\":\"function\""), "tag present: {json}");
+        assert!(
+            json.contains("\"kind\":\"function\""),
+            "tag present: {json}"
+        );
         let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(fn_item, back);
 
         // Enum variant
         let enum_item = ItemDoc {
-            header: ItemHeader { name: "Color".to_string(), doc: Some("Color choices.".to_string()), is_pub: true, annotations: vec![], pragmas: vec![] },
-            kind: ItemKind::Enum { variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()] },
+            header: ItemHeader {
+                name: "Color".to_string(),
+                doc: Some("Color choices.".to_string()),
+                is_pub: true,
+                annotations: vec![],
+                pragmas: vec![],
+            },
+            kind: ItemKind::Enum {
+                variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            },
         };
         let json = serde_json::to_string(&enum_item).expect("serialize");
         assert!(json.contains("\"kind\":\"enum\""), "tag present: {json}");
@@ -587,11 +628,22 @@ mod tests {
 
         // TypeAlias variant
         let alias_item = ItemDoc {
-            header: ItemHeader { name: "Meters".to_string(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
-            kind: ItemKind::TypeAlias { type_repr: "f64".to_string() },
+            header: ItemHeader {
+                name: "Meters".to_string(),
+                doc: None,
+                is_pub: true,
+                annotations: vec![],
+                pragmas: vec![],
+            },
+            kind: ItemKind::TypeAlias {
+                type_repr: "f64".to_string(),
+            },
         };
         let json = serde_json::to_string(&alias_item).expect("serialize");
-        assert!(json.contains("\"kind\":\"type_alias\""), "tag present: {json}");
+        assert!(
+            json.contains("\"kind\":\"type_alias\""),
+            "tag present: {json}"
+        );
         let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(alias_item, back);
     }
@@ -599,29 +651,91 @@ mod tests {
     #[test]
     fn module_doc_with_items_serde_round_trip() {
         fn hdr(name: &str, is_pub: bool) -> ItemHeader {
-            ItemHeader { name: name.to_string(), doc: None, is_pub, annotations: vec![], pragmas: vec![] }
+            ItemHeader {
+                name: name.to_string(),
+                doc: None,
+                is_pub,
+                annotations: vec![],
+                pragmas: vec![],
+            }
         }
         let module = ModuleDoc {
             path: "electronics.board".to_string(),
             doc: Some("Electronics board module.".to_string()),
             items: vec![
-                ItemDoc { header: hdr("Board", true), kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] } },
-                ItemDoc { header: hdr("Connector", false), kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] } },
-                ItemDoc { header: hdr("HasPower", true), kind: ItemKind::Trait { members: vec!["voltage: Voltage".to_string()] } },
-                ItemDoc { header: hdr("supply_voltage", true), kind: ItemKind::Field { type_repr: "Voltage".to_string(), default_repr: None } },
-                ItemDoc { header: hdr("minimize_area", false), kind: ItemKind::Purpose { expr_repr: "total_area".to_string(), direction: "minimize".to_string() } },
-                ItemDoc { header: hdr("Milliamp", true), kind: ItemKind::Unit { base_unit: "Ampere".to_string(), scale: "0.001".to_string() } },
-                ItemDoc { header: hdr("voltage_safe", true), kind: ItemKind::ConstraintDef { expr_repr: "v <= 5.5 V".to_string() } },
+                ItemDoc {
+                    header: hdr("Board", true),
+                    kind: ItemKind::Structure {
+                        params: vec![],
+                        ports: vec![],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
+                },
+                ItemDoc {
+                    header: hdr("Connector", false),
+                    kind: ItemKind::Occurrence {
+                        params: vec![],
+                        ports: vec![],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
+                },
+                ItemDoc {
+                    header: hdr("HasPower", true),
+                    kind: ItemKind::Trait {
+                        members: vec!["voltage: Voltage".to_string()],
+                    },
+                },
+                ItemDoc {
+                    header: hdr("supply_voltage", true),
+                    kind: ItemKind::Field {
+                        type_repr: "Voltage".to_string(),
+                        default_repr: None,
+                    },
+                },
+                ItemDoc {
+                    header: hdr("minimize_area", false),
+                    kind: ItemKind::Purpose {
+                        expr_repr: "total_area".to_string(),
+                        direction: "minimize".to_string(),
+                    },
+                },
+                ItemDoc {
+                    header: hdr("Milliamp", true),
+                    kind: ItemKind::Unit {
+                        base_unit: "Ampere".to_string(),
+                        scale: "0.001".to_string(),
+                    },
+                },
+                ItemDoc {
+                    header: hdr("voltage_safe", true),
+                    kind: ItemKind::ConstraintDef {
+                        expr_repr: "v <= 5.5 V".to_string(),
+                    },
+                },
             ],
-            annotations: vec![AnnotationDoc { name: "version".to_string(), args: vec!["\"1.0\"".to_string()] }],
-            pragmas: vec![PragmaDoc { name: "stability".to_string(), args: vec!["stable".to_string()] }],
+            annotations: vec![AnnotationDoc {
+                name: "version".to_string(),
+                args: vec!["\"1.0\"".to_string()],
+            }],
+            pragmas: vec![PragmaDoc {
+                name: "stability".to_string(),
+                args: vec!["stable".to_string()],
+            }],
             cross_refs: ModuleCrossRefs {
                 referenced_modules: vec!["mechanics.base".to_string()],
                 referenced_items: vec!["MCU".to_string()],
                 referenced_traits: vec![],
             },
         };
-        let model = DocModel { modules: vec![module.clone()] };
+        let model = DocModel {
+            modules: vec![module.clone()],
+        };
         let json = serde_json::to_string(&model).expect("serialize");
         let back: DocModel = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.modules.len(), 1);
@@ -636,19 +750,114 @@ mod tests {
     #[test]
     fn item_doc_all_variant_kind_tags() {
         fn hdr(name: &str) -> ItemHeader {
-            ItemHeader { name: name.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] }
+            ItemHeader {
+                name: name.into(),
+                doc: None,
+                is_pub: false,
+                annotations: vec![],
+                pragmas: vec![],
+            }
         }
         let cases: Vec<(ItemDoc, &str)> = vec![
-            (ItemDoc { header: hdr("S"), kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] } }, "structure"),
-            (ItemDoc { header: hdr("O"), kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] } }, "occurrence"),
-            (ItemDoc { header: hdr("T"), kind: ItemKind::Trait { members: vec![] } }, "trait"),
-            (ItemDoc { header: hdr("F"), kind: ItemKind::Function { signature: "fn f()".into() } }, "function"),
-            (ItemDoc { header: hdr("x"), kind: ItemKind::Field { type_repr: "i32".into(), default_repr: None } }, "field"),
-            (ItemDoc { header: hdr("P"), kind: ItemKind::Purpose { expr_repr: "cost".into(), direction: "minimize".into() } }, "purpose"),
-            (ItemDoc { header: hdr("E"), kind: ItemKind::Enum { variants: vec![] } }, "enum"),
-            (ItemDoc { header: hdr("U"), kind: ItemKind::Unit { base_unit: "Meter".into(), scale: "1.0".into() } }, "unit"),
-            (ItemDoc { header: hdr("A"), kind: ItemKind::TypeAlias { type_repr: "f64".into() } }, "type_alias"),
-            (ItemDoc { header: hdr("C"), kind: ItemKind::ConstraintDef { expr_repr: "x > 0".into() } }, "constraint_def"),
+            (
+                ItemDoc {
+                    header: hdr("S"),
+                    kind: ItemKind::Structure {
+                        params: vec![],
+                        ports: vec![],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
+                },
+                "structure",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("O"),
+                    kind: ItemKind::Occurrence {
+                        params: vec![],
+                        ports: vec![],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
+                },
+                "occurrence",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("T"),
+                    kind: ItemKind::Trait { members: vec![] },
+                },
+                "trait",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("F"),
+                    kind: ItemKind::Function {
+                        signature: "fn f()".into(),
+                    },
+                },
+                "function",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("x"),
+                    kind: ItemKind::Field {
+                        type_repr: "i32".into(),
+                        default_repr: None,
+                    },
+                },
+                "field",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("P"),
+                    kind: ItemKind::Purpose {
+                        expr_repr: "cost".into(),
+                        direction: "minimize".into(),
+                    },
+                },
+                "purpose",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("E"),
+                    kind: ItemKind::Enum { variants: vec![] },
+                },
+                "enum",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("U"),
+                    kind: ItemKind::Unit {
+                        base_unit: "Meter".into(),
+                        scale: "1.0".into(),
+                    },
+                },
+                "unit",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("A"),
+                    kind: ItemKind::TypeAlias {
+                        type_repr: "f64".into(),
+                    },
+                },
+                "type_alias",
+            ),
+            (
+                ItemDoc {
+                    header: hdr("C"),
+                    kind: ItemKind::ConstraintDef {
+                        expr_repr: "x > 0".into(),
+                    },
+                },
+                "constraint_def",
+            ),
         ];
 
         for (item, expected_kind) in &cases {
@@ -666,7 +875,8 @@ mod tests {
     /// `#[serde(default)]`.  Catches accidental removal of the attribute.
     #[test]
     fn module_doc_deserializes_without_cross_refs() {
-        let legacy_json = r#"{"path":"old.module","doc":null,"items":[],"annotations":[],"pragmas":[]}"#;
+        let legacy_json =
+            r#"{"path":"old.module","doc":null,"items":[],"annotations":[],"pragmas":[]}"#;
         let m: ModuleDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
         assert_eq!(m.path, "old.module");
         assert_eq!(m.cross_refs, ModuleCrossRefs::default());
@@ -675,8 +885,15 @@ mod tests {
     #[test]
     fn cross_refs_serde_round_trip() {
         let xrefs = ModuleCrossRefs {
-            referenced_modules: vec!["electronics.power".to_string(), "mechanics.base".to_string()],
-            referenced_items: vec!["Board".to_string(), "MCU".to_string(), "Connector".to_string()],
+            referenced_modules: vec![
+                "electronics.power".to_string(),
+                "mechanics.base".to_string(),
+            ],
+            referenced_items: vec![
+                "Board".to_string(),
+                "MCU".to_string(),
+                "Connector".to_string(),
+            ],
             referenced_traits: vec!["HasPower".to_string(), "HasSignal".to_string()],
         };
         let json = serde_json::to_string(&xrefs).expect("serialize");
@@ -707,19 +924,84 @@ mod tests {
     /// Names are the short identifiers used throughout the accessor tests.
     fn sample_items() -> Vec<ItemDoc> {
         fn hdr(name: &str) -> ItemHeader {
-            ItemHeader { name: name.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] }
+            ItemHeader {
+                name: name.into(),
+                doc: None,
+                is_pub: false,
+                annotations: vec![],
+                pragmas: vec![],
+            }
         }
         vec![
-            ItemDoc { header: hdr("S"), kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] } },
-            ItemDoc { header: hdr("O"), kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] } },
-            ItemDoc { header: hdr("T"), kind: ItemKind::Trait { members: vec![] } },
-            ItemDoc { header: hdr("F"), kind: ItemKind::Function { signature: "fn f()".into() } },
-            ItemDoc { header: hdr("x"), kind: ItemKind::Field { type_repr: "i32".into(), default_repr: None } },
-            ItemDoc { header: hdr("P"), kind: ItemKind::Purpose { expr_repr: "cost".into(), direction: "minimize".into() } },
-            ItemDoc { header: hdr("E"), kind: ItemKind::Enum { variants: vec![] } },
-            ItemDoc { header: hdr("U"), kind: ItemKind::Unit { base_unit: "Meter".into(), scale: "1.0".into() } },
-            ItemDoc { header: hdr("A"), kind: ItemKind::TypeAlias { type_repr: "f64".into() } },
-            ItemDoc { header: hdr("C"), kind: ItemKind::ConstraintDef { expr_repr: "x > 0".into() } },
+            ItemDoc {
+                header: hdr("S"),
+                kind: ItemKind::Structure {
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+            },
+            ItemDoc {
+                header: hdr("O"),
+                kind: ItemKind::Occurrence {
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+            },
+            ItemDoc {
+                header: hdr("T"),
+                kind: ItemKind::Trait { members: vec![] },
+            },
+            ItemDoc {
+                header: hdr("F"),
+                kind: ItemKind::Function {
+                    signature: "fn f()".into(),
+                },
+            },
+            ItemDoc {
+                header: hdr("x"),
+                kind: ItemKind::Field {
+                    type_repr: "i32".into(),
+                    default_repr: None,
+                },
+            },
+            ItemDoc {
+                header: hdr("P"),
+                kind: ItemKind::Purpose {
+                    expr_repr: "cost".into(),
+                    direction: "minimize".into(),
+                },
+            },
+            ItemDoc {
+                header: hdr("E"),
+                kind: ItemKind::Enum { variants: vec![] },
+            },
+            ItemDoc {
+                header: hdr("U"),
+                kind: ItemKind::Unit {
+                    base_unit: "Meter".into(),
+                    scale: "1.0".into(),
+                },
+            },
+            ItemDoc {
+                header: hdr("A"),
+                kind: ItemKind::TypeAlias {
+                    type_repr: "f64".into(),
+                },
+            },
+            ItemDoc {
+                header: hdr("C"),
+                kind: ItemKind::ConstraintDef {
+                    expr_repr: "x > 0".into(),
+                },
+            },
         ]
     }
 
@@ -779,7 +1061,10 @@ mod tests {
             assert!(item.annotations().is_empty());
         }
         // one-marker cases — mutate each sample item to add a "marker" annotation
-        let marker = AnnotationDoc { name: "marker".to_string(), args: vec![] };
+        let marker = AnnotationDoc {
+            name: "marker".to_string(),
+            args: vec![],
+        };
         for mut item in sample_items() {
             push_annotation(&mut item, marker.clone());
             let anns = item.annotations();
@@ -791,8 +1076,16 @@ mod tests {
     #[test]
     fn item_doc_keyword_per_variant() {
         let expected = [
-            "structure", "occurrence", "trait", "fn",
-            "let", "purpose", "enum", "unit", "type", "constraint",
+            "structure",
+            "occurrence",
+            "trait",
+            "fn",
+            "let",
+            "purpose",
+            "enum",
+            "unit",
+            "type",
+            "constraint",
         ];
         for (item, &exp) in sample_items().iter().zip(expected.iter()) {
             assert_eq!(item.keyword(), exp);
@@ -802,8 +1095,16 @@ mod tests {
     #[test]
     fn item_doc_group_per_variant() {
         let expected = [
-            "Structures", "Occurrences", "Traits", "Functions",
-            "Constants", "Constants", "Enums", "Constants", "Constants", "Constants",
+            "Structures",
+            "Occurrences",
+            "Traits",
+            "Functions",
+            "Constants",
+            "Constants",
+            "Enums",
+            "Constants",
+            "Constants",
+            "Constants",
         ];
         for (item, &exp) in sample_items().iter().zip(expected.iter()) {
             assert_eq!(item.group(), exp);
@@ -813,27 +1114,38 @@ mod tests {
     #[test]
     fn item_doc_kind_slug_per_variant() {
         let expected = [
-            "structure", "occurrence", "trait", "function",
-            "field", "purpose", "enum", "unit", "type_alias", "constraint_def",
+            "structure",
+            "occurrence",
+            "trait",
+            "function",
+            "field",
+            "purpose",
+            "enum",
+            "unit",
+            "type_alias",
+            "constraint_def",
         ];
         for (item, &exp) in sample_items().iter().zip(expected.iter()) {
             assert_eq!(item.kind_slug(), exp);
         }
     }
 
-    /// Shape-pinning test: pins the new `ItemDoc { header: ItemHeader, kind: ItemKind }`
-    /// struct shape, exercises all seven accessors, and asserts the JSON wire format
-    /// flattens header + kind to the historical top-level-field shape.
-    ///
-    /// Fails to compile against the current enum-shaped `ItemDoc` — step-2 makes it pass.
+    /// Pins that `header` and `kind` are the public struct fields of `ItemDoc` and that
+    /// both are flattened into the JSON wire format (all keys appear at the top level).
     #[test]
     fn item_doc_struct_shape_with_header_and_kind_round_trips() {
         let header = ItemHeader {
             name: "Bolt".into(),
             doc: Some("A bolt.".into()),
             is_pub: true,
-            annotations: vec![AnnotationDoc { name: "deprecated".into(), args: vec![] }],
-            pragmas: vec![PragmaDoc { name: "inline".into(), args: vec![] }],
+            annotations: vec![AnnotationDoc {
+                name: "deprecated".into(),
+                args: vec![],
+            }],
+            pragmas: vec![PragmaDoc {
+                name: "inline".into(),
+                args: vec![],
+            }],
         };
         let kind = ItemKind::Structure {
             params: vec![],
@@ -843,7 +1155,10 @@ mod tests {
             realizations: vec![],
             meta: vec![],
         };
-        let item = ItemDoc { header: header.clone(), kind: kind.clone() };
+        let item = ItemDoc {
+            header: header.clone(),
+            kind: kind.clone(),
+        };
 
         // Direct field access
         assert_eq!(item.header.name, "Bolt");
@@ -861,10 +1176,16 @@ mod tests {
 
         // JSON wire format: header + kind fields flatten to top-level
         let json = serde_json::to_string(&item).expect("serialize");
-        assert!(json.contains("\"kind\":\"structure\""), "kind tag flattened: {json}");
+        assert!(
+            json.contains("\"kind\":\"structure\""),
+            "kind tag flattened: {json}"
+        );
         assert!(json.contains("\"name\":\"Bolt\""), "name flattened: {json}");
         assert!(json.contains("\"is_pub\":true"), "is_pub flattened: {json}");
-        assert!(json.contains("\"params\":[]"), "variant payload flattened: {json}");
+        assert!(
+            json.contains("\"params\":[]"),
+            "variant payload flattened: {json}"
+        );
 
         // Round-trip
         let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
