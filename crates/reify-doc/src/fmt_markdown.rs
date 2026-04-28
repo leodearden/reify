@@ -863,7 +863,7 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AnnotationDoc, ItemDoc};
+    use crate::model::{AnnotationDoc, ItemDoc, ParamDoc};
 
     /// `@deprecated("first" + "second")` — pathological multi-quote concat arg —
     /// must NOT have the outer quotes stripped by `unquote`. The naïve strip would
@@ -904,6 +904,100 @@ mod tests {
         assert!(
             !out.contains("> **Deprecated:** first\""),
             "naive unquote strip detected in markdown rendering; got:\n{out}"
+        );
+    }
+
+    /// `@optimized("first" + "second")` — pathological multi-quote concat arg —
+    /// must NOT have the outer quotes stripped by `unquote`. The naïve strip would
+    /// yield `*Optimized: `first" + "second`*` (outer `"` eaten); the
+    /// escape-aware `crate::util::unquote` returns the arg unchanged so the note
+    /// reads `*Optimized: `"first" + "second"`*`.
+    ///
+    /// Guards the `@optimized` call site at `fmt_markdown.rs:337` against a
+    /// future revert to a naïve local unquote; parallels the html test at
+    /// `tests/fmt_html_tests.rs:1101`.
+    #[test]
+    fn optimized_annotation_pathological_concat_arg_renders_unchanged() {
+        let item = ItemDoc::Structure {
+            name: "Bolt".into(),
+            doc: None,
+            is_pub: true,
+            annotations: vec![AnnotationDoc {
+                name: "optimized".into(),
+                args: vec!["\"first\" + \"second\"".into()],
+            }],
+            pragmas: vec![],
+            params: vec![],
+            ports: vec![],
+            constraints: vec![],
+            sub_components: vec![],
+            realizations: vec![],
+            meta: vec![],
+        };
+        let mut out = String::new();
+        render_item(&mut out, &item, None, &|n| format!("#{n}"));
+
+        // POSITIVE: arg appears verbatim — unquote returned it unchanged.
+        assert!(
+            out.contains("*Optimized: `\"first\" + \"second\"`*"),
+            "expected verbatim arg in optimized note; got:\n{out}"
+        );
+        // NEGATIVE: naive unquote strip would eat the leading `"`, placing
+        // `first"` right after the backtick.
+        assert!(
+            !out.contains("*Optimized: `first\""),
+            "naive unquote strip detected in markdown @optimized rendering; got:\n{out}"
+        );
+    }
+
+    /// `@solver_hint("first" + "second")` on a parameter — pathological
+    /// multi-quote concat arg — must NOT have the outer quotes stripped.
+    /// The naïve strip would yield `*hint: first" + "second*`; the
+    /// escape-aware `crate::util::unquote` returns the arg unchanged so the
+    /// cell reads `*hint: "first" + "second"*`.
+    ///
+    /// Guards the solver_hint call site at `fmt_markdown.rs:610` inside
+    /// `render_params_table` against a future revert to a naïve local unquote;
+    /// parallels the html test at `tests/fmt_html_tests.rs:543`.
+    #[test]
+    fn solver_hint_annotation_pathological_concat_arg_renders_unchanged() {
+        let item = ItemDoc::Structure {
+            name: "Widget".into(),
+            doc: None,
+            is_pub: true,
+            annotations: vec![],
+            pragmas: vec![],
+            params: vec![ParamDoc {
+                name: "strategy".into(),
+                doc: Some("Solver strategy.".into()),
+                type_repr: "String".into(),
+                default_repr: None,
+                annotations: vec![AnnotationDoc {
+                    name: "solver_hint".into(),
+                    args: vec!["\"first\" + \"second\"".into()],
+                }],
+            }],
+            ports: vec![],
+            constraints: vec![],
+            sub_components: vec![],
+            realizations: vec![],
+            meta: vec![],
+        };
+        let mut out = String::new();
+        render_item(&mut out, &item, None, &|n| format!("#{n}"));
+
+        // POSITIVE: arg appears verbatim in the hint suffix — unquote returned
+        // it unchanged. md_cell_escape only touches `|` and `\n`, so `"` chars
+        // survive verbatim.
+        assert!(
+            out.contains("*hint: \"first\" + \"second\"*"),
+            "expected verbatim arg in solver_hint cell; got:\n{out}"
+        );
+        // NEGATIVE: naive unquote strip would eat the leading `"`, placing
+        // `first"` right after `hint: `.
+        assert!(
+            !out.contains("*hint: first\""),
+            "naive unquote strip detected in markdown solver_hint rendering; got:\n{out}"
         );
     }
 }
