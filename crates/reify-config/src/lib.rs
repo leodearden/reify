@@ -6,8 +6,42 @@
 //! yet, but the binary entry points (CLI, GUI launcher, MCP server) and the
 //! future kernel registry will read the parsed pin from here.
 //!
-//! See the doc comment on [`Manifest`] (added in later steps) for the on-disk
-//! schema and worked examples.
+//! # Schema
+//!
+//! A `reify.toml` may declare a `[kernels]` table mapping each kernel id to
+//! a pinned version. The four kernel ids supported in v0.2 are `occt`,
+//! `manifold`, `fidget`, and `openvdb` — see [`KernelId`]. Truck is
+//! intentionally rejected (the v0.2 PRD drops Truck), as is any other id;
+//! matching is canonical-lowercase only, so `OCCT` also surfaces as
+//! [`ManifestError::UnknownKernel`]. Empty / whitespace-only version
+//! strings are rejected with [`ManifestError::EmptyVersion`].
+//!
+//! Each pin accepts either an inline string scalar or a table with a
+//! `version` key — both forms parse to the same [`KernelPin`]:
+//!
+//! ```toml
+//! [kernels]
+//! occt = "7.7.0"
+//! manifold = { version = "2.5.1" }
+//! fidget = "0.3.4"
+//! openvdb = "11.0.0"
+//! ```
+//!
+//! # Usage
+//!
+//! Use [`Manifest::from_toml_str`] for in-memory documents and
+//! [`Manifest::load_from_path`] to read from disk. Iterate the parsed pin
+//! set in canonical kernel-id order with [`Manifest::kernel_pins`]:
+//!
+//! ```
+//! use reify_config::{KernelId, Manifest};
+//!
+//! let toml = "[kernels]\nocct = \"7.7.0\"\n";
+//! let manifest = Manifest::from_toml_str(toml).expect("valid manifest");
+//! let (id, pin) = manifest.kernel_pins().next().expect("one pin");
+//! assert_eq!(*id, KernelId::Occt);
+//! assert_eq!(pin.version, "7.7.0");
+//! ```
 
 use std::collections::BTreeMap;
 use std::fmt;
