@@ -53,78 +53,16 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 Some(Value::String(s)) => s.as_str(),
                 _ => return Some(Value::Undef),
             };
-            // The axis lookup is now inside each arm: Coupling maps have no axis
-            // field, so moving the lookup prevents a spurious Undef for coupling.
             match kind {
-                "prismatic" => {
-                    let [nax, nay, naz] = match unit_axis_from_map(map) {
-                        Some(a) => a,
-                        None => return Some(Value::Undef),
-                    };
-                    // Accept Length Scalar or bare Real/Int as metres
-                    let dist = match length_input(&args[1]) {
-                        Some(d) => d,
-                        None => return Some(Value::Undef),
-                    };
-                    // length_input already enforces finiteness for the Scalar/Real
-                    // branches; the Int branch yields finite f64 by construction.
-                    // This guard is defense-in-depth against future changes to
-                    // length_input.
-                    if !dist.is_finite() {
-                        return Some(Value::Undef);
-                    }
-                    let translation = Value::Vector(vec![
-                        Value::length(dist * nax),
-                        Value::length(dist * nay),
-                        Value::length(dist * naz),
-                    ]);
-                    let rotation = Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    };
-                    Value::Transform {
-                        rotation: Box::new(rotation),
-                        translation: Box::new(translation),
-                    }
-                }
-                "revolute" => {
-                    let [nax, nay, naz] = match unit_axis_from_map(map) {
-                        Some(a) => a,
-                        None => return Some(Value::Undef),
-                    };
-                    // Accept Angle Scalar or bare Real/Int as radians
-                    let theta = match trig_input(&args[1]) {
-                        Some(t) => t,
-                        None => return Some(Value::Undef),
-                    };
-                    // trig_input already enforces finiteness for the Scalar/Real
-                    // branches; the Int branch yields finite f64 by construction.
-                    // This guard is defense-in-depth against future changes to
-                    // trig_input (parallel to the same guard in the prismatic arm).
-                    if !theta.is_finite() {
-                        return Some(Value::Undef);
-                    }
-                    let rotation = axis_angle_quaternion(nax, nay, naz, theta);
-                    let translation = Value::Vector(vec![
-                        Value::length(0.0),
-                        Value::length(0.0),
-                        Value::length(0.0),
-                    ]);
-                    Value::Transform {
-                        rotation: Box::new(rotation),
-                        translation: Box::new(translation),
-                    }
-                }
+                "prismatic" | "revolute" => transform_at_simple_joint(map, &args[1]),
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
                     // call always has them, but hand-built Maps used in tests or future
                     // serialisation paths may not.
-                    let parent = match map.get(&Value::String("parent".to_string())) {
-                        Some(v) => v.clone(),
-                        None => return Some(Value::Undef),
+                    let parent_map = match map.get(&Value::String("parent".to_string())) {
+                        Some(Value::Map(pm)) => pm,
+                        _ => return Some(Value::Undef),
                     };
                     let ratio_f64 = match map.get(&Value::String("ratio".to_string())) {
                         Some(Value::Real(r)) => *r,
@@ -136,16 +74,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     };
                     // Validate the stored parent kind — defense-in-depth against
                     // hand-built Map fixtures with invalid parent kinds.
-                    let parent_kind = match &parent {
-                        Value::Map(pm) => match pm.get(&Value::String("kind".to_string())) {
-                            Some(Value::String(s)) => s.clone(),
+                    let parent_is_prismatic = match parent_map.get(&Value::String("kind".to_string())) {
+                        Some(Value::String(s)) => match s.as_str() {
+                            "prismatic" => true,
+                            "revolute" => false,
                             _ => return Some(Value::Undef),
                         },
-                        _ => return Some(Value::Undef),
-                    };
-                    let parent_is_prismatic = match parent_kind.as_str() {
-                        "prismatic" => true,
-                        "revolute" => false,
                         _ => return Some(Value::Undef),
                     };
                     // Extract v_si from args[1] via dimension-appropriate helper;
@@ -176,11 +110,11 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     } else {
                         Value::angle(coupled_si)
                     };
-                    // Recursively delegate to the parent joint arm.  Termination is
-                    // guaranteed: `couple` rejects coupling parents at construction,
-                    // so the recursion always reaches a prismatic/revolute arm at depth 1.
-                    eval_joints("transform_at", &[parent, coupled_value])
-                        .unwrap_or(Value::Undef)
+                    // Delegate to the parent joint via the private helper.
+                    // Termination is guaranteed: `couple` rejects coupling parents
+                    // at construction, so the recursion always reaches a
+                    // prismatic/revolute arm at depth 1.
+                    transform_at_simple_joint(parent_map, &coupled_value)
                 }
                 _ => Value::Undef,
             }
@@ -445,6 +379,86 @@ fn axis_angle_quaternion(nax: f64, nay: f64, naz: f64, theta: f64) -> Value {
     let c = half.cos();
     let s = half.sin();
     normalize_quaternion(c, s * nax, s * nay, s * naz).unwrap_or(Value::Undef)
+}
+
+/// Evaluate `transform_at` for a simple (prismatic or revolute) joint map.
+///
+/// Looks up `"kind"` from `map`, dispatches on `"prismatic"` / `"revolute"`, and
+/// returns the computed `Value::Transform`.  Returns `Value::Undef` for any
+/// unknown kind, missing axis, or invalid value argument.
+///
+/// This helper is also the terminal dispatch target for the coupling arm of
+/// `transform_at` — `couple` rejects coupling parents at construction, so the
+/// recursion always reaches this helper at depth 1, guaranteeing termination.
+fn transform_at_simple_joint(map: &BTreeMap<Value, Value>, value: &Value) -> Value {
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return Value::Undef,
+    };
+    match kind {
+        "prismatic" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            // Accept Length Scalar or bare Real/Int as metres
+            let dist = match length_input(value) {
+                Some(d) => d,
+                None => return Value::Undef,
+            };
+            // length_input already enforces finiteness for the Scalar/Real
+            // branches; the Int branch yields finite f64 by construction.
+            // This guard is defense-in-depth against future changes to
+            // length_input.
+            if !dist.is_finite() {
+                return Value::Undef;
+            }
+            let translation = Value::Vector(vec![
+                Value::length(dist * nax),
+                Value::length(dist * nay),
+                Value::length(dist * naz),
+            ]);
+            let rotation = Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            };
+            Value::Transform {
+                rotation: Box::new(rotation),
+                translation: Box::new(translation),
+            }
+        }
+        "revolute" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            // Accept Angle Scalar or bare Real/Int as radians
+            let theta = match trig_input(value) {
+                Some(t) => t,
+                None => return Value::Undef,
+            };
+            // trig_input already enforces finiteness for the Scalar/Real
+            // branches; the Int branch yields finite f64 by construction.
+            // This guard is defense-in-depth against future changes to
+            // trig_input (parallel to the same guard in the prismatic arm).
+            if !theta.is_finite() {
+                return Value::Undef;
+            }
+            let rotation = axis_angle_quaternion(nax, nay, naz, theta);
+            let translation = Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ]);
+            Value::Transform {
+                rotation: Box::new(rotation),
+                translation: Box::new(translation),
+            }
+        }
+        _ => Value::Undef,
+    }
 }
 
 #[cfg(test)]
