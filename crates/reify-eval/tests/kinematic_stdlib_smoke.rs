@@ -17,7 +17,7 @@
 //! would fail this test.
 
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{Value, ValueCellId};
+use reify_types::{Value, ValueCellId, ValueMap};
 
 /// Source: a `Kinematic` structure that exercises every new builtin.
 ///
@@ -59,7 +59,7 @@ structure def Kinematic {
 "#;
 
 /// Resolve a binding by name from the eval result.
-fn get_value<'a>(values: &'a std::collections::BTreeMap<ValueCellId, Value>, name: &str) -> &'a Value {
+fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
     let id = ValueCellId::new("Kinematic", name);
     values
         .get(&id)
