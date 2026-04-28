@@ -216,6 +216,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn register_if_absent_does_not_overwrite() {
         let mut scope = CompilationScope::new("TestEntity");
 
