@@ -195,6 +195,14 @@ const DesignTree: Component<Props> = (props) => {
           <Show when={node.type_name}>
             <span class={styles.typeName}>{node.type_name}</span>
           </Show>
+          <Show when={node.freshness !== 'final'}>
+            <span
+              class={styles.freshnessBadge}
+              data-freshness={node.freshness}
+              data-testid={`row-freshness-${node.entity_path}`}
+              aria-label={`freshness ${node.freshness}`}
+            />
+          </Show>
           <button
             class={styles.eyeIcon}
             data-testid={`eye-icon-${node.entity_path}`}

@@ -86,3 +86,24 @@
   opacity: 0.5;
   font-style: italic;
 }
+
+/* Freshness badge — only rendered for non-Final variants (Final = no badge per arch §7.1). */
+.freshnessBadge {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.freshnessBadge[data-freshness="intermediate"] {
+  background: var(--reify-accent, #89b4fa);
+}
+
+.freshnessBadge[data-freshness="pending"] {
+  background: var(--reify-warning, #fab387);
+}
+
+.freshnessBadge[data-freshness="failed"] {
+  background: var(--reify-error, #f38ba8);
+}
