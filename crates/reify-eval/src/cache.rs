@@ -2956,8 +2956,7 @@ mod tests {
                 leaf.clone(),
                 Freshness::Failed { error: ErrorRef::new("boom") },
                 None,
-            )]
-            .into_iter(),
+            )],
             g,
         );
         assert_eq!(
@@ -2979,8 +2978,7 @@ mod tests {
                 mid.clone(),
                 Freshness::Pending { last_substantive: ResultRef::none() },
                 Some(leaf.clone()),
-            )]
-            .into_iter(),
+            )],
             g,
         );
         assert!(
@@ -2996,7 +2994,7 @@ mod tests {
         // (c) All-Final inputs → (Final, None)
         let (fresh3, cause3) = derive_output_freshness_with_cause(
             false,
-            [(leaf.clone(), Freshness::Final, None)].into_iter(),
+            [(leaf.clone(), Freshness::Final, None)],
             g,
         );
         assert_eq!(fresh3, Freshness::Final, "All-Final inputs must yield Final");

@@ -1864,7 +1864,7 @@ mod tests {
     #[test]
     fn reflective_cell_list_walk_traverses_elements() {
         let elements: Vec<CompiledExpr> = (0..3)
-            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", &format!("c{i}")), Type::Real))
+            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", format!("c{i}")), Type::Real))
             .collect();
         let rcl =
             CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));

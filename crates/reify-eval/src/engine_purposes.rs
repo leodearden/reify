@@ -888,10 +888,11 @@ mod tests {
     fn tree_contains_value_ref_for(expr: &CompiledExpr, entity: &str, member: &str) -> bool {
         let mut found = false;
         expr.walk(&mut |e: &CompiledExpr| {
-            if let CompiledExprKind::ValueRef(id) = &e.kind {
-                if id.entity == entity && id.member == member {
-                    found = true;
-                }
+            if let CompiledExprKind::ValueRef(id) = &e.kind
+                && id.entity == entity
+                && id.member == member
+            {
+                found = true;
             }
         });
         found

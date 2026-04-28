@@ -1071,14 +1071,14 @@ mod tests {
             GeometryHandleId(802),
             GeometryHandleId(803),
         ];
-        let mut kernel = CountingKernel::new()
+        let kernel = CountingKernel::new()
             .with_edges(edge_ids.clone())
             .with_response(edge_ids[0], Value::Real(0.001))
             .with_response(edge_ids[1], Value::Real(0.002))
             .with_response(edge_ids[2], Value::Real(0.003));
 
         let values = query_per_subshape(
-            &mut kernel,
+            &kernel,
             &edge_ids,
             "test_label",
             GeometryQuery::EdgeLength,
@@ -1112,13 +1112,13 @@ mod tests {
             GeometryHandleId(902),
             GeometryHandleId(903),
         ];
-        let mut kernel = FixedReplyQueryManyKernel {
+        let kernel = FixedReplyQueryManyKernel {
             edges: edge_ids.clone(),
             canned_reply: vec![Value::Real(0.001), Value::Real(0.002)],
         };
 
         let err = query_per_subshape(
-            &mut kernel,
+            &kernel,
             &edge_ids,
             "my_selector",
             GeometryQuery::EdgeLength,
