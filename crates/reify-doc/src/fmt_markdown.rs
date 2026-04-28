@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
+use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemKind, ParamDoc, PortDoc};
 
 /// A `CrossRefs` plus a precomputed *inverse* map from conformer name to the
 /// list of traits the conformer implements.
@@ -347,11 +347,11 @@ fn render_item(
     // Kind-specific body. Container variants get parameter / port / constraint
     // / meta sections; the simpler variants emit a tiny body that mirrors the
     // language surface (members list, signature fence, type/default lines, …).
-    match item {
-        ItemDoc::Structure {
+    match &item.kind {
+        ItemKind::Structure {
             params, ports, constraints, meta, ..
         }
-        | ItemDoc::Occurrence {
+        | ItemKind::Occurrence {
             params, ports, constraints, meta, ..
         } => {
             render_params_table(out, params);
@@ -359,28 +359,28 @@ fn render_item(
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        ItemDoc::Trait { members, .. } => {
+        ItemKind::Trait { members } => {
             render_trait_members(out, members);
         }
-        ItemDoc::Function { signature, .. } => {
+        ItemKind::Function { signature } => {
             render_function_signature(out, signature);
         }
-        ItemDoc::Enum { variants, .. } => {
+        ItemKind::Enum { variants } => {
             render_enum_variants(out, variants);
         }
-        ItemDoc::Field { type_repr, default_repr, .. } => {
+        ItemKind::Field { type_repr, default_repr } => {
             render_field_body(out, type_repr, default_repr.as_deref());
         }
-        ItemDoc::Purpose { direction, expr_repr, .. } => {
+        ItemKind::Purpose { direction, expr_repr } => {
             render_purpose_body(out, direction, expr_repr);
         }
-        ItemDoc::Unit { base_unit, scale, .. } => {
+        ItemKind::Unit { base_unit, scale } => {
             render_unit_body(out, base_unit, scale);
         }
-        ItemDoc::TypeAlias { type_repr, .. } => {
+        ItemKind::TypeAlias { type_repr } => {
             render_type_alias_body(out, type_repr);
         }
-        ItemDoc::ConstraintDef { expr_repr, .. } => {
+        ItemKind::ConstraintDef { expr_repr } => {
             render_constraint_def_body(out, expr_repr);
         }
     }
@@ -863,24 +863,28 @@ fn render_split(model: &DocModel, xrefs: Option<&CrossRefIndex<'_>>) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AnnotationDoc, ItemDoc, ParamDoc};
+    use crate::model::{AnnotationDoc, ItemDoc, ItemHeader, ItemKind, ParamDoc};
 
     /// Build a public `Structure` with the given annotations and params; all
     /// other fields default to empty. Used by the pathological-arg tests to
     /// reduce boilerplate.
     fn make_structure(name: &str, anns: Vec<AnnotationDoc>, params: Vec<ParamDoc>) -> ItemDoc {
-        ItemDoc::Structure {
-            name: name.into(),
-            doc: None,
-            is_pub: true,
-            annotations: anns,
-            pragmas: vec![],
-            params,
-            ports: vec![],
-            constraints: vec![],
-            sub_components: vec![],
-            realizations: vec![],
-            meta: vec![],
+        ItemDoc {
+            header: ItemHeader {
+                name: name.into(),
+                doc: None,
+                is_pub: true,
+                annotations: anns,
+                pragmas: vec![],
+            },
+            kind: ItemKind::Structure {
+                params,
+                ports: vec![],
+                constraints: vec![],
+                sub_components: vec![],
+                realizations: vec![],
+                meta: vec![],
+            },
         }
     }
 
