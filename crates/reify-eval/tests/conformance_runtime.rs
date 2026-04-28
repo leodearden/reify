@@ -282,6 +282,78 @@ fn is_watertight_with_literal_int_arg_falls_through_to_undef() {
     );
 }
 
+// ── Amendment: tessellate-path coverage ─────────────────────────────────────
+
+/// Amendment (task 2320, suggestion 1): the post-process must run on the
+/// `tessellate_realizations` path too, so `TessellateResult.values` exposes
+/// the kernel-resolved `Bool` for `is_watertight` / `is_manifold` /
+/// `is_orientable` cells — matching `BuildResult.values` semantics.
+///
+/// Without the post-process being wired into `tessellate_from_values`, a
+/// GUI overlay that reads `TessellateResult.values` to display query-helper
+/// results next to a mesh would see `Value::Undef` while a parallel build
+/// path's overlay would see `Value::Bool(_)`. This test pins the parity.
+#[test]
+fn tessellate_realizations_post_processes_conformance_queries() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let watertight = is_watertight(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(true);
+
+    let result = engine.tessellate_realizations(&compiled);
+
+    let cell = ValueCellId::new("Bracket", "watertight");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Bool(true)),
+        "TessellateResult.values must expose Bool(true) for is_watertight cells \
+         after the kernel reports IsWatertight(handle=1) → true (parity with \
+         BuildResult.values; task 2320 amendment), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// Amendment (task 2320, suggestion 1): tessellate-path counterpart for the
+/// `: Watertight` user-assertion escape hatch. The post-process must
+/// short-circuit before invoking the kernel even on the tessellate path,
+/// so a `RecordingMockKernel` configured to reply `Bool(false)` would
+/// otherwise observe a query if the escape hatch were skipped.
+#[test]
+fn tessellate_realizations_honours_user_assertion_escape_hatch() {
+    let source = "structure def TrustedShell : Watertight {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let watertight = is_watertight(body)\n}";
+    let compiled = compile_no_errors(source);
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let inner =
+        MockGeometryKernel::new().with_query_result(GeometryHandleId(1), Value::Bool(false));
+    let kernel = RecordingMockKernel {
+        inner,
+        is_watertight_query_count: count.clone(),
+    };
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&compiled);
+
+    let cell = ValueCellId::new("TrustedShell", "watertight");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Bool(true)),
+        "TessellateResult.values must short-circuit to Bool(true) via the \
+         `: Watertight` user assertion (task 2320 amendment), got {:?}",
+        result.values.get(&cell),
+    );
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        0,
+        "tessellate path must skip the kernel.query round-trip when the \
+         enclosing structure declares `: Watertight`",
+    );
+}
+
 // ── Step-17: OCCT-backed end-to-end test ────────────────────────────────────
 
 /// Step-17: OCCT-backed end-to-end smoke test for the conformance dispatch
