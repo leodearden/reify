@@ -62,6 +62,23 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
     GEOMETRY_FUNCTION_NAMES.contains(&name)
 }
 
+/// The complete set of stdlib geometry **query-helper** names recognised by
+/// the compiler. Sibling to [`GEOMETRY_FUNCTION_NAMES`] — these helpers
+/// produce a `Type::Bool` and are dispatched at eval-time by
+/// `reify_eval::geometry_ops::try_eval_conformance_query`, which routes to a
+/// `GeometryQuery::Is{Watertight,Manifold,Orientable}` against the kernel.
+///
+/// Kept distinct from `GEOMETRY_FUNCTION_NAMES` because these helpers do not
+/// lower to a `CompiledGeometryOp` and must be classified as
+/// non-geometry-producing by `is_geometry_let`. Case-sensitive: Reify
+/// function names are snake_case.
+pub const GEOMETRY_QUERY_HELPER_NAMES: &[&str] =
+    &["is_watertight", "is_manifold", "is_orientable"];
+
+pub(crate) fn is_geometry_query_helper(name: &str) -> bool {
+    GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
+}
+
 // --- Unit conversion ---
 
 /// Convert a unit string and value to an SI-based `Value::Scalar`.
