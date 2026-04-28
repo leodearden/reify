@@ -182,6 +182,77 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
 
+        "transform_inverse" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (r_q, t_items) = match &args[0] {
+                Value::Transform { rotation, translation } => {
+                    match (rotation.as_ref(), translation.as_ref()) {
+                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
+                            ((*w, *x, *y, *z), items.clone())
+                        }
+                        _ => return Some(Value::Undef),
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(r_q.0, r_q.1, r_q.2, r_q.3) {
+                return Some(Value::Undef);
+            }
+            if t_items.len() != 3 {
+                return Some(Value::Undef);
+            }
+            let t_dim = t_items[0].dimension();
+            if t_items[1].dimension() != t_dim || t_items[2].dimension() != t_dim {
+                return Some(Value::Undef);
+            }
+            let (tx, ty, tz) = match (
+                t_items[0].as_f64(),
+                t_items[1].as_f64(),
+                t_items[2].as_f64(),
+            ) {
+                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+                _ => return Some(Value::Undef),
+            };
+            // Normalize R first to be safe with non-unit input quaternions.
+            let r_norm_sq = r_q.0 * r_q.0 + r_q.1 * r_q.1 + r_q.2 * r_q.2 + r_q.3 * r_q.3;
+            if r_norm_sq < f64::EPSILON {
+                return Some(Value::Undef);
+            }
+            let r_norm = r_norm_sq.sqrt();
+            let r_n = (
+                r_q.0 / r_norm,
+                r_q.1 / r_norm,
+                r_q.2 / r_norm,
+                r_q.3 / r_norm,
+            );
+            // Inverse rotation = conjugate (for unit quaternion).
+            let r_inv = quat_conj(r_n);
+            let r_inv_val = match normalize_quaternion(r_inv.0, r_inv.1, r_inv.2, r_inv.3) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Inverse translation: t_inv = -R^-1 * t.
+            let (rtx, rty, rtz) = quat_rotate(r_inv, tx, ty, tz);
+            let dim = t_dim;
+            let make_component = |v: f64| -> Value {
+                if dim.is_dimensionless() {
+                    Value::Real(v)
+                } else {
+                    Value::Scalar { si_value: v, dimension: dim }
+                }
+            };
+            Value::Transform {
+                rotation: Box::new(r_inv_val),
+                translation: Box::new(Value::Vector(vec![
+                    make_component(-rtx),
+                    make_component(-rty),
+                    make_component(-rtz),
+                ])),
+            }
+        }
+
         "transform_compose" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
