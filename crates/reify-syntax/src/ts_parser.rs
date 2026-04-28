@@ -3390,6 +3390,113 @@ mod tests {
         );
     }
 
+    // ── parse_with_prelude_enums (task 2525) ────────────────────────────────
+
+    /// Helper: locate the first `EnumAccess` expression in a parsed module's
+    /// structure declarations.  Returns the matched `(type_name, variant)`
+    /// pair, or `None` if no `EnumAccess` is present.
+    fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
+        for decl in &module.declarations {
+            if let Declaration::Structure(s) = decl {
+                for member in &s.members {
+                    if let MemberDecl::Let(l) = member
+                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
+                    {
+                        return Some((type_name.clone(), variant.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// (a) When `parse_with_prelude_enums` is given an enum name that is NOT
+    /// declared in the source, `Foo.Bar` must lower to `EnumAccess { type_name: "Foo", variant: "Bar" }`
+    /// rather than `MemberAccess { object: Ident("Foo"), member: "Bar" }`.
+    /// This is the core behavior change motivated by task 2525: prelude enums
+    /// must participate in EnumAccess disambiguation.
+    #[test]
+    fn parse_with_prelude_enums_resolves_prelude_only_enum() {
+        let source = "structure S { let v = Foo.Bar }";
+        let module = parse_with_prelude_enums(
+            source,
+            reify_types::ModulePath::single("test_prelude_enum"),
+            &["Foo"],
+        );
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
+
+        let (type_name, variant) = find_first_enum_access(&module)
+            .expect("expected at least one EnumAccess in parsed module");
+        assert_eq!(type_name, "Foo");
+        assert_eq!(variant, "Bar");
+    }
+
+    /// (b) When the same enum name appears in BOTH `prelude_enum_names` and
+    /// the source's own `enum_declaration`, no parse error fires (the parser
+    /// does not policed prelude/source name overlap), and the disambiguation
+    /// still resolves `Foo.Bar` to `EnumAccess`.  This pins the contract that
+    /// duplicate-prelude/source enum names are tolerated at parse time and
+    /// left to downstream name resolution to handle.
+    #[test]
+    fn parse_with_prelude_enums_dedupes_overlap_with_source_enum() {
+        let source = "enum Foo { Bar, Baz }\nstructure S { let v = Foo.Bar }";
+        let module = parse_with_prelude_enums(
+            source,
+            reify_types::ModulePath::single("test_prelude_overlap"),
+            &["Foo"],
+        );
+        assert!(
+            module.errors.is_empty(),
+            "parse errors should be empty even when prelude and source share an enum name: {:?}",
+            module.errors
+        );
+
+        let (type_name, variant) = find_first_enum_access(&module)
+            .expect("expected at least one EnumAccess in parsed module");
+        assert_eq!(type_name, "Foo");
+        assert_eq!(variant, "Bar");
+    }
+
+    /// (c) `parse_with_prelude_enums(source, path, &[])` must be
+    /// observationally equivalent to `parse(source, path)`.  This is a
+    /// regression guard that pins the empty-prelude case so the wrapper never
+    /// drifts away from the unparameterized `parse` behavior.
+    #[test]
+    fn parse_with_prelude_enums_empty_slice_equivalent_to_parse() {
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
+        let path = reify_types::ModulePath::single("test_empty_prelude");
+
+        let from_parse = parse(source, path.clone());
+        let from_prelude = parse_with_prelude_enums(source, path, &[]);
+
+        // Same parse-error count and same content_hash captures observational
+        // equivalence at the `ParsedModule` level.
+        assert_eq!(
+            from_parse.errors.len(),
+            from_prelude.errors.len(),
+            "empty-slice prelude must produce the same parse error count as parse()"
+        );
+        assert_eq!(
+            from_parse.content_hash, from_prelude.content_hash,
+            "empty-slice prelude must produce the same content_hash as parse()"
+        );
+        assert_eq!(
+            from_parse.declarations.len(),
+            from_prelude.declarations.len(),
+            "empty-slice prelude must produce the same declaration count as parse()"
+        );
+
+        // Both must locate the same `Direction.In` EnumAccess.
+        let from_parse_access = find_first_enum_access(&from_parse).expect("parse() EnumAccess");
+        let from_prelude_access =
+            find_first_enum_access(&from_prelude).expect("parse_with_prelude_enums() EnumAccess");
+        assert_eq!(from_parse_access, from_prelude_access);
+    }
+
     #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
