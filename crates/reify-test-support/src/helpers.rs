@@ -1612,6 +1612,27 @@ mod tests {
         );
     }
 
+    /// walk_structure_exprs skips Constraint members as documented.  A structure
+    /// with one param (no default), one bare `constraint`, and one `let` should
+    /// produce exactly one visitor call — for the `let` value only.  This pins
+    /// the documented contract that other member kinds are silently ignored.
+    #[test]
+    fn walk_structure_exprs_skips_non_targeted_member_kinds() {
+        // param has no default → skipped; constraint → skipped; let → visited.
+        let source = "structure S {\n    param x : Real\n    constraint x > 0\n    let y = 2.0\n}";
+        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        let mut call_count = 0usize;
+        super::walk_structure_exprs(&module, |_expr| {
+            call_count += 1;
+        });
+        assert_eq!(
+            call_count,
+            1,
+            "expected exactly 1 visit (let value only; constraint and no-default param are skipped)"
+        );
+    }
+
     // ── run_modify_pipeline smoke ─────────────────────────────────────────
 
     /// Smoke test for `run_modify_pipeline`: verifies the helper produces 2 ops

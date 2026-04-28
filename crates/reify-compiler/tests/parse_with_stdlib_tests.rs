@@ -119,6 +119,9 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
             enum_accesses.push((type_name.clone(), variant.clone()));
         }
     });
+    // NOTE: walk_structure_exprs also visits `let` values in addition to `param` defaults.
+    // This source has only `param` members, so the count is exactly 2.  If a `let` binding
+    // containing an EnumAccess is ever added to the fixture above the count would increase.
     assert_eq!(
         enum_accesses.len(),
         2,
