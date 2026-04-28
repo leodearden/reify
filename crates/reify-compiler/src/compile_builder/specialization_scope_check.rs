@@ -29,6 +29,19 @@ use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// [`DiagnosticCode::SpecializationForbiddenDecl`] error is pushed.
 pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
     for_each_specialization_member(parsed, &mut |member| {
+        // # Traversal ordering
+        //
+        // `for_each_specialization_member` delegates each scope's body to
+        // `walk_specialization_scope_members` (from reify-syntax), which uses
+        // a parent-before-children depth-first traversal (`walk_members_depth`).
+        // For nested specialization scopes (`sub outer { sub inner { param x } }`):
+        //   1. The visitor fires on `inner` (the MemberDecl::Sub) first.
+        //   2. The walker then recurses into `inner`'s body and fires on `x`.
+        // One diagnostic is emitted per forbidden decl visited, regardless of
+        // nesting depth. The test
+        // `validate_module_emits_diagnostic_for_each_forbidden_decl_in_nested_specialization_scope`
+        // pins this two-diagnostic, outer-first ordering.
+        //
         // # Wording pin
         //
         // The format string below is pinned by
