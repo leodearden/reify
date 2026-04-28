@@ -299,12 +299,30 @@ fn find_annotation<'a>(
 /// Markdown output should display the message text without those wrapping
 /// quotes; non-string-literal args (calls, identifiers, numbers) are returned
 /// unchanged.
+///
+/// # Escape-aware stripping
+///
+/// Strips the outer `"…"` only when the inner content contains **no
+/// unescaped** `"` characters.  A `\` preceding a `"` marks that `"` as
+/// escaped; any other character (including a second `\`) clears the escape
+/// flag.  If the inner content contains an unescaped `"` the input is
+/// returned unchanged — this guards against callers passing a non-string-
+/// literal arg such as `"first" + "second"` whose outer `"` chars are *not*
+/// matching delimiters of a single string literal.
 fn unquote(s: &str) -> &str {
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        &s[1..s.len() - 1]
-    } else {
-        s
+    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
+        return s;
     }
+    let inner = &s[1..s.len() - 1];
+    let mut escaped = false;
+    for b in inner.bytes() {
+        match b {
+            b'\\' => escaped = !escaped,
+            b'"' if !escaped => return s, // unescaped inner quote — not a single literal
+            _ => escaped = false,
+        }
+    }
+    inner
 }
 
 /// Render a single `ItemDoc` to `out`.
