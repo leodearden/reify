@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -47,6 +48,16 @@ impl Manifest {
             kernels.insert(id, KernelPin { version });
         }
         Ok(Manifest { kernels })
+    }
+
+    /// Read and parse a `reify.toml` document from `path`.
+    ///
+    /// Filesystem errors (missing file, permissions, …) surface as
+    /// [`ManifestError::Io`]; parse-time errors surface via the same
+    /// variants as [`Manifest::from_toml_str`].
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Manifest, ManifestError> {
+        let contents = std::fs::read_to_string(path.as_ref()).map_err(ManifestError::Io)?;
+        Manifest::from_toml_str(&contents)
     }
 
     /// Iterate the pinned kernels in canonical (BTreeMap) order.
@@ -94,6 +105,10 @@ pub enum ManifestError {
     /// task-level decision is to reject them at parse time so they
     /// never reach the registry.
     EmptyVersion(KernelId),
+    /// Reading the manifest from disk failed (e.g. missing file,
+    /// permission denied). The wrapped `io::Error` is exposed via
+    /// [`std::error::Error::source`] so callers can introspect it.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for ManifestError {
@@ -116,11 +131,21 @@ impl fmt::Display for ManifestError {
                     id
                 )
             }
+            ManifestError::Io(err) => {
+                write!(f, "failed to read reify.toml: {}", err)
+            }
         }
     }
 }
 
-impl std::error::Error for ManifestError {}
+impl std::error::Error for ManifestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ManifestError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 /// Internal serde shape for the on-disk reify.toml document.
 #[derive(Debug, Default, Deserialize)]
