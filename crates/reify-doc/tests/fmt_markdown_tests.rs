@@ -1609,7 +1609,13 @@ fn snapshot_path(filename: &str) -> std::path::PathBuf {
 /// `tests/snapshots/{filename}`, or — when `UPDATE_SNAPSHOTS=1` is set —
 /// overwrite the snapshot with `actual` so the developer can regenerate
 /// goldens after an intentional formatter change.
+///
+/// `actual` is normalised to LF-only before both comparison and write so
+/// that a Windows developer running `UPDATE_SNAPSHOTS=1` cannot accidentally
+/// bake `\r\n` into committed goldens, which would break the comparison for
+/// every platform that produces LF-terminated output.
 fn assert_or_update_snapshot(filename: &str, actual: &str) {
+    let actual = actual.replace("\r\n", "\n");
     let path = snapshot_path(filename);
     if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
         if let Some(parent) = path.parent() {
