@@ -42,10 +42,10 @@ impl Engine {
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
         // Execute geometry operations. Use the snapshot's eval-round id rather
-        // than `self.next_version_id`: build_snapshot consumes `state.snapshot.values`,
+        // than `self.next_version_id`: build_snapshot is keyed off `state.snapshot.values`,
         // so Failed events must carry that snapshot's version, not the un-used
         // next round that `next_version_id` points at after prior eval/edit calls.
-        let version_id = state.snapshot.version;
+        let version_id = self.current_eval_version();
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -149,17 +149,12 @@ impl Engine {
         // before it is moved into the returned `BuildResult` below.
         let mut values = check_result.values;
 
-        // Use the eval round that produced `values`, not the un-used next
-        // round. `check()` already called `eval()` which bumped
-        // `next_version_id` past `snapshot.version`, so reading
-        // `self.next_version_id` here would tag Failed events one round
-        // ahead of the values that caused the kernel failure.
-        let version_id = self
-            .eval_state
-            .as_ref()
-            .expect("check() populates eval_state")
-            .snapshot
-            .version;
+        // Use the eval round that produced `values`. `check()` already
+        // called `eval()` which bumped `next_version_id` past
+        // `snapshot.version`, so reading `self.next_version_id` here
+        // would tag Failed events one round ahead of the values that
+        // caused the kernel failure.
+        let version_id = self.current_eval_version();
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
@@ -529,6 +524,24 @@ impl Engine {
                 named_steps.insert(name.to_string(), last);
             }
         }
+    }
+
+    /// Returns the `VersionId` of the current eval round — the id stamped into
+    /// `eval_state.snapshot` by the most recent `eval()` or `edit_param()` call.
+    ///
+    /// Both `build` and `build_snapshot` must tag kernel-error `Failed` events
+    /// with this version (not `self.next_version_id`, which already points at
+    /// the *next*, un-used round after `eval()` bumped the counter). Centralising
+    /// the read here means a future call site cannot accidentally use the wrong
+    /// counter.
+    ///
+    /// Panics if `eval_state` is not yet populated.
+    fn current_eval_version(&self) -> VersionId {
+        self.eval_state
+            .as_ref()
+            .expect("eval_state must be populated before reading current_eval_version")
+            .snapshot
+            .version
     }
 
     /// Mark a realization NodeId as `Freshness::Failed { error }` in the eval

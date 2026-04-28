@@ -26,7 +26,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
     BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness,
     GeometryHandleId, ModulePath, RealizationNodeId, Satisfaction, Severity, Type, Value,
-    ValueCellId, VersionId,
+    ValueCellId,
 };
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
@@ -488,6 +488,58 @@ fn constraint_violation_does_not_produce_failed_freshness_or_error_event() {
     );
 }
 
+/// Assert the §9.1 / §2554 version-tagging contract for a kernel-error
+/// `Failed` event scoped to `node`:
+///
+///   (c) Exactly one `EventKind::Failed` is recorded in the journal.
+///   (d) That event is scoped to `node`.
+///   (f) `event.version == expected` — the Failed event carries the eval
+///       round whose values caused the kernel error, not the un-used
+///       `next_version_id`.
+///
+/// Called from both the `build` and `build_snapshot` regression tests so
+/// the contract cannot silently regress at one site while the other is updated.
+fn assert_one_failed_event_at_version(
+    engine: &Engine,
+    node: &NodeId,
+    expected: reify_types::VersionId,
+) {
+    // (c) exactly one Failed event in the journal.
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count,
+        1,
+        "(c) §9.1: exactly one Failed event must be recorded; got {} event(s)",
+        failed_count
+    );
+
+    // (d) that event is scoped to `node`.
+    let r_events = engine.journal().events_for_node(node);
+    let r_failed: Vec<_> = r_events
+        .iter()
+        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
+        .collect();
+    assert_eq!(
+        r_failed.len(),
+        1,
+        "(d) §9.1: the Failed event must be scoped to {:?}; got {} event(s)",
+        node,
+        r_failed.len()
+    );
+
+    // (f) version matches the expected eval round.
+    assert_eq!(
+        r_failed[0].version,
+        expected,
+        "(f) §2554: Failed event version must match the eval round whose \
+         values caused the kernel error; got {:?}, expected {:?}",
+        r_failed[0].version,
+        expected
+    );
+}
+
 /// Build a single-realization module with one Box primitive op:
 ///   `param width:Length=80mm; param height:Length=100mm; param depth:Length=5mm;`
 ///   plus `realization[0] = Box(width, height, depth)`.
@@ -596,31 +648,9 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
         error_message
     );
 
-    // (c) journal records exactly one Failed event.
-    let failed_count = engine
-        .journal()
-        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
-    assert_eq!(
-        failed_count, 1,
-        "(c) §9.1: exactly one Failed event must be recorded for the \
-         kernel-error realization; got {} event(s)",
-        failed_count
-    );
-
-    // (d) the Failed event is scoped to NodeId::Realization(rnid).
-    let r_events = engine.journal().events_for_node(&r_node);
-    let r_failed: Vec<_> = r_events
-        .iter()
-        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
-        .collect();
-    assert_eq!(
-        r_failed.len(),
-        1,
-        "(d) §9.1: the Failed event must be scoped to \
-         NodeId::Realization(rnid); got {} event(s) for {:?}",
-        r_failed.len(),
-        r_node
-    );
+    // (c)/(d)/(f) — shared helper pins the count, node scope, and version
+    // tagging contract; see `assert_one_failed_event_at_version`.
+    assert_one_failed_event_at_version(&engine, &r_node, eval_version);
 
     // (e) the existing Diagnostic::error("geometry error: …") survives —
     //     adding the Failed write must not double-handle and remove the
@@ -636,17 +666,6 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
          error: …\") must still be emitted alongside the Failed write; \
          got 0 such diagnostics in {:?}",
         build_result.diagnostics
-    );
-
-    // (f) the Failed event is tagged with the eval round that produced the
-    //     failing values, NOT the un-used next_version_id. Bug #2554: line 149
-    //     of engine_build.rs used `VersionId(self.next_version_id)` which is
-    //     eval_version + 1 because `check()` already bumped the counter.
-    assert_eq!(
-        r_failed[0].version, eval_version,
-        "(f) §2554: Failed event version must match the eval round whose \
-         values caused the kernel error; got {:?}, expected {:?}",
-        r_failed[0].version, eval_version
     );
 }
 
@@ -697,42 +716,9 @@ fn kernel_execute_error_in_build_snapshot_tags_failed_event_with_snapshot_versio
         .expect("eval_state must be populated after eval+edit_param")
         .version;
 
-    // (c) exactly one EventKind::Failed event.
-    let failed_count = engine
-        .journal()
-        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
-    assert_eq!(
-        failed_count, 1,
-        "(c) §2554: exactly one Failed event must be recorded for the \
-         kernel-error realization in build_snapshot; got {} event(s)",
-        failed_count
-    );
-
-    // (d) the Failed event is scoped to NodeId::Realization(rnid).
-    let r_events = engine.journal().events_for_node(&r_node);
-    let r_failed: Vec<_> = r_events
-        .iter()
-        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
-        .collect();
-    assert_eq!(
-        r_failed.len(),
-        1,
-        "(d) §2554: the Failed event must be scoped to \
-         NodeId::Realization(rnid); got {} event(s) for {:?}",
-        r_failed.len(),
-        r_node
-    );
-
-    // (f) the Failed event is tagged with snapshot.version (eval round 1),
-    //     NOT next_version_id (2). Bug #2554: engine_build.rs:45 read
-    //     `VersionId(self.next_version_id)` which is eval_version + 1.
-    assert_eq!(
-        r_failed[0].version, eval_version,
-        "(f) §2554: build_snapshot Failed event version must match \
-         snapshot.version (the eval round whose values caused the kernel \
-         error); got {:?}, expected {:?}",
-        r_failed[0].version, eval_version
-    );
+    // (c)/(d)/(f) — shared helper pins the count, node scope, and version
+    // tagging contract; see `assert_one_failed_event_at_version`.
+    assert_one_failed_event_at_version(&engine, &r_node, eval_version);
 }
 
 /// `FAILED_REALIZATION_STUB_HANDLE` is the documented sentinel
