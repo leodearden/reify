@@ -76,26 +76,6 @@ fn enum_names_empty_prelude_yields_no_items() {
 
 // ─── step-5: reify_compiler::parse_with_stdlib end-to-end ─────────────────
 
-/// Walk every expression node in a parsed module's structures and apply
-/// `visitor` to it.  Used to count `EnumAccess` nodes for the parse_with_stdlib
-/// integration test.
-fn walk_struct_exprs<F: FnMut(&reify_syntax::ExprKind)>(
-    module: &reify_syntax::ParsedModule,
-    visitor: &mut F,
-) {
-    for decl in &module.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
-            for member in &s.members {
-                if let reify_syntax::MemberDecl::Param(p) = member
-                    && let Some(default) = &p.default
-                {
-                    visitor(&default.kind);
-                }
-            }
-        }
-    }
-}
-
 /// `reify_compiler::parse_with_stdlib` parses a source referencing
 /// `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI` (both
 /// declared only in the stdlib prelude — NOT in this source string) and
@@ -134,8 +114,8 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
 
     // (b) Two EnumAccess nodes — CorrosionClass.C5 and BiocompatibilityClass.USP_Class_VI.
     let mut enum_accesses: Vec<(String, String)> = Vec::new();
-    walk_struct_exprs(&parsed, &mut |kind| {
-        if let ExprKind::EnumAccess { type_name, variant } = kind {
+    reify_test_support::walk_structure_exprs(&parsed, |expr| {
+        if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
             enum_accesses.push((type_name.clone(), variant.clone()));
         }
     });
