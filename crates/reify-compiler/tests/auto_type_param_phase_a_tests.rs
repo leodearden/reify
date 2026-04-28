@@ -136,3 +136,60 @@ structure def ORingSeal : Seal {
         diagnostics
     );
 }
+
+// ─── step-5: multi-candidate alphabetical determinism ─────────────────────
+
+/// When multiple in-scope structures declare conformance to the required
+/// trait, the candidate Vec is sorted alphabetically by template name —
+/// NOT in source-declaration order. Three structures `Zeta`, `Alpha`,
+/// `Mike` are declared in non-alphabetical source order; the result must
+/// be `["Alpha", "Mike", "Zeta"]`.
+///
+/// This pins the determinism guarantee from PRD acceptance criterion 11
+/// ("same source produces same resolution choice across runs and across
+/// machines"). Asserting `assert_eq!` on the exact ordered Vec makes any
+/// regression to source order or to HashMap iteration order fail loudly.
+#[test]
+fn enumerate_returns_found_sorted_alphabetically_for_multiple_candidates() {
+    let source = r#"
+trait Seal {}
+
+structure def Zeta : Seal {
+    param x : Real = 1.0
+}
+
+structure def Alpha : Seal {
+    param x : Real = 1.0
+}
+
+structure def Mike : Seal {
+    param x : Real = 1.0
+}
+"#;
+    let module = compile_source(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        CandidateEnumeration::Found(vec![
+            "Alpha".to_string(),
+            "Mike".to_string(),
+            "Zeta".to_string(),
+        ]),
+        "expected alphabetical order ['Alpha','Mike','Zeta'], NOT source order"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "Found path with no overflow should emit no diagnostics, got: {:?}",
+        diagnostics
+    );
+}
