@@ -318,6 +318,20 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TRAIT_USER_ASSERTED`
     /// (see `docs/prds/geometry-traits.md` §"Scope" point 5).
     TraitUserAsserted,
+    /// Origin: `crates/reify-eval/src/topology_selectors.rs::resolve_unique_by_tag`.
+    /// Emitted as a `Warning` when a feature-tag selector matches zero or multiple
+    /// sub-shapes after a topology change (i.e. the unique-tag invariant is violated).
+    ///
+    /// Canonical message form:
+    /// `"feature-tag selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`.
+    ///
+    /// Two labels accompany the warning: a primary label at the selector call site
+    /// (`"selector call"`) and a secondary label at the `FeatureTag::source_span`
+    /// of the target tag (`"feature originally produced here"`).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
+    /// (see `docs/prds/topology-selectors.md` task 6).
+    TopologyTagStale,
 }
 
 /// A diagnostic message with location and optional labels.
