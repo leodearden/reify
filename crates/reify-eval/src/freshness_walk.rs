@@ -18,6 +18,77 @@
 //!
 //! Public API populated by subsequent task #2335 steps.
 
+use std::collections::{HashSet, VecDeque};
+
+use crate::cache::{CacheStore, NodeId};
+use crate::deps::ReverseDependencyIndex;
+use reify_types::ValueCellId;
+
+/// Propagate freshness forward through the dependents of `changed` cells
+/// without recomputing any value, per arch §3.5 lines 432-436.
+///
+/// BFS forward walk from each `ValueCellId` in `changed`: for every dependent
+/// found via [`ReverseDependencyIndex::dependents_of`], re-derive the
+/// dependent's freshness from its cached `dependency_trace.reads` using
+/// [`CacheStore::derive_output_freshness_for_node`] and write it back via
+/// [`CacheStore::set_freshness`] when it differs from the dependent's current
+/// freshness. When the new freshness equals the current one, the *freshness
+/// early cutoff* fires at that node and propagation stops along that branch.
+///
+/// Returns the set of [`NodeId`]s whose freshness was actually updated; nodes
+/// pruned by early cutoff (or with no cache entry) are not included.
+///
+/// # Scope of writes
+///
+/// Subsequent task #2335 steps refine the write site to use the cause-bearing
+/// helper `derive_output_freshness_for_node_with_cause` and route Pending
+/// outputs through `mark_pending_with_cause` / `mark_pending`. The current
+/// implementation handles the Intermediate ↔ Final transitions only — Pending
+/// chain forwarding and Failed-skip semantics are added in later steps.
+pub fn propagate_freshness_only(
+    cache: &mut CacheStore,
+    reverse_index: &ReverseDependencyIndex,
+    changed: &HashSet<ValueCellId>,
+    generation: u64,
+) -> HashSet<NodeId> {
+    let mut updated: HashSet<NodeId> = HashSet::new();
+    let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
+    let mut visited: HashSet<ValueCellId> = HashSet::new();
+
+    while let Some(cell) = frontier.pop_front() {
+        if !visited.insert(cell.clone()) {
+            continue;
+        }
+
+        // Snapshot the dependent NodeIds before mutating the cache so the
+        // borrow on `reverse_index` is released before we call
+        // `cache.derive_*` / `cache.set_freshness`.
+        let dependents: Vec<NodeId> = reverse_index.dependents_of(&cell).iter().cloned().collect();
+
+        for dependent in dependents {
+            let current = cache.freshness(&dependent);
+            let new = cache.derive_output_freshness_for_node(&dependent, false, generation);
+
+            if new == current {
+                // Freshness early cutoff: nothing changed at this node, so
+                // we do not propagate further along this branch.
+                continue;
+            }
+
+            if cache.set_freshness(&dependent, new.clone()) {
+                updated.insert(dependent.clone());
+                if let NodeId::Value(vcid) = &dependent {
+                    frontier.push_back(vcid.clone());
+                }
+            }
+            // If `set_freshness` returns false the entry is absent — nothing
+            // to write and nothing to propagate from a non-cached node.
+        }
+    }
+
+    updated
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
