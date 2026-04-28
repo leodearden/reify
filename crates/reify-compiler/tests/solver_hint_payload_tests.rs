@@ -219,11 +219,8 @@ fn solver_hint_prefer_stock_standard_sheet_thicknesses_end_to_end() {
 /// produce at least one `Severity::Error` diagnostic whose message contains
 /// `"unresolved name"` and the literal identifier text `"standard_doesnotexist"`.
 ///
-/// This validates that hint payload references go through normal name resolution,
-/// not a special-cased lookup.
-///
-/// NOTE: This test is expected to FAIL until step-5 wires the name-resolution
-/// validator at the `extract_solver_hints` call sites.
+/// Locks in that hint payload references go through name resolution rather than
+/// a special-cased lookup — an unresolvable identifier is a compile error.
 #[test]
 fn solver_hint_unresolved_collection_produces_error() {
     let source = r#"structure S {

@@ -2,6 +2,20 @@
 //!
 //! Tests for `@solver_hint` annotations on param/let members compiling into
 //! `SolverHint` entries on `ValueCellDecl`.
+//!
+//! ## Stdlib coupling note
+//!
+//! The five tests that exercise `discrete_set` / `prefer_stock` extraction
+//! (`solver_hint_discrete_set_compiles`, `solver_hint_prefer_stock_compiles`,
+//! `solver_hint_on_let_compiles`, `solver_hint_in_guarded_block_compiles`,
+//! `solver_hint_multiple_on_same_param`) intentionally reference real `std.stock`
+//! names (`standard_bolt_lengths`, `standard_sheet_thicknesses`) and compile via
+//! `compile_source_with_stdlib`.  This coupling is deliberate — the PRD acceptance
+//! criteria cite these names explicitly, and `compile_source_with_stdlib` is the
+//! realistic production code path.  Pure extraction-only coverage (independent of
+//! stdlib contents) is provided by the `validate_collections_*` unit tests in
+//! `crates/reify-compiler/src/annotations.rs`.  If the `std.stock` names are ever
+//! renamed, update these five tests to match.
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 

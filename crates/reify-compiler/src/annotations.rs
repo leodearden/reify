@@ -377,10 +377,22 @@ pub(crate) fn extract_solver_hints(
 /// For each hint whose kind is **not** `PreferredStrategy`, the collection
 /// identifier is looked up first in the member scope (`scope.resolve`) and
 /// then in the module-level function list (`functions.iter().any(|f| f.name == …)`).
-/// If neither lookup succeeds an `Error` diagnostic is pushed using the same
-/// wording as `compile_expr`'s `Ident` arm — `"unresolved name: <ident>"` with
-/// label `"not found in scope"` — so error-message assertions are uniform
-/// across payload references and ordinary expression references.
+/// If neither lookup succeeds an `Error` diagnostic is pushed with the wording
+/// `"unresolved name: <ident>"` / label `"not found in scope"`, matching the
+/// wording used by `compile_expr`'s `Ident` arm so that the message substring
+/// `"unresolved name"` is consistent in error-message assertions.
+///
+/// **Intentional subset of `compile_expr` resolution:** this validator does *not*
+/// check `scope.collection_sub_names` (structural sub-component list names —
+/// not valid stock-value-set payloads) or `resolve_builtin_constant` (`pi`/`tau`,
+/// which are `Real`-typed scalars and therefore never valid `List`-typed hint
+/// payloads).  If either of those becomes a valid hint-payload target in a future
+/// PRD the checks should be extended here.
+///
+/// **Type-checking is not performed:** the validator only confirms that the name
+/// exists; it does not verify that the resolved entity is `List`-typed.
+/// Type validation is intentionally deferred to a later compiler pass (see
+/// follow-up noted in task 2334).
 ///
 /// `PreferredStrategy` hints are intentionally exempt: spec §12.2 states that
 /// any identifier is accepted at compile time and the back-end emits a runtime
@@ -520,11 +532,15 @@ mod tests {
     }
 
     /// A name registered in scope resolves cleanly.
+    ///
+    /// Uses `Type::List(Box::new(Type::Real))` to represent a realistic
+    /// collection type.  Note: the validator does not check that the resolved
+    /// type is `List`-typed — type-checking is deferred to a later compiler pass.
     #[test]
     fn validate_collections_accepts_name_in_scope() {
         let hints = vec![make_hint(SolverHintKind::DiscreteSet, "my_collection")];
         let mut scope = CompilationScope::new("Test");
-        scope.register("my_collection", Type::Real);
+        scope.register("my_collection", Type::List(Box::new(Type::Real)));
         let functions: &[CompiledFunction] = &[];
         let mut diagnostics = Vec::new();
         validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
