@@ -14,9 +14,12 @@
 //! new freshness is computed from the freshnesses of its cached
 //! `dependency_trace.reads`, and only written when the new freshness differs
 //! from the current one — that comparison is the *freshness early cutoff* that
-//! prunes the walk's frontier.
-//!
-//! Public API populated by subsequent task #2335 steps.
+//! prunes the walk's frontier. Pending outputs are routed through the
+//! canonical `mark_pending_with_cause` / `mark_pending` writers so the §9.2
+//! diagnostic chain is preserved across freshness-only walks. Failed nodes
+//! are treated as terminal chain roots: the walk skips them as write
+//! targets but continues propagating from them to their downstream
+//! dependents.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -30,18 +33,27 @@ use reify_types::{Freshness, ValueCellId};
 /// BFS forward walk from each `ValueCellId` in `changed`: for every dependent
 /// found via [`ReverseDependencyIndex::dependents_of`], re-derive the
 /// dependent's freshness from its cached `dependency_trace.reads` using
-/// [`CacheStore::derive_output_freshness_for_node`] and write it back via
-/// [`CacheStore::set_freshness`] when it differs from the dependent's current
-/// freshness. When the new freshness equals the current one, the *freshness
-/// early cutoff* fires at that node and propagation stops along that branch.
+/// [`CacheStore::derive_output_freshness_for_node_with_cause`] and write it
+/// back via the canonical writer matching the derived variant
+/// ([`CacheStore::set_freshness`] for Final/Intermediate,
+/// [`CacheStore::mark_pending_with_cause`] / [`CacheStore::mark_pending`]
+/// for Pending). When the new freshness equals the current one — or when both
+/// are Pending and the diagnostic chain root (`pending_cause`) already
+/// matches — the *freshness early cutoff* fires at that node and propagation
+/// stops along that branch.
+///
+/// Failed nodes are skipped as write targets (they are terminal chain roots
+/// per `mark_failed`'s contract at `cache.rs:545-566`), but propagation
+/// continues FROM them to their downstream dependents so chain-root
+/// information is forwarded correctly.
 ///
 /// Returns the set of [`NodeId`]s whose freshness was actually updated; nodes
 /// pruned by early cutoff (or with no cache entry) are not included.
 ///
 /// # Touch-list
 ///
-/// **Touches:** `freshness`, and (transitively, via `mark_pending_with_cause`
-/// once routed in step-10) `pending_cause`.
+/// **Touches:** `freshness`, and (transitively, via `mark_pending_with_cause`)
+/// `pending_cause`.
 ///
 /// **Does NOT touch:** `result`, `result_hash`, `dependency_trace`,
 /// `basis_version`, `warm_state`. The walk also never calls `record_evaluation`
@@ -52,14 +64,6 @@ use reify_types::{Freshness, ValueCellId};
 /// unchanged, so no value recomputation occurs." The
 /// `walk_does_not_recompute_values_or_bump_basis_version` unit test (step-7)
 /// asserts this byte-by-byte.
-///
-/// # Scope of writes
-///
-/// Subsequent task #2335 steps refine the write site to use the cause-bearing
-/// helper `derive_output_freshness_for_node_with_cause` and route Pending
-/// outputs through `mark_pending_with_cause` / `mark_pending`. The current
-/// implementation handles the Intermediate ↔ Final transitions only — Pending
-/// chain forwarding and Failed-skip semantics are added in later steps.
 pub fn propagate_freshness_only(
     cache: &mut CacheStore,
     reverse_index: &ReverseDependencyIndex,
@@ -92,6 +96,19 @@ pub fn propagate_freshness_only(
         // Snapshot the dependent NodeIds before mutating the cache so the
         // borrow on `reverse_index` is released before we call
         // `cache.derive_*` / `cache.set_freshness`.
+        //
+        // Performance note: this is an O(fanout) clone per visit, deliberate
+        // and bounded by the dependent count for `cell`. Unlike
+        // `crate::dirty::compute_dirty_cone` (`dirty.rs:29-38`) — which can
+        // iterate the borrowed set directly because it does NOT mutate the
+        // cache during iteration — this walk needs to call `&mut cache`
+        // methods (`derive_output_freshness_for_node_with_cause`,
+        // `set_freshness`, `mark_pending_with_cause`, …) per dependent, so
+        // the iteration borrow on `reverse_index` must be dropped first. The
+        // `Vec<NodeId>` allocation is the simplest way to do that; a
+        // `SmallVec<[NodeId; 4]>` could shave heap allocations for the
+        // common low-fanout case, but that's a micro-optimization not
+        // observed to matter in profiling today.
         let dependents: Vec<NodeId> = reverse_index.dependents_of(&cell).iter().cloned().collect();
 
         for dependent in dependents {
@@ -128,28 +145,53 @@ pub fn propagate_freshness_only(
             // newly-derived freshness equals the current freshness the walk
             // halts at this node and does NOT propagate to its dependents.
             //
-            // The strict `==` comparison is correct because `Freshness`
-            // derives `PartialEq`, so a single `generation` parameter is
-            // threaded through the whole walk: an Intermediate{1} input that
-            // produces an Intermediate{1} output cuts off, but an
-            // Intermediate{1} → Intermediate{2} change would not (yielding a
-            // legitimate generation-bumping transition that *should*
-            // propagate). DO NOT WEAKEN this comparison without re-deriving
-            // the §7.2/§9.2 truth table — `Freshness::Pending`'s
-            // `last_substantive` field is part of the equality and matters
-            // for diagnostic-chain correctness.
+            // The strict `==` comparison is correct for non-Pending
+            // outputs because `Freshness` derives `PartialEq`, so a single
+            // `generation` parameter is threaded through the whole walk:
+            // an Intermediate{1} input that produces an Intermediate{1}
+            // output cuts off, but an Intermediate{1} → Intermediate{2}
+            // change would not (yielding a legitimate generation-bumping
+            // transition that *should* propagate). DO NOT WEAKEN this
+            // comparison for Final/Intermediate without re-deriving the
+            // §7.2 truth table.
             //
-            // Note: the pure helper produces `Pending { last_substantive:
-            // ResultRef::none() }` for any non-Final-input case; the
-            // canonical Pending writers below replace `last_substantive`
-            // with `ResultRef::of_hash(entry.result_hash)`. Comparing
-            // against the pure helper's output is fine here — if the
-            // current freshness is already Pending, then either the
-            // Pending writer's `last_substantive` matches (no write needed)
-            // or `current` is `Pending { ..ResultRef::none() }` from a
-            // prior set_freshness footgun, which the writer will correct
-            // and report as updated.
+            // Pending requires a separate cutoff (see below) because the
+            // pure helper returns `Pending { last_substantive:
+            // ResultRef::none() }` while the canonical writers replace
+            // `last_substantive` with `ResultRef::of_hash(entry.result_hash)`.
+            // A naive `new == current` check therefore never fires for
+            // already-Pending dependents, which would re-bump
+            // `pending_transition_count` on every walk and break the
+            // fixed-point property under repeated invocation.
             if new == current {
+                continue;
+            }
+
+            // Pending idempotency cutoff: when both the derived freshness
+            // and the current freshness are Pending and the diagnostic
+            // chain root (`pending_cause`) matches what the writer would
+            // record, the canonical Pending writers would only re-record
+            // the same final state while bumping `pending_transition_count`
+            // and re-cloning `pending_cause`. Short-circuit before invoking
+            // the writer so the walk remains a true fixed-point operator
+            // for Pending transitions, matching its behavior for the
+            // Final/Intermediate cases above.
+            //
+            // Why compare `pending_cause` instead of `last_substantive`?
+            // `last_substantive` cannot be compared against the pure
+            // helper's output (`ResultRef::none()`) because the writer
+            // replaces it with `ResultRef::of_hash(entry.result_hash)`.
+            // `pending_cause` IS comparable: a Pending entry written by
+            // `mark_pending_with_cause(c)` carries `Some(c)`, and one
+            // written by `mark_pending` carries `None` — exactly the same
+            // values the cause-bearing helper returns. So if the stored
+            // cause matches the derived cause AND both freshnesses are
+            // Pending, we know the writer's effect would be a no-op
+            // modulo the counter bump.
+            if matches!(new, Freshness::Pending { .. })
+                && matches!(current, Freshness::Pending { .. })
+                && cache.pending_cause(&dependent) == cause
+            {
                 continue;
             }
 
@@ -193,26 +235,9 @@ mod tests {
     };
     use std::collections::HashSet;
 
-    /// Helper: insert a Value-cell cache entry with the given freshness and reads.
-    fn put_value_entry(
-        cache: &mut CacheStore,
-        cell: &ValueCellId,
-        freshness: Freshness,
-        reads: Vec<ValueCellId>,
-    ) {
-        cache.put(
-            NodeId::Value(cell.clone()),
-            NodeCache::new(
-                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
-                freshness,
-                DependencyTrace { reads },
-                VersionId(1),
-            ),
-        );
-    }
-
     /// Helper: insert a Value-cell entry with the given concrete `Value`,
-    /// freshness, reads, and basis_version. Used by step-7's snapshot test.
+    /// freshness, reads, and basis_version. Used by step-7's snapshot test
+    /// and the underlying primitive for `put_value_entry`.
     fn put_value_entry_with_payload(
         cache: &mut CacheStore,
         cell: &ValueCellId,
@@ -229,6 +254,26 @@ mod tests {
                 DependencyTrace { reads },
                 basis_version,
             ),
+        );
+    }
+
+    /// Helper: insert a Value-cell cache entry with the given freshness and
+    /// reads, defaulting the value/basis_version. Thin wrapper over
+    /// [`put_value_entry_with_payload`] for tests that don't care about
+    /// the concrete value or basis_version.
+    fn put_value_entry(
+        cache: &mut CacheStore,
+        cell: &ValueCellId,
+        freshness: Freshness,
+        reads: Vec<ValueCellId>,
+    ) {
+        put_value_entry_with_payload(
+            cache,
+            cell,
+            Value::Real(0.0),
+            freshness,
+            reads,
+            VersionId(1),
         );
     }
 
@@ -811,6 +856,110 @@ mod tests {
             cache.pending_cause(&b_node),
             Some(a_node),
             "b's pending_cause must be Some(Value(a)) — the chain root for arch §9.2"
+        );
+    }
+
+    /// Amendment: Pending idempotency cutoff — when both the derived and
+    /// current freshness are Pending and the diagnostic-chain cause already
+    /// matches, the walk must short-circuit (no write, no counter bump,
+    /// not in the returned `updated` set).
+    ///
+    /// 2-cell chain `a → b`: `a` Failed, `b` Intermediate, then run the walk
+    /// once so `b` becomes Pending with `pending_cause = Some(Value(a))`.
+    /// Snapshot the cache's `pending_transition_count`. Re-run the walk with
+    /// identical arguments. The second invocation must:
+    /// - Return an empty `HashSet<NodeId>`.
+    /// - Leave the cache's `pending_transition_count` byte-identical to the
+    ///   snapshot (no counter bump from a redundant `mark_pending_with_cause`).
+    /// - Leave `b`'s freshness and `pending_cause` byte-identical.
+    ///
+    /// This pins the fix for the `reviewer_comprehensive` finding that the
+    /// naive `new == current` cutoff did NOT fire for already-Pending
+    /// dependents (the pure helper returns `Pending { last_substantive:
+    /// ResultRef::none() }` while the writer stores `Pending {
+    /// last_substantive: ResultRef::of_hash(...) }`), so the walk would
+    /// re-write the same final state and bump `pending_transition_count`
+    /// on every invocation.
+    #[test]
+    fn walk_is_idempotent_for_pending_with_cause_transitions() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        let mut cache = CacheStore::new();
+        put_value_entry_with_payload(
+            &mut cache,
+            &a,
+            Value::Real(5.0),
+            Freshness::Final,
+            vec![],
+            VersionId(1),
+        );
+        put_value_entry_with_payload(
+            &mut cache,
+            &b,
+            Value::Real(10.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+            VersionId(1),
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+
+        let a_node = NodeId::Value(a.clone());
+        let b_node = NodeId::Value(b.clone());
+
+        // Mark a as Failed and run the walk once: b transitions to Pending
+        // with cause = Some(Value(a)), driven by mark_pending_with_cause.
+        assert!(cache.mark_failed(&a_node, ErrorRef::new("synthetic")));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated_first =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        assert!(
+            updated_first.contains(&b_node),
+            "sanity: first walk must Pending-flip b, got: {:?}",
+            updated_first
+        );
+        assert_eq!(
+            cache.pending_cause(&b_node),
+            Some(a_node.clone()),
+            "sanity: first walk must record cause = Some(Value(a))"
+        );
+
+        // Snapshot counter and entry state after the first walk.
+        let counter_after_first = cache.pending_transition_count();
+        let b_freshness_after_first = cache.freshness(&b_node);
+        let b_cause_after_first = cache.pending_cause(&b_node);
+
+        // Re-run with identical arguments — the Pending idempotency cutoff
+        // must short-circuit at b.
+        let updated_second =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        assert!(
+            updated_second.is_empty(),
+            "second walk must return empty (Pending idempotency cutoff fires), got: {:?}",
+            updated_second
+        );
+        assert_eq!(
+            cache.pending_transition_count(),
+            counter_after_first,
+            "pending_transition_count must NOT bump on the second walk \
+             (no redundant mark_pending_with_cause invocation)"
+        );
+        assert_eq!(
+            cache.freshness(&b_node),
+            b_freshness_after_first,
+            "b's freshness must be byte-identical between successive walks"
+        );
+        assert_eq!(
+            cache.pending_cause(&b_node),
+            b_cause_after_first,
+            "b's pending_cause must be byte-identical between successive walks"
         );
     }
 }
