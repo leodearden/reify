@@ -173,6 +173,26 @@ fn check_all_indeterminate_exits_success() {
 }
 
 #[test]
+fn check_drivebelt_trait_bounds_resolves_stdlib_enums() {
+    // Regression guard for task 2525: `examples/drivebelt_trait_bounds.ri` references
+    // stdlib enums (`CorrosionClass.C5`, `BiocompatibilityClass.USP_Class_VI`) WITHOUT
+    // inline redeclarations. The CLI's `parse_and_compile` must use prelude-aware parsing
+    // so the parser disambiguates these as `EnumAccess` (not `MemberAccess`), letting
+    // `compile_with_stdlib` resolve them against the stdlib `PreludeContext`.
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::example_path("drivebelt_trait_bounds.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for drivebelt_trait_bounds.ri (stdlib enum refs).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "stdout should contain 'All constraints satisfied', got: {stdout}"
+    );
+}
+
+#[test]
 fn check_nonexistent_file_exits_failure() {
     let (status, _stdout, stderr) = common::run_subcommand("check", "nonexistent_file_that_does_not_exist.ri");
 
