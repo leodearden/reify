@@ -1073,4 +1073,54 @@ mod tests {
             assert_eq!(item.kind_slug(), exp);
         }
     }
+
+    /// Shape-pinning test: pins the new `ItemDoc { header: ItemHeader, kind: ItemKind }`
+    /// struct shape, exercises all seven accessors, and asserts the JSON wire format
+    /// flattens header + kind to the historical top-level-field shape.
+    ///
+    /// Fails to compile against the current enum-shaped `ItemDoc` — step-2 makes it pass.
+    #[test]
+    fn item_doc_struct_shape_with_header_and_kind_round_trips() {
+        let header = ItemHeader {
+            name: "Bolt".into(),
+            doc: Some("A bolt.".into()),
+            is_pub: true,
+            annotations: vec![AnnotationDoc { name: "deprecated".into(), args: vec![] }],
+            pragmas: vec![PragmaDoc { name: "inline".into(), args: vec![] }],
+        };
+        let kind = ItemKind::Structure {
+            params: vec![],
+            ports: vec![],
+            constraints: vec![],
+            sub_components: vec![],
+            realizations: vec![],
+            meta: vec![],
+        };
+        let item = ItemDoc { header: header.clone(), kind: kind.clone() };
+
+        // Direct field access
+        assert_eq!(item.header.name, "Bolt");
+        assert!(item.header.is_pub);
+        assert_eq!(item.kind, kind);
+
+        // All seven accessor methods
+        assert_eq!(item.name(), "Bolt");
+        assert!(item.is_pub());
+        assert_eq!(item.doc(), Some("A bolt."));
+        assert_eq!(item.annotations().len(), 1);
+        assert_eq!(item.keyword(), "structure");
+        assert_eq!(item.group(), "Structures");
+        assert_eq!(item.kind_slug(), "structure");
+
+        // JSON wire format: header + kind fields flatten to top-level
+        let json = serde_json::to_string(&item).expect("serialize");
+        assert!(json.contains("\"kind\":\"structure\""), "kind tag flattened: {json}");
+        assert!(json.contains("\"name\":\"Bolt\""), "name flattened: {json}");
+        assert!(json.contains("\"is_pub\":true"), "is_pub flattened: {json}");
+        assert!(json.contains("\"params\":[]"), "variant payload flattened: {json}");
+
+        // Round-trip
+        let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(item, back);
+    }
 }
