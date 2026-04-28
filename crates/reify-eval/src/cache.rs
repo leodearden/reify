@@ -544,14 +544,15 @@ impl CacheStore {
     /// auto-creation is intentionally not supported (no value/result/trace
     /// to seed).
     ///
-    /// # Warning: do not pass `Freshness::Failed` directly
+    /// # Precondition: do not pass `Freshness::Failed`
     ///
     /// `mark_failed` must be used instead of `set_freshness(node,
     /// Freshness::Failed { error })`. This helper centralises the
     /// "Failed nodes are chain roots" invariant (including the chain-clearing
     /// side effect); `set_freshness` would silently allow downstream
     /// callers to skip recording the chain root and to leak a stale
-    /// `pending_cause`.
+    /// `pending_cause`. This precondition is enforced via `assert!` in all
+    /// builds (task #2592, parity with the Pending guard from task #2451).
     pub fn mark_failed(&mut self, node: &NodeId, error: reify_types::ErrorRef) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Failed { error };
@@ -627,7 +628,7 @@ impl CacheStore {
     /// has no value/result/trace to seed (see task #2326 design decision). Use
     /// `put(node, NodeCache::new(...))` to insert a fresh entry.
     ///
-    /// # Precondition: do not pass `Freshness::Pending`
+    /// # Precondition: do not pass `Freshness::Pending` or `Freshness::Failed`
     ///
     /// `mark_pending` or `mark_pending_with_cause` must be used instead of
     /// `set_freshness(node, Freshness::Pending { ... })` when transitioning a node
@@ -636,12 +637,19 @@ impl CacheStore {
     /// `pending_transition_count` (a diagnostic counter). This precondition is
     /// enforced via `assert!` in all builds (task #2451 S1).
     ///
+    /// `mark_failed` must be used instead of `set_freshness(node,
+    /// Freshness::Failed { ... })` when transitioning a node to the Failed state.
+    /// That helper centralises the "Failed nodes are chain roots" invariant (clearing
+    /// `pending_cause` so no stale diagnostic chain leaks through). This precondition
+    /// is enforced via `assert!` in all builds (task #2592, parity with the Pending
+    /// guard above).
+    ///
     /// **S2 audit (task #2451):** production write paths in `concurrent.rs` and
     /// `engine_edit.rs` already route all Pending transitions through `mark_pending`
-    /// / `mark_pending_with_cause` (tasks #2326, #2335). `CacheStore::caches` is a
-    /// private field with no public `get_mut` accessor, so external code cannot
-    /// write `freshness` directly. This precondition therefore covers all production
-    /// write sites.
+    /// / `mark_pending_with_cause` (tasks #2326, #2335) and all Failed transitions
+    /// through `mark_failed`. `CacheStore::caches` is a private field with no public
+    /// `get_mut` accessor, so external code cannot write `freshness` directly. These
+    /// preconditions therefore cover all production write sites.
     ///
     /// `restore_final` and `mark_pending` continue to coexist as domain-specific
     /// helpers. `mark_pending` additionally captures `result_hash` into
@@ -651,8 +659,8 @@ impl CacheStore {
     #[must_use = "set_freshness returns false when the node is absent; check or explicitly discard"]
     pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
         assert!(
-            !matches!(freshness, Freshness::Pending { .. }),
-            "set_freshness must not be passed Pending; use mark_pending or mark_pending_with_cause instead"
+            !matches!(freshness, Freshness::Pending { .. } | Freshness::Failed { .. }),
+            "set_freshness must not be passed Pending or Failed; use mark_pending/mark_pending_with_cause or mark_failed instead"
         );
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = freshness;
@@ -2651,7 +2659,7 @@ mod tests {
 
     #[test]
     fn cache_store_set_freshness_returns_false_for_missing_and_writes_for_present() {
-        use reify_types::{ErrorRef, Freshness};
+        use reify_types::Freshness;
 
         // (a) Missing node → set_freshness returns false and store stays empty (no auto-create).
         let mut store = CacheStore::new();
@@ -2667,20 +2675,13 @@ mod tests {
         // (b) Present node → set_freshness returns true.
         let node = NodeId::Value(ValueCellId::new("T", "present"));
         store.put(node.clone(), make_test_node_cache(42, 1)); // starts with Freshness::Final
-        let result = store.set_freshness(
-            &node,
-            Freshness::Failed {
-                error: ErrorRef::new("boom"),
-            },
-        );
+        let result = store.set_freshness(&node, Freshness::Intermediate { generation: 1 });
         assert!(result, "set_freshness on present node must return true");
 
         // (c) Round-trip: canonical reader reflects the written value.
         assert_eq!(
             store.freshness(&node),
-            Freshness::Failed {
-                error: ErrorRef::new("boom"),
-            },
+            Freshness::Intermediate { generation: 1 },
             "freshness() must read back the value written by set_freshness()"
         );
     }
