@@ -1584,6 +1584,102 @@ mod tests {
         );
     }
 
+    // ── couple constructor: accepted ratio / offset variants ────────────────
+
+    #[test]
+    fn couple_int_ratio_accepted() {
+        // Value::Int(2) is accepted by ratio_input and stored as Real(2.0)
+        let result = eval_builtin("couple", &[prismatic_x_joint(), Value::Int(2)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(2.0)),
+            "Int(2) ratio should be stored as Real(2.0)"
+        );
+    }
+
+    #[test]
+    fn couple_dimensionless_scalar_ratio_accepted() {
+        use reify_types::DimensionVector;
+        // DIMENSIONLESS Scalar is accepted by ratio_input and stored as Real
+        let ratio = Value::Scalar { si_value: 0.5, dimension: DimensionVector::DIMENSIONLESS };
+        let result = eval_builtin("couple", &[prismatic_x_joint(), ratio]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(0.5)),
+            "DIMENSIONLESS Scalar(0.5) ratio should be stored as Real(0.5)"
+        );
+    }
+
+    #[test]
+    fn couple_prismatic_int_offset_accepted() {
+        // Value::Int(1) is accepted by length_input for a prismatic parent
+        // and stored as Value::length(1.0)
+        let result = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), Value::Int(1)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(1.0)),
+            "Int(1) offset for prismatic should be stored as Value::length(1.0)"
+        );
+    }
+
+    #[test]
+    fn couple_prismatic_bare_real_offset_accepted() {
+        // bare Value::Real(1.5) is accepted by length_input for a prismatic parent
+        let result = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), Value::Real(1.5)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(1.5)),
+            "Real(1.5) offset for prismatic should be stored as Value::length(1.5)"
+        );
+    }
+
+    #[test]
+    fn couple_revolute_int_offset_accepted() {
+        // Value::Int(0) is accepted by trig_input for a revolute parent
+        let result = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0), Value::Int(0)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::angle(0.0)),
+            "Int(0) offset for revolute should be stored as Value::angle(0.0)"
+        );
+    }
+
+    #[test]
+    fn couple_revolute_bare_real_offset_accepted() {
+        // bare Value::Real(π/4) is accepted by trig_input for a revolute parent
+        let pi = std::f64::consts::PI;
+        let result = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0), Value::Real(pi / 4.0)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::angle(pi / 4.0)),
+            "Real(π/4) offset for revolute should be stored as Value::angle(π/4)"
+        );
+    }
+
     // ── transform_at on Coupling: validation rejections ─────────────────────
 
     /// Build a minimal coupling Map by hand for testing defense-in-depth guards.
@@ -1708,6 +1804,39 @@ mod tests {
         assert!(
             eval_builtin("transform_at", &[Value::Map(m), Value::length(1.0)]).is_undef(),
             "coupling missing offset key should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_int_ratio_returns_undef() {
+        // Defense-in-depth: the coupling arm requires ratio to be stored as
+        // Value::Real (the `make_coupling` helper always does this), but a
+        // hand-built Map could carry Value::Int instead.  The guard must fire.
+        let c = make_coupling_fixture(
+            prismatic_x_joint(),
+            Value::Int(1),       // Int, not Real — guard fires
+            Value::length(0.0),
+        );
+        assert!(
+            eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
+            "coupling with Int ratio should return Undef (defense-in-depth)"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_real_offset_returns_undef() {
+        // Defense-in-depth: the coupling arm requires offset to be stored as
+        // Value::Scalar (the `make_coupling` helper always does this via
+        // Value::length / Value::angle), but a hand-built Map could carry a
+        // bare Value::Real instead.  The guard must fire.
+        let c = make_coupling_fixture(
+            prismatic_x_joint(),
+            Value::Real(1.0),
+            Value::Real(0.0),    // Real, not Scalar — guard fires
+        );
+        assert!(
+            eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
+            "coupling with Real offset should return Undef (defense-in-depth)"
         );
     }
 
