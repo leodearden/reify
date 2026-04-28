@@ -1001,6 +1001,137 @@ mod tests {
         );
     }
 
+    // ── couple constructor: happy paths ─────────────────────────────────────
+
+    #[test]
+    fn couple_prismatic_2arg_returns_coupling_map() {
+        // 2-arg form: couple(prismatic, ratio) → Map with kind="coupling",
+        // parent=<prismatic Map>, ratio=Value::Real(-1.0),
+        // offset=Value::length(0.0) (default zero in LENGTH dimension)
+        let parent = prismatic_x_joint();
+        let result = eval_builtin("couple", &[parent.clone(), Value::Real(-1.0)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "parent should match the prismatic joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(-1.0)),
+            "ratio should be Value::Real(-1.0)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "default offset for prismatic should be Value::length(0.0)"
+        );
+    }
+
+    #[test]
+    fn couple_prismatic_3arg_stores_explicit_offset() {
+        // 3-arg form: explicit offset stored as provided
+        let parent = prismatic_x_joint();
+        let offset = Value::length(0.5);
+        let result = eval_builtin("couple", &[parent.clone(), Value::Real(2.0), offset.clone()]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "parent should match the prismatic joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(2.0)),
+            "ratio should be Value::Real(2.0)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&offset),
+            "offset should be Value::length(0.5)"
+        );
+    }
+
+    #[test]
+    fn couple_revolute_2arg_defaults_angle_offset() {
+        // 2-arg revolute parent → default offset is Value::angle(0.0)
+        let parent = revolute_z_joint();
+        let result = eval_builtin("couple", &[parent.clone(), Value::Real(0.5)]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "parent should match the revolute joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(0.5)),
+            "ratio should be Value::Real(0.5)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::angle(0.0)),
+            "default offset for revolute should be Value::angle(0.0)"
+        );
+    }
+
+    #[test]
+    fn couple_revolute_3arg_stores_explicit_angle_offset() {
+        // 3-arg revolute form: explicit angle offset stored
+        let pi = std::f64::consts::PI;
+        let parent = revolute_z_joint();
+        let offset = Value::angle(pi / 4.0);
+        let result = eval_builtin("couple", &[parent.clone(), Value::Real(0.5), offset.clone()]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "parent should match the revolute joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(0.5)),
+            "ratio should be Value::Real(0.5)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&offset),
+            "explicit angle offset should be stored"
+        );
+    }
+
     // ── joint_range accessor ─────────────────────────────────────────────────
 
     #[test]
