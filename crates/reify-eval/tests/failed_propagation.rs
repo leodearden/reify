@@ -26,7 +26,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
     BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness,
     GeometryHandleId, ModulePath, RealizationNodeId, Satisfaction, Severity, Type, Value,
-    ValueCellId,
+    ValueCellId, VersionId,
 };
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
@@ -559,6 +559,15 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
 
     let build_result = engine.build(&module, ExportFormat::Step);
 
+    // Capture the eval-round version that build() produced. `check()` (called
+    // inside `build()`) runs `eval()` which bumps `next_version_id` by 1 and
+    // stores the pre-bump id into `snapshot.version`. By the time we reach the
+    // kernel-execute loop, `next_version_id == eval_version + 1`.
+    let eval_version = engine
+        .snapshot()
+        .expect("build() must populate eval_state")
+        .version;
+
     // (a) freshness(NodeId::Realization(rnid)) == Failed { error }.
     let r_freshness = engine.cache_store().freshness(&r_node);
     let error_message = match &r_freshness {
@@ -627,6 +636,17 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
          error: …\") must still be emitted alongside the Failed write; \
          got 0 such diagnostics in {:?}",
         build_result.diagnostics
+    );
+
+    // (f) the Failed event is tagged with the eval round that produced the
+    //     failing values, NOT the un-used next_version_id. Bug #2554: line 149
+    //     of engine_build.rs used `VersionId(self.next_version_id)` which is
+    //     eval_version + 1 because `check()` already bumped the counter.
+    assert_eq!(
+        r_failed[0].version, eval_version,
+        "(f) §2554: Failed event version must match the eval round whose \
+         values caused the kernel error; got {:?}, expected {:?}",
+        r_failed[0].version, eval_version
     );
 }
 
