@@ -33,13 +33,8 @@ impl Manifest {
             toml::from_str(s).map_err(|e| ManifestError::Parse(e.to_string()))?;
         let mut kernels: BTreeMap<KernelId, KernelPin> = BTreeMap::new();
         for (raw_id, raw_pin) in raw.kernels.into_iter() {
-            // Step-6 will replace this generic Parse fallback with a typed
-            // ManifestError::UnknownKernel variant. For now any non-canonical
-            // id surfaces as a Parse error so the [kernels] wiring is testable
-            // against the canonical-order assertions in step-3.
-            let id = KernelId::from_str(&raw_id).map_err(|_| {
-                ManifestError::Parse(format!("unknown kernel id: '{}'", raw_id))
-            })?;
+            let id = KernelId::from_str(&raw_id)
+                .map_err(|_| ManifestError::UnknownKernel(raw_id.clone()))?;
             kernels.insert(
                 id,
                 KernelPin {
@@ -84,6 +79,12 @@ pub enum ManifestError {
     /// renderer-formatted diagnostic from the underlying `toml` crate
     /// (line/column information is preserved).
     Parse(String),
+    /// A `[kernels]` entry used a key that is not one of the four
+    /// kernel ids supported in v0.2 (occt, manifold, fidget, openvdb).
+    /// The wrapped string is the offending key, verbatim, so callers
+    /// can quote it back to the user. Lookup is canonical-lowercase
+    /// only — `OCCT` and `truck` both surface as `UnknownKernel`.
+    UnknownKernel(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -91,6 +92,13 @@ impl fmt::Display for ManifestError {
         match self {
             ManifestError::Parse(msg) => {
                 write!(f, "failed to parse reify.toml: {}", msg)
+            }
+            ManifestError::UnknownKernel(key) => {
+                write!(
+                    f,
+                    "unknown kernel id '{}' in [kernels] (expected one of: occt, manifold, fidget, openvdb)",
+                    key
+                )
             }
         }
     }
