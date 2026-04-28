@@ -53,20 +53,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 Some(Value::String(s)) => s.as_str(),
                 _ => return Some(Value::Undef),
             };
-            let axis_val = match map.get(&Value::String("axis".to_string())) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            let comps = match validate_axis(axis_val) {
-                Some(c) => c,
-                None => return Some(Value::Undef),
-            };
-            // Normalize axis to unit length
-            let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
-            let [nax, nay, naz] = [comps[0] / mag, comps[1] / mag, comps[2] / mag];
-
+            // The axis lookup is now inside each arm: Coupling maps have no axis
+            // field, so moving the lookup prevents a spurious Undef for coupling.
             match kind {
                 "prismatic" => {
+                    let axis_val = match map.get(&Value::String("axis".to_string())) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    let comps = match validate_axis(axis_val) {
+                        Some(c) => c,
+                        None => return Some(Value::Undef),
+                    };
+                    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
+                    let [nax, nay, naz] = [comps[0] / mag, comps[1] / mag, comps[2] / mag];
                     // Accept Length Scalar or bare Real/Int as metres
                     let dist = match length_input(&args[1]) {
                         Some(d) => d,
@@ -96,6 +96,16 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 "revolute" => {
+                    let axis_val = match map.get(&Value::String("axis".to_string())) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    let comps = match validate_axis(axis_val) {
+                        Some(c) => c,
+                        None => return Some(Value::Undef),
+                    };
+                    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
+                    let [nax, nay, naz] = [comps[0] / mag, comps[1] / mag, comps[2] / mag];
                     // Accept Angle Scalar or bare Real/Int as radians
                     let theta = match trig_input(&args[1]) {
                         Some(t) => t,
@@ -118,6 +128,68 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         rotation: Box::new(rotation),
                         translation: Box::new(translation),
                     }
+                }
+                "coupling" => {
+                    // Extract the four coupling-map fields with explicit guards.
+                    let parent = match map.get(&Value::String("parent".to_string())) {
+                        Some(v) => v.clone(),
+                        None => return Some(Value::Undef),
+                    };
+                    let ratio_f64 = match map.get(&Value::String("ratio".to_string())) {
+                        Some(Value::Real(r)) => *r,
+                        _ => return Some(Value::Undef),
+                    };
+                    let offset_si = match map.get(&Value::String("offset".to_string())) {
+                        Some(Value::Scalar { si_value, .. }) => *si_value,
+                        _ => return Some(Value::Undef),
+                    };
+                    // Validate the stored parent kind — defense-in-depth against
+                    // hand-built Map fixtures with invalid parent kinds.
+                    let parent_kind = match &parent {
+                        Value::Map(pm) => match pm.get(&Value::String("kind".to_string())) {
+                            Some(Value::String(s)) => s.clone(),
+                            _ => return Some(Value::Undef),
+                        },
+                        _ => return Some(Value::Undef),
+                    };
+                    let parent_is_prismatic = match parent_kind.as_str() {
+                        "prismatic" => true,
+                        "revolute" => false,
+                        _ => return Some(Value::Undef),
+                    };
+                    // Extract v_si from args[1] via dimension-appropriate helper;
+                    // both helpers reject wrong-dim Scalars and non-finite values.
+                    let v_si = if parent_is_prismatic {
+                        match length_input(&args[1]) {
+                            Some(d) => d,
+                            None => return Some(Value::Undef),
+                        }
+                    } else {
+                        match trig_input(&args[1]) {
+                            Some(t) => t,
+                            None => return Some(Value::Undef),
+                        }
+                    };
+                    // Defense-in-depth: length_input/trig_input already reject
+                    // non-finite v; this guard mirrors the prismatic/revolute arms.
+                    if !v_si.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    // Derive the coupled motion variable: ratio * v + offset
+                    let coupled_si = ratio_f64 * v_si + offset_si;
+                    if !coupled_si.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    let coupled_value = if parent_is_prismatic {
+                        Value::length(coupled_si)
+                    } else {
+                        Value::angle(coupled_si)
+                    };
+                    // Recursively delegate to the parent joint arm.  Termination is
+                    // guaranteed: `couple` rejects coupling parents at construction,
+                    // so the recursion always reaches a prismatic/revolute arm at depth 1.
+                    eval_joints("transform_at", &[parent, coupled_value])
+                        .unwrap_or(Value::Undef)
                 }
                 _ => Value::Undef,
             }
