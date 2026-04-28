@@ -146,7 +146,17 @@ impl Engine {
         // before it is moved into the returned `BuildResult` below.
         let mut values = check_result.values;
 
-        let version_id = VersionId(self.next_version_id);
+        // Use the eval round that produced `values`, not the un-used next
+        // round. `check()` already called `eval()` which bumped
+        // `next_version_id` past `snapshot.version`, so reading
+        // `self.next_version_id` here would tag Failed events one round
+        // ahead of the values that caused the kernel failure.
+        let version_id = self
+            .eval_state
+            .as_ref()
+            .expect("check() populates eval_state")
+            .snapshot
+            .version;
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
