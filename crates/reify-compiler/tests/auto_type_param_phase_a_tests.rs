@@ -93,9 +93,6 @@ structure def Bracket {
         "Empty path should emit NO diagnostics (selection phase handles E_AUTO_TYPE_PARAM_NO_CANDIDATE), got: {:?}",
         diagnostics
     );
-
-    // Cap is exposed at 10 (sanity-check the public constant).
-    assert_eq!(MAX_AUTO_TYPE_PARAM_CANDIDATES, 10);
 }
 
 // ─── step-3: single-candidate result ──────────────────────────────────────

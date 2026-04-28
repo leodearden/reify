@@ -129,14 +129,19 @@ pub fn enumerate_candidates(
     // are exactly the alphabetically-first MAX of the entire pool).
     let mut collected: Vec<String> = Vec::new();
     for name in sorted_names {
-        let Some(tmpl) = template_registry.get(name.as_str()) else {
-            continue;
-        };
+        let tmpl = template_registry
+            .get(name.as_str())
+            .expect("name was just enumerated from the same template_registry map");
         if bounds
             .iter()
             .all(|b| satisfies_trait_bound(&tmpl.trait_bounds, b, trait_registry))
         {
             collected.push((*name).clone());
+            // Push first, check second: this lets us distinguish
+            // "exactly MAX" from "MAX+1" for the Found vs Overflow
+            // split. The (MAX+1)-th entry is `truncate`d off below;
+            // we deliberately allocate one extra String to detect
+            // overflow.
             if collected.len() > MAX_AUTO_TYPE_PARAM_CANDIDATES {
                 // We have one more match than MAX — that's enough to
                 // conclude overflow; further iteration cannot change
@@ -145,9 +150,14 @@ pub fn enumerate_candidates(
             }
         }
     }
-    // Belt-and-suspenders: pin the alphabetical order on the returned
-    // Vec even if some future refactor changes the iteration strategy.
-    collected.sort();
+    // Sorted iteration above already yields sorted output; this assert
+    // pins the invariant so a future refactor that changes the iteration
+    // strategy fails loudly in debug builds rather than silently breaking
+    // determinism.
+    debug_assert!(
+        collected.windows(2).all(|w| w[0] <= w[1]),
+        "sorted iteration must yield sorted output"
+    );
 
     if collected.is_empty() {
         CandidateEnumeration::Empty
