@@ -1,6 +1,6 @@
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
-use crate::helpers::{tensor_components_f64, trig_input};
+use crate::helpers::{sanitize_value, tensor_components_f64, trig_input};
 
 pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -155,6 +155,26 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 ((r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s)
             };
             normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
+        }
+        "orient_compose" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let a = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            let b = match &args[1] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(a.0, a.1, a.2, a.3)
+                || !quaternion_is_finite(b.0, b.1, b.2, b.3)
+            {
+                return Some(Value::Undef);
+            }
+            let p = quat_mul(a, b);
+            sanitize_value(normalize_quaternion(p.0, p.1, p.2, p.3).unwrap_or(Value::Undef))
         }
         "orient_axis_angle" => {
             if args.len() != 2 {
