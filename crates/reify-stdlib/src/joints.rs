@@ -241,8 +241,147 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 _ => Value::Undef,
             }
         }
+        "joint_jacobian" => {
+            // SE(3) twist column for a joint, returned as
+            // `Map { "angular": Vector3<DIMENSIONLESS>, "linear": Vector3<DIMENSIONLESS> }`.
+            //
+            // Per-kind formula (constant w.r.t. the motion variable for v0.1
+            // single-DOF joints):
+            //   prismatic → angular=[0,0,0], linear=axis_unit
+            //   revolute  → angular=axis_unit, linear=[0,0,0]
+            //   coupling  → ratio * parent_jacobian (component-wise).
+            //
+            // Validation mirrors `transform_at`'s coupling arm: parent kind must
+            // be prismatic/revolute (no nested couplings), ratio must be a
+            // finite `Value::Real`, axis must be a non-zero finite Vector3.
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            joint_jacobian_value(&args[0])
+        }
         _ => return None,
     })
+}
+
+/// Compute the SE(3) twist column for a joint Map.
+///
+/// Returns `Value::Map` on success, `Value::Undef` on any validation failure.
+///
+/// The coupling arm calls this recursively on its parent; termination is
+/// guaranteed because `couple` rejects coupling parents at construction and the
+/// nested-coupling guard inside this helper rejects any hand-built fixture
+/// that violates the invariant.
+fn joint_jacobian_value(value: &Value) -> Value {
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return Value::Undef,
+    };
+    match kind {
+        "prismatic" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz])
+        }
+        "revolute" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0])
+        }
+        "coupling" => {
+            let parent_map = match map.get(&Value::String("parent".to_string())) {
+                Some(Value::Map(pm)) => pm,
+                _ => return Value::Undef,
+            };
+            let ratio_f64 = match map.get(&Value::String("ratio".to_string())) {
+                Some(Value::Real(r)) => *r,
+                _ => return Value::Undef,
+            };
+            if !ratio_f64.is_finite() {
+                return Value::Undef;
+            }
+            // Defense-in-depth: reject nested coupling. `couple` rejects this at
+            // construction, but a hand-built Map could carry it. Mirrors
+            // `transform_at`'s parent-kind validation.
+            match parent_map.get(&Value::String("kind".to_string())) {
+                Some(Value::String(s))
+                    if matches!(s.as_str(), "prismatic" | "revolute") => {}
+                _ => return Value::Undef,
+            }
+            // Recurse to the parent's Jacobian (always single-DOF at depth 1).
+            let parent_jac = joint_jacobian_value(&Value::Map(parent_map.clone()));
+            scale_jacobian(&parent_jac, ratio_f64)
+        }
+        _ => Value::Undef,
+    }
+}
+
+/// Build a Jacobian Map with the standard `{ "angular", "linear" }` layout,
+/// where each value is a `Value::Vector` of three `Value::Real` components.
+fn make_jacobian(angular: [f64; 3], linear: [f64; 3]) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("angular".to_string()),
+        Value::Vector(vec![
+            Value::Real(angular[0]),
+            Value::Real(angular[1]),
+            Value::Real(angular[2]),
+        ]),
+    );
+    m.insert(
+        Value::String("linear".to_string()),
+        Value::Vector(vec![
+            Value::Real(linear[0]),
+            Value::Real(linear[1]),
+            Value::Real(linear[2]),
+        ]),
+    );
+    Value::Map(m)
+}
+
+/// Scale a Jacobian Map's `angular` and `linear` components by `ratio`.
+///
+/// Returns `Value::Map` on success, `Value::Undef` if any component is
+/// non-finite after scaling or the input shape is malformed.
+fn scale_jacobian(jac: &Value, ratio: f64) -> Value {
+    let m = match jac {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let read_vec3 = |key: &str| -> Option<[f64; 3]> {
+        match m.get(&Value::String(key.to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => {
+                let a = items[0].as_f64()?;
+                let b = items[1].as_f64()?;
+                let c = items[2].as_f64()?;
+                Some([a, b, c])
+            }
+            _ => None,
+        }
+    };
+    let ang = match read_vec3("angular") {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let lin = match read_vec3("linear") {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let scaled_ang = [ratio * ang[0], ratio * ang[1], ratio * ang[2]];
+    let scaled_lin = [ratio * lin[0], ratio * lin[1], ratio * lin[2]];
+    for v in scaled_ang.iter().chain(scaled_lin.iter()) {
+        if !v.is_finite() {
+            return Value::Undef;
+        }
+    }
+    make_jacobian(scaled_ang, scaled_lin)
 }
 
 /// Extract a dimensionless ratio from a `couple` ratio argument.
