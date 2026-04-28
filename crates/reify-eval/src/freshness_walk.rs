@@ -499,6 +499,112 @@ mod tests {
         );
     }
 
+    /// Step-13: The walk is a fixed-point operator under repeated invocation.
+    ///
+    /// 2-cell chain `a → b`. After flipping a to Final, the first walk
+    /// flips b Intermediate{1} → Final and returns `{Value(b)}`. Running
+    /// the same walk again with the same arguments must:
+    /// - Return an empty `HashSet<NodeId>` (no node's freshness changed).
+    /// - Leave the cache byte-identical to its post-first-walk state.
+    ///
+    /// Pins that the early-cutoff gate (step-6) plus the visited-cells guard
+    /// (step-4) make repeated invocations no-ops once propagation has
+    /// settled. The fixed-point property is what allows callers to safely
+    /// re-run the walk after partial state changes (e.g. an edit_param
+    /// follow-up after another walk has already flipped some downstream
+    /// nodes) without double-counting updates.
+    #[test]
+    fn walk_is_idempotent_under_repeated_invocation() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        let mut cache = CacheStore::new();
+        put_value_entry_with_payload(
+            &mut cache,
+            &a,
+            Value::Real(5.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+            VersionId(1),
+        );
+        put_value_entry_with_payload(
+            &mut cache,
+            &b,
+            Value::Real(10.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+            VersionId(1),
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+
+        let a_node = NodeId::Value(a.clone());
+        let b_node = NodeId::Value(b.clone());
+
+        // Flip a to Final and run the walk; b transitions Intermediate → Final.
+        assert!(cache.set_freshness(&a_node, Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated_first =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        assert!(
+            updated_first.contains(&b_node),
+            "sanity: first walk must update b, got: {:?}",
+            updated_first
+        );
+        assert_eq!(
+            cache.freshness(&b_node),
+            Freshness::Final,
+            "sanity: b must be Final after first walk"
+        );
+
+        // Snapshot every cached entry's relevant fields after the first walk.
+        let a_after_first = cache.get(&a_node).expect("a cached").clone();
+        let b_after_first = cache.get(&b_node).expect("b cached").clone();
+
+        // Run the walk again with the same arguments.
+        let updated_second =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        assert!(
+            updated_second.is_empty(),
+            "second walk must return an empty set (early cutoff fires at every dependent), got: {:?}",
+            updated_second
+        );
+
+        // Cache must be byte-identical between the two snapshots.
+        let a_after_second = cache.get(&a_node).expect("a cached").clone();
+        let b_after_second = cache.get(&b_node).expect("b cached").clone();
+        assert_eq!(
+            a_after_second.freshness, a_after_first.freshness,
+            "a's freshness must be byte-identical between successive walks"
+        );
+        assert_eq!(
+            b_after_second.freshness, b_after_first.freshness,
+            "b's freshness must be byte-identical between successive walks"
+        );
+        assert_eq!(
+            a_after_second.result_hash, a_after_first.result_hash,
+            "a's result_hash must be byte-identical (the walk never touches result_hash)"
+        );
+        assert_eq!(
+            b_after_second.result_hash, b_after_first.result_hash,
+            "b's result_hash must be byte-identical (the walk never touches result_hash)"
+        );
+        assert_eq!(
+            a_after_second.basis_version, a_after_first.basis_version,
+            "a's basis_version must be byte-identical (the walk never bumps basis_version)"
+        );
+        assert_eq!(
+            b_after_second.basis_version, b_after_first.basis_version,
+            "b's basis_version must be byte-identical (the walk never bumps basis_version)"
+        );
+    }
+
     /// Step-11: A Failed node is terminal — the walk must NOT re-derive it
     /// (which would silently flip Failed → Final/Intermediate/Pending based
     /// on its inputs and destroy the chain-root invariant) but MUST still
