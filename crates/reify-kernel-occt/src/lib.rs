@@ -5611,11 +5611,9 @@ mod tests {
     /// the same OCCT volume-centroid path as `Centroid` (see `geometry.rs:365–376` for the
     /// documented bit-equality invariant: "the result is identical to `Centroid(handle)`").
     ///
-    /// This test guards two things simultaneously:
-    /// 1. The helper-extraction refactor in step-2 (both arms must produce the same string
-    ///    before and after calling `centroid_json`).
-    /// 2. Any future contributor who bypasses the helper and copies an inline `format!` into
-    ///    one arm but not the other — the test will catch any format divergence.
+    /// This test guards against any future contributor who bypasses the helper and copies an
+    /// inline `format!` into one arm but not the other — the test will catch any format
+    /// divergence between the `Centroid` and `CenterOfMass` query arms.
     ///
     /// A translated box (dx=5, dy=-3, dz=7) is used so the expected centroid is at (5, -3, 7):
     /// an origin-centred box would pass even if one arm hardcoded the origin.
@@ -5655,6 +5653,20 @@ mod tests {
             "CenterOfMass and Centroid must produce bit-equal Value outputs for a uniform-density \
              solid (documented invariant: geometry.rs:365–376). Got Centroid={centroid:?}, \
              CenterOfMass={center_of_mass:?}"
+        );
+
+        // Verify the centroid is actually at the expected translated position (5, -3, 7) —
+        // guards against both arms silently agreeing on an incorrect value (e.g., returning
+        // the origin when the shape is not at the origin).
+        let centroid_str = match &centroid {
+            Value::String(s) => s.as_str(),
+            other => panic!("Centroid must return Value::String, got {:?}", other),
+        };
+        let (cx, cy, cz) = parse_centroid_json(centroid_str);
+        assert!(
+            (cx - 5.0).abs() < 1e-6 && (cy + 3.0).abs() < 1e-6 && (cz - 7.0).abs() < 1e-6,
+            "Centroid should be at (5, -3, 7) for a box translated by (dx=5, dy=-3, dz=7), \
+             got ({cx}, {cy}, {cz})"
         );
     }
 
