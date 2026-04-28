@@ -100,6 +100,11 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(elem);
             }
         }
+        CompiledExprKind::ReflectiveCellList(elements) => {
+            for elem in elements {
+                assert_no_unresolved(elem);
+            }
+        }
         CompiledExprKind::SetLiteral(elements) => {
             for elem in elements {
                 assert_no_unresolved(elem);

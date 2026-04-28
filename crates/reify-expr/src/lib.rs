@@ -399,6 +399,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::List(items)
         }
 
+        // ReflectiveCellList: same runtime semantics as ListLiteral outside the
+        // quantifier evaluator — the variant distinction only matters for
+        // eval_quantifier's cell-iteration trigger (task-2458).
+        CompiledExprKind::ReflectiveCellList(elements) => {
+            let items: Vec<Value> = elements.iter().map(|e| eval_expr(e, ctx)).collect();
+            Value::List(items)
+        }
+
         CompiledExprKind::SetLiteral(elements) => {
             let items: std::collections::BTreeSet<Value> =
                 elements.iter().map(|e| eval_expr(e, ctx)).collect();

@@ -56,6 +56,7 @@ fn find_node<'a>(
         }
         CompiledExprKind::Lambda { body, .. } => find_node(body, pred),
         CompiledExprKind::ListLiteral(elements) => elements.iter().find_map(|e| find_node(e, pred)),
+        CompiledExprKind::ReflectiveCellList(elements) => elements.iter().find_map(|e| find_node(e, pred)),
         CompiledExprKind::SetLiteral(elements) => elements.iter().find_map(|e| find_node(e, pred)),
         CompiledExprKind::MapLiteral(entries) => entries
             .iter()

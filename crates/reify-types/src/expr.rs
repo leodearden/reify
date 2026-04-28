@@ -135,6 +135,15 @@ pub enum CompiledExprKind {
         /// The schema-query kind (e.g. `"params"`, `"geometric_params"`).
         query_kind: String,
     },
+    /// Activation-time post-expansion shape produced exclusively by
+    /// `expand_purpose_reflective_placeholders`. Distinguished from `ListLiteral`
+    /// so that `eval_quantifier`'s cell-iteration mode triggers only on
+    /// placeholder-derived lists, not user-written all-`ValueRef` literals
+    /// (task-2458).
+    ///
+    /// At runtime (outside the quantifier evaluator), behaves identically to
+    /// `ListLiteral` — it is purely a structural marker.
+    ReflectiveCellList(Vec<CompiledExpr>),
 }
 
 /// Determinacy predicate kinds.
@@ -228,7 +237,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[26]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[27]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -251,6 +260,7 @@ pub const TAG_RANGE_CONSTRUCTOR: u8 = 18;
 pub const TAG_AD_HOC_SELECTOR: u8 = 19;
 pub const TAG_MATCH: u8 = 24;
 pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
+pub const TAG_REFLECTIVE_CELL_LIST: u8 = 26;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -336,6 +346,11 @@ impl CompiledExpr {
                 body.walk(f);
             }
             CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.walk(f);
+                }
+            }
+            CompiledExprKind::ReflectiveCellList(elements) => {
                 for elem in elements {
                     elem.walk(f);
                 }
@@ -464,6 +479,11 @@ impl CompiledExpr {
                     elem.collect_value_refs_inner(refs);
                 }
             }
+            CompiledExprKind::ReflectiveCellList(elements) => {
+                for elem in elements {
+                    elem.collect_value_refs_inner(refs);
+                }
+            }
             CompiledExprKind::SetLiteral(elements) => {
                 for elem in elements {
                     elem.collect_value_refs_inner(refs);
@@ -571,6 +591,24 @@ impl CompiledExpr {
         }
         CompiledExpr {
             kind: CompiledExprKind::ListLiteral(elements),
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a reflective-cell-list expression (task-2458).
+    ///
+    /// Post-expansion shape produced exclusively by
+    /// `expand_purpose_reflective_placeholders`; distinguished from `ListLiteral`
+    /// by tag byte `TAG_REFLECTIVE_CELL_LIST` so `eval_quantifier`'s
+    /// cell-iteration trigger fires only on placeholder-derived lists.
+    pub fn reflective_cell_list(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
+        let mut content_hash = ContentHash::of(&[TAG_REFLECTIVE_CELL_LIST]);
+        for elem in &elements {
+            content_hash = content_hash.combine(elem.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::ReflectiveCellList(elements),
             result_type,
             content_hash,
         }
@@ -746,6 +784,11 @@ impl CompiledExpr {
                     elem.remap_entity(from_entity, to_entity);
                 }
             }
+            CompiledExprKind::ReflectiveCellList(elements) => {
+                for elem in elements {
+                    elem.remap_entity(from_entity, to_entity);
+                }
+            }
             CompiledExprKind::SetLiteral(elements) => {
                 for elem in elements {
                     elem.remap_entity(from_entity, to_entity);
@@ -885,6 +928,11 @@ impl CompiledExpr {
                 }
             }
             CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::ReflectiveCellList(elements) => {
                 for elem in elements {
                     elem.remap_cell(from, to);
                 }

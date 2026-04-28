@@ -67,6 +67,11 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
                 collect_body_refs_inner(elem, refs);
             }
         }
+        CompiledExprKind::ReflectiveCellList(elements) => {
+            for elem in elements {
+                collect_body_refs_inner(elem, refs);
+            }
+        }
         CompiledExprKind::SetLiteral(elements) => {
             for elem in elements {
                 collect_body_refs_inner(elem, refs);

@@ -1295,6 +1295,12 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
             format!("[{}]", elem_strs.join(", "))
         }
+        // ReflectiveCellList: same surface formatting as ListLiteral — the
+        // variant marker is internal to the evaluator (task-2458).
+        CompiledExprKind::ReflectiveCellList(elems) => {
+            let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
+            format!("[{}]", elem_strs.join(", "))
+        }
         CompiledExprKind::SetLiteral(elems) => {
             let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
             format!("set{{{}}}", elem_strs.join(", "))

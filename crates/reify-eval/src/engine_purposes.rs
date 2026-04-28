@@ -439,7 +439,11 @@ fn expand_purpose_reflective_placeholders(
         CompiledExprKind::Lambda { body, .. } => {
             expand_purpose_reflective_placeholders(body, queries, entity_ref, value_cells);
         }
-        CompiledExprKind::ListLiteral(elements) | CompiledExprKind::SetLiteral(elements) => {
+        CompiledExprKind::ListLiteral(elements)
+        | CompiledExprKind::SetLiteral(elements)
+        | CompiledExprKind::ReflectiveCellList(elements) => {
+            // ReflectiveCellList: idempotent — elements are ValueRefs by construction,
+            // never placeholders. Included for completeness (task-2458).
             for elem in elements {
                 expand_purpose_reflective_placeholders(elem, queries, entity_ref, value_cells);
             }
