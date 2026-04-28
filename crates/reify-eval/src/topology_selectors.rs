@@ -1325,4 +1325,62 @@ mod tests {
             diagnostics,
         );
     }
+
+    /// Regression: dedup must apply to the full candidate set, not only matching
+    /// ids.  Interleaves a matching id with a non-matching id (both duplicated)
+    /// to verify that the dedup gate (`seen.insert`) is evaluated unconditionally
+    /// for every candidate — regardless of tag-match result.
+    ///
+    /// This protects against a future refactor that moves `seen.insert` inside the
+    /// tag-match branch (e.g. swapping the `&&` operands to
+    /// `table.lookup(id) == Some(&target) && seen.insert(id)`), which would
+    /// correctly dedup matching ids but silently skip adding non-matching ids to
+    /// `seen`, leaving them visible to subsequent loop iterations.
+    ///
+    /// Slice under test: `[id_match, id_nomatch, id_nomatch, id_match]`.
+    /// Expected: `Some(id_match)`, zero diagnostics.
+    #[test]
+    fn resolve_unique_by_tag_interleaved_matching_and_nonmatching_duplicates() {
+        use reify_types::{Diagnostic, FeatureTag, FeatureTagTable, SourceSpan, StepKind};
+
+        let id_match = GeometryHandleId(100);
+        let id_nomatch = GeometryHandleId(200);
+
+        let tag_source_span = SourceSpan::new(600, 620);
+        let target_tag =
+            FeatureTag { source_span: tag_source_span, step_kind: StepKind::Primitive, sub_index: 0 };
+        let other_tag =
+            FeatureTag { source_span: tag_source_span, step_kind: StepKind::Primitive, sub_index: 1 };
+
+        let mut table = FeatureTagTable::default();
+        table.record(id_match, target_tag);
+        table.record(id_nomatch, other_tag);
+
+        let selector_span = SourceSpan::new(700, 720);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // Both ids appear twice; they are interleaved so the duplicate of id_match
+        // is not adjacent to its first occurrence.  An unguarded resolver (or one
+        // that only deduplicates matching ids) would count n=2 and emit a spurious
+        // W_TOPOLOGY_TAG_STALE instead of returning Some(id_match).
+        let result = resolve_unique_by_tag(
+            &table,
+            &[id_match, id_nomatch, id_nomatch, id_match],
+            target_tag,
+            selector_span,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(id_match),
+            "duplicate candidate ids must not inflate the match count regardless of tag-match order",
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no spurious W_TOPOLOGY_TAG_STALE when matching and non-matching duplicates are interleaved; \
+             got diagnostics: {:?}",
+            diagnostics,
+        );
+    }
 }
