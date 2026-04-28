@@ -18,7 +18,7 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::compile_source;
-use reify_types::SourceSpan;
+use reify_types::{DiagnosticCode, Severity, SourceSpan};
 
 /// Build the `(template_registry, trait_registry)` pair that
 /// `enumerate_candidates` consumes, borrowing from a single compiled module.
@@ -341,5 +341,72 @@ fn enumerate_returns_found_at_exactly_max_candidates_no_overflow() {
         diagnostics.is_empty(),
         "boundary case (exactly MAX) must emit no diagnostics, got: {:?}",
         diagnostics
+    );
+}
+
+// ─── step-13: overflow at MAX+1 — full diagnostic shape ───────────────────
+
+/// With exactly 11 structures `S00..S10` implementing `Seal`, the result
+/// is `Overflow([S00..S09])` (alphabetical first 10, NOT `S10`). One
+/// diagnostic is pushed onto the supplied vector with:
+///   - severity: Error
+///   - code: AutoTypeParamPoolOverflow
+///   - candidates: ["S00", .., "S09"] (machine-readable)
+///   - labels[0].span: the use-site span passed in
+///   - message: contains the bound name "Seal"
+///
+/// This is the single canonical pin of the overflow contract end-to-end.
+#[test]
+fn enumerate_overflows_at_eleven_candidates_emits_diagnostic_with_first_ten() {
+    let source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    let module = compile_source(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let use_site_span = SourceSpan::new(100, 110);
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string()],
+        &template_registry,
+        &trait_registry,
+        use_site_span,
+        &mut diagnostics,
+    );
+
+    let expected_first_ten: Vec<String> = (0..MAX_AUTO_TYPE_PARAM_CANDIDATES)
+        .map(|i| format!("S{:02}", i))
+        .collect();
+    assert_eq!(
+        result,
+        CandidateEnumeration::Overflow(expected_first_ten.clone()),
+        "MAX+1 candidates must produce Overflow with first MAX alphabetically (excluding S{:02})",
+        MAX_AUTO_TYPE_PARAM_CANDIDATES
+    );
+
+    // Exactly one diagnostic — not one per excess candidate.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one overflow diagnostic expected, got {}",
+        diagnostics.len()
+    );
+    let d = &diagnostics[0];
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.code, Some(DiagnosticCode::AutoTypeParamPoolOverflow));
+    assert_eq!(
+        d.candidates, expected_first_ten,
+        "diagnostic.candidates must contain the first 10 alphabetically"
+    );
+    assert!(
+        !d.labels.is_empty(),
+        "diagnostic must carry at least one label at the use-site span"
+    );
+    assert_eq!(
+        d.labels[0].span, use_site_span,
+        "primary label must point at the supplied use-site span"
+    );
+    assert!(
+        d.message.contains("Seal"),
+        "diagnostic message must mention the bound 'Seal', got: {:?}",
+        d.message
     );
 }
