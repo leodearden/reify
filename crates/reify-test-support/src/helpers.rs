@@ -76,6 +76,66 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
+/// Walk every top-level expression in all `Structure` declarations of a parsed module.
+///
+/// For each [`reify_syntax::Declaration::Structure`] in `module.declarations`, this function
+/// iterates the structure's `members` and calls `visit` with a reference to:
+///
+/// - [`reify_syntax::MemberDecl::Param`] — the `default` expression, **when it is
+///   `Some`** (`param` without a default is skipped entirely).
+/// - [`reify_syntax::MemberDecl::Let`] — the `value` expression (always present).
+///
+/// Members of other kinds (Constraint, ConstraintInst, Sub, Minimize, Maximize,
+/// GuardedGroup, AssociatedType, Port, Connect, Chain, MetaBlock, ForallConnect,
+/// ForallConstraint) are silently skipped.
+///
+/// # Scope limitations (intentional)
+///
+/// The following are **not** covered by this helper:
+///
+/// - Other declaration kinds (Occurrence, Trait, Function, ConstraintDef, Purpose,
+///   Field, Unit, TypeAlias, Enum, Import) — only `Structure` is visited.
+/// - Sub-expression recursion — only the top-level `Expr` of each qualifying member
+///   is visited, not the operands of `BinOp`, `FunctionCall`, `Conditional`, etc.
+///
+/// This minimal scope matches exactly what the legacy local helpers `walk_struct_exprs`
+/// (in `parse_with_stdlib_tests.rs`) and `find_first_enum_access` (in
+/// `ts_parser.rs::tests`) walked.  Future regression tests can extend the helper
+/// incrementally.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut enum_accesses: Vec<(String, String)> = Vec::new();
+/// walk_structure_exprs(&parsed, |expr| {
+///     if let reify_syntax::ExprKind::EnumAccess { type_name, variant } = &expr.kind {
+///         enum_accesses.push((type_name.clone(), variant.clone()));
+///     }
+/// });
+/// ```
+pub fn walk_structure_exprs<F: FnMut(&reify_syntax::Expr)>(
+    module: &reify_syntax::ParsedModule,
+    mut visit: F,
+) {
+    for decl in &module.declarations {
+        if let reify_syntax::Declaration::Structure(s) = decl {
+            for member in &s.members {
+                match member {
+                    reify_syntax::MemberDecl::Param(p) => {
+                        if let Some(default) = &p.default {
+                            visit(default);
+                        }
+                    }
+                    reify_syntax::MemberDecl::Let(l) => {
+                        visit(&l.value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Parse `source` with the given `module_name` module path, asserting no parse errors.
 ///
 /// # Panics
