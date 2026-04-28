@@ -449,9 +449,33 @@ impl CacheStore {
     ///
     /// Returns `true` if the node was found and marked, `false` if not cached.
     ///
-    /// **Diagnostic chain:** this helper does NOT set `pending_cause`. Use
-    /// [`CacheStore::mark_pending_with_cause`] to populate the chain when the
-    /// transition is driven by a known upstream Failed/Pending node.
+    /// # Diagnostic chain — pick the right helper
+    ///
+    /// This no-cause helper **does NOT set `pending_cause`** — the diagnostic
+    /// chain forwarded into [`Freshness::Pending`] downstream consumers will
+    /// be empty. Use [`CacheStore::mark_pending_with_cause`] instead whenever
+    /// the transition is driven by a *known upstream* Failed/Pending node;
+    /// that is the canonical wire for arch §9.2 propagation (see
+    /// `docs/reify-implementation-architecture.md` lines 880-890).
+    ///
+    /// `mark_pending` is reserved for the **bulk dirty-flag pass** during
+    /// incremental re-evaluation, where the "cause" is *the user-driven edit
+    /// that bumped the version* rather than any specific upstream NodeId.
+    /// Audit of in-tree callers (task #2330 amendment review):
+    ///
+    /// - `cache.rs::incremental_eval` — top-level dirty walk, no upstream
+    ///   node is the cause (the trigger is the bumped `VersionId`).
+    /// - `concurrent.rs::concurrent_eval` and `engine_edit.rs::edit_param` /
+    ///   `engine_edit.rs::edit_source` — same shape: bulk-mark every member
+    ///   of the eval-set Pending before the per-node evaluator runs.
+    ///
+    /// All four of these intentionally drop the chain because none of them
+    /// has Failed or Pending in their input set at the moment they call
+    /// `mark_pending`. The §9.2 chain is laid down inside the per-node
+    /// evaluator itself (e.g. `evaluate_let_bindings` →
+    /// `mark_pending_with_cause`), not by the bulk pre-pass. Future call
+    /// sites that *do* have a known cause MUST migrate to
+    /// [`CacheStore::mark_pending_with_cause`].
     pub fn mark_pending(&mut self, node: &NodeId) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Pending {
@@ -1085,7 +1109,12 @@ pub fn incremental_eval(
             continue;
         }
 
-        // Mark as pending before evaluation
+        // Mark as pending before evaluation. Bulk dirty-pass: the "cause"
+        // is the user-driven version bump that produced `changed`, not any
+        // upstream Failed/Pending NodeId, so the no-cause helper is correct
+        // here. The arch §9.2 diagnostic chain is laid down by the per-node
+        // evaluator (e.g. `evaluate_let_bindings`'s pre-eval Pending gate)
+        // when it actually observes a Failed/Pending input.
         let node = NodeId::Value(cell.clone());
         cache.mark_pending(&node);
 
