@@ -361,11 +361,13 @@ pub struct TopologyTemplate {
     pub pragmas: Vec<reify_syntax::Pragma>,
     /// Match-arm decl clusters registered during compilation (task 2372, step-10).
     ///
-    /// Only populated in test builds — production consumers (union typing, eval)
-    /// are wired in task 2373 when a downstream stage first needs the data.
-    /// Kept `#[cfg(test)]` so no changes are required in `reify-test-support`
-    /// or downstream crates that construct `TopologyTemplate` outside test mode.
-    #[cfg(test)]
+    /// Populated by `compile_match_arm_decl_group` in `entity.rs`.  Empty for
+    /// templates that contain no `MatchArmDeclGroup` members.
+    ///
+    /// Production consumers (union typing, eval) are wired in task 2373 when a
+    /// downstream stage first needs the data.  The field is always present (not
+    /// `#[cfg(test)]`) so integration tests in `crates/reify-compiler/tests/`
+    /// can access it — integration tests compile the library *without* cfg(test).
     pub match_arm_groups: Vec<GuardedDeclGroup>,
 }
 

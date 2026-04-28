@@ -1920,9 +1920,8 @@ pub(crate) fn compile_entity(
         is_recursive: false,
         annotations,
         pragmas: structure.pragmas.to_vec(),
-        // Expose the match-arm cluster map to test builds (task 2372 step-10).
-        // Production surfacing deferred to task 2373 (union typing consumer).
-        #[cfg(test)]
+        // Expose the match-arm cluster map (task 2372 step-10).
+        // Always present; production consumers wired in task 2373.
         match_arm_groups: scope.match_arm_groups.values().cloned().collect(),
     }
 }
@@ -1955,10 +1954,10 @@ fn compile_match_arm_decl_group(
     sub_components: &mut Vec<SubComponentDecl>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     type_param_names: &HashSet<String>,
-    alias_registry: &TypeAliasRegistry,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
-    known_geometry_lets: &HashSet<&str>,
+    _alias_registry: &TypeAliasRegistry,
+    _structure_names: &HashSet<String>,
+    _trait_names: &HashSet<String>,
+    _known_geometry_lets: &HashSet<&str>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
