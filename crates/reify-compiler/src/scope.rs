@@ -45,6 +45,12 @@ pub(crate) struct CompilationScope<'u> {
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
+    /// Match-arm clusters keyed by their shared logical name (task 2372).
+    ///
+    /// Deliberately separate from `names` so that duplicate-name diagnostics
+    /// (task 2375) cannot misfire on cluster members registered here.
+    /// Populated by `register_match_arm_group`; queried by `resolve_match_arm_group`.
+    pub(crate) match_arm_groups: HashMap<String, GuardedDeclGroup>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -64,6 +70,7 @@ impl<'u> CompilationScope<'u> {
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             has_geometry: false,
+            match_arm_groups: HashMap::new(),
         }
     }
 
@@ -132,13 +139,79 @@ impl<'u> CompilationScope<'u> {
     pub(crate) fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
+
+    /// Register a match-arm `GuardedDeclGroup` under its logical name.
+    ///
+    /// Stored in `match_arm_groups` — deliberately separate from `names` so that
+    /// future duplicate-name diagnostics (task 2375) cannot misfire on cluster
+    /// members. Overwriting a previous registration is harmless because the cluster
+    /// is fully assembled before this call is made.
+    pub(crate) fn register_match_arm_group(&mut self, name: &str, group: GuardedDeclGroup) {
+        self.match_arm_groups.insert(name.to_string(), group);
+    }
+
+    /// Look up a match-arm cluster by its logical name.
+    ///
+    /// Returns `None` if no cluster has been registered under `name`. This never
+    /// consults `self.names`, preserving the separation-from-`names` invariant.
+    pub(crate) fn resolve_match_arm_group(&self, name: &str) -> Option<&GuardedDeclGroup> {
+        self.match_arm_groups.get(name)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ── match-arm-group registration (task 2372, step-3) ─────────────────────
+
+    fn make_test_group(name: &str) -> GuardedDeclGroup {
+        use reify_types::Value;
+        GuardedDeclGroup {
+            name: name.to_string(),
+            arms: vec![GuardedDeclArm {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: ValueCellId::new("TestEntity", "__guard_0"),
+                arm_type: Type::StructureRef("SomeHead".to_string()),
+            }],
+        }
+    }
+
     #[test]
+    fn register_match_arm_group_stores_in_dedicated_map() {
+        let mut scope = CompilationScope::new("TestEntity");
+        let group = make_test_group("head");
+        scope.register_match_arm_group("head", group.clone());
+        let retrieved = scope.resolve_match_arm_group("head");
+        assert!(retrieved.is_some(), "group should be retrievable after registration");
+        assert_eq!(retrieved.unwrap().name, "head");
+        assert_eq!(retrieved.unwrap().arms.len(), 1);
+    }
+
+    #[test]
+    fn register_match_arm_group_does_not_pollute_names_map() {
+        let mut scope = CompilationScope::new("TestEntity");
+        let group = make_test_group("head");
+        scope.register_match_arm_group("head", group);
+        assert!(
+            scope.resolve("head").is_none(),
+            "cluster registration must NOT insert into the regular names map"
+        );
+        assert!(
+            scope.names.get("head").is_none(),
+            "names map must remain empty after cluster registration"
+        );
+    }
+
+    #[test]
+    fn resolve_match_arm_group_returns_none_for_unknown_name() {
+        let scope = CompilationScope::new("TestEntity");
+        assert!(
+            scope.resolve_match_arm_group("nonexistent").is_none(),
+            "resolve_match_arm_group must return None for an unknown name"
+        );
+    }
+
     fn register_if_absent_does_not_overwrite() {
         let mut scope = CompilationScope::new("TestEntity");
 
