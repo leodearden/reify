@@ -242,6 +242,32 @@ mod tests {
     }
 
     #[test]
+    fn empty_version_string_rejected() {
+        let err = Manifest::from_toml_str("[kernels]\nocct = \"\"\n")
+            .expect_err("empty version string should be rejected");
+        match err {
+            ManifestError::EmptyVersion(id) => assert_eq!(id, KernelId::Occt),
+            other => panic!(
+                "expected ManifestError::EmptyVersion(KernelId::Occt), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn whitespace_only_version_rejected() {
+        let err = Manifest::from_toml_str("[kernels]\nocct = \"   \"\n")
+            .expect_err("whitespace-only version should be rejected");
+        match err {
+            ManifestError::EmptyVersion(id) => assert_eq!(id, KernelId::Occt),
+            other => panic!(
+                "expected ManifestError::EmptyVersion(KernelId::Occt), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
     fn multiple_kernel_pins_iterate_in_kernel_id_order() {
         // Non-canonical text order in the TOML source.
         let toml = "[kernels]\n\
