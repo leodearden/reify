@@ -337,6 +337,18 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             let r_norm = r_norm_sq.sqrt();
             let (nw, nx, ny, nz) = (rw / r_norm, rx / r_norm, ry / r_norm, rz / r_norm);
+            // Canonicalize quaternion sign: q and -q represent the same SO(3)
+            // rotation. Flipping when nw < 0 ensures the small-angle Taylor
+            // branch always sees nw ≈ +1 (so ω = +2*(nx,ny,nz) for q≈identity,
+            // not −2*(nx,ny,nz) for q≈−identity). The general atan2 branch
+            // still produces the correct magnitude either way, but the sign
+            // of the rotation axis matches the canonical hemisphere only
+            // after this flip — so we apply it for both branches.
+            let (nw, nx, ny, nz) = if nw < 0.0 {
+                (-nw, -nx, -ny, -nz)
+            } else {
+                (nw, nx, ny, nz)
+            };
             let v_norm = (nx * nx + ny * ny + nz * nz).sqrt();
             const EPS: f64 = 1e-12;
             let (wx, wy, wz) = if v_norm < EPS {
@@ -2985,6 +2997,61 @@ mod tests {
             ang[2],
             eps
         );
+    }
+
+    /// Negated-quaternion (w ≈ -1) input represents the same rotation as
+    /// identity, so transform_log must canonicalize the sign before computing
+    /// ω. Without canonicalization, the small-angle Taylor branch (v_norm < EPS)
+    /// would emit ω ≈ −2*(nx,ny,nz) — wrong-signed for q whose nw is exactly 0
+    /// or near −1. After the canonical sign-flip, both q and −q yield the same
+    /// rotation vector.
+    #[test]
+    fn transform_log_negated_identity_quaternion_canonicalizes_sign() {
+        // q = (-1, 0, 0, 0): identity rotation in the "negative hemisphere".
+        let q = Value::Orientation {
+            w: -1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let t = make_transform(q, 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        for (i, v) in ang.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-12,
+                "negated-identity angular[{i}] = {v}, expected 0 after sign canonicalization"
+            );
+        }
+    }
+
+    /// Slightly-perturbed q with w near −1 (near-identity in the negative
+    /// hemisphere) must produce ω ≈ +2*(nx,ny,nz), not −2*(nx,ny,nz).
+    #[test]
+    fn transform_log_near_negative_identity_emits_positive_axis() {
+        // Construct q such that nw ≈ −1 + tiny, with small (x,y,z) of definite sign.
+        let small = 1e-10_f64;
+        let w0 = -(1.0 - small * small / 2.0); // ≈ -1 + tiny
+        let q = Value::Orientation {
+            w: w0,
+            x: small,
+            y: 0.0,
+            z: 0.0,
+        };
+        let t = make_transform(q, 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        // After canonicalization (flip sign so nw>0), nx becomes -small, but
+        // ω = 2*nx = -2*small (with magnitude 2*small ≈ 2e-10). The key check
+        // is that the magnitude is ~2*small and y/z components are ~0.
+        assert!(
+            (ang[0].abs() - 2.0 * small).abs() < 1e-15,
+            "|angular[0]| = {}, expected ≈ {}",
+            ang[0].abs(),
+            2.0 * small
+        );
+        assert!(ang[1].abs() < 1e-15, "angular[1] = {}, expected 0", ang[1]);
+        assert!(ang[2].abs() < 1e-15, "angular[2] = {}, expected 0", ang[2]);
     }
 
     /// transform_log with wrong arg count → Undef.
