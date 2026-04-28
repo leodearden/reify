@@ -634,7 +634,7 @@ impl CacheStore {
     /// to the Pending state. Those helpers derive `last_substantive` from the current
     /// cached `result_hash` (ensuring consistency) and increment
     /// `pending_transition_count` (a diagnostic counter). This precondition is
-    /// enforced via `debug_assert!` in debug/test builds (task #2451 S1).
+    /// enforced via `assert!` in all builds (task #2451 S1).
     ///
     /// **S2 audit (task #2451):** production write paths in `concurrent.rs` and
     /// `engine_edit.rs` already route all Pending transitions through `mark_pending`
@@ -650,7 +650,7 @@ impl CacheStore {
     /// retained for readability at its call sites.
     #[must_use = "set_freshness returns false when the node is absent; check or explicitly discard"]
     pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
-        debug_assert!(
+        assert!(
             !matches!(freshness, Freshness::Pending { .. }),
             "set_freshness must not be passed Pending; use mark_pending or mark_pending_with_cause instead"
         );
@@ -2688,14 +2688,10 @@ mod tests {
     // --- set_freshness precondition: Pending is forbidden (task #2451, step-1) ---
 
     /// Pins the `set_freshness` precondition guard (S1): passing `Freshness::Pending`
-    /// must panic in debug/test builds. Callers must use `mark_pending` or
+    /// must panic in all builds. Callers must use `mark_pending` or
     /// `mark_pending_with_cause` instead, which also derive `last_substantive` and
     /// increment `pending_transition_count`.
-    ///
-    /// Gated on `debug_assertions` because the guard uses `debug_assert!`, which is
-    /// a no-op in release builds — the panic only fires in debug/test profiles.
     #[test]
-    #[cfg(debug_assertions)]
     #[should_panic(expected = "Pending")]
     fn set_freshness_panics_when_passed_pending() {
         use reify_types::{ContentHash, Freshness, ResultRef};
@@ -3425,19 +3421,18 @@ mod tests {
 
     // --- S3 agreement: no-cause variants == .0 of with_cause variants (task #2451 step-3) ---
 
-    /// Pins the invariant that the no-cause cache methods return exactly `.0` of
-    /// their `_with_cause` cousins across the §7.2/§9.2 truth-table input scenarios.
-    /// This test passes before the step-4 refactor (both sides implement the same
-    /// loop) and will continue to pass after the refactor makes the no-cause methods
-    /// thin wrappers over `_with_cause`.
+    /// Smoke-checks that the no-cause cache methods return exactly `.0` of their
+    /// `_with_cause` cousins. After the step-4 refactor the no-cause variants are
+    /// `let (f, _) = self._with_cause(...); f` wrappers, so full truth-table
+    /// coverage would be a tautology. Two representative rows suffice to catch a
+    /// future regression where a method is accidentally hand-rolled again.
     #[test]
     fn derive_output_freshness_no_cause_variants_agree_with_with_cause() {
-        use reify_types::{DeterminacyState, ErrorRef, Freshness, Value, VersionId};
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
         let out_id = ValueCellId::new("T", "out");
-        let cause_id = ValueCellId::new("T", "cause_root");
 
         // Helper: build a fresh store with `out` having trace = [a, b].
         let make_store = |a_fresh: Freshness, b_fresh: Freshness| -> CacheStore {
@@ -3479,7 +3474,6 @@ mod tests {
         let sr = false;
         let g = 5u64;
 
-        // Macro to assert both method pairs agree for a given store + trace.
         macro_rules! assert_agree {
             ($store:expr, $trace:expr, $sr:expr, $g:expr, $label:expr) => {{
                 let for_node = $store.derive_output_freshness_for_node(&out, $sr, $g);
@@ -3499,72 +3493,19 @@ mod tests {
             }};
         }
 
-        // Row 1: all-Final
+        // Row 1: all-Final (simplest path through the classifier)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
             let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
             assert_agree!(store, &trace, sr, g, "all-Final");
         }
 
-        // Row 2: one Intermediate
-        {
-            let store = make_store(Freshness::Final, Freshness::Intermediate { generation: 3 });
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
-            assert_agree!(store, &trace, sr, g, "one-Intermediate");
-        }
-
-        // Row 3: one Pending (via mark_pending)
+        // Row 2: one Pending (non-trivial classifier path; exercises the main divergence risk)
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_pending(&NodeId::Value(b_id.clone()));
             let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
             assert_agree!(store, &trace, sr, g, "one-Pending");
-        }
-
-        // Row 4: one Failed
-        {
-            let mut store = make_store(Freshness::Final, Freshness::Final);
-            store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("boom"));
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
-            assert_agree!(store, &trace, sr, g, "one-Failed");
-        }
-
-        // Row 5: mixed Pending + Failed
-        {
-            let mut store = make_store(Freshness::Final, Freshness::Final);
-            store.mark_pending_with_cause(
-                &NodeId::Value(a_id.clone()),
-                NodeId::Value(cause_id.clone()),
-            );
-            store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("type error"));
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
-            assert_agree!(store, &trace, sr, g, "mixed-Pending+Failed");
-        }
-
-        // Row 6: still_refining=true, all-Final (must yield Intermediate)
-        {
-            let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
-            assert_agree!(store, &trace, true, g, "still_refining=true, all-Final");
-        }
-
-        // Row 7: absent-node fallback — no cache entry for `out`
-        {
-            let store = make_store(Freshness::Final, Freshness::Final);
-            let absent = NodeId::Value(ValueCellId::new("T", "no_such_node"));
-            let empty_trace = DependencyTrace::default();
-            let for_node = store.derive_output_freshness_for_node(&absent, sr, g);
-            let for_node_cause = store.derive_output_freshness_for_node_with_cause(&absent, sr, g).0;
-            assert_eq!(
-                for_node, for_node_cause,
-                "absent-node: for_node vs _with_cause must agree"
-            );
-            let from_trace = store.derive_output_freshness_from_trace(&empty_trace, sr, g);
-            let from_trace_cause = store.derive_output_freshness_from_trace_with_cause(&empty_trace, sr, g).0;
-            assert_eq!(
-                from_trace, from_trace_cause,
-                "absent-node (empty trace): from_trace vs _with_cause must agree"
-            );
         }
     }
 }
