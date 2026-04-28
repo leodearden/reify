@@ -488,17 +488,26 @@ pub(crate) fn compile_entity(
                                 );
                             }
                         }
-                        _ => {
-                            register_guarded_names(
-                                std::slice::from_ref(&*arm.member),
-                                &mut scope,
-                                functions,
-                                diagnostics,
-                                &type_param_names,
-                                alias_registry,
-                                structure_names,
-                                trait_names,
-                                &mut known_geometry_lets,
+                        other => {
+                            // suggestion 6: only 'sub' arms are supported in task 2372.
+                            // Param/Let arms are explicitly rejected here so they are never
+                            // inserted into scope.names — preserving the cluster-isolation
+                            // invariant that prevents task 2375's dup-name diagnostics from
+                            // misfiring. Future tasks may lift this restriction.
+                            let member_label = match arm_member_name(other) {
+                                Some(n) => format!("'{}'", n),
+                                None => "this member".to_string(),
+                            };
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "only 'sub' declarations are supported inside match arms; \
+                                     {} is not yet supported",
+                                    member_label
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    arm.span,
+                                    "unsupported arm member kind",
+                                )),
                             );
                         }
                     }
@@ -1473,10 +1482,6 @@ pub(crate) fn compile_entity(
                     &mut sub_components,
                     pending_bound_checks,
                     &type_param_names,
-                    alias_registry,
-                    structure_names,
-                    trait_names,
-                    &known_geometry_lets,
                 );
             }
         }
@@ -1957,10 +1962,6 @@ fn compile_match_arm_decl_group(
     sub_components: &mut Vec<SubComponentDecl>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     type_param_names: &HashSet<String>,
-    _alias_registry: &TypeAliasRegistry,
-    _structure_names: &HashSet<String>,
-    _trait_names: &HashSet<String>,
-    _known_geometry_lets: &HashSet<&str>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -2026,8 +2027,48 @@ fn compile_match_arm_decl_group(
                 return;
             }
         },
-        None => return, // empty match arm group — nothing to compile
+        None => {
+            // suggestion 5: explicit diagnostic for empty match block
+            diagnostics.push(
+                Diagnostic::error("match block must contain at least one arm")
+                    .with_label(DiagnosticLabel::new(m.span, "empty match block")),
+            );
+            return;
+        }
     };
+
+    // suggestion 4: validate that all subsequent arms share the same logical name
+    for arm in &m.arms[1..] {
+        match arm_member_name(&arm.member) {
+            Some(name) if name == logical_name => {} // OK
+            Some(name) => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "all arms in a match block must declare the same logical name; \
+                         expected '{}', found '{}'",
+                        logical_name, name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        arm.span,
+                        "mismatched arm name",
+                    )),
+                );
+                return;
+            }
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "match-arm member must be a named declaration (param, let, or sub)",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        arm.span,
+                        "unsupported member kind in arm",
+                    )),
+                );
+                return;
+            }
+        }
+    }
 
     let discriminant_ref =
         CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
@@ -2056,6 +2097,22 @@ fn compile_match_arm_decl_group(
 
         // Compile Sub members directly into sub_components with the per-arm guard.
         if let reify_syntax::MemberDecl::Sub(sub) = &*arm.member {
+            // suggestion 1: where_clause and body are not yet supported inside
+            // match-arm subs — emit a diagnostic so users get explicit feedback
+            // rather than silent data loss.
+            if sub.where_clause.is_some() || sub.body.is_some() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "where clauses and bodies are not yet supported \
+                         in match-arm sub declarations",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        arm.span,
+                        "unsupported: where/body in match arm (future task)",
+                    )),
+                );
+            }
+
             let compiled_args: Vec<(String, CompiledExpr)> = sub
                 .args
                 .iter()
@@ -2067,32 +2124,56 @@ fn compile_match_arm_decl_group(
                 })
                 .collect();
 
+            // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
+            // entries emit a diagnostic and yield Type::Real, preserving positional
+            // alignment for subsequent bound checks.
             let resolved_type_args: Vec<Type> = sub
                 .type_args
                 .iter()
-                .filter_map(|ta| {
+                .map(|ta| {
                     if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
-                        Some(
-                            resolve_type_name(name).unwrap_or_else(|| {
-                                if type_param_names.contains(name) {
-                                    Type::TypeParam(name.clone())
-                                } else {
-                                    Type::StructureRef(name.clone())
-                                }
-                            }),
-                        )
+                        resolve_type_name(name).unwrap_or_else(|| {
+                            if type_param_names.contains(name) {
+                                Type::TypeParam(name.clone())
+                            } else {
+                                Type::StructureRef(name.clone())
+                            }
+                        })
                     } else {
-                        None
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unexpected dimensional expression in type argument: {}",
+                                ta
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                ta.span,
+                                "unexpected dimensional expression in type argument",
+                            )),
+                        );
+                        Type::Real
                     }
                 })
                 .collect();
 
-            // Deferred bound checks for the per-arm sub instantiation.
+            // suggestion 2: push one PendingBoundCheck::SubComponent + one
+            // TraitArgConformance per arg, mirroring the non-arm Sub path
+            // (entity.rs:984-1013) so trait-bound violations inside match arms
+            // are caught in the post-compilation pass.
             pending_bound_checks.push(PendingBoundCheck::SubComponent {
                 type_args: resolved_type_args.clone(),
                 target_name: sub.structure_name.clone(),
                 span: sub.span,
             });
+            for ((_, arg_expr), (arg_name, compiled_arg)) in
+                sub.args.iter().zip(compiled_args.iter())
+            {
+                pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
+                    target_name: sub.structure_name.clone(),
+                    arg_name: arg_name.clone(),
+                    compiled_arg: compiled_arg.clone(),
+                    span: arg_expr.span,
+                });
+            }
 
             sub_components.push(SubComponentDecl {
                 name: sub.name.clone(),
@@ -2125,6 +2206,23 @@ fn compile_match_arm_decl_group(
             guard_value_cell: guard_cell_id,
             arm_type,
         });
+    }
+
+    // suggestion 8: detect duplicate match-arm cluster names (two separate
+    // match blocks in the same structure both producing the same logical name).
+    if scope.match_arm_groups.contains_key(logical_name.as_str()) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "duplicate match-arm cluster name '{}' — two match blocks declare \
+                 the same logical name in this structure",
+                logical_name
+            ))
+            .with_label(DiagnosticLabel::new(
+                m.span,
+                "duplicate cluster",
+            )),
+        );
+        return;
     }
 
     // Register the assembled cluster in the dedicated scope map.
@@ -2178,7 +2276,18 @@ fn arm_member_type(
                 .map(|(_, ty)| ty.clone())
                 .unwrap_or(Type::Real)
         }
-        _ => Type::Real,
+        _ => {
+            // suggestion 7: emit a diagnostic for any unhandled MemberDecl variant
+            // so the caller gets explicit feedback rather than a silently-wrong Type::Real.
+            diagnostics.push(
+                Diagnostic::error("unsupported member kind in match arm")
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "expected param, let, or sub",
+                    )),
+            );
+            Type::Real
+        }
     }
 }
 
