@@ -297,6 +297,129 @@ pub enum ItemDoc {
     },
 }
 
+impl ItemDoc {
+    /// Lookup the `name` field of any variant.
+    pub fn name(&self) -> &str {
+        match self {
+            ItemDoc::Structure { name, .. }
+            | ItemDoc::Occurrence { name, .. }
+            | ItemDoc::Trait { name, .. }
+            | ItemDoc::Function { name, .. }
+            | ItemDoc::Field { name, .. }
+            | ItemDoc::Purpose { name, .. }
+            | ItemDoc::Enum { name, .. }
+            | ItemDoc::Unit { name, .. }
+            | ItemDoc::TypeAlias { name, .. }
+            | ItemDoc::ConstraintDef { name, .. } => name,
+        }
+    }
+
+    /// Lookup the `is_pub` field of any variant.
+    pub fn is_pub(&self) -> bool {
+        match self {
+            ItemDoc::Structure { is_pub, .. }
+            | ItemDoc::Occurrence { is_pub, .. }
+            | ItemDoc::Trait { is_pub, .. }
+            | ItemDoc::Function { is_pub, .. }
+            | ItemDoc::Field { is_pub, .. }
+            | ItemDoc::Purpose { is_pub, .. }
+            | ItemDoc::Enum { is_pub, .. }
+            | ItemDoc::Unit { is_pub, .. }
+            | ItemDoc::TypeAlias { is_pub, .. }
+            | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub,
+        }
+    }
+
+    /// Lookup the optional doc-comment of any variant.
+    pub fn doc(&self) -> Option<&str> {
+        match self {
+            ItemDoc::Structure { doc, .. }
+            | ItemDoc::Occurrence { doc, .. }
+            | ItemDoc::Trait { doc, .. }
+            | ItemDoc::Function { doc, .. }
+            | ItemDoc::Field { doc, .. }
+            | ItemDoc::Purpose { doc, .. }
+            | ItemDoc::Enum { doc, .. }
+            | ItemDoc::Unit { doc, .. }
+            | ItemDoc::TypeAlias { doc, .. }
+            | ItemDoc::ConstraintDef { doc, .. } => doc.as_deref(),
+        }
+    }
+
+    /// Lookup the annotations attached to any variant.
+    pub fn annotations(&self) -> &[AnnotationDoc] {
+        match self {
+            ItemDoc::Structure { annotations, .. }
+            | ItemDoc::Occurrence { annotations, .. }
+            | ItemDoc::Trait { annotations, .. }
+            | ItemDoc::Function { annotations, .. }
+            | ItemDoc::Field { annotations, .. }
+            | ItemDoc::Purpose { annotations, .. }
+            | ItemDoc::Enum { annotations, .. }
+            | ItemDoc::Unit { annotations, .. }
+            | ItemDoc::TypeAlias { annotations, .. }
+            | ItemDoc::ConstraintDef { annotations, .. } => annotations,
+        }
+    }
+
+    /// Language keyword displayed in the H2 heading for each variant.
+    ///
+    /// Matches the snake_case kind tag used by `#[serde(tag="kind", rename_all="snake_case")]`
+    /// on `ItemDoc`, except for variants whose Reify-source keyword differs from the
+    /// JSON tag (`Field` → `"let"`, `TypeAlias` → `"type"`, `ConstraintDef` →
+    /// `"constraint"`).
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            ItemDoc::Structure { .. } => "structure",
+            ItemDoc::Occurrence { .. } => "occurrence",
+            ItemDoc::Trait { .. } => "trait",
+            ItemDoc::Function { .. } => "fn",
+            ItemDoc::Field { .. } => "let",
+            ItemDoc::Purpose { .. } => "purpose",
+            ItemDoc::Enum { .. } => "enum",
+            ItemDoc::Unit { .. } => "unit",
+            ItemDoc::TypeAlias { .. } => "type",
+            ItemDoc::ConstraintDef { .. } => "constraint",
+        }
+    }
+
+    /// Stable TOC group label. `"Constants"` buckets the long tail of
+    /// value-like declarations (Field, Unit, TypeAlias, ConstraintDef, Purpose)
+    /// per the PRD's six-group TOC.
+    pub fn group(&self) -> &'static str {
+        match self {
+            ItemDoc::Trait { .. } => "Traits",
+            ItemDoc::Structure { .. } => "Structures",
+            ItemDoc::Occurrence { .. } => "Occurrences",
+            ItemDoc::Enum { .. } => "Enums",
+            ItemDoc::Function { .. } => "Functions",
+            ItemDoc::Field { .. }
+            | ItemDoc::Unit { .. }
+            | ItemDoc::TypeAlias { .. }
+            | ItemDoc::ConstraintDef { .. }
+            | ItemDoc::Purpose { .. } => "Constants",
+        }
+    }
+
+    /// Snake_case kind tag matching `#[serde(tag="kind", rename_all="snake_case")]`.
+    /// Used as the prefix in split-mode filenames so multi-kind name collisions
+    /// (e.g. a trait `Board` vs a structure `Board`) stay distinct.
+    pub fn kind_slug(&self) -> &'static str {
+        match self {
+            ItemDoc::Structure { .. } => "structure",
+            ItemDoc::Occurrence { .. } => "occurrence",
+            ItemDoc::Trait { .. } => "trait",
+            ItemDoc::Function { .. } => "function",
+            ItemDoc::Field { .. } => "field",
+            ItemDoc::Purpose { .. } => "purpose",
+            ItemDoc::Enum { .. } => "enum",
+            ItemDoc::Unit { .. } => "unit",
+            ItemDoc::TypeAlias { .. } => "type_alias",
+            ItemDoc::ConstraintDef { .. } => "constraint_def",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
