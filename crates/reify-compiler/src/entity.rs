@@ -466,6 +466,44 @@ pub(crate) fn compile_entity(
                     &mut known_geometry_lets,
                 );
             }
+            reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
+                // Pre-pass: register per-arm member names so that the main pass
+                // and any forward references can resolve them.
+                // Sub-component type entries (used for `self.sub.member` qualified
+                // access) are registered per-arm; the last arm wins for name
+                // clashes — task 2375 will tighten this once the cluster is the
+                // canonical entry point for such lookups.
+                for arm in &m.arms {
+                    match &*arm.member {
+                        reify_syntax::MemberDecl::Sub(sub) => {
+                            scope
+                                .sub_component_types
+                                .insert(sub.name.clone(), sub.structure_name.clone());
+                            if let Some(child_tmpl) =
+                                find_template(compiled_templates, &sub.structure_name)
+                            {
+                                scope.sub_structure_traits.insert(
+                                    sub.structure_name.clone(),
+                                    child_tmpl.trait_bounds.clone(),
+                                );
+                            }
+                        }
+                        _ => {
+                            register_guarded_names(
+                                std::slice::from_ref(&*arm.member),
+                                &mut scope,
+                                functions,
+                                diagnostics,
+                                &type_param_names,
+                                alias_registry,
+                                structure_names,
+                                trait_names,
+                                &mut known_geometry_lets,
+                            );
+                        }
+                    }
+                }
+            }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
                     // Duplicate port name — emit error and skip registration
@@ -1417,8 +1455,30 @@ pub(crate) fn compile_entity(
                     )),
                 );
             }
-            // task 2372 (step-10): match-arm decl-group compilation wired here.
-            reify_syntax::MemberDecl::MatchArmDeclGroup(_) => {}
+            reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
+                // Compile each arm's guard and register a GuardedDeclGroup cluster
+                // in the scope (task 2372, spec §6.4).  The cluster lives in
+                // `scope.match_arm_groups` (separate from `names`) so future
+                // duplicate-name tightening (task 2375) cannot misfire here.
+                compile_match_arm_decl_group(
+                    entity_name,
+                    m,
+                    &mut scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    &mut guarded_groups,
+                    &mut structure_controlling,
+                    &mut guard_index,
+                    &mut sub_components,
+                    pending_bound_checks,
+                    &type_param_names,
+                    alias_registry,
+                    structure_names,
+                    trait_names,
+                    &known_geometry_lets,
+                );
+            }
         }
     }
 
@@ -1860,7 +1920,307 @@ pub(crate) fn compile_entity(
         is_recursive: false,
         annotations,
         pragmas: structure.pragmas.to_vec(),
+        // Expose the match-arm cluster map to test builds (task 2372 step-10).
+        // Production surfacing deferred to task 2373 (union typing consumer).
+        #[cfg(test)]
+        match_arm_groups: scope.match_arm_groups.values().cloned().collect(),
     }
+}
+
+/// Compile a `MatchArmDeclGroupDecl` into a `GuardedDeclGroup` cluster (task 2372).
+///
+/// For each arm:
+///   1. Synthesises a per-arm guard expression `discriminant == EnumType.Variant`
+///      (or an OR of equality checks for `|`-pipe multi-pattern arms).
+///   2. Allocates a synthetic `__guard_N` `ValueCellId` and registers it in
+///      `structure_controlling` — identical bookkeeping to `compile_block_guard`.
+///   3. Records the arm's declared type (`StructureRef` for `Sub` arms).
+///   4. Compiles `Sub` arms directly into `sub_components` with a `GuardState::Compiled`
+///      pointing to the per-arm guard, matching the `where` desugaring in spec §6.4.
+///
+/// After all arms are processed, builds a `GuardedDeclGroup { name, arms }` and
+/// calls `scope.register_match_arm_group`.  Cluster names **never** route through
+/// `scope.register()`, so task 2375's duplicate-name tightening cannot misfire.
+#[allow(clippy::too_many_arguments)]
+fn compile_match_arm_decl_group(
+    entity_name: &str,
+    m: &reify_syntax::MatchArmDeclGroupDecl,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+    sub_components: &mut Vec<SubComponentDecl>,
+    pending_bound_checks: &mut Vec<PendingBoundCheck>,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    known_geometry_lets: &HashSet<&str>,
+) {
+    // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
+    // are supported in this task; complex expressions are deferred to task 2373.
+    let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
+        reify_syntax::ExprKind::Ident(name) => {
+            match scope.resolve(name) {
+                Some((cell_id, Type::Enum(enum_name))) => {
+                    (cell_id.clone(), enum_name.clone())
+                }
+                Some((_, other_ty)) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm discriminant '{}' has type {}, expected an enum",
+                            name, other_ty
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            m.discriminant.span,
+                            "discriminant must be an enum-typed param or let",
+                        )),
+                    );
+                    return;
+                }
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm discriminant '{}' not found in scope",
+                            name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            m.discriminant.span,
+                            "unresolved identifier",
+                        )),
+                    );
+                    return;
+                }
+            }
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "match-arm discriminant must be a simple identifier in this version",
+                )
+                .with_label(DiagnosticLabel::new(
+                    m.discriminant.span,
+                    "only identifier discriminants are supported (task 2373 extends this)",
+                )),
+            );
+            return;
+        }
+    };
+
+    // Extract the shared logical name from the first arm's member.
+    let logical_name = match m.arms.first() {
+        Some(arm) => match arm_member_name(&arm.member) {
+            Some(n) => n.to_string(),
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "match-arm member must be a named declaration (param, let, or sub)",
+                    )
+                    .with_label(DiagnosticLabel::new(m.span, "unsupported member kind in arm")),
+                );
+                return;
+            }
+        },
+        None => return, // empty match arm group — nothing to compile
+    };
+
+    let discriminant_ref =
+        CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
+
+    let mut group_arms: Vec<GuardedDeclArm> = Vec::with_capacity(m.arms.len());
+
+    for arm in &m.arms {
+        // Synthesise the per-arm guard expression.
+        // For a single pattern: `discriminant == EnumType.Variant`
+        // For a pipe pattern:   `discriminant == V1 || discriminant == V2 || ...`
+        let arm_guard_expr = build_arm_guard_expr(
+            &discriminant_ref,
+            &enum_type_name,
+            &arm.patterns,
+            arm.span,
+            diagnostics,
+        );
+
+        // Allocate a synthetic guard ValueCell (mirrors compile_block_guard).
+        let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
+        *guard_index += 1;
+        structure_controlling.insert(guard_cell_id.clone());
+
+        // Record the arm type from the member declaration.
+        let arm_type = arm_member_type(&arm.member, scope, diagnostics, arm.span);
+
+        // Compile Sub members directly into sub_components with the per-arm guard.
+        if let reify_syntax::MemberDecl::Sub(sub) = &*arm.member {
+            let compiled_args: Vec<(String, CompiledExpr)> = sub
+                .args
+                .iter()
+                .map(|(name, expr)| {
+                    (
+                        name.clone(),
+                        compile_expr(expr, scope, enum_defs, functions, diagnostics),
+                    )
+                })
+                .collect();
+
+            let resolved_type_args: Vec<Type> = sub
+                .type_args
+                .iter()
+                .filter_map(|ta| {
+                    if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
+                        Some(
+                            resolve_type_name(name).unwrap_or_else(|| {
+                                if type_param_names.contains(name) {
+                                    Type::TypeParam(name.clone())
+                                } else {
+                                    Type::StructureRef(name.clone())
+                                }
+                            }),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Deferred bound checks for the per-arm sub instantiation.
+            pending_bound_checks.push(PendingBoundCheck::SubComponent {
+                type_args: resolved_type_args.clone(),
+                target_name: sub.structure_name.clone(),
+                span: sub.span,
+            });
+
+            sub_components.push(SubComponentDecl {
+                name: sub.name.clone(),
+                structure_name: sub.structure_name.clone(),
+                visibility: Visibility::Public,
+                args: compiled_args,
+                type_args: resolved_type_args,
+                is_collection: false,
+                count_cell: None,
+                guard_state: GuardState::Compiled(arm_guard_expr.clone()),
+                span: sub.span,
+                content_hash: sub.content_hash,
+            });
+        }
+
+        // Add an empty CompiledGuardedGroup so the guard cell participates in
+        // the reference-safety sweep and guard_parent_map machinery.
+        guarded_groups.push(CompiledGuardedGroup {
+            guard_expr: arm_guard_expr.clone(),
+            guard_value_cell: guard_cell_id.clone(),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+            parent_guard: None,
+        });
+
+        group_arms.push(GuardedDeclArm {
+            guard_expr: arm_guard_expr,
+            guard_value_cell: guard_cell_id,
+            arm_type,
+        });
+    }
+
+    // Register the assembled cluster in the dedicated scope map.
+    scope.register_match_arm_group(
+        &logical_name,
+        GuardedDeclGroup {
+            name: logical_name.clone(),
+            arms: group_arms,
+        },
+    );
+}
+
+/// Extract the shared logical name from an arm's `MemberDecl`.
+fn arm_member_name(member: &reify_syntax::MemberDecl) -> Option<&str> {
+    match member {
+        reify_syntax::MemberDecl::Sub(s) => Some(&s.name),
+        reify_syntax::MemberDecl::Param(p) => Some(&p.name),
+        reify_syntax::MemberDecl::Let(l) => Some(&l.name),
+        _ => None,
+    }
+}
+
+/// Determine the `Type` of an arm's declared member for `GuardedDeclArm::arm_type`.
+fn arm_member_type(
+    member: &reify_syntax::MemberDecl,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Type {
+    match member {
+        reify_syntax::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
+        reify_syntax::MemberDecl::Param(p) => {
+            // The param was registered in the pre-pass; resolve its type from scope.
+            scope
+                .resolve(&p.name)
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "could not resolve type for match-arm param '{}'",
+                            p.name
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "unresolved param")),
+                    );
+                    Type::Real
+                })
+        }
+        reify_syntax::MemberDecl::Let(l) => {
+            scope
+                .resolve(&l.name)
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or(Type::Real)
+        }
+        _ => Type::Real,
+    }
+}
+
+/// Build the guard expression for one match arm.
+///
+/// - Single pattern `Hex`: produces `discriminant == HeadType::Hex`
+/// - Pipe patterns `Hex | Button`: produces `(discriminant == HeadType::Hex) || (discriminant == HeadType::Button)`
+fn build_arm_guard_expr(
+    discriminant_ref: &CompiledExpr,
+    enum_type_name: &str,
+    patterns: &[String],
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    if patterns.is_empty() {
+        diagnostics.push(
+            Diagnostic::error("match arm has no patterns")
+                .with_label(DiagnosticLabel::new(span, "empty arm pattern list")),
+        );
+        // Return a sentinel Bool(false) so compilation can continue.
+        return CompiledExpr::literal(Value::Bool(false), Type::Bool);
+    }
+
+    let mut expr: Option<CompiledExpr> = None;
+    for variant in patterns {
+        let variant_literal = CompiledExpr::literal(
+            Value::Enum {
+                type_name: enum_type_name.to_string(),
+                variant: variant.clone(),
+            },
+            Type::Enum(enum_type_name.to_string()),
+        );
+        let eq = CompiledExpr::binop(
+            BinOp::Eq,
+            discriminant_ref.clone(),
+            variant_literal,
+            Type::Bool,
+        );
+        expr = Some(match expr {
+            None => eq,
+            Some(prev) => CompiledExpr::binop(BinOp::Or, prev, eq, Type::Bool),
+        });
+    }
+    expr.expect("patterns was non-empty, so expr is Some")
 }
 
 /// A deferred bound check to be executed after all structures are compiled.

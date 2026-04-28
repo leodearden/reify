@@ -359,6 +359,14 @@ pub struct TopologyTemplate {
     pub annotations: Vec<reify_types::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
     pub pragmas: Vec<reify_syntax::Pragma>,
+    /// Match-arm decl clusters registered during compilation (task 2372, step-10).
+    ///
+    /// Only populated in test builds — production consumers (union typing, eval)
+    /// are wired in task 2373 when a downstream stage first needs the data.
+    /// Kept `#[cfg(test)]` so no changes are required in `reify-test-support`
+    /// or downstream crates that construct `TopologyTemplate` outside test mode.
+    #[cfg(test)]
+    pub match_arm_groups: Vec<GuardedDeclGroup>,
 }
 
 impl TopologyTemplate {
