@@ -1428,16 +1428,21 @@ impl OcctKernel {
     }
 }
 
-/// Test fixture helpers: exposed as `pub` (not gated on `cfg(test)`) so that
-/// integration tests in `tests/` can call them.  These are named with a
-/// `_for_test` suffix to signal their intended scope.
+/// Test fixture helpers for integration tests in `tests/`. Gated behind the
+/// `test-fixtures` cargo feature so that downstream consumers building
+/// `reify-kernel-occt` in normal mode do not see these methods on
+/// `OcctKernel`'s public API surface.
 ///
-/// Integration tests are compiled as a separate crate that depends on this
-/// library in its normal (non-test) build mode, so `#[cfg(test)]`-gated items
-/// in this crate are NOT visible to integration tests.  Gating on `has_occt`
-/// only (no `test` cfg) keeps these helpers out of stub builds while keeping
-/// them available to all test binaries that link this crate.
-#[cfg(has_occt)]
+/// Cargo automatically enables `test-fixtures` for this crate's own
+/// integration tests via the self-dev-dep `reify-kernel-occt = { path = ".",
+/// features = ["test-fixtures"] }` in `Cargo.toml`. Workspace siblings (e.g.
+/// `reify-eval`) that depend on this crate via `reify-kernel-occt.workspace
+/// = true` do NOT enable the feature, so the helpers remain hidden from
+/// production builds.
+///
+/// Naming: the `_for_test` suffix is retained for self-documentation; the
+/// real isolation comes from the cfg gate above.
+#[cfg(all(has_occt, any(test, feature = "test-fixtures")))]
 impl OcctKernel {
     /// Create a circle face at the given z-height via the OCCT FFI and store
     /// it in the kernel, returning its `GeometryHandleId`.
