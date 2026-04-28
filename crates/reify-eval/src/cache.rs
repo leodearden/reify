@@ -479,10 +479,17 @@ impl CacheStore {
     ///
     /// # Diagnostic chain — pick the right helper
     ///
-    /// This no-cause helper **does NOT set `pending_cause`** — the diagnostic
-    /// chain forwarded into [`Freshness::Pending`] downstream consumers will
-    /// be empty. Use [`CacheStore::mark_pending_with_cause`] instead whenever
-    /// the transition is driven by a *known upstream* Failed/Pending node;
+    /// This no-cause helper **clears any stale `pending_cause` side-table
+    /// entry** — the per-node evaluator is responsible for re-attaching a
+    /// cause via [`CacheStore::mark_pending_with_cause`] when it detects a
+    /// Failed/Pending input on this round. Wiping the chain here is the
+    /// invariant that prevents the §9.2 diagnostic chain from leaking
+    /// across freshness transitions and pointing at a node that was
+    /// already re-evaluated successfully on a later round (regression
+    /// pinned by `mark_pending_and_mark_failed_clear_stale_pending_cause`).
+    ///
+    /// Use [`CacheStore::mark_pending_with_cause`] instead whenever the
+    /// transition is driven by a *known upstream* Failed/Pending node;
     /// that is the canonical wire for arch §9.2 propagation (see
     /// `docs/reify-implementation-architecture.md` lines 880-890).
     ///
@@ -509,6 +516,10 @@ impl CacheStore {
             entry.freshness = Freshness::Pending {
                 last_substantive: ResultRef::of_hash(entry.result_hash),
             };
+            // Clear any stale chain carried over from a prior round so the
+            // per-node evaluator can decide afresh whether to re-attach a
+            // cause via mark_pending_with_cause (task #2330 §9.2 invariant).
+            entry.pending_cause = None;
             self.pending_transition_count += 1;
             true
         } else {
@@ -518,10 +529,15 @@ impl CacheStore {
 
     /// Mark a node as Failed, recording the supplied [`ErrorRef`].
     ///
-    /// Sets `freshness = Freshness::Failed { error }` in place. The
-    /// `pending_cause` side-table is left **unchanged** because a Failed
-    /// node is itself the chain root, not a forwarder (downstream Pending
-    /// entries will store this NodeId in their own `pending_cause`).
+    /// Sets `freshness = Freshness::Failed { error }` in place AND clears
+    /// the `pending_cause` side-table on the entry. A Failed node is
+    /// itself the chain root, not a forwarder — downstream Pending
+    /// entries store *this NodeId* in their own `pending_cause`, so the
+    /// Failed node's own `pending_cause` must read as `None` per the
+    /// [`CacheStore::pending_cause`] reader contract. Clearing here
+    /// prevents a stale chain (e.g. left over from a previous round in
+    /// which this node was Pending) from leaking through and reporting a
+    /// fictitious upstream cause for what is now a Failed root.
     ///
     /// Returns `true` if the node was present and updated, `false` if no
     /// cache entry exists. As with [`CacheStore::mark_pending`], absent-node
@@ -532,11 +548,17 @@ impl CacheStore {
     ///
     /// `mark_failed` must be used instead of `set_freshness(node,
     /// Freshness::Failed { error })`. This helper centralises the
-    /// "Failed nodes are chain roots" invariant; `set_freshness` would
-    /// silently allow downstream callers to skip recording the chain root.
+    /// "Failed nodes are chain roots" invariant (including the chain-clearing
+    /// side effect); `set_freshness` would silently allow downstream
+    /// callers to skip recording the chain root and to leak a stale
+    /// `pending_cause`.
     pub fn mark_failed(&mut self, node: &NodeId, error: reify_types::ErrorRef) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Failed { error };
+            // Failed nodes are chain roots — pending_cause() reader contract
+            // requires None here. Wipe any stale chain from a prior round so
+            // it cannot leak through (task #2330 §9.2 invariant).
+            entry.pending_cause = None;
             true
         } else {
             false
