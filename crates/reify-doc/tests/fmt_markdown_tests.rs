@@ -7,7 +7,8 @@
 use reify_doc::cross_refs::CrossRefs;
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
 use reify_doc::model::{
-    AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ModuleDoc, ParamDoc, PortDoc,
+    AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc, ParamDoc,
+    PortDoc,
 };
 
 /// Helper: build a single-module model with one item and return the rendered
@@ -160,91 +161,81 @@ fn item_h2_headings_per_variant() {
     let cases: Vec<(&str, ItemDoc, &str)> = vec![
         (
             "structure",
-            item_with_name(|n| ItemDoc::Structure {
-                name: n.into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
             }),
             "## `pub structure Foo` <a id=\"Foo\"></a>",
         ),
         (
             "occurrence",
-            item_with_name(|n| ItemDoc::Occurrence {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
             }),
             "## `occurrence Foo` <a id=\"Foo\"></a>",
         ),
         (
             "trait",
-            item_with_name(|n| ItemDoc::Trait {
-                name: n.into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![], members: vec![],
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Trait { members: vec![] },
             }),
             "## `pub trait Foo` <a id=\"Foo\"></a>",
         ),
         (
             "function",
-            item_with_name(|n| ItemDoc::Function {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                signature: "fn Foo()".into(),
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Function { signature: "fn Foo()".into() },
             }),
             "## `fn Foo` <a id=\"Foo\"></a>",
         ),
         (
             "field",
-            item_with_name(|n| ItemDoc::Field {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "i32".into(), default_repr: None,
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Field { type_repr: "i32".into(), default_repr: None },
             }),
             "## `let Foo` <a id=\"Foo\"></a>",
         ),
         (
             "purpose",
-            item_with_name(|n| ItemDoc::Purpose {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "x".into(), direction: "minimize".into(),
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Purpose { expr_repr: "x".into(), direction: "minimize".into() },
             }),
             "## `purpose Foo` <a id=\"Foo\"></a>",
         ),
         (
             "enum",
-            item_with_name(|n| ItemDoc::Enum {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], variants: vec![],
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Enum { variants: vec![] },
             }),
             "## `enum Foo` <a id=\"Foo\"></a>",
         ),
         (
             "unit",
-            item_with_name(|n| ItemDoc::Unit {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                base_unit: "Meter".into(), scale: "1.0".into(),
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::Unit { base_unit: "Meter".into(), scale: "1.0".into() },
             }),
             "## `unit Foo` <a id=\"Foo\"></a>",
         ),
         (
             "type_alias",
-            item_with_name(|n| ItemDoc::TypeAlias {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "f64".into(),
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::TypeAlias { type_repr: "f64".into() },
             }),
             "## `type Foo` <a id=\"Foo\"></a>",
         ),
         (
             "constraint_def",
-            item_with_name(|n| ItemDoc::ConstraintDef {
-                name: n.into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "x > 0".into(),
+            item_with_name(|n| ItemDoc {
+                header: ItemHeader { name: n.into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                kind: ItemKind::ConstraintDef { expr_repr: "x > 0".into() },
             }),
             "## `constraint Foo` <a id=\"Foo\"></a>",
         ),
@@ -263,27 +254,28 @@ fn item_h2_headings_per_variant() {
 /// the standard 5-column header (Name | Type | Dimension | Default | Description).
 #[test]
 fn parameters_table_renders() {
-    let item = ItemDoc::Structure {
-        name: "Bolt".into(), doc: None, is_pub: true,
-        annotations: vec![], pragmas: vec![],
-        params: vec![
-            ParamDoc {
-                name: "length".into(),
-                doc: Some("Bolt length.".into()),
-                type_repr: "Length".into(),
-                default_repr: Some("100 mm".into()),
-                annotations: vec![],
-            },
-            ParamDoc {
-                name: "diameter".into(),
-                doc: None,
-                type_repr: "Length".into(),
-                default_repr: None,
-                annotations: vec![],
-            },
-        ],
-        ports: vec![], constraints: vec![], sub_components: vec![],
-        realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure {
+            params: vec![
+                ParamDoc {
+                    name: "length".into(),
+                    doc: Some("Bolt length.".into()),
+                    type_repr: "Length".into(),
+                    default_repr: Some("100 mm".into()),
+                    annotations: vec![],
+                },
+                ParamDoc {
+                    name: "diameter".into(),
+                    doc: None,
+                    type_repr: "Length".into(),
+                    default_repr: None,
+                    annotations: vec![],
+                },
+            ],
+            ports: vec![], constraints: vec![], sub_components: vec![],
+            realizations: vec![], meta: vec![],
+        },
     };
     let out = render_one_item(item);
     assert!(out.contains("### Parameters"), "section H3 missing:\n{out}");
@@ -310,11 +302,9 @@ fn parameters_table_renders() {
 /// A Structure with no params omits the `### Parameters` section entirely.
 #[test]
 fn parameters_table_omitted_when_empty() {
-    let item = ItemDoc::Structure {
-        name: "Empty".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![],
-        ports: vec![], constraints: vec![], sub_components: vec![],
-        realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Empty".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Parameters"), "should omit section, got:\n{out}");
@@ -325,25 +315,27 @@ fn parameters_table_omitted_when_empty() {
 /// standard 5-column header (Name | Kind | Role | Type | Description).
 #[test]
 fn ports_table_renders() {
-    let item = ItemDoc::Structure {
-        name: "Board".into(), doc: None, is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![],
-        ports: vec![
-            PortDoc {
-                name: "pwr_in".into(),
-                direction: "in".into(),
-                type_name: "Power".into(),
-                members: vec!["voltage".into(), "current".into()],
-            },
-            PortDoc {
-                name: "data_out".into(),
-                direction: "out".into(),
-                type_name: "Signal".into(),
-                members: vec![],
-            },
-        ],
-        constraints: vec![], sub_components: vec![],
-        realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Board".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure {
+            params: vec![],
+            ports: vec![
+                PortDoc {
+                    name: "pwr_in".into(),
+                    direction: "in".into(),
+                    type_name: "Power".into(),
+                    members: vec!["voltage".into(), "current".into()],
+                },
+                PortDoc {
+                    name: "data_out".into(),
+                    direction: "out".into(),
+                    type_name: "Signal".into(),
+                    members: vec![],
+                },
+            ],
+            constraints: vec![], sub_components: vec![],
+            realizations: vec![], meta: vec![],
+        },
     };
     let out = render_one_item(item);
     assert!(out.contains("### Ports"), "section H3 missing:\n{out}");
@@ -365,11 +357,9 @@ fn ports_table_renders() {
 
 #[test]
 fn ports_table_omitted_when_empty() {
-    let item = ItemDoc::Structure {
-        name: "NoP".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![],
-        ports: vec![], constraints: vec![], sub_components: vec![],
-        realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "NoP".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Ports"), "should omit ports section, got:\n{out}");
@@ -381,11 +371,12 @@ fn ports_table_omitted_when_empty() {
 /// `- \`{expr}\``.
 #[test]
 fn constraints_section_renders() {
-    let item = ItemDoc::Structure {
-        name: "Bolt".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![],
-        ports: vec![],
-        constraints: vec![
+    let item = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure {
+            params: vec![],
+            ports: vec![],
+            constraints: vec![
             ConstraintDoc {
                 label: None,
                 expr_repr: "length >= diameter".into(),
@@ -399,7 +390,8 @@ fn constraints_section_renders() {
                 line: None,
             },
         ],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+            sub_components: vec![], realizations: vec![], meta: vec![],
+        },
     };
     let out = render_one_item(item);
     assert!(out.contains("### Constraints"), "H3 missing:\n{out}");
@@ -426,11 +418,9 @@ fn constraints_section_renders() {
 
 #[test]
 fn constraints_section_omitted_when_empty() {
-    let item = ItemDoc::Structure {
-        name: "NoC".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![],
-        ports: vec![], constraints: vec![],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "NoC".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Constraints"), "should omit, got:\n{out}");
@@ -447,25 +437,27 @@ fn constraints_section_omitted_when_empty() {
 fn constraints_section_uses_safe_inline_code_fence() {
     let labeled_expr = "v <= `max` V"; // internal backtick, no leading/trailing
     let unlabeled_expr = "`a` && b";   // starts with backtick → pad
-    let item = ItemDoc::Structure {
-        name: "Safe".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![],
-        ports: vec![],
-        constraints: vec![
-            ConstraintDoc {
-                label: Some("safe".into()),
-                expr_repr: labeled_expr.into(),
-                annotations: vec![],
-                line: None,
-            },
-            ConstraintDoc {
-                label: None,
-                expr_repr: unlabeled_expr.into(),
-                annotations: vec![],
-                line: Some(7),
-            },
-        ],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Safe".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure {
+            params: vec![],
+            ports: vec![],
+            constraints: vec![
+                ConstraintDoc {
+                    label: Some("safe".into()),
+                    expr_repr: labeled_expr.into(),
+                    annotations: vec![],
+                    line: None,
+                },
+                ConstraintDoc {
+                    label: None,
+                    expr_repr: unlabeled_expr.into(),
+                    annotations: vec![],
+                    line: Some(7),
+                },
+            ],
+            sub_components: vec![], realizations: vec![], meta: vec![],
+        },
     };
     let out = render_one_item(item);
 
@@ -499,14 +491,16 @@ fn constraints_section_uses_safe_inline_code_fence() {
 /// "alpha" before "version".
 #[test]
 fn meta_section_renders_alphabetical() {
-    let item = ItemDoc::Structure {
-        name: "Meta".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![
-            ("version".into(), "1.0".into()),
-            ("alpha".into(), "yes".into()),
-        ],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Meta".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure {
+            params: vec![], ports: vec![],
+            constraints: vec![], sub_components: vec![], realizations: vec![],
+            meta: vec![
+                ("version".into(), "1.0".into()),
+                ("alpha".into(), "yes".into()),
+            ],
+        },
     };
     let out = render_one_item(item);
     assert!(out.contains("### Meta"), "H3 missing:\n{out}");
@@ -524,11 +518,9 @@ fn meta_section_renders_alphabetical() {
 
 #[test]
 fn meta_section_omitted_when_empty() {
-    let item = ItemDoc::Structure {
-        name: "NoMeta".into(), doc: None, is_pub: false,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "NoMeta".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Meta"), "should omit, got:\n{out}");
@@ -538,16 +530,14 @@ fn meta_section_omitted_when_empty() {
 /// signatures.
 #[test]
 fn trait_body_renders_members() {
-    let item = ItemDoc::Trait {
-        name: "HasPower".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        members: vec![
-            "voltage: Voltage".into(),
-            "current: Current".into(),
-        ],
+    let item = ItemDoc {
+        header: ItemHeader { name: "HasPower".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait {
+            members: vec![
+                "voltage: Voltage".into(),
+                "current: Current".into(),
+            ],
+        },
     };
     let out = render_one_item(item);
     assert!(out.contains("### Members"), "Members H3 missing:\n{out}");
@@ -564,13 +554,9 @@ fn trait_body_renders_members() {
 /// A trait with no members omits the `### Members` section entirely.
 #[test]
 fn trait_body_omits_members_when_empty() {
-    let item = ItemDoc::Trait {
-        name: "Marker".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        members: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Marker".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec![] },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Members"), "should omit, got:\n{out}");
@@ -580,13 +566,9 @@ fn trait_body_omits_members_when_empty() {
 /// rendered signature.
 #[test]
 fn function_body_renders_signature_fence() {
-    let item = ItemDoc::Function {
-        name: "compute".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        signature: "fn compute(x: f64) -> f64".into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "compute".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Function { signature: "fn compute(x: f64) -> f64".into() },
     };
     let out = render_one_item(item);
     assert!(out.contains("```reify\n"), "opening fence missing:\n{out}");
@@ -605,13 +587,9 @@ fn function_body_renders_signature_fence() {
 /// Enum variant emits a `### Variants` H3 + bullet list.
 #[test]
 fn enum_body_renders_variants() {
-    let item = ItemDoc::Enum {
-        name: "Color".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        variants: vec!["Red".into(), "Green".into(), "Blue".into()],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Color".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Enum { variants: vec!["Red".into(), "Green".into(), "Blue".into()] },
     };
     let out = render_one_item(item);
     assert!(out.contains("### Variants"), "Variants H3 missing:\n{out}");
@@ -623,13 +601,9 @@ fn enum_body_renders_variants() {
 /// An enum with no variants omits the `### Variants` section entirely.
 #[test]
 fn enum_body_omits_variants_when_empty() {
-    let item = ItemDoc::Enum {
-        name: "Empty".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        variants: vec![],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Empty".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Enum { variants: vec![] },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Variants"), "should omit, got:\n{out}");
@@ -639,14 +613,9 @@ fn enum_body_omits_variants_when_empty() {
 /// `default_repr.is_some()`) a `**Default:** \`...\`` line.
 #[test]
 fn field_body_renders_type_and_default() {
-    let item = ItemDoc::Field {
-        name: "supply_voltage".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        type_repr: "Voltage".into(),
-        default_repr: Some("3.3 V".into()),
+    let item = ItemDoc {
+        header: ItemHeader { name: "supply_voltage".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Field { type_repr: "Voltage".into(), default_repr: Some("3.3 V".into()) },
     };
     let out = render_one_item(item);
     assert!(
@@ -662,14 +631,9 @@ fn field_body_renders_type_and_default() {
 /// Field with `default_repr: None` omits the `**Default:**` line.
 #[test]
 fn field_body_omits_default_when_none() {
-    let item = ItemDoc::Field {
-        name: "x".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        type_repr: "i32".into(),
-        default_repr: None,
+    let item = ItemDoc {
+        header: ItemHeader { name: "x".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Field { type_repr: "i32".into(), default_repr: None },
     };
     let out = render_one_item(item);
     assert!(out.contains("**Type:** `i32`"), "Type line missing:\n{out}");
@@ -690,14 +654,9 @@ fn field_body_omits_default_when_none() {
 fn field_body_uses_safe_inline_code_fence() {
     let type_repr = "Map<`Key`, V>";
     let default_repr = "`zero`";
-    let item = ItemDoc::Field {
-        name: "store".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        type_repr: type_repr.into(),
-        default_repr: Some(default_repr.into()),
+    let item = ItemDoc {
+        header: ItemHeader { name: "store".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Field { type_repr: type_repr.into(), default_repr: Some(default_repr.into()) },
     };
     let out = render_one_item(item);
 
@@ -734,14 +693,9 @@ fn field_body_uses_safe_inline_code_fence() {
 /// `**Expression:** \`{expr_repr}\`` lines.
 #[test]
 fn purpose_body_renders_direction_and_expression() {
-    let item = ItemDoc::Purpose {
-        name: "minimize_area".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        expr_repr: "total_area".into(),
-        direction: "minimize".into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "minimize_area".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Purpose { expr_repr: "total_area".into(), direction: "minimize".into() },
     };
     let out = render_one_item(item);
     assert!(
@@ -762,14 +716,9 @@ fn purpose_body_uses_safe_inline_code_fence() {
     // "minimize `area` + slack": one internal backtick run (length 1), no
     // leading/trailing backtick → fence_len = 2, needs_pad = false.
     let expr_repr = "minimize `area` + slack";
-    let item = ItemDoc::Purpose {
-        name: "min_area".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        expr_repr: expr_repr.into(),
-        direction: "minimize".into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "min_area".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Purpose { expr_repr: expr_repr.into(), direction: "minimize".into() },
     };
     let out = render_one_item(item);
 
@@ -798,14 +747,9 @@ fn purpose_body_uses_safe_inline_code_fence() {
 /// `**Scale:** \`{scale}\`` lines.
 #[test]
 fn unit_body_renders_base_and_scale() {
-    let item = ItemDoc::Unit {
-        name: "Milliamp".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        base_unit: "Ampere".into(),
-        scale: "0.001".into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "Milliamp".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Unit { base_unit: "Ampere".into(), scale: "0.001".into() },
     };
     let out = render_one_item(item);
     assert!(out.contains("**Base:** `Ampere`"), "Base line missing:\n{out}");
@@ -821,14 +765,9 @@ fn unit_body_renders_base_and_scale() {
 fn unit_body_uses_safe_inline_code_fence() {
     let base_unit = "`Ampere`"; // starts and ends with backtick → pad
     let scale = "1`e`-3";      // internal backtick, no leading/trailing → no pad
-    let item = ItemDoc::Unit {
-        name: "Milliamp2".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        base_unit: base_unit.into(),
-        scale: scale.into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "Milliamp2".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Unit { base_unit: base_unit.into(), scale: scale.into() },
     };
     let out = render_one_item(item);
 
@@ -854,13 +793,9 @@ fn unit_body_uses_safe_inline_code_fence() {
 /// TypeAlias variant emits a single `= \`{type_repr}\`` line.
 #[test]
 fn type_alias_body_renders_rhs() {
-    let item = ItemDoc::TypeAlias {
-        name: "Meters".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        type_repr: "f64".into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "Meters".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::TypeAlias { type_repr: "f64".into() },
     };
     let out = render_one_item(item);
     assert!(
@@ -876,13 +811,9 @@ fn type_alias_body_uses_safe_inline_code_fence() {
     // "Vec<`T`>": one internal backtick run (length 1), no leading/trailing.
     // → fence_len = 2, needs_pad = false → "``Vec<`T`>``"
     let type_repr = "Vec<`T`>";
-    let item = ItemDoc::TypeAlias {
-        name: "VecT".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        type_repr: type_repr.into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "VecT".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::TypeAlias { type_repr: type_repr.into() },
     };
     let out = render_one_item(item);
 
@@ -900,13 +831,9 @@ fn type_alias_body_uses_safe_inline_code_fence() {
 /// ConstraintDef variant emits a single `\`{expr_repr}\`` line.
 #[test]
 fn constraint_def_body_renders_expr() {
-    let item = ItemDoc::ConstraintDef {
-        name: "voltage_safe".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        expr_repr: "v <= 5.5 V".into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "voltage_safe".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::ConstraintDef { expr_repr: "v <= 5.5 V".into() },
     };
     let out = render_one_item(item);
     assert!(
@@ -924,13 +851,9 @@ fn constraint_def_body_uses_safe_inline_code_fence() {
     // "`inner` && true": longest backtick run = 1, starts with backtick.
     // Expected fence_len = 2, needs_pad = true → "`` `inner` && true ``".
     let expr_repr = "`inner` && true";
-    let item = ItemDoc::ConstraintDef {
-        name: "safe_check".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        expr_repr: expr_repr.into(),
+    let item = ItemDoc {
+        header: ItemHeader { name: "safe_check".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::ConstraintDef { expr_repr: expr_repr.into() },
     };
     let out = render_one_item(item);
 
@@ -958,18 +881,20 @@ fn constraint_def_body_uses_safe_inline_code_fence() {
 /// doc-comment paragraph (or kind-specific body).
 #[test]
 fn deprecated_annotation_emits_callout() {
-    let item = ItemDoc::Structure {
-        name: "OldThing".into(),
-        doc: Some("This is the docstring.".into()),
-        is_pub: true,
-        annotations: vec![AnnotationDoc {
-            name: "deprecated".into(),
-            // String-literal arg as rendered from source: leading/trailing `"`s
-            // are part of the printable representation; the formatter strips them.
-            args: vec!["\"use Foo instead\"".into()],
-        }],
-        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader {
+            name: "OldThing".into(),
+            doc: Some("This is the docstring.".into()),
+            is_pub: true,
+            annotations: vec![AnnotationDoc {
+                name: "deprecated".into(),
+                // String-literal arg as rendered from source: leading/trailing `"`s
+                // are part of the printable representation; the formatter strips them.
+                args: vec!["\"use Foo instead\"".into()],
+            }],
+            pragmas: vec![],
+        },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let out = render_one_item(item);
     assert!(
@@ -990,16 +915,18 @@ fn deprecated_annotation_emits_callout() {
 /// `*Optimized: \`area\`*`.
 #[test]
 fn optimized_annotation_emits_italic_note() {
-    let item = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![AnnotationDoc {
-            name: "optimized".into(),
-            args: vec!["\"area\"".into()],
-        }],
-        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let item = ItemDoc {
+        header: ItemHeader {
+            name: "Bolt".into(),
+            doc: None,
+            is_pub: false,
+            annotations: vec![AnnotationDoc {
+                name: "optimized".into(),
+                args: vec!["\"area\"".into()],
+            }],
+            pragmas: vec![],
+        },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let out = render_one_item(item);
     assert!(
@@ -1017,13 +944,9 @@ fn optimized_annotation_emits_italic_note() {
 /// by `- [\`Fastener\`](#Fastener)`.
 #[test]
 fn cross_refs_conforms_to_renders_for_structure() {
-    let bolt = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let bolt = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -1053,13 +976,9 @@ fn cross_refs_conforms_to_renders_for_structure() {
 /// `- [\`Board\`](#Board)`.
 #[test]
 fn cross_refs_used_by_renders_for_occurrence() {
-    let mcu = ItemDoc::Occurrence {
-        name: "MCU".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let mcu = ItemDoc {
+        header: ItemHeader { name: "MCU".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -1088,13 +1007,9 @@ fn cross_refs_used_by_renders_for_occurrence() {
 /// sections are emitted.
 #[test]
 fn cross_refs_omitted_when_absent_or_empty() {
-    let bolt = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let bolt = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -1134,54 +1049,45 @@ fn cross_refs_omitted_when_absent_or_empty() {
 /// scaffolding used by the TOC tests.
 fn mk_item(kind: &str, name: &str) -> ItemDoc {
     match kind {
-        "structure" => ItemDoc::Structure {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-            constraints: vec![], sub_components: vec![], realizations: vec![],
-            meta: vec![],
+        "structure" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
         },
-        "occurrence" => ItemDoc::Occurrence {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-            constraints: vec![], sub_components: vec![], realizations: vec![],
-            meta: vec![],
+        "occurrence" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
         },
-        "trait" => ItemDoc::Trait {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![], members: vec![],
+        "trait" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Trait { members: vec![] },
         },
-        "function" => ItemDoc::Function {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![],
-            signature: format!("fn {name}()"),
+        "function" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Function { signature: format!("fn {name}()") },
         },
-        "field" => ItemDoc::Field {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![],
-            type_repr: "i32".into(), default_repr: None,
+        "field" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Field { type_repr: "i32".into(), default_repr: None },
         },
-        "purpose" => ItemDoc::Purpose {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![],
-            expr_repr: "x".into(), direction: "minimize".into(),
+        "purpose" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Purpose { expr_repr: "x".into(), direction: "minimize".into() },
         },
-        "enum" => ItemDoc::Enum {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![], variants: vec![],
+        "enum" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Enum { variants: vec![] },
         },
-        "unit" => ItemDoc::Unit {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![],
-            base_unit: "Meter".into(), scale: "1.0".into(),
+        "unit" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::Unit { base_unit: "Meter".into(), scale: "1.0".into() },
         },
-        "type_alias" => ItemDoc::TypeAlias {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![], type_repr: "f64".into(),
+        "type_alias" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::TypeAlias { type_repr: "f64".into() },
         },
-        "constraint_def" => ItemDoc::ConstraintDef {
-            name: name.into(), doc: None, is_pub: true,
-            annotations: vec![], pragmas: vec![],
-            expr_repr: "x > 0".into(),
+        "constraint_def" => ItemDoc {
+            header: ItemHeader { name: name.into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+            kind: ItemKind::ConstraintDef { expr_repr: "x > 0".into() },
         },
         other => panic!("unknown kind: {other}"),
     }
@@ -1346,21 +1252,19 @@ fn toc_constants_bucket_includes_field_unit_alias_constraint_purpose() {
 /// emitted under a `## Tests` H2 subsection at the bottom of the module.
 #[test]
 fn test_annotated_items_grouped_under_tests_section() {
-    let foo = ItemDoc::Structure {
-        name: "Foo".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let foo = ItemDoc {
+        header: ItemHeader { name: "Foo".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
-    let bar = ItemDoc::Structure {
-        name: "Bar".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![AnnotationDoc { name: "test".into(), args: vec![] }],
-        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let bar = ItemDoc {
+        header: ItemHeader {
+            name: "Bar".into(),
+            doc: None,
+            is_pub: true,
+            annotations: vec![AnnotationDoc { name: "test".into(), args: vec![] }],
+            pragmas: vec![],
+        },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -1384,13 +1288,9 @@ fn test_annotated_items_grouped_under_tests_section() {
 /// When no item carries `@test`, the `## Tests` header is omitted entirely.
 #[test]
 fn no_tests_no_tests_header() {
-    let only = ItemDoc::Structure {
-        name: "Only".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![], params: vec![], ports: vec![], constraints: vec![],
-        sub_components: vec![], realizations: vec![], meta: vec![],
+    let only = ItemDoc {
+        header: ItemHeader { name: "Only".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -1408,26 +1308,24 @@ fn no_tests_no_tests_header() {
 /// cell, after the doc-comment text.
 #[test]
 fn solver_hint_annotation_appends_to_description_cell() {
-    let item = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: false,
-        annotations: vec![],
-        pragmas: vec![],
-        params: vec![ParamDoc {
-            name: "length".into(),
-            doc: Some("Bolt length.".into()),
-            type_repr: "Length".into(),
-            default_repr: None,
-            annotations: vec![AnnotationDoc {
-                name: "solver_hint".into(),
-                // Non-string-literal arg (no surrounding quotes); the rendered
-                // representation is the call expression itself.
-                args: vec!["discrete_set(standard_bolt_lengths)".into()],
+    let item = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure {
+            params: vec![ParamDoc {
+                name: "length".into(),
+                doc: Some("Bolt length.".into()),
+                type_repr: "Length".into(),
+                default_repr: None,
+                annotations: vec![AnnotationDoc {
+                    name: "solver_hint".into(),
+                    // Non-string-literal arg (no surrounding quotes); the rendered
+                    // representation is the call expression itself.
+                    args: vec!["discrete_set(standard_bolt_lengths)".into()],
+                }],
             }],
-        }],
-        ports: vec![], constraints: vec![], sub_components: vec![],
-        realizations: vec![], meta: vec![],
+            ports: vec![], constraints: vec![], sub_components: vec![],
+            realizations: vec![], meta: vec![],
+        },
     };
     let out = render_one_item(item);
     // The description cell of `length` must contain both the doc text and the
@@ -1466,20 +1364,13 @@ fn render_split(model: &DocModel) -> Vec<(String, String)> {
 /// then items in module declaration order.
 #[test]
 fn split_mode_emits_index_and_per_item_files() {
-    let board = ItemDoc::Structure {
-        name: "Board".into(),
-        doc: Some("The main PCB board.".into()),
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let board = ItemDoc {
+        header: ItemHeader { name: "Board".into(), doc: Some("The main PCB board.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
-    let has_power = ItemDoc::Trait {
-        name: "HasPower".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![],
-        members: vec!["voltage: Voltage".into()],
+    let has_power = ItemDoc {
+        header: ItemHeader { name: "HasPower".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec!["voltage: Voltage".into()] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -1682,171 +1573,124 @@ fn build_integration_full_v01_fixture() -> DocModel {
                 "Comprehensive v0.1 language feature integration.".to_string(),
             ),
             items: vec![
-                ItemDoc::TypeAlias {
-                    name: "Pressure".into(),
-                    doc: Some("Pressure is Force per Area (SI unit: Pa).".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    type_repr: "Force / Area".into(),
+                ItemDoc {
+                    header: ItemHeader { name: "Pressure".into(), doc: Some("Pressure is Force per Area (SI unit: Pa).".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::TypeAlias { type_repr: "Force / Area".into() },
                 },
-                ItemDoc::Unit {
-                    name: "mil".into(),
-                    doc: Some("One mil = 1/1000 inch.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    base_unit: "Length".into(),
-                    scale: "0.0000254".into(),
+                ItemDoc {
+                    header: ItemHeader { name: "mil".into(), doc: Some("One mil = 1/1000 inch.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Unit { base_unit: "Length".into(), scale: "0.0000254".into() },
                 },
-                ItemDoc::Enum {
-                    name: "Grade".into(),
-                    doc: Some("Material grade classification.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    variants: vec![
-                        "Standard".into(),
-                        "Reinforced".into(),
-                        "Premium".into(),
-                    ],
+                ItemDoc {
+                    header: ItemHeader { name: "Grade".into(), doc: Some("Material grade classification.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Enum { variants: vec!["Standard".into(), "Reinforced".into(), "Premium".into()] },
                 },
-                ItemDoc::Function {
-                    name: "safety_factor".into(),
-                    doc: Some("Safety factor for real-valued loads.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    signature: "fn safety_factor(load: Real) -> Real".into(),
+                ItemDoc {
+                    header: ItemHeader { name: "safety_factor".into(), doc: Some("Safety factor for real-valued loads.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Function { signature: "fn safety_factor(load: Real) -> Real".into() },
                 },
-                ItemDoc::Trait {
-                    name: "Physical".into(),
-                    doc: Some("Trait for objects with a measurable mass.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    members: vec!["mass: Mass".into()],
+                ItemDoc {
+                    header: ItemHeader { name: "Physical".into(), doc: Some("Trait for objects with a measurable mass.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Trait { members: vec!["mass: Mass".into()] },
                 },
-                ItemDoc::ConstraintDef {
-                    name: "Positive".into(),
-                    doc: Some("Length value v is strictly positive.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    expr_repr: "v > 0mm".into(),
+                ItemDoc {
+                    header: ItemHeader { name: "Positive".into(), doc: Some("Length value v is strictly positive.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::ConstraintDef { expr_repr: "v > 0mm".into() },
                 },
-                ItemDoc::Purpose {
-                    name: "minimize_area".into(),
-                    doc: None,
-                    is_pub: false,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    expr_repr: "total_area".into(),
-                    direction: "minimize".into(),
+                ItemDoc {
+                    header: ItemHeader { name: "minimize_area".into(), doc: None, is_pub: false, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Purpose { expr_repr: "total_area".into(), direction: "minimize".into() },
                 },
-                ItemDoc::Structure {
-                    name: "Bolt".into(),
-                    doc: Some("A standard fastening bolt.".into()),
-                    is_pub: true,
-                    annotations: vec![AnnotationDoc {
-                        name: "optimized".into(),
-                        args: vec!["\"area\"".into()],
-                    }],
-                    pragmas: vec![],
-                    params: vec![
-                        ParamDoc {
-                            name: "length".into(),
-                            doc: Some("Bolt length.".into()),
-                            type_repr: "Length".into(),
-                            default_repr: Some("100 mm".into()),
-                            annotations: vec![AnnotationDoc {
-                                name: "solver_hint".into(),
-                                args: vec![
-                                    "discrete_set(standard_bolt_lengths)".into(),
-                                ],
-                            }],
-                        },
-                        ParamDoc {
-                            name: "diameter".into(),
-                            doc: None,
-                            type_repr: "Length".into(),
-                            default_repr: Some("M8".into()),
+                ItemDoc {
+                    header: ItemHeader {
+                        name: "Bolt".into(),
+                        doc: Some("A standard fastening bolt.".into()),
+                        is_pub: true,
+                        annotations: vec![AnnotationDoc {
+                            name: "optimized".into(),
+                            args: vec!["\"area\"".into()],
+                        }],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Structure {
+                        params: vec![
+                            ParamDoc {
+                                name: "length".into(),
+                                doc: Some("Bolt length.".into()),
+                                type_repr: "Length".into(),
+                                default_repr: Some("100 mm".into()),
+                                annotations: vec![AnnotationDoc {
+                                    name: "solver_hint".into(),
+                                    args: vec![
+                                        "discrete_set(standard_bolt_lengths)".into(),
+                                    ],
+                                }],
+                            },
+                            ParamDoc {
+                                name: "diameter".into(),
+                                doc: None,
+                                type_repr: "Length".into(),
+                                default_repr: Some("M8".into()),
+                                annotations: vec![],
+                            },
+                        ],
+                        ports: vec![],
+                        constraints: vec![ConstraintDoc {
+                            label: None,
+                            expr_repr: "length >= diameter".into(),
                             annotations: vec![],
-                        },
-                    ],
-                    ports: vec![],
-                    constraints: vec![ConstraintDoc {
-                        label: None,
-                        expr_repr: "length >= diameter".into(),
-                        annotations: vec![],
-                        line: Some(42),
-                    }],
-                    sub_components: vec![],
-                    realizations: vec![],
-                    meta: vec![("version".into(), "1.0".into())],
+                            line: Some(42),
+                        }],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![("version".into(), "1.0".into())],
+                    },
                 },
-                ItemDoc::Structure {
-                    name: "Board".into(),
-                    doc: Some("Main PCB board.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    params: vec![],
-                    ports: vec![PortDoc {
-                        name: "pwr_in".into(),
-                        direction: "in".into(),
-                        type_name: "Power".into(),
-                        members: vec!["voltage".into(), "current".into()],
-                    }],
-                    constraints: vec![],
-                    sub_components: vec![],
-                    realizations: vec![],
-                    meta: vec![],
+                ItemDoc {
+                    header: ItemHeader { name: "Board".into(), doc: Some("Main PCB board.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Structure {
+                        params: vec![],
+                        ports: vec![PortDoc {
+                            name: "pwr_in".into(),
+                            direction: "in".into(),
+                            type_name: "Power".into(),
+                            members: vec!["voltage".into(), "current".into()],
+                        }],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
                 },
-                ItemDoc::Occurrence {
-                    name: "MCU".into(),
-                    doc: Some("Microcontroller occurrence.".into()),
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    params: vec![],
-                    ports: vec![],
-                    constraints: vec![],
-                    sub_components: vec![],
-                    realizations: vec![],
-                    meta: vec![],
+                ItemDoc {
+                    header: ItemHeader { name: "MCU".into(), doc: Some("Microcontroller occurrence.".into()), is_pub: true, annotations: vec![], pragmas: vec![] },
+                    kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
                 },
-                ItemDoc::Structure {
-                    name: "OldThing".into(),
-                    doc: Some("Deprecated legacy structure.".into()),
-                    is_pub: true,
-                    annotations: vec![AnnotationDoc {
-                        name: "deprecated".into(),
-                        args: vec!["\"use Bolt instead\"".into()],
-                    }],
-                    pragmas: vec![],
-                    params: vec![],
-                    ports: vec![],
-                    constraints: vec![],
-                    sub_components: vec![],
-                    realizations: vec![],
-                    meta: vec![],
+                ItemDoc {
+                    header: ItemHeader {
+                        name: "OldThing".into(),
+                        doc: Some("Deprecated legacy structure.".into()),
+                        is_pub: true,
+                        annotations: vec![AnnotationDoc {
+                            name: "deprecated".into(),
+                            args: vec!["\"use Bolt instead\"".into()],
+                        }],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
                 },
-                ItemDoc::Structure {
-                    name: "TestSelfWeight".into(),
-                    doc: Some("Self-weight regression test.".into()),
-                    is_pub: false,
-                    annotations: vec![AnnotationDoc {
-                        name: "test".into(),
-                        args: vec![],
-                    }],
-                    pragmas: vec![],
-                    params: vec![],
-                    ports: vec![],
-                    constraints: vec![],
-                    sub_components: vec![],
-                    realizations: vec![],
-                    meta: vec![],
+                ItemDoc {
+                    header: ItemHeader {
+                        name: "TestSelfWeight".into(),
+                        doc: Some("Self-weight regression test.".into()),
+                        is_pub: false,
+                        annotations: vec![AnnotationDoc {
+                            name: "test".into(),
+                            args: vec![],
+                        }],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
                 },
             ],
             ..Default::default()
@@ -1944,21 +1788,13 @@ fn snapshot_integration_full_v01_split_mode() {
 /// - same-named items in different modules resolve to *distinct* files.
 #[test]
 fn split_mode_multi_module_prefixes_and_backlinks() {
-    let board_a = ItemDoc::Structure {
-        name: "Board".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let board_a = ItemDoc {
+        header: ItemHeader { name: "Board".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
-    let board_b = ItemDoc::Structure {
-        name: "Board".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let board_b = ItemDoc {
+        header: ItemHeader { name: "Board".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![
