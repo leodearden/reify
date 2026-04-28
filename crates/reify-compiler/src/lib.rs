@@ -111,6 +111,27 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
     compile_with_prelude_context(parsed, stdlib_loader::load_stdlib_context())
 }
 
+/// Parse a source string with the stdlib's prelude enum names pre-seeded
+/// into the parser's `EnumAccess` disambiguation set.
+///
+/// Companion to [`compile_with_stdlib`]: when the produced `ParsedModule`
+/// will be fed to `compile_with_stdlib`, prefer this entry over the bare
+/// [`reify_syntax::parse`] so that `Type.Variant` references to stdlib
+/// enums (e.g. `CorrosionClass.C5`) lower to `ExprKind::EnumAccess` rather
+/// than `ExprKind::MemberAccess`.
+///
+/// Reads the cached `&'static PreludeContext` from
+/// [`stdlib_loader::load_stdlib_context`] (no fresh stdlib compile),
+/// flattens its enum names into a `Vec<&str>`, and delegates to
+/// [`reify_syntax::parse_with_prelude_enums`].
+pub fn parse_with_stdlib(
+    source: &str,
+    module_path: reify_types::ModulePath,
+) -> reify_syntax::ParsedModule {
+    let names: Vec<&str> = stdlib_loader::load_stdlib_context().enum_names().collect();
+    reify_syntax::parse_with_prelude_enums(source, module_path, &names)
+}
+
 /// Compile a parsed module with prelude definitions available for resolution.
 ///
 /// Prelude modules provide trait definitions, enum definitions, and functions
