@@ -560,6 +560,24 @@ impl Engine {
         &self.journal
     }
 
+    /// Return the current [`Freshness`] of `node` from the engine's cache.
+    ///
+    /// This is the **stable, always-public** read path that GUI and LSP
+    /// consumers use to surface computation state without reaching into the
+    /// test-instrumentation-gated [`cache_store()`](Self::cache_store).
+    ///
+    /// Mirrors the design of [`Engine::journal()`] — always public, no cfg gate.
+    /// See arch §7.1 lines 716-728 and the task #2337 design decision on
+    /// "Add a public `Engine::freshness` accessor on the Engine facade".
+    ///
+    /// Returns [`Freshness::Final`] (the default) when `node` has no cache
+    /// entry — identical to [`CacheStore::freshness`]'s own default behaviour,
+    /// so that "unknown = Final" is enforced in one place and callers never
+    /// need to handle a missing-node error path.
+    pub fn freshness(&self, node: &NodeId) -> reify_types::Freshness {
+        self.cache.freshness(node)
+    }
+
     /// **Test-instrumentation only — not a stable public metric.**
     ///
     /// Immutable access to the engine's warm-state pool. Per arch §4.3 / §6.4,
