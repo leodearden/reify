@@ -125,7 +125,14 @@ def main() -> None:
                 subtasks = task.get("subtasks", [])
                 if subtasks:
                     parent_id = task.get("id", "?")
-                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name, subtasks_by_parent=subtasks_by_parent)
+                    _validate_subtasks(
+                        subtasks,
+                        known_ids,
+                        parent_id,
+                        errors,
+                        tag_context=tag_name,
+                        subtasks_by_parent=subtasks_by_parent,
+                    )
 
     if errors:
         for err in errors:
@@ -226,7 +233,9 @@ def _validate_subtasks(
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
-    Subtask deps may reference sibling subtask IDs or parent-task IDs.
+    Subtask deps may reference sibling subtask IDs, parent-task IDs, or the
+    dotted ``<parent>.<subtask>`` form (iff parent is a known top-level id and
+    the subtask id exists under that parent).
     ``tag_context`` is the enclosing tag name (e.g. ``"master"``) and is
     prepended to error messages when set.
     """
