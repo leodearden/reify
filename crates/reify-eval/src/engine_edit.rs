@@ -648,13 +648,16 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
     /// **before** calling `pool.donate_preserving_lru`.  Both are on the
     /// double-panic hot path: if `Drop` fires during stack-unwinding from
-    /// another panic, either the `warn!` dispatch (formatting / subscriber
-    /// routing) or `donate_preserving_lru` could theoretically panic, both
-    /// triggering an unconditional `std::process::abort`.  In practice the
-    /// risk is essentially zero — `tracing::warn!` does not heap-allocate
-    /// when no subscriber matches, and `donate_preserving_lru` only panics
-    /// in debug builds when the events buffer is at its cap (65 536 entries)
-    /// — but both are documented here for completeness.
+    /// another panic, either the `warn!` dispatch or `donate_preserving_lru`
+    /// could theoretically panic, triggering an unconditional
+    /// `std::process::abort`.
+    ///
+    /// `tracing::warn!` is unlikely to panic in well-behaved subscribers, but
+    /// does dispatch (and may allocate) when a subscriber is attached — a
+    /// buggy subscriber could in principle panic on the unwind path.
+    /// `donate_preserving_lru` only panics in debug builds when the events
+    /// buffer is at its cap (65 536 entries).  Both risks are documented here
+    /// for completeness.
     fn drop(&mut self) {
         let len = self.map.len();
         if len == 0 {
