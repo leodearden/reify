@@ -4371,6 +4371,61 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Task 2516 S6 — Drop WARN structured-field schema
+    // -----------------------------------------------------------------------
+
+    /// Dropping a guard with a non-empty staging map emits a WARN event whose
+    /// structured-field schema includes both `hint` (contextual diagnostic,
+    /// new in S6) and `count` (entry count, regression-locked from earlier
+    /// work).
+    ///
+    /// This test pins the *schema* — which fields are present — but does **not**
+    /// assert the message-body wording (per the pattern established by
+    /// `auto_trim_warn_omits_invariant_current_len_field` in `warm_pool.rs`,
+    /// which uses `contains_key` rather than string matching).
+    ///
+    /// Structured fields are the unit of log-aggregator queries; body wording
+    /// is verified by code review.
+    #[test]
+    fn pending_warm_seeds_guard_drop_warn_emits_hint_field() {
+        use crate::warm_pool::WarmStatePool;
+        use crate::cache::NodeId;
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::OpaqueState;
+        use super::PendingWarmSeedsGuard;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut pool = WarmStatePool::new(1024);
+            let nid = NodeId::Value(ValueCellId::new("T", "hint_field_test"));
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
+            // Drop fires with a non-empty map → safety-net WARN must fire.
+        });
+
+        // Exactly one WARN should fire.
+        capture.assert_count(1);
+
+        let all_fields = capture.fields_by_event();
+        let event_fields = &all_fields[0];
+
+        // Schema assertion: `hint` (new S6 field) must be present.
+        assert!(
+            event_fields.contains_key("hint"),
+            "safety-net WARN must include a `hint` structured field; \
+             got fields: {event_fields:?}"
+        );
+
+        // Regression-lock: `count` (established actionable field) must be present.
+        assert!(
+            event_fields.contains_key("count"),
+            "safety-net WARN must include the `count` structured field; \
+             got fields: {event_fields:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Task 2516 S1 — guard LRU-stamp preservation (step-3 / step-4)
     // -----------------------------------------------------------------------
 
