@@ -205,6 +205,10 @@ pub fn compile_with_prelude_context(
     compile_builder::pre_pass::validate_module_pragmas(&mut compile_ctx, parsed);
     compile_builder::dot_chain_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::shadow_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
+    compile_builder::specialization_scope_check::validate_module(
+        parsed,
+        &mut compile_ctx.diagnostics,
+    );
 
     // Respect #no_prelude: if the pragma is present, treat as empty prelude.
     let prelude_refs: &[&CompiledModule] =
