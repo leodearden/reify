@@ -299,7 +299,7 @@ pub enum ItemDoc {
 
 impl ItemDoc {
     /// Lookup the `name` field of any variant.
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         match self {
             ItemDoc::Structure { name, .. }
             | ItemDoc::Occurrence { name, .. }
@@ -315,7 +315,7 @@ impl ItemDoc {
     }
 
     /// Lookup the `is_pub` field of any variant.
-    pub fn is_pub(&self) -> bool {
+    pub(crate) fn is_pub(&self) -> bool {
         match self {
             ItemDoc::Structure { is_pub, .. }
             | ItemDoc::Occurrence { is_pub, .. }
@@ -331,7 +331,7 @@ impl ItemDoc {
     }
 
     /// Lookup the optional doc-comment of any variant.
-    pub fn doc(&self) -> Option<&str> {
+    pub(crate) fn doc(&self) -> Option<&str> {
         match self {
             ItemDoc::Structure { doc, .. }
             | ItemDoc::Occurrence { doc, .. }
@@ -347,7 +347,7 @@ impl ItemDoc {
     }
 
     /// Lookup the annotations attached to any variant.
-    pub fn annotations(&self) -> &[AnnotationDoc] {
+    pub(crate) fn annotations(&self) -> &[AnnotationDoc] {
         match self {
             ItemDoc::Structure { annotations, .. }
             | ItemDoc::Occurrence { annotations, .. }
@@ -368,7 +368,7 @@ impl ItemDoc {
     /// on `ItemDoc`, except for variants whose Reify-source keyword differs from the
     /// JSON tag (`Field` → `"let"`, `TypeAlias` → `"type"`, `ConstraintDef` →
     /// `"constraint"`).
-    pub fn keyword(&self) -> &'static str {
+    pub(crate) fn keyword(&self) -> &'static str {
         match self {
             ItemDoc::Structure { .. } => "structure",
             ItemDoc::Occurrence { .. } => "occurrence",
@@ -386,7 +386,7 @@ impl ItemDoc {
     /// Stable TOC group label. `"Constants"` buckets the long tail of
     /// value-like declarations (Field, Unit, TypeAlias, ConstraintDef, Purpose)
     /// per the PRD's six-group TOC.
-    pub fn group(&self) -> &'static str {
+    pub(crate) fn group(&self) -> &'static str {
         match self {
             ItemDoc::Trait { .. } => "Traits",
             ItemDoc::Structure { .. } => "Structures",
@@ -404,7 +404,7 @@ impl ItemDoc {
     /// Snake_case kind tag matching `#[serde(tag="kind", rename_all="snake_case")]`.
     /// Used as the prefix in split-mode filenames so multi-kind name collisions
     /// (e.g. a trait `Board` vs a structure `Board`) stay distinct.
-    pub fn kind_slug(&self) -> &'static str {
+    pub(crate) fn kind_slug(&self) -> &'static str {
         match self {
             ItemDoc::Structure { .. } => "structure",
             ItemDoc::Occurrence { .. } => "occurrence",
