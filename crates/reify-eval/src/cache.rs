@@ -680,10 +680,8 @@ impl CacheStore {
     /// This method is the right choice for callers that only have a `NodeId` and do not
     /// hold the current trace (e.g. diagnostics, tests that verify post-eval state).
     ///
-    /// Returns the derived freshness:
-    /// - If `still_refining`, always `Intermediate { generation }`.
-    /// - If any input is non-Final, `Intermediate { generation }`.
-    /// - Otherwise, `Final`.
+    /// Returns the derived freshness per the §7.2/§9.2 truth table — see
+    /// [`derive_output_freshness`] for the full table.
     ///
     /// **Absent node fallback:** if `node_id` has no cache entry (no trace exists),
     /// returns `derive_output_freshness(still_refining, empty, generation)` which yields
@@ -700,6 +698,64 @@ impl CacheStore {
             return derive_output_freshness(still_refining, std::iter::empty(), generation);
         };
         self.derive_output_freshness_from_trace(&entry.dependency_trace, still_refining, generation)
+    }
+
+    /// Cause-bearing variant of [`derive_output_freshness_for_node`].
+    ///
+    /// Returns both the derived `Freshness` AND the upstream `NodeId` (if any)
+    /// that drove the Pending output, by feeding `(NodeId, Freshness, Option<NodeId>)`
+    /// triples into [`derive_output_freshness_with_cause`]. The triples are built
+    /// from the node's cached `dependency_trace.reads`: each read's freshness is
+    /// looked up via [`CacheStore::freshness`] and its `pending_cause` via
+    /// [`CacheStore::pending_cause`].
+    ///
+    /// **Absent node fallback:** if `node_id` has no cache entry, returns
+    /// `(Final, None)` (consistent with the pure helper's empty-input case).
+    ///
+    /// See arch §9.2 lines 880-890 (Failed → Pending carve-out) and arch §7.2
+    /// line 748 (Pending forwards the chain).
+    pub fn derive_output_freshness_for_node_with_cause(
+        &self,
+        node_id: &NodeId,
+        still_refining: bool,
+        generation: u64,
+    ) -> (Freshness, Option<NodeId>) {
+        let Some(entry) = self.caches.get(node_id) else {
+            return derive_output_freshness_with_cause(
+                still_refining,
+                std::iter::empty(),
+                generation,
+            );
+        };
+        self.derive_output_freshness_from_trace_with_cause(
+            &entry.dependency_trace,
+            still_refining,
+            generation,
+        )
+    }
+
+    /// Cause-bearing variant of [`derive_output_freshness_from_trace`].
+    ///
+    /// Walks `trace.reads`, looks up each input's freshness and `pending_cause`,
+    /// and feeds the triples into [`derive_output_freshness_with_cause`]. Use
+    /// this at wire sites that have a freshly-computed trace and need the chain
+    /// root — e.g. the pre-eval Pending gate in `evaluate_let_bindings`.
+    pub fn derive_output_freshness_from_trace_with_cause(
+        &self,
+        trace: &DependencyTrace,
+        still_refining: bool,
+        generation: u64,
+    ) -> (Freshness, Option<NodeId>) {
+        derive_output_freshness_with_cause(
+            still_refining,
+            trace.reads.iter().map(|read| {
+                let n = NodeId::Value(read.clone());
+                let f = self.freshness(&n);
+                let c = self.pending_cause(&n);
+                (n, f, c)
+            }),
+            generation,
+        )
     }
 
     /// Insert a synthetic cache entry for a Realization node so that tests can
