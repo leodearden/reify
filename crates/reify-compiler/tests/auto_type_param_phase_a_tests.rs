@@ -454,3 +454,107 @@ fn enumerate_overflow_with_many_candidates_still_terminates_at_eleven() {
         diagnostics.len()
     );
 }
+
+// ─── step-17: composite-bound overflow names all bound traits ─────────────
+
+/// Build a Reify source defining `trait Seal {}`, `trait Cooled {}`, and
+/// `count` structures `S00`..`S{count-1}` each declaring `: Seal + Cooled`.
+/// Mirrors `build_n_seal_structures` but with a composite bound.
+fn build_n_composite_structures(count: usize) -> String {
+    assert!(
+        count <= 100,
+        "build_n_composite_structures: zero-pad width is two digits; max count is 100"
+    );
+    let mut src = String::from("trait Seal {}\ntrait Cooled {}\n");
+    for i in 0..count {
+        src.push_str(&format!(
+            "structure def S{:02} : Seal + Cooled {{\n    param x : Real = 1.0\n}}\n",
+            i
+        ));
+    }
+    src
+}
+
+/// When the bounds slice is composite (e.g. `["Seal", "Cooled"]`), the
+/// overflow diagnostic must name **all** bound traits in both the
+/// top-level message and the primary label, so users can see at a glance
+/// which intersection produced the pool. The implementation joins bounds
+/// with ` + `, so we expect the substring `"Seal + Cooled"` to appear in
+/// both places.
+///
+/// This pins composite-bound diagnostic clarity: a regression that
+/// formatted only `bounds[0]` (e.g. `"{bounds_str}" = bounds[0]` instead
+/// of `bounds.join(" + ")`) would lose the second trait name from the
+/// message and would fail this test.
+#[test]
+fn enumerate_composite_bound_overflow_message_lists_all_bound_traits() {
+    let source = build_n_composite_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    let module = compile_source(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string(), "Cooled".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::new(50, 60),
+        &mut diagnostics,
+    );
+
+    // Sanity-check: composite overflow returns 10 candidates.
+    let expected_first_ten: Vec<String> = (0..MAX_AUTO_TYPE_PARAM_CANDIDATES)
+        .map(|i| format!("S{:02}", i))
+        .collect();
+    assert_eq!(
+        result,
+        CandidateEnumeration::Overflow(expected_first_ten),
+        "composite overflow with MAX+1 candidates must produce Overflow with first MAX alphabetically"
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one overflow diagnostic expected, got {}",
+        diagnostics.len()
+    );
+    let d = &diagnostics[0];
+
+    // Top-level message must name BOTH bound traits.
+    assert!(
+        d.message.contains("Seal"),
+        "diagnostic message must mention 'Seal', got: {:?}",
+        d.message
+    );
+    assert!(
+        d.message.contains("Cooled"),
+        "diagnostic message must mention 'Cooled', got: {:?}",
+        d.message
+    );
+    assert!(
+        d.message.contains("Seal + Cooled"),
+        "diagnostic message must contain joined bounds 'Seal + Cooled', got: {:?}",
+        d.message
+    );
+
+    // Primary label must also name BOTH bound traits.
+    assert!(
+        !d.labels.is_empty(),
+        "diagnostic must carry at least one label"
+    );
+    let label_msg = &d.labels[0].message;
+    assert!(
+        label_msg.contains("Seal"),
+        "label message must mention 'Seal', got: {:?}",
+        label_msg
+    );
+    assert!(
+        label_msg.contains("Cooled"),
+        "label message must mention 'Cooled', got: {:?}",
+        label_msg
+    );
+    assert!(
+        label_msg.contains("Seal + Cooled"),
+        "label message must contain joined bounds 'Seal + Cooled', got: {:?}",
+        label_msg
+    );
+}
