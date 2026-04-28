@@ -192,6 +192,48 @@ mod tests {
     }
 
     #[test]
+    fn unknown_kernel_id_rejected_with_typed_error() {
+        let err = Manifest::from_toml_str("[kernels]\nfoobar = \"1.0\"\n")
+            .expect_err("unknown kernel id should be rejected");
+        match err {
+            ManifestError::UnknownKernel(name) => assert_eq!(name, "foobar"),
+            other => panic!(
+                "expected ManifestError::UnknownKernel(\"foobar\"), got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// PRD: docs/prds/v0_2/multi-kernel.md, "Resolved design decisions
+    /// (2026-04-28)" — "Truck dropped from v0.2". Truck must be rejected as
+    /// an unknown kernel id, not silently accepted.
+    #[test]
+    fn truck_is_rejected_as_unknown_in_v0_2() {
+        let err = Manifest::from_toml_str("[kernels]\ntruck = \"0.5\"\n")
+            .expect_err("truck must be rejected in v0.2");
+        match err {
+            ManifestError::UnknownKernel(name) => assert_eq!(name, "truck"),
+            other => panic!(
+                "expected ManifestError::UnknownKernel(\"truck\"), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn kernel_id_match_is_lowercase_only() {
+        let err = Manifest::from_toml_str("[kernels]\nOCCT = \"7.7\"\n")
+            .expect_err("uppercase kernel id should be rejected");
+        match err {
+            ManifestError::UnknownKernel(name) => assert_eq!(name, "OCCT"),
+            other => panic!(
+                "expected ManifestError::UnknownKernel(\"OCCT\"), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
     fn multiple_kernel_pins_iterate_in_kernel_id_order() {
         // Non-canonical text order in the TOML source.
         let toml = "[kernels]\n\
