@@ -202,7 +202,7 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// it is used as the failure-tuple key and in error messages so that nested
 /// files are unambiguous in failure reports.
 fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
-    use reify_compiler::compile_with_stdlib;
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
     use reify_types::{ModulePath, Severity};
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -218,7 +218,11 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     let module_path = ModulePath::single(&stem);
 
     // Parse phase — accumulate, do NOT panic on errors.
-    let parsed = reify_syntax::parse(&source, module_path);
+    // Use prelude-aware parsing so `Type.Variant` references against stdlib
+    // enums (e.g. `CorrosionClass.C5`) resolve as `EnumAccess` nodes — see
+    // `parse_with_stdlib` for details.  This matches the `compile_with_stdlib`
+    // companion below.
+    let parsed = parse_with_stdlib(&source, module_path);
     if !parsed.errors.is_empty() {
         let msgs: Vec<String> = parsed
             .errors
