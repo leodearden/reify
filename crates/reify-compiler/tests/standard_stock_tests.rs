@@ -3,7 +3,10 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::collect_errors;
-use reify_types::{DimensionVector, ModulePath, Type, Value, ValueMap};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledFnBody, CompiledFunction, ContentHash, DimensionVector,
+    ModulePath, Type, Value, ValueCellId, ValueMap,
+};
 
 /// Helper: load the stdlib and find the std.stock CompiledModule.
 fn stock_module() -> &'static reify_compiler::CompiledModule {
@@ -143,4 +146,129 @@ fn standard_sheet_thicknesses_function_present_and_returns_metal_gauge_series() 
             0.0030, 0.0040, 0.0050, 0.0060, 0.0080, 0.0100,
         ],
     );
+}
+
+// ─── task-2524 / esc-2455-83: let-binding eval contract ──────────────────────
+
+/// Pins the contract that `eval_user_function_call` evaluates
+/// `func.body.let_bindings` in order before `result_expr`, so that a future
+/// refactor adding let-bindings to std.stock helpers cannot silently drop
+/// bindings or yield `Value::Undef`.
+///
+/// Rationale: task 2524 / esc-2455-83.  The two existing callers of
+/// `assert_length_constant` both have `let_bindings: vec![]`, so they do not
+/// exercise this code path in `eval_user_function_call`.  This test
+/// constructs a fully synthetic `CompiledFunction` corresponding to:
+///
+/// ```text
+/// pub fn synthetic_let_length() -> List<Length> {
+///     let x = 0.05 m;
+///     [x, x * 2]
+/// }
+/// ```
+///
+/// and asserts the returned `Value::List` is `[0.05 m, 0.10 m]` with
+/// `DimensionVector::LENGTH` dimension and finite `si_value`.  If the
+/// let-binding were silently dropped or yielded `Value::Undef`, the test
+/// panics with a diagnostic message identifying the failure mode.
+#[test]
+fn user_function_call_evaluates_let_bindings_in_synthetic_length_function() {
+    let func_name = "synthetic_let_length";
+
+    // value_ref_x = ValueRef(ValueCellId::new(func_name, "x")) : Length
+    let value_ref_x = CompiledExpr::value_ref(
+        ValueCellId::new(func_name, "x"),
+        Type::length(),
+    );
+
+    // binop_mul_x_two = x * 2 : Length  (exercises Scalar × Int arm of eval_mul)
+    let binop_mul_x_two = CompiledExpr::binop(
+        BinOp::Mul,
+        value_ref_x.clone(),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::length(),
+    );
+
+    // result_expr = [x, x * 2] : List<Length>
+    let result_expr = CompiledExpr::list_literal(
+        vec![value_ref_x, binop_mul_x_two],
+        Type::List(Box::new(Type::length())),
+    );
+
+    // binding_expr = literal Scalar{0.05, LENGTH} : Length
+    let binding_expr = CompiledExpr::literal(
+        Value::Scalar { si_value: 0.05, dimension: DimensionVector::LENGTH },
+        Type::length(),
+    );
+
+    let func = CompiledFunction {
+        name: func_name.to_string(),
+        is_pub: true,
+        params: vec![],
+        return_type: Type::List(Box::new(Type::length())),
+        body: CompiledFnBody {
+            let_bindings: vec![("x".to_string(), binding_expr)],
+            result_expr,
+        },
+        content_hash: ContentHash::of(b"synthetic_let_length"),
+        annotations: vec![],
+    };
+
+    let call_expr = CompiledExpr::user_function_call(
+        func_name.to_string(),
+        vec![],
+        Type::List(Box::new(Type::length())),
+    );
+    let values = ValueMap::new();
+    let functions = [func];
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::List(elems) => {
+            assert_eq!(
+                elems.len(),
+                2,
+                "synthetic_let_length should return 2 elements"
+            );
+            for (i, expected) in [(0usize, 0.05_f64), (1, 0.10_f64)] {
+                match &elems[i] {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "element {} should have LENGTH dimension",
+                            i
+                        );
+                        assert!(
+                            si_value.is_finite(),
+                            "element {} si_value should be finite, got {}",
+                            i,
+                            si_value
+                        );
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "element {} si_value: expected {}, got {}",
+                            i,
+                            expected,
+                            si_value
+                        );
+                    }
+                    Value::Undef => panic!(
+                        "element {} is Value::Undef — let-binding x was silently dropped or unresolved",
+                        i
+                    ),
+                    other => panic!(
+                        "element {} should be Value::Scalar, got {:?}",
+                        i,
+                        other
+                    ),
+                }
+            }
+        }
+        other => panic!(
+            "synthetic_let_length should return Value::List, got {:?}",
+            other
+        ),
+    }
 }
