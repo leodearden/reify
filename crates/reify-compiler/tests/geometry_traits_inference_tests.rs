@@ -592,6 +592,41 @@ fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
     );
 }
 
+// ─── E2E: inline-form baseline (already-rejected path) ──────────────────────
+
+/// Pin the inline rejection baseline: `intersection(box, box)` at a
+/// `Connected` param emits exactly one `TypeNotConformingToTrait` diagnostic.
+///
+/// `combine_intersection(all, all)` drops `connected`, so the inlined call
+/// is correctly rejected today. This test locks the inline-form behaviour so
+/// that the let-bound test (step-7) can assert symmetric parity.
+#[test]
+fn inline_intersection_of_boxes_at_connected_param_emits_diagnostic() {
+    let source = r#"
+        structure def Foo {
+            param g : Connected
+        }
+        structure def Top {
+            sub x = Foo(g: intersection(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm)))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+
+    let conformance_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .filter(|d| d.message.contains("'g'") || d.message.contains("Connected"))
+        .collect();
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly one TypeNotConformingToTrait for inline \
+         intersection(box,box) at a Connected slot, got: {:?}",
+        conformance_errors
+    );
+}
+
 // ─── GEOMETRY_FUNCTION_NAMES ↔ infer_traits_for_function_call coverage ──────
 
 // ─── infer_traits_for_op — op-array walker unit tests ───────────────────────
