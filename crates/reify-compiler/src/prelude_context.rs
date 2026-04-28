@@ -89,4 +89,16 @@ impl<'a> PreludeContext<'a> {
     pub fn resolution_enums(&self) -> &[EnumDef] {
         &self.resolution_enums
     }
+
+    /// The names of every enum in the prelude, in [`resolution_enums`](Self::resolution_enums)
+    /// order.
+    ///
+    /// Returned as an iterator (zero-allocation) — callers that need a slice
+    /// can collect: `enum_names().collect::<Vec<_>>()`.  Used by
+    /// `reify_compiler::parse_with_stdlib` to feed
+    /// `reify_syntax::parse_with_prelude_enums` so prelude enums participate
+    /// in the parser's `EnumAccess` disambiguation pass.
+    pub fn enum_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.resolution_enums.iter().map(|e| e.name.as_str())
+    }
 }
