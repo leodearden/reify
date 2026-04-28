@@ -865,6 +865,25 @@ mod tests {
     use super::*;
     use crate::model::{AnnotationDoc, ItemDoc, ParamDoc};
 
+    /// Build a public `Structure` with the given annotations and params; all
+    /// other fields default to empty. Used by the pathological-arg tests to
+    /// reduce boilerplate.
+    fn make_structure(name: &str, anns: Vec<AnnotationDoc>, params: Vec<ParamDoc>) -> ItemDoc {
+        ItemDoc::Structure {
+            name: name.into(),
+            doc: None,
+            is_pub: true,
+            annotations: anns,
+            pragmas: vec![],
+            params,
+            ports: vec![],
+            constraints: vec![],
+            sub_components: vec![],
+            realizations: vec![],
+            meta: vec![],
+        }
+    }
+
     /// `@deprecated("first" + "second")` — pathological multi-quote concat arg —
     /// must NOT have the outer quotes stripped by `unquote`. The naïve strip would
     /// yield `> **Deprecated:** first" + "second` (outer `"` eaten); the
@@ -875,22 +894,14 @@ mod tests {
     /// `crate::util::unquote` rather than any local naive helper.
     #[test]
     fn deprecated_annotation_pathological_concat_arg_renders_unchanged() {
-        let item = ItemDoc::Structure {
-            name: "OldThing".into(),
-            doc: None,
-            is_pub: true,
-            annotations: vec![AnnotationDoc {
+        let item = make_structure(
+            "OldThing",
+            vec![AnnotationDoc {
                 name: "deprecated".into(),
                 args: vec!["\"first\" + \"second\"".into()],
             }],
-            pragmas: vec![],
-            params: vec![],
-            ports: vec![],
-            constraints: vec![],
-            sub_components: vec![],
-            realizations: vec![],
-            meta: vec![],
-        };
+            vec![],
+        );
         let mut out = String::new();
         render_item(&mut out, &item, None, &|n| format!("#{n}"));
 
@@ -918,22 +929,14 @@ mod tests {
     /// `tests/fmt_html_tests.rs:1101`.
     #[test]
     fn optimized_annotation_pathological_concat_arg_renders_unchanged() {
-        let item = ItemDoc::Structure {
-            name: "Bolt".into(),
-            doc: None,
-            is_pub: true,
-            annotations: vec![AnnotationDoc {
+        let item = make_structure(
+            "Bolt",
+            vec![AnnotationDoc {
                 name: "optimized".into(),
                 args: vec!["\"first\" + \"second\"".into()],
             }],
-            pragmas: vec![],
-            params: vec![],
-            ports: vec![],
-            constraints: vec![],
-            sub_components: vec![],
-            realizations: vec![],
-            meta: vec![],
-        };
+            vec![],
+        );
         let mut out = String::new();
         render_item(&mut out, &item, None, &|n| format!("#{n}"));
 
@@ -961,13 +964,10 @@ mod tests {
     /// parallels the html test at `tests/fmt_html_tests.rs:543`.
     #[test]
     fn solver_hint_annotation_pathological_concat_arg_renders_unchanged() {
-        let item = ItemDoc::Structure {
-            name: "Widget".into(),
-            doc: None,
-            is_pub: true,
-            annotations: vec![],
-            pragmas: vec![],
-            params: vec![ParamDoc {
+        let item = make_structure(
+            "Widget",
+            vec![],
+            vec![ParamDoc {
                 name: "strategy".into(),
                 doc: Some("Solver strategy.".into()),
                 type_repr: "String".into(),
@@ -977,12 +977,7 @@ mod tests {
                     args: vec!["\"first\" + \"second\"".into()],
                 }],
             }],
-            ports: vec![],
-            constraints: vec![],
-            sub_components: vec![],
-            realizations: vec![],
-            meta: vec![],
-        };
+        );
         let mut out = String::new();
         render_item(&mut out, &item, None, &|n| format!("#{n}"));
 
