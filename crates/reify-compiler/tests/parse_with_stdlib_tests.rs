@@ -112,30 +112,27 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
         parsed.errors
     );
 
-    // (b) Two EnumAccess nodes — CorrosionClass.C5 and BiocompatibilityClass.USP_Class_VI.
-    let mut enum_accesses: Vec<(String, String)> = Vec::new();
+    // (b) Exactly two EnumAccess nodes — CorrosionClass.C5 and
+    // BiocompatibilityClass.USP_Class_VI. Asserted as a set so adding new
+    // members to the fixture (param defaults OR let values) that introduce
+    // unrelated EnumAccess nodes will fail loudly here rather than silently
+    // change a count.
+    let mut enum_accesses: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     reify_test_support::walk_structure_exprs(&parsed, |expr| {
         if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
-            enum_accesses.push((type_name.clone(), variant.clone()));
+            enum_accesses.insert((type_name.clone(), variant.clone()));
         }
     });
-    // NOTE: walk_structure_exprs also visits `let` values in addition to `param` defaults.
-    // This source has only `param` members, so the count is exactly 2.  If a `let` binding
-    // containing an EnumAccess is ever added to the fixture above the count would increase.
+    let expected: std::collections::HashSet<(String, String)> = [
+        ("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string()),
+        ("CorrosionClass".to_string(), "C5".to_string()),
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(
-        enum_accesses.len(),
-        2,
-        "expected exactly 2 EnumAccess nodes (CorrosionClass.C5 + BiocompatibilityClass.USP_Class_VI), got: {:?}",
-        enum_accesses
-    );
-    assert!(
-        enum_accesses.contains(&("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string())),
-        "expected EnumAccess for BiocompatibilityClass.USP_Class_VI, got: {:?}",
-        enum_accesses
-    );
-    assert!(
-        enum_accesses.contains(&("CorrosionClass".to_string(), "C5".to_string())),
-        "expected EnumAccess for CorrosionClass.C5, got: {:?}",
+        enum_accesses, expected,
+        "expected exactly the prelude EnumAccess set, got: {:?}",
         enum_accesses
     );
 
