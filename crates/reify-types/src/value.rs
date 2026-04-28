@@ -2745,6 +2745,47 @@ mod tests {
         assert!(format!("{:?}", err).contains("boom"));
     }
 
+    // ── ErrorRef diagnostic code tests (task #2330 step-1) ──────────────────
+    //
+    // Pin the optional `code` field on `ErrorRef`: builders, accessors, and
+    // backward-compatible defaults. See arch §9.2 lines 880-890.
+
+    #[test]
+    fn test_error_ref_new_has_no_code_by_default() {
+        let err = ErrorRef::new("msg");
+        assert_eq!(err.code(), None);
+        // The message accessor is unaffected.
+        assert_eq!(err.message(), "msg");
+    }
+
+    #[test]
+    fn test_error_ref_with_code_sets_code() {
+        use crate::diagnostics::DiagnosticCode;
+        let err = ErrorRef::new("msg").with_code(DiagnosticCode::ConstraintViolated);
+        assert_eq!(err.code(), Some(DiagnosticCode::ConstraintViolated));
+        // The message accessor is unaffected by the builder.
+        assert_eq!(err.message(), "msg");
+    }
+
+    #[test]
+    fn test_error_ref_from_eval_error_defaults_code_to_none() {
+        let e = EvalError("boom".to_string());
+        let err: ErrorRef = e.into();
+        assert_eq!(err.code(), None);
+        assert_eq!(err.message(), "boom");
+    }
+
+    #[test]
+    fn test_error_ref_with_code_preserves_clone_eq() {
+        use crate::diagnostics::DiagnosticCode;
+        let err = ErrorRef::new("boom").with_code(DiagnosticCode::ConstraintViolated);
+        let err2 = err.clone();
+        assert_eq!(err, err2);
+        // Two ErrorRefs with the same message but different codes must NOT compare equal.
+        let plain = ErrorRef::new("boom");
+        assert_ne!(err, plain);
+    }
+
     #[test]
     fn test_eval_error_display() {
         let err = EvalError("division by zero".to_string());
