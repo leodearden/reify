@@ -4085,4 +4085,130 @@ mod tests {
              not short-circuit to all() via premature cycle-guard firing"
         );
     }
+
+    /// Regression for task-2543 / task-2458: `check_trait_arg_conformance` must
+    /// recurse into `ReflectiveCellList` elements the same way it recurses into
+    /// `ListLiteral` elements.
+    ///
+    /// # Why this test lives here (and cannot move to `tests/*.rs`)
+    ///
+    /// `ReflectiveCellList` is produced exclusively at activation time by
+    /// `expand_purpose_reflective_placeholders` (reify-eval), *after* compile-time
+    /// conformance has already run — there is no `compile_source(...)` string that
+    /// routes an RCL node into `check_trait_arg_conformance`. The fixture must be
+    /// hand-built, which requires `pub(crate)` access to
+    /// `check_trait_arg_conformance`. See the module-level comment above for the
+    /// full rationale shared by all unit tests in this block.
+    ///
+    /// # RED before the fix (task-2543)
+    ///
+    /// The `(Type::List, ListLiteral)` arm in `walk_param_against_arg` does not
+    /// match the `ReflectiveCellList` variant. The walker falls through to the
+    /// type-level fallback; `walk_param_against_arg_type(List<MS>, List<MS>)` sees
+    /// identical wrapper shapes and emits no diagnostic. The element's actual
+    /// `StructureRef("NotAMaterial")` is never inspected → 0 diagnostics.
+    ///
+    /// # GREEN after the fix (task-2543)
+    ///
+    /// The merged `ListLiteral | ReflectiveCellList` arm iterates the elements.
+    /// The leaf check sees `StructureRef("NotAMaterial")`, looks up "NotAMaterial"
+    /// (no `MaterialSpec` in `trait_bounds`), and emits
+    /// `TypeNotConformingToTrait`.
+    ///
+    /// # Fixture shape (design decision #3)
+    ///
+    /// The RCL `result_type` is set to `List<TraitObject("MaterialSpec")>` —
+    /// identical to the param type — so the type-level fallback finds no
+    /// wrapper-level mismatch. This is what makes the test RED before the fix:
+    /// only the dedicated literal arm can see the element's actual type.
+    #[test]
+    fn walk_param_against_arg_recurses_into_reflective_cell_list_elements() {
+        // ── Trait registry ────────────────────────────────────────────────────
+        let material_spec = CompiledTrait {
+            name: "MaterialSpec".to_string(),
+            is_pub: true,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("MaterialSpec".to_string(), &material_spec);
+
+        // ── Template registry ─────────────────────────────────────────────────
+        // "Host" template with one param: `ms : List<MaterialSpec>`.
+        let ms_cell = ValueCellDecl {
+            id: ValueCellId::new("Host", "ms"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Public,
+            cell_type: Type::List(Box::new(Type::TraitObject("MaterialSpec".to_string()))),
+            default_expr: None,
+            solver_hints: vec![],
+            span: SourceSpan::empty(0),
+        };
+        let host_template = minimal_template("Host", vec![ms_cell]);
+
+        // "NotAMaterial" template — no trait_bounds, so does NOT refine MaterialSpec.
+        let not_a_material = minimal_template("NotAMaterial", vec![]);
+
+        let mut template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        template_registry.insert("Host".to_string(), &host_template);
+        template_registry.insert("NotAMaterial".to_string(), &not_a_material);
+
+        // ── Hand-built RCL compiled arg ───────────────────────────────────────
+        // RCL result_type intentionally matches the param type (List<MaterialSpec>)
+        // so the type-level fallback finds no wrapper mismatch — the only way to
+        // catch the element violation is via the dedicated literal arm (task-2543
+        // design decision #3).
+        let elem = CompiledExpr::value_ref(
+            ValueCellId::new("E", "x"),
+            Type::StructureRef("NotAMaterial".to_string()),
+        );
+        let rcl = CompiledExpr::reflective_cell_list(
+            vec![elem],
+            Type::List(Box::new(Type::TraitObject("MaterialSpec".to_string()))),
+        );
+
+        // ── Invoke the walker ─────────────────────────────────────────────────
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_trait_arg_conformance(
+            "Host",
+            "ms",
+            &rcl,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+
+        // ── Assertions ────────────────────────────────────────────────────────
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic (RCL element 'NotAMaterial' does not conform \
+             to 'MaterialSpec'), got {}: {diagnostics:?}",
+            diagnostics.len(),
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToTrait),
+            "expected TypeNotConformingToTrait, got {:?}",
+            d.code,
+        );
+        assert!(
+            d.message.contains("NotAMaterial"),
+            "diagnostic message should mention 'NotAMaterial', got: {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.contains("MaterialSpec"),
+            "diagnostic message should mention 'MaterialSpec', got: {:?}",
+            d.message,
+        );
+    }
 }
