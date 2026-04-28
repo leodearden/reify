@@ -79,8 +79,8 @@ def main() -> None:
 
     errors: list[str] = []
     warnings: list[str] = []
-    # Per-tag list of (tag_name, tasks, known_ids) for subtask iteration.
-    tag_results: list[tuple[str, list, set]] = []
+    # Per-tag list of (tag_name, tasks, known_ids, subtasks_by_parent) for subtask iteration.
+    tag_results: list[tuple[str, list, set[str], dict[str, set[str]]]] = []
 
     for tag_name, tag_value in data.items():
         # Skip known metadata keys that are deliberately not tag namespaces.
