@@ -105,8 +105,8 @@ def main() -> None:
                 f" ('tasks' is {type(tasks_list).__name__!r}, expected list)"
             )
             continue
-        known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
-        tag_results.append((tag_name, tasks_list, known_ids))
+        known_ids, subtasks_by_parent = _validate_tasks(tasks_list, errors, context=tag_name)
+        tag_results.append((tag_name, tasks_list, known_ids, subtasks_by_parent))
 
     # Require at least one valid tag namespace when tag-like keys exist.
     # A file where every non-metadata key was WARN-skipped (malformed shape)
@@ -120,12 +120,12 @@ def main() -> None:
         )
 
     if args.check_subtasks:
-        for tag_name, tasks_list, known_ids in tag_results:
+        for tag_name, tasks_list, known_ids, subtasks_by_parent in tag_results:
             for task in tasks_list:
                 subtasks = task.get("subtasks", [])
                 if subtasks:
                     parent_id = task.get("id", "?")
-                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name)
+                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name, subtasks_by_parent=subtasks_by_parent)
 
     if errors:
         for err in errors:
@@ -138,10 +138,12 @@ def main() -> None:
         print(f"WARN: {warn}", file=sys.stderr)
 
 
-def _validate_tasks(tasks: list, errors: list, context: str) -> set:
+def _validate_tasks(tasks: list, errors: list, context: str) -> tuple:
     """Validate invariants 1-3 for a flat list of tasks.
 
-    Returns the set of known string IDs (for use by subtask validation).
+    Returns a tuple of (known_ids, subtasks_by_parent) where:
+    - known_ids is the set of known string IDs (for use by subtask validation)
+    - subtasks_by_parent maps each task id to the set of its subtask ids
     """
     prefix = f"{context}: " if context else ""
 
@@ -210,7 +212,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
                 f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
             )
 
-    return known_ids
+    return known_ids, subtasks_by_parent
 
 
 def _validate_subtasks(
@@ -220,6 +222,7 @@ def _validate_subtasks(
     errors: list,
     *,
     tag_context: str = "",
+    subtasks_by_parent: "dict[str, set[str]] | None" = None,
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
@@ -259,8 +262,10 @@ def _validate_subtasks(
         else:
             known_subtask_ids.add(sid)
 
-    # Invariant 2 for subtasks (deps may be sibling subtask ids or parent task ids).
+    # Invariant 2 for subtasks (deps may be sibling subtask ids, parent task ids,
+    # or dotted <parent>.<subtask> references resolved via subtasks_by_parent).
     allowed_ids = known_subtask_ids | parent_task_ids
+    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for sub in subtasks:
         sid = sub.get("id", "?")
         deps_raw = sub.get("dependencies", [])
@@ -274,10 +279,23 @@ def _validate_subtasks(
                 errors.append(
                     f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
-            elif dep not in allowed_ids:
-                errors.append(
-                    f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
-                )
+            elif dep in allowed_ids:
+                pass  # valid plain dep
+            else:
+                # Check dotted <parent>.<subtask> form (e.g. "2295.4" meaning
+                # subtask 4 of top-level task 2295).
+                m = dotted_re.fullmatch(dep)
+                if (
+                    m
+                    and subtasks_by_parent is not None
+                    and m.group(1) in parent_task_ids
+                    and m.group(2) in subtasks_by_parent.get(m.group(1), set())
+                ):
+                    pass  # valid dotted cross-task subtask ref
+                else:
+                    errors.append(
+                        f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
+                    )
 
 
 if __name__ == "__main__":
