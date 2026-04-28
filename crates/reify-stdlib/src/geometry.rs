@@ -4,6 +4,90 @@ use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
 
+/// Decompose a `Value::Vector` of exactly three components carrying a single
+/// shared dimension into its three finite f64 components and that dimension.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `v` is not a `Value::Vector` of length 3,
+/// - the three components have mixed dimensions, or
+/// - any component is non-numeric or non-finite.
+///
+/// Used by `decompose_transform` for the translation field and by
+/// `transform_exp` to validate the `angular` / `linear` fields of the input
+/// twist `Map`.
+fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
+    let items = match v {
+        Value::Vector(items) if items.len() == 3 => items,
+        _ => return None,
+    };
+    let dim = items[0].dimension();
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
+    let (a, b, c) = match (items[0].as_f64(), items[1].as_f64(), items[2].as_f64()) {
+        (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+        _ => return None,
+    };
+    Some(([a, b, c], dim))
+}
+
+/// `(w, x, y, z)` quaternion components extracted from a `Value::Orientation`.
+type QuatComponents = (f64, f64, f64, f64);
+
+/// Decomposed `Value::Transform`: rotation quaternion components, the three
+/// translation f64 components, and the shared dimension carried on the
+/// translation vector.
+type DecomposedTransform = (QuatComponents, [f64; 3], DimensionVector);
+
+/// Decompose a `Value::Transform` into its quaternion components, three
+/// translation f64 components, and the shared dimension carried on the
+/// translation vector.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `v` is not a `Value::Transform`,
+/// - `rotation` is not an `Orientation` or has non-finite components,
+/// - `translation` is not a `Vector` of exactly three components,
+/// - the three translation components have mixed dimensions, or
+/// - any component is non-numeric or non-finite.
+///
+/// This consolidates the destructure-and-validate pattern shared by
+/// `transform_compose`, `transform_inverse`, `transform_log`, and
+/// `transform_exp`.
+fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
+    let (rotation, translation) = match v {
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
+        _ => return None,
+    };
+    let (rw, rx, ry, rz) = match rotation {
+        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+        _ => return None,
+    };
+    if !quaternion_is_finite(rw, rx, ry, rz) {
+        return None;
+    }
+    let (t, dim) = decompose_vec3(translation)?;
+    Some(((rw, rx, ry, rz), t, dim))
+}
+
+/// Build a translation/twist component preserving the carried dimension:
+/// `DIMENSIONLESS → Value::Real(v)`, otherwise `Value::Scalar { si_value, dim }`.
+///
+/// This consolidates the inline closure shared by `transform_compose`,
+/// `transform_inverse`, `transform_log`, and `transform_exp`.
+fn make_dimensioned_component(dim: DimensionVector, value: f64) -> Value {
+    if dim.is_dimensionless() {
+        Value::Real(value)
+    } else {
+        Value::Scalar {
+            si_value: value,
+            dimension: dim,
+        }
+    }
+}
+
 pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         // --- Determinacy predicates (stubs) ---
@@ -201,19 +285,14 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 None => return Some(Value::Undef),
             };
             // Extract angular: must be Vector3<DIMENSIONLESS>.
-            let (ang_comps, ang_dim) = match tensor_components_f64(angular_val) {
-                Some(c) if c.0.len() == 3 => c,
-                _ => return Some(Value::Undef),
+            let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
             if ang_dim != DimensionVector::DIMENSIONLESS {
                 return Some(Value::Undef);
             }
-            let wx = ang_comps[0];
-            let wy = ang_comps[1];
-            let wz = ang_comps[2];
-            if !wx.is_finite() || !wy.is_finite() || !wz.is_finite() {
-                return Some(Value::Undef);
-            }
+            let (wx, wy, wz) = (ang_comps[0], ang_comps[1], ang_comps[2]);
             // Extract linear: must be Vector3 with a single shared dimension.
             //
             // Twist linear convention (polymorphic, mirrored on transform_log):
@@ -224,28 +303,14 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // This matches transform_log, which preserves the input translation's
             // dimension verbatim — so the round-trip log↔exp works for both
             // LENGTH and DIMENSIONLESS Transforms.
-            let (lin_items, _lin_dim_first) = match linear_val {
-                Value::Vector(items) if items.len() == 3 => {
-                    let dim0 = items[0].dimension();
-                    if items[1].dimension() != dim0 || items[2].dimension() != dim0 {
-                        return Some(Value::Undef);
-                    }
-                    (items.clone(), dim0)
-                }
-                _ => return Some(Value::Undef),
+            let (lin_comps, lin_dim) = match decompose_vec3(linear_val) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
-            let lin_dim = lin_items[0].dimension();
             if lin_dim != DimensionVector::LENGTH && lin_dim != DimensionVector::DIMENSIONLESS {
                 return Some(Value::Undef);
             }
-            let (lx, ly, lz) = match (
-                lin_items[0].as_f64(),
-                lin_items[1].as_f64(),
-                lin_items[2].as_f64(),
-            ) {
-                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
-                _ => return Some(Value::Undef),
-            };
+            let (lx, ly, lz) = (lin_comps[0], lin_comps[1], lin_comps[2]);
             // Compute R = orient_exp(angular).
             let theta_sq = wx * wx + wy * wy + wz * wz;
             let theta = theta_sq.sqrt();
@@ -288,17 +353,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if !tx.is_finite() || !ty.is_finite() || !tz.is_finite() {
                 return Some(Value::Undef);
             }
-            let dim = lin_dim;
-            let make_t = |v: f64| -> Value {
-                if dim.is_dimensionless() {
-                    Value::Real(v)
-                } else {
-                    Value::Scalar { si_value: v, dimension: dim }
-                }
-            };
             Value::Transform {
                 rotation: Box::new(r_val),
-                translation: Box::new(Value::Vector(vec![make_t(tx), make_t(ty), make_t(tz)])),
+                translation: Box::new(Value::Vector(vec![
+                    make_dimensioned_component(lin_dim, tx),
+                    make_dimensioned_component(lin_dim, ty),
+                    make_dimensioned_component(lin_dim, tz),
+                ])),
             }
         }
 
@@ -306,35 +367,11 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 1 {
                 return Some(Value::Undef);
             }
-            let (r_q, t_items) = match &args[0] {
-                Value::Transform { rotation, translation } => {
-                    match (rotation.as_ref(), translation.as_ref()) {
-                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
-                            ((*w, *x, *y, *z), items.clone())
-                        }
-                        _ => return Some(Value::Undef),
-                    }
-                }
-                _ => return Some(Value::Undef),
+            let (r_q, t, t_dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
-            if !quaternion_is_finite(r_q.0, r_q.1, r_q.2, r_q.3) {
-                return Some(Value::Undef);
-            }
-            if t_items.len() != 3 {
-                return Some(Value::Undef);
-            }
-            let t_dim = t_items[0].dimension();
-            if t_items[1].dimension() != t_dim || t_items[2].dimension() != t_dim {
-                return Some(Value::Undef);
-            }
-            let (tx, ty, tz) = match (
-                t_items[0].as_f64(),
-                t_items[1].as_f64(),
-                t_items[2].as_f64(),
-            ) {
-                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
-                _ => return Some(Value::Undef),
-            };
+            let (tx, ty, tz) = (t[0], t[1], t[2]);
             // Compute angular = orient_log(R): rotation vector ω.
             let (rw, rx, ry, rz) = r_q;
             // Normalize quaternion first.
@@ -398,14 +435,6 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
                 return Some(Value::Undef);
             }
-            let dim = t_dim;
-            let make_lin = |v: f64| -> Value {
-                if dim.is_dimensionless() {
-                    Value::Real(v)
-                } else {
-                    Value::Scalar { si_value: v, dimension: dim }
-                }
-            };
             let mut m = BTreeMap::new();
             m.insert(
                 Value::String("angular".to_string()),
@@ -417,7 +446,11 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             );
             m.insert(
                 Value::String("linear".to_string()),
-                Value::Vector(vec![make_lin(lx), make_lin(ly), make_lin(lz)]),
+                Value::Vector(vec![
+                    make_dimensioned_component(t_dim, lx),
+                    make_dimensioned_component(t_dim, ly),
+                    make_dimensioned_component(t_dim, lz),
+                ]),
             );
             Value::Map(m)
         }
@@ -426,34 +459,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 1 {
                 return Some(Value::Undef);
             }
-            let (r_q, t_items) = match &args[0] {
-                Value::Transform { rotation, translation } => {
-                    match (rotation.as_ref(), translation.as_ref()) {
-                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
-                            ((*w, *x, *y, *z), items.clone())
-                        }
-                        _ => return Some(Value::Undef),
-                    }
-                }
-                _ => return Some(Value::Undef),
-            };
-            if !quaternion_is_finite(r_q.0, r_q.1, r_q.2, r_q.3) {
-                return Some(Value::Undef);
-            }
-            if t_items.len() != 3 {
-                return Some(Value::Undef);
-            }
-            let t_dim = t_items[0].dimension();
-            if t_items[1].dimension() != t_dim || t_items[2].dimension() != t_dim {
-                return Some(Value::Undef);
-            }
-            let (tx, ty, tz) = match (
-                t_items[0].as_f64(),
-                t_items[1].as_f64(),
-                t_items[2].as_f64(),
-            ) {
-                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
-                _ => return Some(Value::Undef),
+            let (r_q, t, t_dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
             // Normalize R first to be safe with non-unit input quaternions.
             let r_norm_sq = r_q.0 * r_q.0 + r_q.1 * r_q.1 + r_q.2 * r_q.2 + r_q.3 * r_q.3;
@@ -474,21 +482,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 None => return Some(Value::Undef),
             };
             // Inverse translation: t_inv = -R^-1 * t.
-            let (rtx, rty, rtz) = quat_rotate(r_inv, tx, ty, tz);
-            let dim = t_dim;
-            let make_component = |v: f64| -> Value {
-                if dim.is_dimensionless() {
-                    Value::Real(v)
-                } else {
-                    Value::Scalar { si_value: v, dimension: dim }
-                }
-            };
+            let (rtx, rty, rtz) = quat_rotate(r_inv, t[0], t[1], t[2]);
             Value::Transform {
                 rotation: Box::new(r_inv_val),
                 translation: Box::new(Value::Vector(vec![
-                    make_component(-rtx),
-                    make_component(-rty),
-                    make_component(-rtz),
+                    make_dimensioned_component(t_dim, -rtx),
+                    make_dimensioned_component(t_dim, -rty),
+                    make_dimensioned_component(t_dim, -rtz),
                 ])),
             }
         }
@@ -497,56 +497,17 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
-            let (r1_q, t1_items) = match &args[0] {
-                Value::Transform { rotation, translation } => {
-                    match (rotation.as_ref(), translation.as_ref()) {
-                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
-                            ((*w, *x, *y, *z), items.clone())
-                        }
-                        _ => return Some(Value::Undef),
-                    }
-                }
-                _ => return Some(Value::Undef),
+            let (r1_q, t1, t1_dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
-            let (r2_q, t2_items) = match &args[1] {
-                Value::Transform { rotation, translation } => {
-                    match (rotation.as_ref(), translation.as_ref()) {
-                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
-                            ((*w, *x, *y, *z), items.clone())
-                        }
-                        _ => return Some(Value::Undef),
-                    }
-                }
-                _ => return Some(Value::Undef),
+            let (r2_q, t2, t2_dim) = match decompose_transform(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
-            if !quaternion_is_finite(r1_q.0, r1_q.1, r1_q.2, r1_q.3)
-                || !quaternion_is_finite(r2_q.0, r2_q.1, r2_q.2, r2_q.3)
-            {
-                return Some(Value::Undef);
-            }
-            // Extract translation components and shared dimension.
-            if t1_items.len() != 3 || t2_items.len() != 3 {
-                return Some(Value::Undef);
-            }
-            let t1_dim = t1_items[0].dimension();
-            if t1_items[1].dimension() != t1_dim || t1_items[2].dimension() != t1_dim {
-                return Some(Value::Undef);
-            }
-            let t2_dim = t2_items[0].dimension();
-            if t2_items[1].dimension() != t2_dim || t2_items[2].dimension() != t2_dim {
-                return Some(Value::Undef);
-            }
             if t1_dim != t2_dim {
                 return Some(Value::Undef);
             }
-            let (t1x, t1y, t1z) = match (t1_items[0].as_f64(), t1_items[1].as_f64(), t1_items[2].as_f64()) {
-                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
-                _ => return Some(Value::Undef),
-            };
-            let (t2x, t2y, t2z) = match (t2_items[0].as_f64(), t2_items[1].as_f64(), t2_items[2].as_f64()) {
-                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
-                _ => return Some(Value::Undef),
-            };
             // Normalize R1 (matches operator-level semantics in reify-expr).
             let r1_norm_sq =
                 r1_q.0 * r1_q.0 + r1_q.1 * r1_q.1 + r1_q.2 * r1_q.2 + r1_q.3 * r1_q.3;
@@ -562,26 +523,19 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             );
             // R = R1 * R2 (Hamilton product), then normalize.
             let composed_r = quat_mul(r1_n, r2_q);
-            let r_val = match normalize_quaternion(composed_r.0, composed_r.1, composed_r.2, composed_r.3) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
+            let r_val =
+                match normalize_quaternion(composed_r.0, composed_r.1, composed_r.2, composed_r.3) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
             // t = R1 * t2 + t1.
-            let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2x, t2y, t2z);
-            let dim = t1_dim;
-            let make_component = |v: f64| -> Value {
-                if dim.is_dimensionless() {
-                    Value::Real(v)
-                } else {
-                    Value::Scalar { si_value: v, dimension: dim }
-                }
-            };
+            let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
             Value::Transform {
                 rotation: Box::new(r_val),
                 translation: Box::new(Value::Vector(vec![
-                    make_component(rt2x + t1x),
-                    make_component(rt2y + t1y),
-                    make_component(rt2z + t1z),
+                    make_dimensioned_component(t1_dim, rt2x + t1[0]),
+                    make_dimensioned_component(t1_dim, rt2y + t1[1]),
+                    make_dimensioned_component(t1_dim, rt2z + t1[2]),
                 ])),
             }
         }
