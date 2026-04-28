@@ -64,6 +64,7 @@ pub(crate) use units::*;
 pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyPredicateKind,
@@ -122,14 +123,24 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 ///
 /// Reads the cached `&'static PreludeContext` from
 /// [`stdlib_loader::load_stdlib_context`] (no fresh stdlib compile),
-/// flattens its enum names into a `Vec<&str>`, and delegates to
-/// [`reify_syntax::parse_with_prelude_enums`].
+/// memoizes its flattened enum-name list in a process-global `OnceLock`,
+/// and delegates to [`reify_syntax::parse_with_prelude_enums`].  This keeps
+/// hot edit-loop callers (LSP recompiles per keystroke, GUI engine
+/// reloads) from re-collecting the same `&'static str`s on every parse.
+///
+/// **TODO(perf):** the parser side still heap-allocates one `String` per
+/// name into its `known_enums: HashSet<String>` on every call.  A future
+/// optimization could thread the set through as `&HashSet<&'static str>`
+/// so the prelude side participates as a borrow.  N is small today; profile
+/// before changing the parser API.
 pub fn parse_with_stdlib(
     source: &str,
     module_path: reify_types::ModulePath,
 ) -> reify_syntax::ParsedModule {
-    let names: Vec<&str> = stdlib_loader::load_stdlib_context().enum_names().collect();
-    reify_syntax::parse_with_prelude_enums(source, module_path, &names)
+    static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
+    let names: &Vec<&'static str> =
+        NAMES.get_or_init(|| stdlib_loader::load_stdlib_context().enum_names().collect());
+    reify_syntax::parse_with_prelude_enums(source, module_path, names)
 }
 
 /// Compile a parsed module with prelude definitions available for resolution.
