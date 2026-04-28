@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
@@ -180,6 +182,114 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 }
                 None => Value::Undef,
             }
+        }
+
+        "transform_log" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (r_q, t_items) = match &args[0] {
+                Value::Transform { rotation, translation } => {
+                    match (rotation.as_ref(), translation.as_ref()) {
+                        (Value::Orientation { w, x, y, z }, Value::Vector(items)) => {
+                            ((*w, *x, *y, *z), items.clone())
+                        }
+                        _ => return Some(Value::Undef),
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(r_q.0, r_q.1, r_q.2, r_q.3) {
+                return Some(Value::Undef);
+            }
+            if t_items.len() != 3 {
+                return Some(Value::Undef);
+            }
+            let t_dim = t_items[0].dimension();
+            if t_items[1].dimension() != t_dim || t_items[2].dimension() != t_dim {
+                return Some(Value::Undef);
+            }
+            let (tx, ty, tz) = match (
+                t_items[0].as_f64(),
+                t_items[1].as_f64(),
+                t_items[2].as_f64(),
+            ) {
+                (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+                _ => return Some(Value::Undef),
+            };
+            // Compute angular = orient_log(R): rotation vector ω.
+            let (rw, rx, ry, rz) = r_q;
+            // Normalize quaternion first.
+            let r_norm_sq = rw * rw + rx * rx + ry * ry + rz * rz;
+            if r_norm_sq < f64::EPSILON {
+                return Some(Value::Undef);
+            }
+            let r_norm = r_norm_sq.sqrt();
+            let (nw, nx, ny, nz) = (rw / r_norm, rx / r_norm, ry / r_norm, rz / r_norm);
+            let v_norm = (nx * nx + ny * ny + nz * nz).sqrt();
+            const EPS: f64 = 1e-12;
+            let (wx, wy, wz) = if v_norm < EPS {
+                // Near-identity → ω ≈ 2*(x,y,z) (Taylor leading order).
+                (2.0 * nx, 2.0 * ny, 2.0 * nz)
+            } else {
+                let angle = 2.0 * v_norm.atan2(nw);
+                let scale = angle / v_norm;
+                (scale * nx, scale * ny, scale * nz)
+            };
+            if !wx.is_finite() || !wy.is_finite() || !wz.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Compute V_inv * t where V is the SE(3) left Jacobian.
+            // |ω|² is the squared magnitude of the rotation vector.
+            let theta_sq = wx * wx + wy * wy + wz * wz;
+            let theta = theta_sq.sqrt();
+            // Apply V_inv = I − 0.5*[ω]× + α*[ω]×², where
+            //   α = 1/|ω|² − cot(|ω|/2)/(2|ω|).
+            // For small |ω|, use Taylor: α ≈ 1/12 + |ω|²/720 + ...
+            // Use the small-angle Taylor when theta < ~1e-4 to keep FP accurate.
+            let alpha = if theta < 1.0e-4 {
+                1.0 / 12.0 + theta_sq / 720.0
+            } else {
+                let half = theta / 2.0;
+                let cot_half = half.cos() / half.sin();
+                1.0 / theta_sq - cot_half / (2.0 * theta)
+            };
+            // [ω]× t = ω × t (cross product).
+            let cx = wy * tz - wz * ty;
+            let cy = wz * tx - wx * tz;
+            let cz = wx * ty - wy * tx;
+            // [ω]×² t = ω × (ω × t).
+            let ccx = wy * cz - wz * cy;
+            let ccy = wz * cx - wx * cz;
+            let ccz = wx * cy - wy * cx;
+            let lx = tx - 0.5 * cx + alpha * ccx;
+            let ly = ty - 0.5 * cy + alpha * ccy;
+            let lz = tz - 0.5 * cz + alpha * ccz;
+            if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
+                return Some(Value::Undef);
+            }
+            let dim = t_dim;
+            let make_lin = |v: f64| -> Value {
+                if dim.is_dimensionless() {
+                    Value::Real(v)
+                } else {
+                    Value::Scalar { si_value: v, dimension: dim }
+                }
+            };
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("angular".to_string()),
+                Value::Vector(vec![
+                    Value::Real(wx),
+                    Value::Real(wy),
+                    Value::Real(wz),
+                ]),
+            );
+            m.insert(
+                Value::String("linear".to_string()),
+                Value::Vector(vec![make_lin(lx), make_lin(ly), make_lin(lz)]),
+            );
+            Value::Map(m)
         }
 
         "transform_inverse" => {
