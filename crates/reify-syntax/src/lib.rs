@@ -282,16 +282,26 @@ where
     }
     for member in members {
         visitor(member);
-        // Spec §8.7 nested-sub criterion: a nested SubDecl whose own body
-        // is `Some(_)` opens its own specialization scope. Visit the outer
-        // Sub first (so visitor sees the parent before its children), then
-        // descend.
-        if let MemberDecl::Sub(s) = member
-            && let Some(nested) = s.body.as_ref()
-        {
-            walk_members_depth(nested, visitor, depth + 1);
+        match member {
+            // Spec §8.7 nested-sub criterion: a nested SubDecl whose own
+            // body is `Some(_)` opens its own specialization scope. Visit
+            // the outer Sub first (parent-before-children), then descend.
+            MemberDecl::Sub(s) => {
+                if let Some(nested) = s.body.as_ref() {
+                    walk_members_depth(nested, visitor, depth + 1);
+                }
+            }
+            // Spec §8.7 + shadow_lint.rs:39-43: `where { … } else { … }`
+            // members are siblings inside the enclosing specialization
+            // scope. Recurse into both branches so the visitor sees their
+            // members at the same logical level as the parent's other
+            // direct children.
+            MemberDecl::GuardedGroup(g) => {
+                walk_members_depth(&g.members, visitor, depth + 1);
+                walk_members_depth(&g.else_members, visitor, depth + 1);
+            }
+            _ => {}
         }
-        // GuardedGroup recursion is added in step 8.
     }
 }
 
