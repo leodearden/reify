@@ -4536,4 +4536,190 @@ mod tests {
             "is_watertight(body) with kernel returning Bool(true) must produce Some(Bool(true))"
         );
     }
+
+    /// Test-local wrapper around `MockGeometryKernel` that increments a
+    /// counter on every `query()` call. Used to assert that
+    /// `try_eval_conformance_query` short-circuits *before* consulting
+    /// the kernel along the early-return paths (non-helper name, bad
+    /// arg shape, unresolvable cell name, user-asserted marker trait).
+    struct RecordingMockKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        query_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RecordingMockKernel {
+        fn new(inner: reify_test_support::mocks::MockGeometryKernel) -> Self {
+            Self {
+                inner,
+                query_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn query_count(&self) -> usize {
+            self.query_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl reify_types::GeometryKernel for RecordingMockKernel {
+        fn execute(
+            &mut self,
+            op: &reify_types::GeometryOp,
+        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            query: &reify_types::GeometryQuery,
+        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            self.query_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.query(query)
+        }
+
+        fn export(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            format: reify_types::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_types::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+    }
+
+    /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
+    fn conformance_call_literal_arg(helper_name: &str) -> reify_types::CompiledExpr {
+        let arg = reify_types::CompiledExpr::literal(
+            reify_types::Value::Real(1.0),
+            reify_types::Type::Real,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_types::Type::Bool,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn try_eval_conformance_query_non_helper_name_returns_none_no_kernel_call() {
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        // `volume` is a real stdlib function name but NOT one of the three
+        // recognised conformance helpers. The dispatch must return None.
+        let expr = conformance_call("volume", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "non-helper name 'volume' must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted for non-helper names"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_literal_arg_returns_none_no_kernel_call() {
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+
+        // `is_watertight(1.0)` — recognised helper name but the arg is a
+        // literal, not a `ValueRef`. The dispatch must return None *and*
+        // never consult the kernel.
+        let expr = conformance_call_literal_arg("is_watertight");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "is_watertight(<literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_unresolvable_member_returns_none_no_kernel_call() {
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel = RecordingMockKernel::new(inner);
+
+        // `named_steps` contains "body" but the call references "ghost",
+        // which is not present. The dispatch must return None and never
+        // consult the kernel.
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "ghost");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "unresolvable cell-member 'ghost' must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted when the cell-member name is absent"
+        );
+    }
 }
