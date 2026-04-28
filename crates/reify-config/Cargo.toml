@@ -1,0 +1,13 @@
+[package]
+name = "reify-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Project manifest (reify.toml) schema, parser, and validator for Reify"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
