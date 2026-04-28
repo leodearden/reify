@@ -26,6 +26,7 @@ use reify_compiler::geometry_traits_inference::{
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
     CompiledExpr, CompiledExprKind, ContentHash, DiagnosticCode, ResolvedFunction, Type, Value,
+    ValueCellId,
 };
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
@@ -588,6 +589,32 @@ fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
 }
 
 // ─── GEOMETRY_FUNCTION_NAMES ↔ infer_traits_for_function_call coverage ──────
+
+// ─── Tripwire / expectation-pinning: ValueRef safe-default ──────────────────
+
+/// Documents the soundness gap: `infer_traits_for_expr` returns
+/// `InferredTraits::all()` (safe-default-Bounded) for any `ValueRef` — i.e.
+/// the env-less wrapper has no way to resolve `let g = union(box, box); Foo(g: g)`
+/// and therefore assumes the ref is fully Bounded+Connected+Convex.
+///
+/// This test MUST remain green throughout and after the env-aware fix
+/// (step-5 / step-8 below) because `infer_traits_for_expr` continues to use
+/// `EmptyLetEnv` after the refactor — the env-less wrapper preserves the
+/// `_ => all()` safe-default for unbound `ValueRef`s. The actual fix is
+/// exercised through `infer_traits_for_expr_in_env` with a non-empty env,
+/// which is tested in the `infer_traits_for_expr_in_env_*` suite below.
+#[test]
+fn infer_traits_for_expr_value_ref_returns_all_safe_default() {
+    let value_ref =
+        CompiledExpr::value_ref(ValueCellId::new("E", "g"), Type::Geometry);
+    assert_eq!(
+        infer_traits_for_expr(&value_ref),
+        InferredTraits::all(),
+        "infer_traits_for_expr(ValueRef) must return InferredTraits::all() \
+         (safe-default-Bounded) when no env is supplied — this is the deliberate \
+         soundness gap that the env-aware extension fixes"
+    );
+}
 
 /// Every name in `GEOMETRY_FUNCTION_NAMES` must hit an **explicit** arm in
 /// `infer_traits_for_function_call` — `try_infer_traits_for_function_call`
