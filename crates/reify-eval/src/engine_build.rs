@@ -89,12 +89,11 @@ impl Engine {
                         );
                     }
                 }
-                // Task 2320: post-process conformance-query helpers
-                // (is_watertight / is_manifold / is_orientable) for cells in
-                // this template, now that `named_steps` has been populated by
-                // the realization loop above.  Patches `Value::Bool(_)` into
-                // the `ValueMap` for cells whose `default_expr` is a recognised
-                // conformance call; leaves all other cells untouched.
+                // Task 2320: see `Engine::post_process_conformance_queries`
+                // docstring for the full contract. Mirrored in `build` and
+                // `tessellate_from_values` — keep all four call sites in
+                // sync (follow-up: the broader build/build_snapshot
+                // realization-loop duplication is tracked separately).
                 Engine::post_process_conformance_queries(
                     template,
                     &named_steps,
@@ -195,12 +194,12 @@ impl Engine {
                         );
                     }
                 }
-                // Task 2320: post-process conformance-query helpers
-                // (is_watertight / is_manifold / is_orientable) for cells in
-                // this template, now that `named_steps` has been populated by
-                // the realization loop above.  Patches `Value::Bool(_)` into
-                // the `ValueMap` for cells whose `default_expr` is a recognised
-                // conformance call; leaves all other cells untouched.
+                // Task 2320: see `Engine::post_process_conformance_queries`
+                // docstring for the full contract. Mirrored in
+                // `build_snapshot` and `tessellate_from_values` — keep all
+                // four call sites in sync (follow-up: the broader
+                // build/build_snapshot realization-loop duplication is
+                // tracked separately).
                 Engine::post_process_conformance_queries(
                     template,
                     &named_steps,
@@ -376,13 +375,11 @@ impl Engine {
                     }
                 }
             }
-            // Task 2320 amendment: post-process conformance-query helpers
-            // (`is_watertight` / `is_manifold` / `is_orientable`) for cells
-            // in this template, mirroring the wire-up in `build` and
-            // `build_snapshot`. Without this, `TessellateResult.values`
-            // would expose `Value::Undef` for these cells while
-            // `BuildResult.values` exposes the kernel-resolved `Bool` —
-            // a divergence that confuses GUI overlays consuming both.
+            // Task 2320 amendment: mirrors the `build` / `build_snapshot`
+            // wire-up so `TessellateResult.values` exposes the same
+            // kernel-resolved `Bool` for conformance-query cells as
+            // `BuildResult.values`. See
+            // `Engine::post_process_conformance_queries` docstring.
             Engine::post_process_conformance_queries(
                 template,
                 &named_steps,
