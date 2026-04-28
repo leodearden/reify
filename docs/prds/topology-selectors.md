@@ -165,6 +165,12 @@ Also references #318, #319 (existing selector FFI pattern) and #249
 6. **Stale-tag diagnostic `W_TOPOLOGY_TAG_STALE`** with source-span
    surface mapping. Test: edit profile → tagged feature disappears →
    exactly one warning emitted, span points to original selector site.
+   — **Implemented (task 2332):** `DiagnosticCode::TopologyTagStale` in
+   `crates/reify-types/src/diagnostics.rs`; resolver building-block
+   `resolve_unique_by_tag` in `crates/reify-eval/src/topology_selectors.rs`
+   (covered by three unit tests: 1-match / 0-match / N>1-match).
+   Re-routing existing filter selectors through the resolver is tracked
+   separately under task 5 (task 2329 in the queue).
 7. **Worked-example smoke tests** — the two examples from this PRD
    (`block_inertia`, `fillet_top_edges`) shipped as `.ri` example files
    under `examples/topology_selectors/` and exercised by the eval test
