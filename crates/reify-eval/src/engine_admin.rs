@@ -754,4 +754,66 @@ mod tests {
         engine.clear_panic_on_eval();
         assert!(engine.panic_on_eval_cells.is_empty());
     }
+
+    /// `Engine::freshness` is a stable always-public read accessor (no cfg
+    /// gate) that returns `Freshness::Final` for unknown nodes and correctly
+    /// reflects the cache state after a forced-panic eval.
+    ///
+    /// (a) On a fresh engine with no eval, unknown node → `Freshness::Final`.
+    /// (b) After `set_panic_on_eval(cell)` + `eval()`, the cell's node →
+    ///     `Freshness::Failed { error }`.
+    ///
+    /// Step-1 test: this will fail until `Engine::freshness` is implemented
+    /// in step-2 (the method does not yet exist).
+    #[test]
+    fn freshness_returns_final_for_unknown_node_and_failed_after_forced_panic() {
+        use crate::cache::NodeId;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::{Freshness, ModulePath, Type, Value, ValueCellId};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // (a) Unknown node → Final (default) even before any eval.
+        let unknown = ValueCellId::new("Ghost", "x");
+        let unknown_node = NodeId::Value(unknown.clone());
+        assert_eq!(
+            engine.freshness(&unknown_node),
+            Freshness::Final,
+            "freshness of an unknown node must default to Freshness::Final"
+        );
+
+        // Build a 1-cell synthetic module: `let b = 1.0` in template T.
+        let b_id = ValueCellId::new("T", "b");
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .let_binding(
+                        "T",
+                        "b",
+                        Type::Real,
+                        reify_test_support::builders::literal(Value::Real(1.0)),
+                    )
+                    .build(),
+            )
+            .build();
+
+        // (b) Force a panic on `b`; after eval the cache must record Failed.
+        engine.set_panic_on_eval(b_id.clone());
+        let _ = engine.eval(&module);
+
+        let b_node = NodeId::Value(b_id.clone());
+        match engine.freshness(&b_node) {
+            Freshness::Failed { error } => {
+                assert!(
+                    !error.message().is_empty(),
+                    "Failed error message must be non-empty"
+                );
+            }
+            other => panic!(
+                "expected Freshness::Failed after forced-panic eval, got {:?}",
+                other
+            ),
+        }
+    }
 }
