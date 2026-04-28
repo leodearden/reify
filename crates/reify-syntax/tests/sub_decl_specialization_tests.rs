@@ -17,8 +17,8 @@
 //! coverage) build on this AST contract.
 
 use reify_syntax::{
-    ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, SubDecl,
-    walk_specialization_scope_members,
+    ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MemberDecl, ParamDecl,
+    SubDecl, walk_specialization_scope_members,
 };
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
@@ -228,5 +228,39 @@ fn walker_does_not_recurse_when_nested_sub_body_is_none() {
     assert_eq!(
         count, 1,
         "walker should visit only the outer Sub member when its nested body is None"
+    );
+}
+
+// ── (d) walker recurses into GuardedGroup branches ──────────────────────
+
+#[allow(dead_code)]
+fn make_guarded_group(
+    members: Vec<MemberDecl>,
+    else_members: Vec<MemberDecl>,
+) -> MemberDecl {
+    MemberDecl::GuardedGroup(GuardedGroupDecl {
+        condition: dummy_expr(),
+        members,
+        else_members,
+        span: dummy_span(),
+        content_hash: dummy_hash(),
+    })
+}
+
+#[test]
+fn walker_recurses_into_guarded_group_branches() {
+    // SubDecl{body: Some([ GuardedGroup{ then=[Param("a")], else=[Constraint] } ])}
+    // The walker must visit the GuardedGroup itself first, then recurse
+    // into the `then` branch (Param), then the `else` branch (Constraint).
+    let group = make_guarded_group(vec![make_param("a")], vec![make_constraint()]);
+    let sub = make_sub_with_body("scope", Some(vec![group]));
+
+    let mut tags = Vec::<Tag>::new();
+    walk_specialization_scope_members(&sub, &mut |m| tags.push(tag_of(m)));
+
+    assert_eq!(
+        tags,
+        vec![Tag::GuardedGroup, Tag::Param, Tag::Constraint],
+        "walker must visit the GuardedGroup, then its `then` members, then its `else` members"
     );
 }
