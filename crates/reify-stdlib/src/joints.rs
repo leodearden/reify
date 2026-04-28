@@ -1198,6 +1198,136 @@ mod tests {
         );
     }
 
+    // ── couple constructor: validation rejections ────────────────────────────
+
+    #[test]
+    fn couple_zero_args_returns_undef() {
+        assert!(eval_builtin("couple", &[]).is_undef(), "0 args should return Undef");
+    }
+
+    #[test]
+    fn couple_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint()]).is_undef(),
+            "1 arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_four_args_returns_undef() {
+        assert!(
+            eval_builtin("couple", &[
+                prismatic_x_joint(),
+                Value::Real(1.0),
+                Value::length(0.0),
+                Value::Real(0.0),
+            ]).is_undef(),
+            "4 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_non_map_parent_returns_undef() {
+        assert!(
+            eval_builtin("couple", &[Value::Real(1.0), Value::Real(1.0)]).is_undef(),
+            "non-Map parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_map_missing_kind_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            eval_builtin("couple", &[Value::Map(m), Value::Real(1.0)]).is_undef(),
+            "Map parent missing kind key should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_coupling_parent_returns_undef() {
+        // nested coupling is rejected — kind="coupling" is not a DrivingJoint
+        let inner = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("couple", &[inner, Value::Real(1.0)]).is_undef(),
+            "coupling parent (kind='coupling') should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_unknown_parent_kind_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            eval_builtin("couple", &[Value::Map(m), Value::Real(1.0)]).is_undef(),
+            "parent kind='sliding' should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_string_ratio_returns_undef() {
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint(), Value::String("bad".to_string())]).is_undef(),
+            "String ratio should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_nan_ratio_returns_undef() {
+        // NaN ratio must be rejected — only finites are valid
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint(), Value::Real(f64::NAN)]).is_undef(),
+            "NaN ratio should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_inf_ratio_returns_undef() {
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint(), Value::Real(f64::INFINITY)]).is_undef(),
+            "Infinite ratio should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_dimensioned_ratio_returns_undef() {
+        // a Length Scalar as ratio is not dimensionless — must be rejected
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint(), Value::length(1.0)]).is_undef(),
+            "dimensioned ratio should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_prismatic_wrong_offset_dim_returns_undef() {
+        use reify_types::DimensionVector;
+        let mass_offset = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), mass_offset]).is_undef(),
+            "MASS offset for prismatic parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_revolute_wrong_offset_dim_returns_undef() {
+        // Length offset for a revolute parent (needs Angle or bare Real)
+        assert!(
+            eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0), Value::length(1.0)]).is_undef(),
+            "Length offset for revolute parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn couple_prismatic_nan_offset_returns_undef() {
+        assert!(
+            eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), Value::Real(f64::NAN)]).is_undef(),
+            "NaN offset should return Undef"
+        );
+    }
+
     // ── joint_range accessor ─────────────────────────────────────────────────
 
     #[test]
