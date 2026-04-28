@@ -1126,3 +1126,143 @@ structure S {
         l0.span
     );
 }
+
+/// Statement-form `forall ... : connect ...` whose bound variable matches an
+/// entity-scope `param` MUST emit one Shadowing warning. Mirrors the
+/// expression-form `quantifier_variable_shadows_entity_param_emits_w_shadow`
+/// case but exercises the `MemberDecl::ForallConnect` arm in
+/// `walk_members_depth` (shadow_lint.rs:472-499) — the statement-form binder
+/// must produce the same shadow diagnostic as the expression-form binder for
+/// behavioral consistency between the two `forall` surfaces.
+#[test]
+fn forall_connect_variable_shadows_entity_param_emits_w_shadow() {
+    let source = r#"
+structure S {
+    param v : Real = 0
+    forall v in [1, 2, 3]: connect v.inlet -> housing.air_channel
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning for forall-connect-shadow case, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(
+        warning.labels.len(),
+        2,
+        "Shadowing warning must carry two labels (child + original), got: {:?}",
+        warning.labels
+    );
+
+    let l0 = &warning.labels[0];
+    let l1 = &warning.labels[1];
+    assert!(
+        !l0.span.is_empty(),
+        "child-site label span must be non-empty, got: {:?}",
+        l0.span
+    );
+    assert!(
+        !l1.span.is_empty(),
+        "original-decl label span must be non-empty, got: {:?}",
+        l1.span
+    );
+    assert_ne!(
+        l0.span, l1.span,
+        "child-site and original-decl spans must be distinct, both = {:?}",
+        l0.span
+    );
+
+    // The original-decl span (l1) lies on the entity's `param v`, which appears
+    // BEFORE the forall statement — assert l1 precedes l0.
+    assert!(
+        l1.span.start < l0.span.start,
+        "original-decl span ({:?}) must precede the child-site span ({:?})",
+        l1.span,
+        l0.span
+    );
+}
+
+/// Statement-form `forall ... : constraint ...` whose bound variable matches
+/// an entity-scope `param` MUST emit one Shadowing warning. Mirrors the
+/// expression-form `quantifier_variable_shadows_entity_param_emits_w_shadow`
+/// case but exercises the `MemberDecl::ForallConstraint` arm in
+/// `walk_members_depth` (shadow_lint.rs:500-527) — the statement-form binder
+/// must produce the same shadow diagnostic as the expression-form binder for
+/// behavioral consistency between the two `forall` surfaces.
+#[test]
+fn forall_constraint_variable_shadows_entity_param_emits_w_shadow() {
+    let source = r#"
+structure S {
+    param v : Real = 0
+    forall v in [1, 2, 3]: constraint v > 0
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning for forall-constraint-shadow case, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(
+        warning.labels.len(),
+        2,
+        "Shadowing warning must carry two labels (child + original), got: {:?}",
+        warning.labels
+    );
+
+    let l0 = &warning.labels[0];
+    let l1 = &warning.labels[1];
+    assert!(
+        !l0.span.is_empty(),
+        "child-site label span must be non-empty, got: {:?}",
+        l0.span
+    );
+    assert!(
+        !l1.span.is_empty(),
+        "original-decl label span must be non-empty, got: {:?}",
+        l1.span
+    );
+    assert_ne!(
+        l0.span, l1.span,
+        "child-site and original-decl spans must be distinct, both = {:?}",
+        l0.span
+    );
+
+    // The original-decl span (l1) lies on the entity's `param v`, which appears
+    // BEFORE the forall statement — assert l1 precedes l0.
+    assert!(
+        l1.span.start < l0.span.start,
+        "original-decl span ({:?}) must precede the child-site span ({:?})",
+        l1.span,
+        l0.span
+    );
+}
