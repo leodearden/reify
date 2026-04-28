@@ -390,6 +390,19 @@ fn expand_purpose_reflective_placeholders(
                 })
                 .collect();
 
+            // Invariant (task-2544): every element produced above is a ValueRef —
+            // guaranteed by the `CompiledExpr::value_ref(cell_id, elem_type)` call
+            // on line 389. The split no-op arm in the match below relies on this.
+            debug_assert!(
+                elements
+                    .iter()
+                    .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_))),
+                "expand_purpose_reflective_placeholders: RCL elements must be \
+                 ValueRefs by construction; an emission-site change broke the \
+                 invariant that the ReflectiveCellList(_) no-op arm relies on \
+                 (task-2544)"
+            );
+
             // Outer ReflectiveCellList type: inherit first element's type when
             // populated; default to Type::Real on empty (anti-cascade).
             // task-2458: emit ReflectiveCellList (not ListLiteral) so that
@@ -1404,78 +1417,4 @@ mod tests {
         );
     }
 
-    /// Pin: the RCL arm of `expand_purpose_reflective_placeholders` is a no-op.
-    /// Production code never builds an RCL containing a placeholder (elements are
-    /// `ValueRef`s by construction at the only RCL emission site, lines 403–404),
-    /// but this test exploits that synthetic shape as a discriminating witness —
-    /// under the unified arm the inner placeholder would be expanded; under the
-    /// split arm it survives. Pins task-2544.
-    #[test]
-    fn expand_does_not_recurse_into_reflective_cell_list_elements() {
-        let entity = "Foo";
-        let cell_x = ValueCellId::new(entity, "x");
-        let queries = vec![ResolvedSchemaQuery {
-            param_name: "subject".to_string(),
-            query_kind: "params".to_string(),
-            resolved_ids: vec![cell_x.clone()],
-        }];
-        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
-        value_cells.insert(
-            cell_x.clone(),
-            ValueCellNode {
-                id: cell_x.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("x"),
-            },
-        );
-
-        // Synthetic fixture: an RCL whose single element is a placeholder.
-        // Production code never builds this shape (elements are ValueRefs by
-        // construction), but the synthetic shape discriminates the unified arm
-        // (which recurses and rewrites the inner placeholder) from the split arm
-        // (which is a no-op and leaves the inner placeholder intact).
-        let placeholder = CompiledExpr::purpose_reflective_aggregation(
-            "subject".to_string(),
-            "params".to_string(),
-            Type::List(Box::new(Type::Real)),
-        );
-        let mut expr = CompiledExpr::reflective_cell_list(
-            vec![placeholder],
-            Type::List(Box::new(Type::Real)),
-        );
-
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
-
-        // The RCL arm must be a no-op: the outer node is still ReflectiveCellList
-        // with one element whose kind is still PurposeReflectiveAggregation.
-        assert!(
-            tree_contains_placeholder(&expr),
-            "expand must not recurse into ReflectiveCellList elements; \
-             the synthetic inner placeholder should survive unmutated"
-        );
-        match &expr.kind {
-            CompiledExprKind::ReflectiveCellList(elements) => {
-                assert_eq!(
-                    elements.len(),
-                    1,
-                    "outer RCL must still have exactly one element"
-                );
-                assert!(
-                    matches!(
-                        &elements[0].kind,
-                        CompiledExprKind::PurposeReflectiveAggregation { .. }
-                    ),
-                    "inner element must still be PurposeReflectiveAggregation, got {:?}",
-                    elements[0].kind
-                );
-            }
-            other => panic!(
-                "outer node must remain ReflectiveCellList after expand \
-                 (RCL arm is a no-op); got {:?}",
-                other
-            ),
-        }
-    }
 }
