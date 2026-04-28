@@ -195,7 +195,7 @@ const DesignTree: Component<Props> = (props) => {
           <Show when={node.type_name}>
             <span class={styles.typeName}>{node.type_name}</span>
           </Show>
-          <Show when={node.freshness !== 'final'}>
+          <Show when={node.freshness !== 'final' && node.freshness !== 'aggregate'}>
             <span
               class={styles.freshnessBadge}
               data-freshness={node.freshness}

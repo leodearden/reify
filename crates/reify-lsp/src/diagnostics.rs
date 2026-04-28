@@ -1284,7 +1284,7 @@ structure S {
     fn compute_diagnostics_with_state_emits_failed_diagnostic_for_failed_cell() {
         // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
         let volume_id = ValueCellId::new("Bracket", "volume");
-        let mut state = build_eval_state_with_failed_cell(volume_id);
+        let mut state = build_eval_state_with_failed_cell(volume_id.clone());
 
         let uri = test_uri();
         let source = reify_test_support::bracket_source();
@@ -1303,19 +1303,44 @@ structure S {
             })
             .collect();
 
-        assert_eq!(
-            failed_diags.len(),
-            1,
-            "expected exactly 1 'computation-failed' ERROR diagnostic for Bracket.volume, \
-             got {}: {:#?}",
-            failed_diags.len(),
+        assert!(
+            !failed_diags.is_empty(),
+            "expected at least one 'computation-failed' ERROR diagnostic (got 0); \
+             all diagnostics: {:#?}",
             result.diagnostics
         );
+
+        // Pin that Bracket.volume's source span is among the failed diagnostics.
+        // Re-compile with the same pipeline to get the canonical cell span.  This
+        // avoids a hardcoded line number (which would drift if bracket_source changes)
+        // and is resilient to stdlib templates adding extra let cells in the future.
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let volume_span = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.value_cells.iter())
+            .find(|vc| vc.id == volume_id)
+            .map(|vc| vc.span)
+            .expect("Bracket.volume cell must be present in compiled bracket_source");
+        let volume_range = convert::span_to_range(source, volume_span);
+
+        let covers_volume = failed_diags.iter().any(|d| d.range == volume_range);
+        assert!(
+            covers_volume,
+            "expected a 'computation-failed' diagnostic anchored at Bracket.volume's range \
+             ({:?}); failed diagnostics: {:#?}",
+            volume_range,
+            failed_diags
+        );
         assert_eq!(
-            failed_diags[0].severity,
+            failed_diags
+                .iter()
+                .find(|d| d.range == volume_range)
+                .unwrap()
+                .severity,
             Some(DiagnosticSeverity::ERROR),
-            "computation-failed diagnostic must have ERROR severity, got {:?}",
-            failed_diags[0].severity
+            "computation-failed diagnostic for Bracket.volume must have ERROR severity"
         );
     }
 

@@ -222,7 +222,9 @@ export interface EntityTreeNode {
   /**
    * Freshness state of the backing node (arch §7.1 lines 716-728).
    * Wire values: `"final"` | `"intermediate"` | `"pending"` | `"failed"`.
-   * `"final"` is the success state and renders no badge.
+   * Sub-component container nodes (`kind === "sub"`) emit `"aggregate"` —
+   * they have no individual freshness; inspect `children` instead.
+   * Both `"final"` and `"aggregate"` suppress badge rendering.
    * See design decision: wire format is a tag-only string (payload fields are
    * carried by the LSP diagnostic channel, not this wire type).
    */

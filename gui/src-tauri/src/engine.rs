@@ -1057,11 +1057,13 @@ pub(crate) fn build_template_node(
         } else {
             vec![]
         };
-        // Sub-component container nodes aggregate their children; their own
-        // freshness defaults to "final" — per-child freshness is visible on
-        // the children themselves, and aggregate freshness roll-up is out of
-        // scope for this task (a future task can add a parent-level summary
-        // by walking children recursively).
+        // Sub-component container nodes aggregate their children; freshness
+        // roll-up across children is out of scope for this task.  We emit
+        // the sentinel `"aggregate"` rather than `"final"` to make it clear
+        // on the wire that this node has no *individual* freshness — consumers
+        // should inspect the children array directly.  The frontend suppresses
+        // the badge for `"aggregate"` the same as for `"final"` (no badge
+        // until a future task implements parent-level roll-up).
         children.push(EntityTreeNode {
             entity_path: sub_path,
             kind: "sub".to_string(),
@@ -1070,7 +1072,7 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: false,
             children: sub_children,
-            freshness: "final".to_string(),
+            freshness: "aggregate".to_string(),
         });
     }
 

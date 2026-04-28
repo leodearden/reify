@@ -3672,8 +3672,8 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
     let volume = state
         .values
         .iter()
-        .find(|v| v.name == "volume")
-        .expect("should have a 'volume' ValueData");
+        .find(|v| v.cell_id == "Bracket.volume")
+        .expect("should have a 'Bracket.volume' ValueData");
 
     assert_eq!(
         volume.freshness, "failed",
@@ -3683,7 +3683,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
 
     // --- (b) No leakage: all other cells stay at "final" ---
     for v in &state.values {
-        if v.name == "volume" {
+        if v.cell_id == "Bracket.volume" {
             continue; // already checked above
         }
         assert_eq!(
@@ -3919,9 +3919,22 @@ structure Parent {
         failed_node.entity_path
     );
 
-    // --- (c) All other nodes stay at freshness="final" (no leakage) ---
+    // --- (c) All other nodes stay at "final" or "aggregate" (no leakage) ---
+    //
+    // Sub-component container nodes ("kind == sub") emit "aggregate" — they
+    // have no individual freshness and their children must be inspected
+    // separately.  All leaf/cell nodes must be "final".
     for node in &all_nodes {
         if node.entity_path == "Parent.rib.half_h" {
+            continue; // the failed cell — already checked above
+        }
+        if node.kind == "sub" {
+            assert_eq!(
+                node.freshness, "aggregate",
+                "sub-component container node '{}' must have freshness='aggregate' \
+                 (no individual freshness; see children); got '{}'",
+                node.entity_path, node.freshness
+            );
             continue;
         }
         assert_eq!(
