@@ -1095,6 +1095,11 @@ purpose mfg(subject : Structure) {
 /// * Diagnostic code must be equal.
 /// * Message template (with the variable name replaced by `'<name>'`) must
 ///   be identical — so the two arms can't silently diverge in wording.
+///
+/// **Label lookup**: labels are found by `.message` (`"originally declared
+/// here"` / the other label) rather than by index, so this test is invariant
+/// under any future reordering of labels in `push_shadow_diagnostic`. The
+/// literal label messages are pinned by `shadow_diagnostic_message_format_is_pinned`.
 #[test]
 fn fn_and_purpose_body_arm_emit_analogous_shadow_warnings() {
     // ── fn arm ──────────────────────────────────────────────────────────────
@@ -1137,20 +1142,31 @@ fn fn_and_purpose_body_arm_emit_analogous_shadow_warnings() {
     let fn_body_let_x = fn_source
         .find("let x")
         .expect("fn source must contain `let x`");
-    // labels[0] = child site, labels[1] = original-decl site
+    // Look up labels by pinned message rather than by index, so this test is
+    // invariant under any future label-order change in push_shadow_diagnostic.
+    let fn_orig_label = fn_warn
+        .labels
+        .iter()
+        .find(|l| l.message == "originally declared here")
+        .expect("fn arm: shadow warning must include `originally declared here` label");
+    let fn_child_label = fn_warn
+        .labels
+        .iter()
+        .find(|l| l.message != "originally declared here")
+        .expect("fn arm: shadow warning must include child-site label");
     assert!(
-        (fn_warn.labels[1].span.start as usize) >= fn_param_x
-            && (fn_warn.labels[1].span.start as usize) < fn_body_let_x,
+        (fn_orig_label.span.start as usize) >= fn_param_x
+            && (fn_orig_label.span.start as usize) < fn_body_let_x,
         "fn arm: original-decl span must be in param signature (byte {} ..< {}), got {:?}",
         fn_param_x,
         fn_body_let_x,
-        fn_warn.labels[1].span
+        fn_orig_label.span
     );
     assert!(
-        (fn_warn.labels[0].span.start as usize) >= fn_body_let_x,
+        (fn_child_label.span.start as usize) >= fn_body_let_x,
         "fn arm: child-site span must be at or after body `let x` (byte {}), got {:?}",
         fn_body_let_x,
-        fn_warn.labels[0].span
+        fn_child_label.span
     );
 
     // ── purpose arm ─────────────────────────────────────────────────────────
@@ -1198,19 +1214,30 @@ purpose mfg(subject : Structure) {
     let purpose_body_let = purpose_source
         .find("let subject")
         .expect("purpose source must contain `let subject`");
+    // Look up labels by pinned message rather than by index.
+    let purpose_orig_label = purpose_warn
+        .labels
+        .iter()
+        .find(|l| l.message == "originally declared here")
+        .expect("purpose arm: shadow warning must include `originally declared here` label");
+    let purpose_child_label = purpose_warn
+        .labels
+        .iter()
+        .find(|l| l.message != "originally declared here")
+        .expect("purpose arm: shadow warning must include child-site label");
     assert!(
-        (purpose_warn.labels[1].span.start as usize) >= purpose_param
-            && (purpose_warn.labels[1].span.start as usize) < purpose_body_let,
+        (purpose_orig_label.span.start as usize) >= purpose_param
+            && (purpose_orig_label.span.start as usize) < purpose_body_let,
         "purpose arm: original-decl span must be in param signature (byte {} ..< {}), got {:?}",
         purpose_param,
         purpose_body_let,
-        purpose_warn.labels[1].span
+        purpose_orig_label.span
     );
     assert!(
-        (purpose_warn.labels[0].span.start as usize) >= purpose_body_let,
+        (purpose_child_label.span.start as usize) >= purpose_body_let,
         "purpose arm: child-site span must be at or after body `let subject` (byte {}), got {:?}",
         purpose_body_let,
-        purpose_warn.labels[0].span
+        purpose_child_label.span
     );
 
     // ── cross-arm symmetry assertions ────────────────────────────────────────
