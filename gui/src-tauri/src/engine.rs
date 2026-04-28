@@ -105,8 +105,10 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        // Parse
-        let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+        // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
+        // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
+        // `compile_with_stdlib` below). See task 2525.
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
@@ -204,8 +206,10 @@ impl EngineSession {
             .unwrap_or("unnamed");
 
         // Re-parse and re-compile from scratch (topology may have changed)
-        // All state mutation is deferred until after successful parse+compile
-        let parsed = reify_syntax::parse(content, ModulePath::single(module_name));
+        // All state mutation is deferred until after successful parse+compile.
+        // Prelude-aware parse so stdlib enum references disambiguate correctly;
+        // pairs with `compile_with_stdlib` below. See task 2525.
+        let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
