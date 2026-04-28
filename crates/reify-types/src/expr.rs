@@ -603,6 +603,21 @@ impl CompiledExpr {
     /// by tag byte `TAG_REFLECTIVE_CELL_LIST` so `eval_quantifier`'s
     /// cell-iteration trigger fires only on placeholder-derived lists.
     pub fn reflective_cell_list(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
+        // Invariant (task-2552, follow-up to task-2544): every element must be a
+        // `ValueRef`. The split no-op arm for `ReflectiveCellList` in
+        // `expand_purpose_reflective_placeholders` (reify-eval) elides recursion on
+        // the basis of this invariant — a non-ValueRef element here would silently
+        // skip placeholder expansion in release builds.
+        debug_assert!(
+            elements
+                .iter()
+                .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_))),
+            "ReflectiveCellList elements must be ValueRefs by construction; \
+             the `ReflectiveCellList(_)` no-op arm in \
+             `expand_purpose_reflective_placeholders` (reify-eval) relies on this \
+             invariant — a non-ValueRef element would silently bypass placeholder \
+             expansion in release builds (task-2544 / task-2552)"
+        );
         let mut content_hash = ContentHash::of(&[TAG_REFLECTIVE_CELL_LIST]);
         for elem in &elements {
             content_hash = content_hash.combine(elem.content_hash);
