@@ -163,6 +163,10 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 /// to drift apart — the bit-equality invariant documented in the `CenterOfMass`
 /// doc-comment in `reify-types::geometry` ("the result is identical to
 /// `Centroid(handle)`") is upheld by construction rather than by convention.
+///
+/// This helper exists specifically because two query arms must produce identical output;
+/// it is not a general-purpose JSON encoder. Other query arms (e.g. `BoundingBox`) keep
+/// their inline `format!` because no such cross-arm equality contract applies to them.
 fn centroid_json(p: ffi::ffi::Point3) -> String {
     format!("{{\"x\":{},\"y\":{},\"z\":{}}}", p.x, p.y, p.z)
 }
