@@ -961,15 +961,17 @@ impl QueryCounts {
 
 /// A [`MockGeometryKernel`] wrapper that counts every `query()` round-trip.
 ///
-/// ## Purpose
+/// ## What is counted
 ///
-/// Wraps a fully-configured [`MockGeometryKernel`] and intercepts every
-/// `GeometryKernel::query` call to:
+/// Only `query()` calls are intercepted. Per the list below:
 ///
-/// 1. Increment the grand `total` counter.
-/// 2. Increment a per-variant counter for the conformance-helper trio
-///    (`IsWatertight`, `IsManifold`, `IsOrientable`).
-/// 3. Forward the call to the inner kernel and return its result unchanged.
+/// * **Counted** — `query()` (grand `total` + per-variant counter for
+///   `IsWatertight`, `IsManifold`, `IsOrientable`).
+/// * **Counted via default** — `query_many()` (the trait default forwards
+///   per-element to `query()`, so each element is counted; see section below).
+/// * **Forwarded uncounted** — `execute`, `export`, `tessellate`,
+///   `extract_edges`, and `extract_faces` are delegated to the inner kernel
+///   without touching any counter.
 ///
 /// ## Arc-sharing contract
 ///
@@ -3317,5 +3319,30 @@ mod tests {
 
         // The Arc<QueryCounts> captured before the move should still see the increment.
         assert_eq!(counts.is_watertight(), 1);
+    }
+
+    #[test]
+    fn counting_mock_kernel_query_many_routes_through_query_intercept() {
+        // Pins the doc-comment invariant: the trait default for `query_many`
+        // forwards per-element to `query()`, so each element passes through
+        // our counting intercept. This test will fail if either
+        // `CountingMockKernel` or the inner `MockGeometryKernel` ever gains
+        // an explicit `query_many` override that bypasses `query()`.
+        let handle = GeometryHandleId(5);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        kernel
+            .query_many(&[
+                GeometryQuery::IsWatertight(handle),
+                GeometryQuery::IsManifold(handle),
+            ])
+            .unwrap();
+
+        let counts = kernel.counts();
+        assert_eq!(counts.is_watertight(), 1, "IsWatertight element must be counted");
+        assert_eq!(counts.is_manifold(), 1, "IsManifold element must be counted");
+        assert_eq!(counts.total(), 2, "both elements contribute to grand total");
     }
 }
