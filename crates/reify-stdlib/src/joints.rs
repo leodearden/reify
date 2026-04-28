@@ -68,6 +68,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         Some(Value::Real(r)) => *r,
                         _ => return Some(Value::Undef),
                     };
+                    // Defense-in-depth: a hand-built coupling Map could carry
+                    // Value::Real(NaN) or Value::Real(Inf). `couple` rejects these at
+                    // construction via `ratio_input`, but `transform_at` should not rely
+                    // on the constructor. Symmetric with the parent-kind / offset / v_si
+                    // guards below.
+                    if !ratio_f64.is_finite() {
+                        return Some(Value::Undef);
+                    }
                     let offset_si = match map.get(&Value::String("offset".to_string())) {
                         Some(Value::Scalar { si_value, .. }) => *si_value,
                         _ => return Some(Value::Undef),
