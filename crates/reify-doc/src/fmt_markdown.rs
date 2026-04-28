@@ -968,5 +968,27 @@ mod tests {
             "\"a",
             "asymmetric input (open quote, no close) must be returned unchanged"
         );
+
+        // Edge case: input ending with an escaped trailing quote — `"foo\"`
+        // (raw 6-char string: `"`, `f`, `o`, `o`, `\`, `"`).  The
+        // `ends_with('"')` check is escape-blind and matches the trailing `"`;
+        // the inner walk (`foo\`) contains no `"` byte, so the implementation
+        // strips outer quotes and returns `foo\`.  Pinned here to prevent
+        // silent behavioural drift if `unquote` is later rewritten.
+        assert_eq!(
+            unquote("\"foo\\\""),
+            "foo\\",
+            "escape-blind trailing-quote: outer quotes stripped, yielding foo\\"
+        );
+
+        // Extra trailing-side concatenation case: `"a""` (raw 4-char string:
+        // `"`, `a`, `"`, `"`).  The inner walk finds an unescaped `"` at
+        // position 1 and returns the input unchanged — exercises detection of
+        // unescaped inner quotes near the trailing delimiter.
+        assert_eq!(
+            unquote("\"a\"\""),
+            "\"a\"\"",
+            "trailing-side unescaped inner quote must be returned unchanged"
+        );
     }
 }

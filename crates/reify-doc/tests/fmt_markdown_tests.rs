@@ -1610,10 +1610,16 @@ fn snapshot_path(filename: &str) -> std::path::PathBuf {
 /// overwrite the snapshot with `actual` so the developer can regenerate
 /// goldens after an intentional formatter change.
 ///
-/// `actual` is normalised to LF-only before both comparison and write so
-/// that a Windows developer running `UPDATE_SNAPSHOTS=1` cannot accidentally
-/// bake `\r\n` into committed goldens, which would break the comparison for
-/// every platform that produces LF-terminated output.
+/// Both `actual` and the on-disk `expected` are normalised to LF-only before
+/// comparison so the test produces a closed result regardless of working-tree
+/// EOL transforms.  Specifically:
+/// - `actual` normalisation prevents a Windows developer running
+///   `UPDATE_SNAPSHOTS=1` from accidentally baking `\r\n` into committed
+///   goldens (which would break comparison on every other platform).
+/// - `expected` normalisation prevents the reverse: a Windows checkout with
+///   `core.autocrlf=true` silently converting a committed LF golden to CRLF
+///   on disk, making the on-disk file differ from the LF-only `actual` even
+///   when the logical content is identical.
 fn assert_or_update_snapshot(filename: &str, actual: &str) {
     let actual = actual.replace("\r\n", "\n");
     let path = snapshot_path(filename);
@@ -1627,7 +1633,7 @@ fn assert_or_update_snapshot(filename: &str, actual: &str) {
         return;
     }
     let expected = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
+        Ok(s) => s.replace("\r\n", "\n"),
         Err(e) => panic!(
             "snapshot file not found at {path:?}: {e}\n\
              Re-run with UPDATE_SNAPSHOTS=1 to create it.\n\
