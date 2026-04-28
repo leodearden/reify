@@ -64,7 +64,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         .and_then(|s| s.to_str())
         .unwrap_or("unnamed");
 
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
         for err in &parsed.errors {
