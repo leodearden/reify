@@ -351,6 +351,30 @@ mod tests {
         );
     }
 
+    // ── step-9: permitted decls must not fire ────────────────────────────────
+
+    /// `let` and `constraint` declarations inside a specialization-scope body
+    /// must produce zero diagnostics. Pins the converse of design decision #5:
+    /// only param/port/sub fire — let/constraint/connect/etc. are permitted.
+    ///
+    /// This test exists to guard against a future change that accidentally broadens
+    /// `forbidden_kind_name` (e.g., catching `Let` or `Constraint`). With step-8's
+    /// impl in place, this test passes immediately.
+    #[test]
+    fn validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope() {
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_let("v"), make_constraint()],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "let and constraint inside a specialization scope must not fire diagnostics, got: {diagnostics:?}"
+        );
+    }
+
     // ── step-7: bare Sub inside specialization scope ─────────────────────────
 
     /// A bare `sub` declaration (body=None) inside a specialization-scope body must
