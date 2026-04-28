@@ -169,3 +169,64 @@ fn walker_no_op_when_body_is_none() {
         "walker should not visit anything for body == None"
     );
 }
+
+// ── (c) walker recurses into nested specialization scopes ───────────────
+
+/// Compact discriminant tag for asserting visitation order.
+#[derive(Debug, PartialEq, Eq)]
+enum Tag {
+    Param,
+    Let,
+    Constraint,
+    Sub,
+    GuardedGroup,
+}
+
+#[allow(dead_code)]
+fn tag_of(member: &MemberDecl) -> Tag {
+    match member {
+        MemberDecl::Param(_) => Tag::Param,
+        MemberDecl::Let(_) => Tag::Let,
+        MemberDecl::Constraint(_) => Tag::Constraint,
+        MemberDecl::Sub(_) => Tag::Sub,
+        MemberDecl::GuardedGroup(_) => Tag::GuardedGroup,
+        // Variants below are unused by the current tests but listed
+        // explicitly so that adding a new MemberDecl variant in the future
+        // forces a deliberate update here rather than silently mapping to
+        // an arbitrary tag.
+        _ => panic!("tag_of: unexpected MemberDecl variant in test"),
+    }
+}
+
+#[test]
+fn walker_recurses_into_nested_specialization_scope() {
+    // Outer SubDecl{body: Some([ Sub{body: Some([Param])} ])}
+    // The walker must visit the outer's `Sub` member first, then descend
+    // and visit the inner body's `Param`.
+    let inner = MemberDecl::Sub(make_sub_with_body("inner", Some(vec![make_param("p")])));
+    let outer = make_sub_with_body("outer", Some(vec![inner]));
+
+    let mut tags = Vec::<Tag>::new();
+    walk_specialization_scope_members(&outer, &mut |m| tags.push(tag_of(m)));
+
+    assert_eq!(
+        tags,
+        vec![Tag::Sub, Tag::Param],
+        "walker must visit the outer Sub member, then recurse into its nested body",
+    );
+}
+
+#[test]
+fn walker_does_not_recurse_when_nested_sub_body_is_none() {
+    // Nested SubDecl with body == None is just a bare instantiation, not
+    // a specialization scope — the walker must NOT recurse into it.
+    let inner = MemberDecl::Sub(make_sub_with_body("inner", None));
+    let outer = make_sub_with_body("outer", Some(vec![inner]));
+
+    let mut count = 0usize;
+    walk_specialization_scope_members(&outer, &mut |_m| count += 1);
+    assert_eq!(
+        count, 1,
+        "walker should visit only the outer Sub member when its nested body is None"
+    );
+}
