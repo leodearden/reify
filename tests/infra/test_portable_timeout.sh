@@ -306,19 +306,18 @@ assert "builder-generated setup variables non-empty with correct trap/TMPDIR pro
 # -- Safety-net regression: -E not -qE in while-read kill pipeline -----------
 assert "Test 16a safety-net uses -E not -qE (stdout feeds while-read kill-loop)" \
     env TEST_FILE="$0" bash -c '
-        _key="kills any"
-        _ln=$(grep -n "${_key} sleep 31337 system-wide" "$TEST_FILE" | tail -1 | cut -d: -f1)
+        _ln=$(grep -nE "^[[:space:]]+#[[:space:]]SAFETY_NET_GREP_LINE" "$TEST_FILE" | tail -1 | cut -d: -f1)
         _sn=$(sed -n "${_ln},$((${_ln}+4))p" "$TEST_FILE")
         printf "%s" "$_sn" | grep -q " -E " && ! printf "%s" "$_sn" | grep -q " -qE "
     '
 
-assert "safety-net pipeline actually kills a deliberately leaked sleep 31337 sentinel" \
-    bash -c '
-        sleep 31337 & _victim=$!
+assert "safety-net pipeline actually kills a deliberately leaked sleep sentinel" \
+    env _SENT_16="${_SENT_16}" bash -c '
+        sleep $_SENT_16 & _victim=$!
         trap "kill -9 $_victim 2>/dev/null || true" EXIT
         sleep 0.1
         ps -A -o pid,args 2>/dev/null \
-            | grep -E "[[:space:]]sleep 31337$" \
+            | grep -E "[[:space:]]sleep ${_SENT_16}$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
         sleep 0.2
         ! kill -0 "$_victim" 2>/dev/null
@@ -397,27 +396,28 @@ assert "lib_portable.sh timer cleanup uses process-group kill (kill -- -)" \
 echo ""
 echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 
-# This test verifies that the timer's inner 'sleep 31337' (a distinctive
+# This test verifies that the timer's inner sleep $_SENT_16 (a per-instance
 # sentinel duration) is actually spawned and properly cleaned up when the
 # command exits before the timeout fires.
 #
 # Test 16a (positive spawn check): proves the test setup is valid — the timer
-# must actually start its inner 'sleep 31337' before Test 16b's cleanup check
+# must actually start its inner sleep $_SENT_16 before Test 16b's cleanup check
 # is meaningful.  Runs portable_timeout in the background, 5 checks separated
 # by 4×200ms sleeps (~0.8s worst case) for the sentinel sleep to appear, then
 # asserts it was found.
 #
-# Test 16b (orphan cleanup check): verifies the timer's 'sleep 31337' is gone
+# Test 16b (orphan cleanup check): verifies the timer's sleep $_SENT_16 is gone
 # after portable_timeout returns.  Uses 'sleep 0.3' (not 'true') as the
 # command, giving the timer time to spawn its sentinel before cleanup fires.
-# (With 'true', the timer subshell may not have started 'sleep 31337' before
+# (With 'true', the timer subshell may not have started sleep $_SENT_16 before
 # the main shell kills it, so the orphan check would pass vacuously.)
 #
 # Subtlety: timer subshells inherit EXIT traps from the calling shell.
 # Save absolute paths BEFORE PATH manipulation; use them for post-exit checks.
 
-assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive check)" \
-    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
+assert "POSIX fallback: timer actually spawns sentinel sleep \$_SENT_16 (positive check)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
+        _SENT_16="$_SENT_16" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -425,8 +425,8 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Background portable_timeout with a 2s command so the timer has time
-        # to spawn its inner "sleep 31337" before we check.
-        portable_timeout 31337 sleep 2 &
+        # to spawn its inner sleep $_SENT_16 before we check.
+        portable_timeout "$_SENT_16" sleep 2 &
         pt_pid=$!
 
         # Poll up to 5×200ms for the sentinel to appear (robust under CI load).
@@ -434,7 +434,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         found=1
         for _attempt in 1 2 3 4 5; do
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
-                    | "$_abs_grep" -qE "[[:space:]]sleep 31337$"; then
+                    | "$_abs_grep" -qE "[[:space:]]sleep ${_SENT_16}$"; then
                 found=0
                 break
             fi
@@ -445,10 +445,10 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
-        # SAFETY_NET_GREP_LINE — Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
-        # Safety-net: kill any lingering sentinel sleep 31337 processes.
+        # SAFETY_NET_GREP_LINE — kills sleep $_SENT_16 belonging to this instance only.
+        # Safety-net: kill any lingering sentinel sleep processes for this instance.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
+            | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_16}$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
 
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
@@ -457,37 +457,38 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
-    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
+        _SENT_16="$_SENT_16" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_kill=$(command -v kill)
         _abs_awk=$(command -v awk)
 
-        # Kill stale "sleep 31337" orphans left by Test 16a, prior runs, or
+        # Kill stale sleep $_SENT_16 orphans left by Test 16a, prior runs, or
         # concurrent verify pipelines on the same host so they do not cause
         # a false negative for THIS invocation. Mirrors the stabilization
         # pattern applied to Test 21b in cbeeb5a81 / 14f9287f2.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
+            | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_16}$" \
             | "$_abs_awk" "{print \$1}" \
             | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
         "$_abs_sleep" 0.5
 
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
-        # Run a 0.3s command under a long timeout (31337s sentinel).
+        # Run a 0.3s command under a long timeout ($_SENT_16 sentinel).
         # Using sleep 0.3 instead of "true" gives the timer time to spawn
-        # its inner "sleep 31337" before the command exits.
-        portable_timeout 31337 "$_abs_sleep" 0.3 || true
+        # its inner sleep $_SENT_16 before the command exits.
+        portable_timeout "$_SENT_16" "$_abs_sleep" 0.3 || true
 
-        # Poll up to 5s for the orphan sleep 31337 to be reaped.
+        # Poll up to 5s for the orphan sleep $_SENT_16 to be reaped.
         # A single fixed sleep races against kernel process-table cleanup
         # on busy systems, so retry a few times before declaring failure.
         _check_rc=0
         for _try in 1 2 3 4 5; do
             _check_rc=0
-            ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$" || _check_rc=$?
+            ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_16}$" || _check_rc=$?
             [ "$_check_rc" -eq 0 ] && break
             "$_abs_sleep" 1
         done
@@ -606,18 +607,19 @@ echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 #   1. Timer fires after 1s, sends SIGTERM to the command (bash wrapper).
 #   2. Command ignores SIGTERM (trap "" TERM).
 #   3. Timer escalates after 2s grace: sends SIGKILL to the command (bash).
-#   4. Bash wrapper is killed; its child 'sleep 31339' is an orphan candidate.
+#   4. Bash wrapper is killed; its child sleep $_SENT_21 is an orphan candidate.
 #
 # Asserts: (a) exit code is 124 (genuine timeout recognized despite SIGKILL),
-#          (b) no 'sleep 31339' process remains after portable_timeout returns.
+#          (b) no sleep $_SENT_21 process remains after portable_timeout returns.
 #
 # This test FAILS against unpatched lib_portable.sh:
 #   - Exit code is 137 (128+9) because flag-file check only accepts 143 (SIGTERM).
-#   - 'sleep 31339' survives because kill -9 $cmd_pid kills only the bash
+#   - sleep $_SENT_21 survives because kill -9 $cmd_pid kills only the bash
 #     wrapper, not its child sleep.
 # These failures confirm the test catches real SIGKILL path regressions.
 #
-# Sentinel duration 31339 is distinct from 31337 (Test 16) to avoid ps conflicts.
+# Sentinel $_SENT_21 ($$ * 10 + 9) is distinct from $_SENT_16 ($$ * 10 + 7)
+# by construction; cannot collide across instances.
 # Total test time: ~1s (timer fires) + 2s (grace period) = ~3s.
 #
 # Regression guard (verified manually, step-5): temporarily commenting out the
@@ -626,7 +628,8 @@ echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 # This confirms the test has discriminating power and is not vacuous.
 
 assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
-    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
+        _SENT_21="$_SENT_21" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -634,12 +637,12 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
         _abs_kill=$(command -v kill)
         _abs_awk=$(command -v awk)
 
-        # Kill stale "sleep 31339" orphans left by prior runs or concurrent verify
+        # Kill stale sleep $_SENT_21 orphans left by prior runs or concurrent verify
         # pipelines so they do not cause resource contention / timing interference
         # for this invocation.  Mirrors the stabilization applied to Test 21b in
         # cbeeb5a81 / 14f9287f2 and to Test 16b in f72ef337e.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
+            | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_21}$" \
             | "$_abs_awk" "{print \$1}" \
             | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
         "$_abs_sleep" 1.0
@@ -647,8 +650,9 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
+        _inner_cmd="trap \"\" TERM; sleep $_SENT_21"
         rc=0
-        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || rc=$?
+        portable_timeout 1 "$_abs_bash" -c "$_inner_cmd" || rc=$?
         _check_rc=0
         [ "$rc" -eq 124 ] || _check_rc=$?
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
@@ -656,8 +660,9 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
         exit "$_check_rc"
     '
 
-assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
-    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
+assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep \$_SENT_21" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
+        _SENT_21="$_SENT_21" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -665,10 +670,10 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
         _abs_kill=$(command -v kill)
         _abs_awk=$(command -v awk)
 
-        # Kill stale "sleep 31339" orphans left by Test 21a or prior runs so
+        # Kill stale sleep $_SENT_21 orphans left by Test 21a or prior runs so
         # they do not cause a false negative for THIS invocation.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
+            | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_21}$" \
             | "$_abs_awk" "{print \$1}" \
             | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
         "$_abs_sleep" 1.0
@@ -676,15 +681,16 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Command ignores SIGTERM; timer escalates to SIGKILL.
-        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
+        _inner_cmd="trap \"\" TERM; sleep $_SENT_21"
+        portable_timeout 1 "$_abs_bash" -c "$_inner_cmd" || true
 
-        # Poll up to 5s for the orphan sleep 31339 to be reaped.
+        # Poll up to 5s for the orphan sleep $_SENT_21 to be reaped.
         # A single fixed sleep races against kernel process-table cleanup
         # on busy systems, so retry a few times before declaring failure.
         _check_rc=0
         for _try in 1 2 3 4 5; do
             _check_rc=0
-            ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$" || _check_rc=$?
+            ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_21}$" || _check_rc=$?
             [ "$_check_rc" -eq 0 ] && break
             "$_abs_sleep" 1
         done
@@ -863,14 +869,14 @@ assert "Test 24b sanity branch 2 (count check) uses exit 2 distinct code" \
 echo ""
 echo "--- Test 26: structural: no literal sentinel grep patterns remain ---"
 
-# After step-4, all [[:space:]]sleep 31337$ and [[:space:]]sleep 31339$ regex
-# patterns in Tests 16a/b, 21a/b, and the safety-net regression test must be
-# replaced by ${_SENT_16} / ${_SENT_21} references. These assertions FAIL until
+# After step-4, all per-instance sentinel grep patterns in Tests 16a/b, 21a/b,
+# and the safety-net regression test must use ${_SENT_16} / ${_SENT_21}
+# references instead of literal numbers. These assertions FAIL until
 # step-4 completes the substitution.
 #
 # Pattern assembled via printf chunks (fixed-string grep -F) so that the
-# contiguous literal "[[:space:]]sleep 31337$" does not appear in source
-# and this assertion line cannot self-match.
+# contiguous literal pattern text does not appear in source and this
+# assertion line cannot self-match.
 printf -v _sent16_lit_str '%s%s%s%s' '[[:space:]]' 'sleep ' '3133' '7$'
 printf -v _sent21_lit_str '%s%s%s%s' '[[:space:]]' 'sleep ' '3133' '9$'
 
