@@ -684,14 +684,16 @@ mod tests {
     // round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyTagStale` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"TopologyTagStale"`.
-    /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`; a future
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_trait_user_asserted_with_code_round_trips`; a future
     /// enum reorganisation that drops `TopologyTagStale` is caught here.
+    /// (The `Debug` rendering assertion is omitted — it would only pin the
+    /// identifier spelling, which any rename touches on both sides simultaneously.
+    /// The serde wire-format test below provides the real external-contract pin.)
     #[test]
     fn diagnostic_code_topology_tag_stale_with_code_round_trips() {
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::TopologyTagStale);
         assert_eq!(d.code, Some(DiagnosticCode::TopologyTagStale));
-        assert_eq!(format!("{:?}", DiagnosticCode::TopologyTagStale), "TopologyTagStale");
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::TopologyTagStale` serializes as
