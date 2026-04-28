@@ -135,24 +135,6 @@ fn forall_empty_list_vacuous_truth() {
     assert_eq!(result, Value::Bool(true));
 }
 
-/// step-7: exists over empty list -> false (vacuous falsity)
-#[test]
-fn exists_empty_list_vacuous_falsity() {
-    let x_id = ValueCellId::new("$quant0.S", "x");
-    let collection = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
-    let predicate = CompiledExpr::binop(
-        BinOp::Gt,
-        CompiledExpr::value_ref(x_id.clone(), Type::Int),
-        CompiledExpr::literal(Value::Int(0), Type::Int),
-        Type::Bool,
-    );
-    let expr = make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
-
-    let values = ValueMap::new();
-    let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Bool(false));
-}
-
 /// step-9: forall over [1, Undef, 3] with x>0 -> Undef (no false, but undef present)
 #[test]
 fn forall_with_undef_no_false() {
@@ -201,30 +183,6 @@ fn exists_with_undef_has_true() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Bool(true));
-}
-
-/// step-9: exists over [Undef, -1] with x>0 -> Undef (no true, undef present)
-#[test]
-fn exists_with_undef_no_true() {
-    let x_id = ValueCellId::new("$quant0.S", "x");
-    let collection = CompiledExpr::list_literal(
-        vec![
-            CompiledExpr::literal(Value::Undef, Type::Int),
-            CompiledExpr::literal(Value::Int(-1), Type::Int),
-        ],
-        Type::List(Box::new(Type::Int)),
-    );
-    let predicate = CompiledExpr::binop(
-        BinOp::Gt,
-        CompiledExpr::value_ref(x_id.clone(), Type::Int),
-        CompiledExpr::literal(Value::Int(0), Type::Int),
-        Type::Bool,
-    );
-    let expr = make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
-
-    let values = ValueMap::new();
-    let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Undef);
 }
 
 // ─── step-11: Integration test: parse + compile + eval quantifier in constraint context ───
@@ -346,10 +304,18 @@ fn exists_kleene_truth_table_over_list_and_set() {
         ("empty", vec![], Value::Bool(false)),
     ];
 
+    // x_id and predicate are invariant across all (kind, row) iterations.
+    let x_id = ValueCellId::new("$quant0.S", "x");
+    // Predicate: x > 0
+    let predicate = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+
     for kind in [CollKind::List, CollKind::Set] {
         for (name, elements, expected) in &rows {
-            let x_id = ValueCellId::new("$quant0.S", "x");
-
             // Build element expressions: Some(i) → Int literal, None → Undef literal
             let elem_exprs: Vec<CompiledExpr> = elements
                 .iter()
@@ -369,16 +335,13 @@ fn exists_kleene_truth_table_over_list_and_set() {
                 }
             };
 
-            // Predicate: x > 0
-            let predicate = CompiledExpr::binop(
-                BinOp::Gt,
-                CompiledExpr::value_ref(x_id.clone(), Type::Int),
-                CompiledExpr::literal(Value::Int(0), Type::Int),
-                Type::Bool,
+            let expr = make_quantifier(
+                QuantifierKind::Exists,
+                "x",
+                x_id.clone(),
+                collection,
+                predicate.clone(),
             );
-
-            let expr =
-                make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
 
             let values = ValueMap::new();
             let result = eval_expr(&expr, &EvalContext::simple(&values));

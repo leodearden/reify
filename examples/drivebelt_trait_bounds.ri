@@ -29,6 +29,8 @@
 // diagnostic is emitted, and the compiler's resolution_enums has the prelude
 // entry first so stdlib types win.  See materials_chemical_tests.rs for the
 // same pattern and rationale.
+// TODO(task #2525): drop the inline redecls below once the parser consults
+// prelude/stdlib enums for EnumAccess disambiguation.
 
 // ── Enum re-declarations (for parser EnumAccess resolution) ─────────────────
 

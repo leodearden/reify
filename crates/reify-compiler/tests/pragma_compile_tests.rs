@@ -939,9 +939,9 @@ fn precision_pragma_with_keyvalue_arg_warns_unrecognised_form() {
 
 /// Helper: filter warnings that match the block-level "deferred to v0.2"
 /// shape — message contains "ignored in v0.1" AND ("v0.2" OR "per-block").
-fn deferred_v02_warnings<'a>(
-    module: &'a reify_compiler::CompiledModule,
-) -> Vec<&'a reify_types::Diagnostic> {
+fn deferred_v02_warnings(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<&reify_types::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {
@@ -2041,9 +2041,9 @@ fn malformed_then_valid_solver_pragmas_recover() {
 /// Helper: filter warnings that match the block-level `#solver` "deferred to
 /// v0.2" shape — message contains "ignored in v0.1" AND ("v0.2" OR
 /// "per-block").
-fn deferred_v02_solver_warnings<'a>(
-    module: &'a reify_compiler::CompiledModule,
-) -> Vec<&'a reify_types::Diagnostic> {
+fn deferred_v02_solver_warnings(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<&reify_types::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {
@@ -2455,12 +2455,95 @@ fn multiple_module_level_kernel_pragmas_first_wins() {
     );
 }
 
+/// Regression: `apply_kernel_pragma` sets `first_seen = true` BEFORE the args
+/// match (module_pragmas.rs line 698), which is the *opposite* of
+/// `apply_solver_pragma` and `apply_precision_pragma` (both of which set
+/// `first_seen = true` only inside their success arms). As a consequence a
+/// malformed first `#kernel` (e.g. `#kernel` with no args, or
+/// `#kernel(name="occt")` with a key-value arg) still **consumes** the
+/// first-wins slot. A subsequent valid `#kernel(occt)` is therefore suppressed
+/// under the "subsequent #kernel pragma ignored; first one wins" warning,
+/// leaving `module.kernel_pragma = None`.
+///
+/// This test pins that intentional asymmetry so any future refactor that aligns
+/// kernel with solver/precision recovery semantics trips this regression. (See
+/// task 2313 reviewer note: "deliberate mirror of the established convention".)
+#[test]
+fn malformed_first_kernel_blocks_valid_second_first_wins_consumes_slot() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "#kernel\n#kernel(occt)\nstructure S { param x : Real }",
+            "zero-arg-first",
+        ),
+        (
+            "#kernel(name=\"occt\")\n#kernel(occt)\nstructure S { param x : Real }",
+            "key-value-first",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        assert!(
+            errors_only(&module).is_empty(),
+            "[{label}] expected no errors (both diagnostics are warning-severity), got: {:?}",
+            errors_only(&module)
+        );
+
+        assert!(
+            module.kernel_pragma.is_none(),
+            "[{label}] expected kernel_pragma to be None (valid second #kernel(occt) was \
+             suppressed by malformed-first consuming the first-wins slot), got: {:?}",
+            module.kernel_pragma
+        );
+
+        let warns = warnings_only(&module);
+
+        let malformed_warns: Vec<_> = warns
+            .iter()
+            .copied()
+            .filter(|d| d.message == "#kernel: expected #kernel(occt); ignored")
+            .collect();
+        assert_eq!(
+            malformed_warns.len(),
+            1,
+            "[{label}] expected exactly 1 malformed-first warning \
+             \"#kernel: expected #kernel(occt); ignored\", got {}: {:?}",
+            malformed_warns.len(),
+            warns
+        );
+
+        let first_wins_warns: Vec<_> = warns
+            .iter()
+            .copied()
+            .filter(|d| d.message == "subsequent #kernel pragma ignored; first one wins")
+            .collect();
+        assert_eq!(
+            first_wins_warns.len(),
+            1,
+            "[{label}] expected exactly 1 first-wins warning \
+             \"subsequent #kernel pragma ignored; first one wins\", got {}: {:?}",
+            first_wins_warns.len(),
+            warns
+        );
+
+        assert_eq!(
+            warns.len(),
+            2,
+            "[{label}] expected exactly 2 total warnings (no unknown-pragma noise), \
+             got {}: {:?}",
+            warns.len(),
+            warns
+        );
+    }
+}
+
 /// Helper: filter warnings that match the block-level `#kernel` "deferred to
 /// v0.2" shape — message contains "#kernel" AND "ignored in v0.1" AND
 /// ("v0.2" OR "per-block"). Sibling of `deferred_v02_solver_warnings`.
-fn deferred_v02_kernel_warnings<'a>(
-    module: &'a reify_compiler::CompiledModule,
-) -> Vec<&'a reify_types::Diagnostic> {
+fn deferred_v02_kernel_warnings(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<&reify_types::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {

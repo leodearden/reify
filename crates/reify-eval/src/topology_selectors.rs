@@ -84,8 +84,13 @@ fn check_query_many_len(
 /// The selector-specific predicate loop (extract scalar, parse JSON, apply
 /// window / cone / dot test) stays in each selector body; only this boilerplate
 /// trio moves here.
+///
+/// Takes `kernel` by shared reference (`&K`) — the helper does not mutate the
+/// kernel and is callable from `&self`/`&K` contexts. Callers that hold
+/// `&mut K` (needed for the preceding `extract_edges`/`extract_faces` call)
+/// compile unchanged because `&mut K` coerces to `&K` automatically.
 fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
-    kernel: &mut K,
+    kernel: &K,
     ids: &[GeometryHandleId],
     selector: &'static str,
     mk_query: F,
@@ -1006,5 +1011,28 @@ mod tests {
             }
             other => panic!("expected QueryFailed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn query_per_subshape_accepts_shared_kernel_reference() {
+        // Compile witness: query_per_subshape must accept &K, not &mut K.
+        let edge_ids = vec![GeometryHandleId(1101), GeometryHandleId(1102)];
+        let kernel = CountingKernel::new()
+            .with_response(GeometryHandleId(1101), Value::Real(0.001))
+            .with_response(GeometryHandleId(1102), Value::Real(0.002));
+
+        let values = query_per_subshape(
+            &kernel,
+            &edge_ids,
+            "shared_ref_test",
+            GeometryQuery::EdgeLength,
+        )
+        .expect("query_per_subshape should succeed with a shared kernel reference");
+
+        assert_eq!(
+            values,
+            vec![Value::Real(0.001), Value::Real(0.002)],
+            "helper must return values aligned with input ids through a shared reference"
+        );
     }
 }

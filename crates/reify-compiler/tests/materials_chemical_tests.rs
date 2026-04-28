@@ -78,6 +78,74 @@ fn assert_inline_enums_match_stdlib_bidirectionally(inline: &[EnumDef], stdlib: 
     }
 }
 
+/// Compile `source` via `compile_source_with_stdlib` and assert the full
+/// TitaniumImplant contract: zero error diagnostics, both trait bounds present,
+/// and enum-typed `biocompatibility_class` / `corrosion_class` value cells.
+///
+/// Used by both `titanium_implant_conforms_to_biocompatible_and_corrosion_resistant`
+/// (with inline enum redecls) and the `#[ignore]`-gated sibling
+/// `titanium_implant_conforms_without_inline_enum_redeclarations` (without them),
+/// so assertion drift between the two is structurally impossible.  The future
+/// merge in task 2525 reduces to deleting the first test and dropping `#[ignore]`.
+fn assert_titanium_implant_compiles_correctly(source: &str) {
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "TitaniumImplant should compile cleanly, got errors: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "TitaniumImplant")
+        .expect("expected 'TitaniumImplant' template in compiled module");
+
+    assert!(
+        template.trait_bounds.contains(&"Biocompatible".to_string()),
+        "TitaniumImplant must have 'Biocompatible' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template
+            .trait_bounds
+            .contains(&"CorrosionResistant".to_string()),
+        "TitaniumImplant must have 'CorrosionResistant' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // Verify enum-typed value cells.
+    let bio_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "biocompatibility_class")
+        .expect("expected 'biocompatibility_class' value cell in TitaniumImplant");
+    assert_eq!(
+        bio_cell.cell_type,
+        Type::Enum("BiocompatibilityClass".to_string()),
+        "biocompatibility_class should have Enum(BiocompatibilityClass) cell_type, got {:?}",
+        bio_cell.cell_type
+    );
+
+    let corrosion_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "corrosion_class")
+        .expect("expected 'corrosion_class' value cell in TitaniumImplant");
+    assert_eq!(
+        corrosion_cell.cell_type,
+        Type::Enum("CorrosionClass".to_string()),
+        "corrosion_class should have Enum(CorrosionClass) cell_type, got {:?}",
+        corrosion_cell.cell_type
+    );
+}
+
 // ─── (a) module loads cleanly with two trait defs and two enum defs ───────────
 
 /// The std/materials/chemical module must load with zero error-severity
@@ -283,6 +351,9 @@ fn biocompatible_refines_material_spec_with_enum_param() {
 
 // ─── (f-guard) Inline enum re-declarations match stdlib definitions ───────────
 
+// TODO(task #2525): this guard test becomes obsolete once the parser consults
+// prelude/stdlib enums — delete this test together with the inline redecls.
+
 /// The inline enum re-declarations used in the TitaniumImplant conformance test
 /// must stay in sync with the stdlib definitions in `materials_chemical.ri`.
 /// The check is bidirectional: both stdlib-side additions (a new enum in stdlib
@@ -313,6 +384,10 @@ enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
 /// value cells for both enum-typed params with correct Enum cell_type.
 #[test]
 fn titanium_implant_conforms_to_biocompatible_and_corrosion_resistant() {
+    // TODO(task #2525): remove inline enum redecls and merge with the sibling
+    // #[ignore]-gated `titanium_implant_conforms_without_inline_enum_redeclarations`
+    // test once the parser fix lands.
+    //
     // Note: the enums are declared inline here because the parser populates
     // `known_enums` only from the current source file (not from the stdlib
     // prelude), so `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI`
@@ -332,60 +407,31 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
 }
 "#;
 
-    let compiled = compile_source_with_stdlib(source);
+    assert_titanium_implant_compiles_correctly(source);
+}
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "TitaniumImplant should compile cleanly, got errors: {:?}",
-        errors
-    );
+// ─── (f-future) TitaniumImplant without inline enum re-declarations ───────────
 
-    let template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "TitaniumImplant")
-        .expect("expected 'TitaniumImplant' template in compiled module");
+/// Documents the expected primary-use path: stdlib enums consumed by name
+/// without inline re-declaration in the source string.
+///
+/// Currently ignored because the parser populates `known_enums` only from the
+/// current source file (`crates/reify-syntax/src/ts_parser.rs:58`), so
+/// `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI` are not
+/// recognised as EnumAccess nodes when the enums live solely in the stdlib
+/// prelude.  Remove the `#[ignore]` attribute once the parser fix in task 2525
+/// lands — the test will then pass without modification.
+#[test]
+#[ignore = "blocked on task 2525: parser known_enums must consult prelude/stdlib (see crates/reify-syntax/src/ts_parser.rs:58)"]
+fn titanium_implant_conforms_without_inline_enum_redeclarations() {
+    let source = r#"
+structure def TitaniumImplant : Biocompatible + CorrosionResistant {
+    param density : Real = 4500.0
+    param name : String = "titanium"
+    param biocompatibility_class : BiocompatibilityClass = BiocompatibilityClass.USP_Class_VI
+    param corrosion_class : CorrosionClass = CorrosionClass.C5
+}
+"#;
 
-    assert!(
-        template.trait_bounds.contains(&"Biocompatible".to_string()),
-        "TitaniumImplant must have 'Biocompatible' trait bound, got: {:?}",
-        template.trait_bounds
-    );
-    assert!(
-        template
-            .trait_bounds
-            .contains(&"CorrosionResistant".to_string()),
-        "TitaniumImplant must have 'CorrosionResistant' trait bound, got: {:?}",
-        template.trait_bounds
-    );
-
-    // Verify enum-typed value cells.
-    let bio_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "biocompatibility_class")
-        .expect("expected 'biocompatibility_class' value cell in TitaniumImplant");
-    assert_eq!(
-        bio_cell.cell_type,
-        Type::Enum("BiocompatibilityClass".to_string()),
-        "biocompatibility_class should have Enum(BiocompatibilityClass) cell_type, got {:?}",
-        bio_cell.cell_type
-    );
-
-    let corrosion_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "corrosion_class")
-        .expect("expected 'corrosion_class' value cell in TitaniumImplant");
-    assert_eq!(
-        corrosion_cell.cell_type,
-        Type::Enum("CorrosionClass".to_string()),
-        "corrosion_class should have Enum(CorrosionClass) cell_type, got {:?}",
-        corrosion_cell.cell_type
-    );
+    assert_titanium_implant_compiles_correctly(source);
 }
