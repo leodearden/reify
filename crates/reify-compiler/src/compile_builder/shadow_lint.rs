@@ -229,32 +229,21 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
             }
         }
         Declaration::Purpose(p) => {
-            // The purpose body is a CHILD scope of the params: a body `let`
-            // (or any other body decl) whose name matches a purpose-param is
-            // a shadow per spec §8.5. Build the params frame first, then
-            // collect body decls into a separate body frame, emitting a
-            // Warning for each body-vs-param collision.
-            let mut params_frame: Frame = HashMap::new();
-            for pp in &p.params {
-                params_frame.insert(pp.name.clone(), pp.span);
-            }
-            let params_stack = FrameStack {
-                frame: &params_frame,
-                parent: None,
-            };
-
-            let mut body_frame: Frame = HashMap::new();
-            for (name, span) in collect_body_frame(&p.members) {
-                if let Some(parent_span) = params_stack.lookup(&name) {
-                    push_shadow_diagnostic(diagnostics, &name, span, parent_span);
-                }
-                body_frame.insert(name, span);
-            }
-            let body_stack = FrameStack {
-                frame: &body_frame,
-                parent: Some(&params_stack),
-            };
-            walk_members(&p.members, Some(&body_stack), diagnostics);
+            // The purpose body is a CHILD scope of the params: a body decl
+            // whose name matches a purpose-param is a shadow per spec §8.5.
+            // Delegate the params/body-frame scaffolding to
+            // `walk_child_scope_body`. The HashMap iterator from
+            // `collect_body_frame` is forwarded directly — iteration order is
+            // already nondeterministic in the original code (design decision
+            // #3, task 2499), so no sort is introduced here.
+            walk_child_scope_body(
+                p.params.iter().map(|pp| (pp.name.clone(), pp.span)),
+                collect_body_frame(&p.members),
+                |body_stack, diagnostics| {
+                    walk_members(&p.members, Some(body_stack), diagnostics);
+                },
+                diagnostics,
+            );
         }
         // The remaining declaration arms (Enum, Unit, TypeAlias) do not
         // introduce expression-bearing scopes that the lint needs to walk;
