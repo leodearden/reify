@@ -101,10 +101,57 @@ The PRD decomposes into 10 tasks when activated:
 9. **`KernelAttributeHook` trait + Manifold implementation.** Generic hook; Manifold gets the first concrete impl using `originalID`/`faceID`/`MeshGL` merge vectors. Gated on Manifold landing per 2295.
 10. **Selector vocabulary v2.** Direction (incl. `+vec`), extremal (both flavours), geometry-type filter (incl. `%Geom` universal), Boolean combinators, topological walks, history-based selectors, attribute primitives. Splittable into `10a` (cheap: direction, type, combinators) and `10b` (walks, history, attribute queries) if too big for one task.
 
-## Deferred to v0.3+
+## Deferred to v0.3+ (tracker bookmarks)
 
-- **Adjacent-element backup keys.** Kim et al. 2016 propose `FaceName1#FaceName2` for edges and face-triple for vertices, exploiting adjacency as a more robust invariant than direct identity. Deferred because the modification-history postfix handles the most common failure modes; revisit when telemetry shows residual reliability gaps in the primary key.
-- **Hash-compaction of attribute names.** RealThunder's StringHasher trick (FreeCAD hit 22.6 MiB attribute storage on real models, compressed to 3.6 MiB via SHA-1 segment hashing). Our scheme is short by construction; deferred until telemetry shows modification-history postfixes accumulating to memory or perf pain in deeply-stacked feature trees.
+The items below are tracked future work — concrete extensions with activation triggers and
+references — not active v0.2 scope and not items we rule out. They differ from the "Out of
+scope" list, which records things we explicitly do not plan to implement. Each subsection
+corresponds to a task bookmark that survives in source control alongside this PRD.
+
+### Adjacent-element backup keys (task #2560)
+
+Kim et al. 2016 propose `FaceName1#FaceName2` for edges and face-triple for vertices,
+exploiting adjacency as a more robust invariant than direct identity. Deferred because the
+modification-history postfix handles the most common failure modes; revisit when telemetry
+shows residual reliability gaps in the primary key. Detailed activation triggers and
+reference study to be filled out interactively after v0.2 ships.
+
+### Hash-compaction of attribute storage (task #2561)
+
+**Applicability.** This bookmark applies if the v0.2 implementation (or a subsequent
+iteration) introduces any attribute-name component that grows unboundedly with edit depth —
+for example a modification-history postfix such as `:mod_history=…`. The v0.2 "Sketch of
+approach" describes a fixed-width `(feature_id, role, local_index)` tuple and does not yet
+specify such a component; if that remains true through release this bookmark is dormant.
+
+**Idea.** Apply the RealThunder StringHasher pattern from the FreeCAD Topological Naming
+project: segment-hash any unbounded attribute-name component into a fixed-width digest and
+persist it alongside a digest → original-substring sidecar table. Attribute storage shrinks
+because the variable-length component is replaced by a short hash. The sidecar allows
+lossless round-trip when the full string is needed.
+
+**Published numbers** (RealThunder FreeCAD implementation, studied 2026-04-28; see reference
+below for source): order-of-magnitude reduction in attribute storage size, at the cost of a
+modest recompute overhead (~30% in the reported benchmark) because hashing is not free.
+
+**Why deferred.**
+- The v0.2 attribute tuple `(feature_id, role, local_index)` is fixed-width by construction;
+  any future variable-length component is the only growth surface.
+- Variable-length component length would grow with edit depth, not model complexity — most
+  designs stay shallow.
+- The hash sidecar adds debugging and round-trip overhead: `:H7af3b2c1:` is opaque without
+  the sidecar, complicating error messages and serialized diagnostics.
+
+**When to action.**
+- Telemetry shows per-realization attribute storage exceeding ~10 MiB.
+- Per-realization serde wall-time exceeds 50 ms attributable to attribute handling, confirmed
+  by profile evidence.
+- A connected kernel rejects or truncates attribute names above a documented byte limit (e.g.
+  Manifold via `KernelAttributeHook`; substitute the actual limit when known).
+
+**Reference.** RealThunder Topological Naming Algorithm wiki, StringHasher section:
+<https://github.com/realthunder/FreeCAD_assembly3/wiki/Topological-Naming-Algorithm>
+(studied 2026-04-28).
 
 ## Out of scope for this PRD
 
