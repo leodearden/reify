@@ -79,8 +79,8 @@ def main() -> None:
 
     errors: list[str] = []
     warnings: list[str] = []
-    # Per-tag list of (tag_name, tasks, known_ids) for subtask iteration.
-    tag_results: list[tuple[str, list, set]] = []
+    # Per-tag list of (tag_name, tasks, known_ids, subtasks_by_parent) for subtask iteration.
+    tag_results: list[tuple[str, list, set, dict]] = []
 
     for tag_name, tag_value in data.items():
         # Skip known metadata keys that are deliberately not tag namespaces.
@@ -105,8 +105,8 @@ def main() -> None:
                 f" ('tasks' is {type(tasks_list).__name__!r}, expected list)"
             )
             continue
-        known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
-        tag_results.append((tag_name, tasks_list, known_ids))
+        known_ids, subtasks_by_parent = _validate_tasks(tasks_list, errors, context=tag_name)
+        tag_results.append((tag_name, tasks_list, known_ids, subtasks_by_parent))
 
     # Require at least one valid tag namespace when tag-like keys exist.
     # A file where every non-metadata key was WARN-skipped (malformed shape)
@@ -120,12 +120,16 @@ def main() -> None:
         )
 
     if args.check_subtasks:
-        for tag_name, tasks_list, known_ids in tag_results:
+        for tag_name, tasks_list, known_ids, subtasks_by_parent in tag_results:
             for task in tasks_list:
                 subtasks = task.get("subtasks", [])
                 if subtasks:
                     parent_id = task.get("id", "?")
-                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name)
+                    _validate_subtasks(
+                        subtasks, known_ids, parent_id, errors,
+                        tag_context=tag_name,
+                        subtasks_by_parent=subtasks_by_parent,
+                    )
 
     if errors:
         for err in errors:
@@ -138,10 +142,13 @@ def main() -> None:
         print(f"WARN: {warn}", file=sys.stderr)
 
 
-def _validate_tasks(tasks: list, errors: list, context: str) -> set:
+def _validate_tasks(tasks: list, errors: list, context: str) -> tuple[set, dict]:
     """Validate invariants 1-3 for a flat list of tasks.
 
-    Returns the set of known string IDs (for use by subtask validation).
+    Returns a (known_ids, subtasks_by_parent) tuple.  ``known_ids`` is the set
+    of valid string IDs; ``subtasks_by_parent`` maps each parent ID to the set
+    of valid subtask IDs beneath it.  Both are used by subtask validation to
+    resolve dotted ``<parent>.<subtask>`` dependency references.
     """
     prefix = f"{context}: " if context else ""
 
@@ -210,7 +217,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
                 f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
             )
 
-    return known_ids
+    return known_ids, subtasks_by_parent
 
 
 def _validate_subtasks(
@@ -220,10 +227,12 @@ def _validate_subtasks(
     errors: list,
     *,
     tag_context: str = "",
+    subtasks_by_parent: dict | None = None,
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
-    Subtask deps may reference sibling subtask IDs or parent-task IDs.
+    Subtask deps may reference sibling subtask IDs, parent-task IDs, or dotted
+    ``<parent>.<subtask>`` references when ``subtasks_by_parent`` is supplied.
     ``tag_context`` is the enclosing tag name (e.g. ``"master"``) and is
     prepended to error messages when set.
     """
@@ -259,8 +268,10 @@ def _validate_subtasks(
         else:
             known_subtask_ids.add(sid)
 
-    # Invariant 2 for subtasks (deps may be sibling subtask ids or parent task ids).
+    # Invariant 2 for subtasks (deps may be sibling subtask ids, parent task ids,
+    # or dotted ``<parent>.<subtask>`` references to known subtasks elsewhere).
     allowed_ids = known_subtask_ids | parent_task_ids
+    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for sub in subtasks:
         sid = sub.get("id", "?")
         deps_raw = sub.get("dependencies", [])
@@ -275,6 +286,16 @@ def _validate_subtasks(
                     f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
             elif dep not in allowed_ids:
+                # Also accept dotted <parent>.<subtask> form when subtasks_by_parent
+                # is available (passed from the main loop via _validate_tasks output).
+                m = dotted_re.fullmatch(dep)
+                if (
+                    m is not None
+                    and subtasks_by_parent is not None
+                    and m.group(1) in parent_task_ids
+                    and m.group(2) in subtasks_by_parent.get(m.group(1), set())
+                ):
+                    continue
                 errors.append(
                     f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
                 )
