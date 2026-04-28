@@ -140,37 +140,22 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
         Declaration::Import(_) => {}
         Declaration::Function(f) => {
             // The fn body is a CHILD scope of the params: a body `let` whose
-            // name matches a fn-param is a shadow per spec §8.5. Build the
-            // params frame first, then collect body lets into a separate
-            // body frame, emitting a Warning for each let-vs-param collision.
-            let mut params_frame: Frame = HashMap::new();
-            for p in &f.params {
-                params_frame.insert(p.name.clone(), p.span);
-            }
-            let params_stack = FrameStack {
-                frame: &params_frame,
-                parent: None,
-            };
-
-            let mut body_frame: Frame = HashMap::new();
-            for l in &f.body.let_bindings {
-                if let Some(parent_span) = params_stack.lookup(&l.name) {
-                    push_shadow_diagnostic(diagnostics, &l.name, l.span, parent_span);
-                }
-                body_frame.insert(l.name.clone(), l.span);
-            }
-            let body_stack = FrameStack {
-                frame: &body_frame,
-                parent: Some(&params_stack),
-            };
-
-            for l in &f.body.let_bindings {
-                walk_expr(&l.value, Some(&body_stack), diagnostics);
-                if let Some(wc) = &l.where_clause {
-                    walk_expr(&wc.condition, Some(&body_stack), diagnostics);
-                }
-            }
-            walk_expr(&f.body.result_expr, Some(&body_stack), diagnostics);
+            // name matches a fn-param is a shadow per spec §8.5. Delegate
+            // the params/body-frame scaffolding to `walk_child_scope_body`.
+            walk_child_scope_body(
+                f.params.iter().map(|p| (p.name.clone(), p.span)),
+                f.body.let_bindings.iter().map(|l| (l.name.clone(), l.span)),
+                |body_stack, diagnostics| {
+                    for l in &f.body.let_bindings {
+                        walk_expr(&l.value, Some(body_stack), diagnostics);
+                        if let Some(wc) = &l.where_clause {
+                            walk_expr(&wc.condition, Some(body_stack), diagnostics);
+                        }
+                    }
+                    walk_expr(&f.body.result_expr, Some(body_stack), diagnostics);
+                },
+                diagnostics,
+            );
         }
         Declaration::Constraint(cd) => {
             // Build a frame from the constraint def's params and walk every
@@ -655,6 +640,61 @@ fn walk_expr_depth(
         | ExprKind::EnumAccess { .. }
         | ExprKind::Auto { .. } => {}
     }
+}
+
+/// Common scope-management for the `Declaration::Function` and
+/// `Declaration::Purpose` arms of [`walk_declaration`] (spec §8.5):
+///
+/// 1. Build a **params frame** from `params` and wrap it in a [`FrameStack`]
+///    with no parent.
+/// 2. Iterate `body_names`; for each `(name, span)` that collides with a name
+///    visible from `params_stack`, emit a [`push_shadow_diagnostic`] warning
+///    and insert the name into the **body frame** (so later body names can
+///    shadow each other, but not the param they just shadowed — that first
+///    shadow is already recorded).
+/// 3. Build a `body_stack` with `parent = Some(&params_stack)` and invoke
+///    `walk_body` with it so all expressions inside the body are walked under
+///    both scopes.
+///
+/// Both iterators are generic (`impl IntoIterator`) so the Function call site
+/// can forward its native `Vec`-backed `.iter().map(…)` and the Purpose call
+/// site can forward the `HashMap`'s `.into_iter()` — no intermediate
+/// allocations, and each arm's native iteration order is preserved (spec §8.5,
+/// design decision #3 in task 2499).
+///
+/// Extracted to consolidate the duplicated fn/purpose-body scaffolding in a
+/// single edit site, mirroring the [`walk_forall_binder`] pattern for
+/// `ForallConnect`/`ForallConstraint`.
+fn walk_child_scope_body(
+    params: impl IntoIterator<Item = (String, SourceSpan)>,
+    body_names: impl IntoIterator<Item = (String, SourceSpan)>,
+    walk_body: impl FnOnce(&FrameStack, &mut Vec<Diagnostic>),
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Build params scope.
+    let mut params_frame: Frame = HashMap::new();
+    for (name, span) in params {
+        params_frame.insert(name, span);
+    }
+    let params_stack = FrameStack {
+        frame: &params_frame,
+        parent: None,
+    };
+
+    // Build body scope, emitting a Shadowing warning for each param collision.
+    let mut body_frame: Frame = HashMap::new();
+    for (name, span) in body_names {
+        if let Some(parent_span) = params_stack.lookup(&name) {
+            push_shadow_diagnostic(diagnostics, &name, span, parent_span);
+        }
+        body_frame.insert(name, span);
+    }
+    let body_stack = FrameStack {
+        frame: &body_frame,
+        parent: Some(&params_stack),
+    };
+
+    walk_body(&body_stack, diagnostics);
 }
 
 /// Common scope-management for both `MemberDecl::ForallConnect` and
