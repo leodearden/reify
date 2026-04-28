@@ -217,6 +217,61 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let p = quat_mul(a, b);
             sanitize_value(normalize_quaternion(p.0, p.1, p.2, p.3).unwrap_or(Value::Undef))
         }
+        "orient_slerp" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            let (aw, ax, ay, az) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            let (mut bw, mut bx, mut by, mut bz) = match &args[1] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(aw, ax, ay, az) || !quaternion_is_finite(bw, bx, by, bz) {
+                return Some(Value::Undef);
+            }
+            // t must be a pure number (Real or DIMENSIONLESS Scalar). Dimensioned
+            // Scalars (e.g. Angle) are rejected.
+            if args[2].dimension() != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let t = match args[2].as_f64() {
+                Some(t) => t,
+                None => return Some(Value::Undef),
+            };
+            if !t.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Choose short-path on the 3-sphere by negating b if dot(a, b) < 0.
+            let mut dot = aw * bw + ax * bx + ay * by + az * bz;
+            if dot < 0.0 {
+                bw = -bw;
+                bx = -bx;
+                by = -by;
+                bz = -bz;
+                dot = -dot;
+            }
+            // Clamp dot to [-1, 1] for numerical safety before acos.
+            if dot > 1.0 {
+                dot = 1.0;
+            }
+            const EPS: f64 = 1e-10;
+            let (w_a, w_b) = if 1.0 - dot < EPS {
+                // Near-collinear: fall back to linear interpolation, normalize after.
+                (1.0 - t, t)
+            } else {
+                let theta = dot.acos();
+                let s = theta.sin();
+                (((1.0 - t) * theta).sin() / s, (t * theta).sin() / s)
+            };
+            let w = w_a * aw + w_b * bw;
+            let x = w_a * ax + w_b * bx;
+            let y = w_a * ay + w_b * by;
+            let z = w_a * az + w_b * bz;
+            sanitize_value(normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef))
+        }
         "orient_exp" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
