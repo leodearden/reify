@@ -83,9 +83,9 @@ pub mod ffi {
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
 
-        /// Probe whether `a` and `b` have a non-empty BRepAlgoAPI_Common result.
-        /// Returns true iff any sub-shape (TopoDS_Iterator::More()) of the common
-        /// shape exists. Face-touching pairs count as intersecting.
+        /// Probe whether `a` and `b` are intersecting (non-positive minimum distance)
+        /// via BRepExtrema_DistShapeShape. Returns true iff dist.Value() <= 0.0.
+        /// Face-touching pairs count as intersecting.
         fn shapes_intersect(a: &OcctShape, b: &OcctShape) -> Result<bool>;
 
         // --- Modifications ---
