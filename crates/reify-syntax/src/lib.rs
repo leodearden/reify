@@ -269,9 +269,10 @@ pub const MAX_MEMBER_NESTING_DEPTH: usize = 32;
 /// Recursively search a member list for a named param or let declaration.
 ///
 /// Returns [`MemberSpanInfo`] for the first match. Recurses into
-/// `GuardedGroup.members`, `GuardedGroup.else_members`, and `Port.members`
-/// so that declarations inside `where cond { ... } else { ... }` blocks
-/// and port bodies are found. Recursion is bounded by
+/// `GuardedGroup.members`, `GuardedGroup.else_members`, `Port.members`,
+/// and each arm's `member` inside `MatchArmDeclGroup` so that declarations
+/// inside `where cond { ... } else { ... }` blocks, port bodies, and
+/// match-arm clusters are found. Recursion is bounded by
 /// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological input.
 pub fn find_named_member_span<'a>(
     members: &'a [MemberDecl],
@@ -293,6 +294,8 @@ pub fn find_named_member_span<'a>(
 ///   * `MemberDecl::GuardedGroup(g)` — both `g.members` (the `where { … }`
 ///     branch) and `g.else_members` (the `else { … }` branch). Both branches
 ///     are siblings inside the enclosing specialization scope.
+///   * `MemberDecl::MatchArmDeclGroup(g)` — each arm's `member` (spec §6.4,
+///     task 2372). The group node is visited first, then each arm's member.
 ///
 /// The walker does NOT recurse into `PortDecl.members`; port bodies have
 /// their own grammar and are themselves forbidden inside a specialization
@@ -335,6 +338,18 @@ where
                 walk_members_depth(&g.members, visitor, depth + 1);
                 walk_members_depth(&g.else_members, visitor, depth + 1);
             }
+            // Spec §6.4 (task 2372): match-arm decl clusters desugar each arm
+            // to a same-name guarded decl. Recurse into each arm's member so
+            // the visitor sees per-arm declarations as children of the group.
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    walk_members_depth(
+                        std::slice::from_ref(&*arm.member),
+                        visitor,
+                        depth + 1,
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -374,6 +389,19 @@ fn find_named_member_span_depth<'a>(
             MemberDecl::Port(port) => {
                 if let Some(result) = find_named_member_span_depth(&port.members, name, depth + 1) {
                     return Some(result);
+                }
+            }
+            // Spec §6.4 (task 2372): recurse into each arm's member to find
+            // named declarations inside match-arm clusters.
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    if let Some(result) = find_named_member_span_depth(
+                        std::slice::from_ref(&*arm.member),
+                        name,
+                        depth + 1,
+                    ) {
+                        return Some(result);
+                    }
                 }
             }
             _ => {}
