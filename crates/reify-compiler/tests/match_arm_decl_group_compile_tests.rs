@@ -741,6 +741,19 @@ fn match_arm_decl_group_param_arm_emits_unsupported_diagnostic() {
         "expected 'only sub declarations are supported' diagnostic for Param arm, got: {:#?}",
         compiled.diagnostics
     );
+
+    // Suggestion 2: the pre-pass emits the first diagnostic and compile_match_arm_decl_group
+    // now skips non-Sub arms, so the second "could not resolve type for match-arm param"
+    // diagnostic should NOT be emitted.
+    let has_second_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("could not resolve type for match-arm param"));
+    assert!(
+        !has_second_diag,
+        "expected no second 'could not resolve type' diagnostic for Param arm, got: {:#?}",
+        compiled.diagnostics
+    );
 }
 
 /// suggestion 5: an empty match block emits 'must contain at least one arm'.

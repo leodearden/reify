@@ -486,6 +486,18 @@ pub(crate) fn compile_entity(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
                                 );
+                                // Populate sub_member_types so that `self.<arm-sub>.<member>`
+                                // qualified access resolves correctly — mirrors the regular Sub
+                                // pre-pass at entity.rs:594-602.
+                                // (Suggestion 3 from review: match regular Sub pre-pass.)
+                                let member_types: BTreeMap<String, Type> = child_tmpl
+                                    .value_cells
+                                    .iter()
+                                    .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+                                    .collect();
+                                scope
+                                    .sub_member_types
+                                    .insert(sub.name.clone(), member_types);
                             }
                         }
                         other => {
@@ -2070,6 +2082,24 @@ fn compile_match_arm_decl_group(
         }
     }
 
+    // Guard against duplicate cluster names BEFORE the per-arm loop so that
+    // sub_components and guarded_groups are never polluted with ghost entries from
+    // the rejected cluster.  (Suggestion 1 from review: check early, before pushes.)
+    if scope.match_arm_groups.contains_key(logical_name.as_str()) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "duplicate match-arm cluster name '{}' — two match blocks declare \
+                 the same logical name in this structure",
+                logical_name
+            ))
+            .with_label(DiagnosticLabel::new(
+                m.span,
+                "duplicate cluster",
+            )),
+        );
+        return;
+    }
+
     let discriminant_ref =
         CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
 
@@ -2104,6 +2134,14 @@ fn compile_match_arm_decl_group(
     let mut group_arms: Vec<GuardedDeclArm> = Vec::with_capacity(m.arms.len());
 
     for arm in &m.arms {
+        // The pre-pass already emitted a diagnostic for any non-Sub arm.
+        // Skip here to avoid a second misleading "could not resolve type" diagnostic
+        // from arm_member_type attempting scope.resolve on an unregistered name.
+        // (Suggestion 2 from review: suppress duplicate diagnostics for Param/Let arms.)
+        if !matches!(&*arm.member, reify_syntax::MemberDecl::Sub(_)) {
+            continue;
+        }
+
         // Synthesise the per-arm guard expression.
         // For a single pattern: `discriminant == EnumType.Variant`
         // For a pipe pattern:   `discriminant == V1 || discriminant == V2 || ...`
@@ -2234,23 +2272,6 @@ fn compile_match_arm_decl_group(
             guard_value_cell: guard_cell_id,
             arm_type,
         });
-    }
-
-    // suggestion 8: detect duplicate match-arm cluster names (two separate
-    // match blocks in the same structure both producing the same logical name).
-    if scope.match_arm_groups.contains_key(logical_name.as_str()) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "duplicate match-arm cluster name '{}' — two match blocks declare \
-                 the same logical name in this structure",
-                logical_name
-            ))
-            .with_label(DiagnosticLabel::new(
-                m.span,
-                "duplicate cluster",
-            )),
-        );
-        return;
     }
 
     // Register the assembled cluster in the dedicated scope map.
