@@ -116,6 +116,16 @@ pub struct NodeCache {
     /// Optional warm-start state for the evaluator (type-erased).
     /// Transient: not preserved across clones (warm state is an optimization hint).
     pub warm_state: Option<OpaqueState>,
+    /// Diagnostic-chain side-table: when `freshness == Pending`, this carries
+    /// the upstream `NodeId` that caused this node to be Pending (a Failed
+    /// leaf, or another Pending node forwarding its own cause). `None` when
+    /// the entry is not Pending or the chain root has not been recorded.
+    ///
+    /// This lives outside `Freshness::Pending` so the four-variant lifecycle
+    /// tag stays untouched (see arch §7.1, plan task #2330 design decision).
+    /// Failed entries do NOT set this field — a Failed node is itself the
+    /// chain root, not a forwarder.
+    pub pending_cause: Option<NodeId>,
 }
 
 impl Clone for NodeCache {
@@ -127,12 +137,17 @@ impl Clone for NodeCache {
             dependency_trace: self.dependency_trace.clone(),
             basis_version: self.basis_version,
             warm_state: None, // warm state is transient, not preserved across clones
+            pending_cause: self.pending_cause.clone(),
         }
     }
 }
 
 impl NodeCache {
     /// Create a new cache entry, automatically computing the result hash.
+    ///
+    /// `pending_cause` defaults to `None`; the diagnostic chain is populated
+    /// by [`CacheStore::mark_pending_with_cause`] at the wire site, not by
+    /// this constructor.
     pub fn new(
         result: CachedResult,
         freshness: Freshness,
@@ -147,6 +162,7 @@ impl NodeCache {
             dependency_trace,
             basis_version,
             warm_state: None,
+            pending_cause: None,
         }
     }
 }
@@ -315,6 +331,7 @@ impl CacheStore {
                 dependency_trace: trace,
                 basis_version: version,
                 warm_state: None,
+                pending_cause: None,
             },
         );
         EvalOutcome::Changed
@@ -431,6 +448,10 @@ impl CacheStore {
     /// previous result for comparison while signaling that re-evaluation is in progress.
     ///
     /// Returns `true` if the node was found and marked, `false` if not cached.
+    ///
+    /// **Diagnostic chain:** this helper does NOT set `pending_cause`. Use
+    /// [`CacheStore::mark_pending_with_cause`] to populate the chain when the
+    /// transition is driven by a known upstream Failed/Pending node.
     pub fn mark_pending(&mut self, node: &NodeId) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Pending {
@@ -441,6 +462,74 @@ impl CacheStore {
         } else {
             false
         }
+    }
+
+    /// Mark a node as Failed, recording the supplied [`ErrorRef`].
+    ///
+    /// Sets `freshness = Freshness::Failed { error }` in place. The
+    /// `pending_cause` side-table is left **unchanged** because a Failed
+    /// node is itself the chain root, not a forwarder (downstream Pending
+    /// entries will store this NodeId in their own `pending_cause`).
+    ///
+    /// Returns `true` if the node was present and updated, `false` if no
+    /// cache entry exists. As with [`CacheStore::mark_pending`], absent-node
+    /// auto-creation is intentionally not supported (no value/result/trace
+    /// to seed).
+    ///
+    /// # Warning: do not pass `Freshness::Failed` directly
+    ///
+    /// `mark_failed` must be used instead of `set_freshness(node,
+    /// Freshness::Failed { error })`. This helper centralises the
+    /// "Failed nodes are chain roots" invariant; `set_freshness` would
+    /// silently allow downstream callers to skip recording the chain root.
+    pub fn mark_failed(&mut self, node: &NodeId, error: reify_types::ErrorRef) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.freshness = Freshness::Failed { error };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mark a node as Pending with the supplied diagnostic-chain cause.
+    ///
+    /// Mirrors [`CacheStore::mark_pending`] (sets `freshness = Pending {
+    /// last_substantive: ResultRef::of_hash(prev_hash) }`, bumps
+    /// `pending_transition_count`) and additionally records `cause` in the
+    /// `pending_cause` side-table on the entry.
+    ///
+    /// `cause` is the upstream `NodeId` that drove the transition — typically
+    /// either a Failed leaf or another Pending node forwarding its own cause.
+    /// See arch §9.2 lines 880-890 and arch §7.2 line 748.
+    ///
+    /// Returns `true` if the node was present and updated, `false` if no
+    /// cache entry exists.
+    pub fn mark_pending_with_cause(&mut self, node: &NodeId, cause: NodeId) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.freshness = Freshness::Pending {
+                last_substantive: ResultRef::of_hash(entry.result_hash),
+            };
+            entry.pending_cause = Some(cause);
+            self.pending_transition_count += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Read the diagnostic-chain cause stored on a node's cache entry.
+    ///
+    /// Returns the `Option<NodeId>` from the entry's `pending_cause`
+    /// side-table when present; returns `None` when the node has no entry
+    /// (consistent with the "default to None on absent" pattern).
+    ///
+    /// Failed entries return `None` here (they are chain roots, not
+    /// forwarders); only Pending entries written via
+    /// [`CacheStore::mark_pending_with_cause`] populate this field.
+    pub fn pending_cause(&self, node: &NodeId) -> Option<NodeId> {
+        self.caches
+            .get(node)
+            .and_then(|e| e.pending_cause.clone())
     }
 
     /// Canonical reader for cache freshness.
@@ -2913,7 +3002,7 @@ mod tests {
             Freshness::Failed {
                 error: ErrorRef::new("boom"),
             },
-            "mark_failed must set freshness to Failed { error }"
+            "mark_failed must set freshness to Failed {{ error }}"
         );
     }
 
