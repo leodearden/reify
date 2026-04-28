@@ -88,6 +88,26 @@ pub fn propagate_freshness_only(
 
         for dependent in dependents {
             let current = cache.freshness(&dependent);
+
+            // Failed-skip guard (cache.rs:545-566 mark_failed contract;
+            // arch §9.2 lines 880-890): a Failed node is a terminal
+            // chain-root state. Re-deriving it via the §7.2/§9.2 helper
+            // would silently flip it to Final/Intermediate/Pending based
+            // on its inputs, destroying the chain-root invariant
+            // (`pending_cause` reader contract requires Failed to read
+            // None). However, downstream propagation MUST continue —
+            // dependents of Failed b correctly become Pending with b as
+            // the chain root, so we DO push the cell onto the frontier
+            // before continuing. The `continue` MUST come AFTER
+            // `frontier.push_back` so that the inner derivation step at
+            // c (which sees Failed b as input) still fires.
+            if matches!(current, Freshness::Failed { .. }) {
+                if let NodeId::Value(vcid) = &dependent {
+                    frontier.push_back(vcid.clone());
+                }
+                continue;
+            }
+
             // Cause-bearing variant (arch §9.2 lines 880-890): returns the
             // upstream `NodeId` chain root for a Pending output. We forward
             // `cause` through `mark_pending_with_cause` so the §9.2
