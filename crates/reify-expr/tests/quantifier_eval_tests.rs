@@ -675,18 +675,6 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
 /// observationally equivalent under both paths; the path divergence is
 /// exercised separately by
 /// `forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration`.
-///
-/// The cell-iteration branch keys off the structural shape, not a marker —
-/// so user-written code matching the same shape also routes through
-/// `remap_cell` rewriting + scope-binding instead of the value-iteration
-/// fallback. For arithmetic predicates this is observationally equivalent
-/// to value-iteration: the rewrite turns `ValueRef($loop)` into
-/// `ValueRef(E.x)`, and `eval_expr` on the rewritten ValueRef looks the
-/// value up in `ctx.values` — same lookup the value-iteration path would
-/// have done after binding `$loop -> values.get(E.x)`. This test locks
-/// that semantics in: a user-written quantifier over a list of
-/// ValueRefs returns the same boolean result it would under
-/// value-iteration, with no panics from the cell-iteration codepath.
 #[test]
 fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
     let cell_x = ValueCellId::new("E", "x");
@@ -702,9 +690,8 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
         Type::List(Box::new(Type::Real)),
     );
 
-    // Predicate: `p > 0` — references the loop var via ValueRef, which
-    // `remap_cell` rewrites to `ValueRef(E.x)` / `ValueRef(E.y)` per
-    // iteration. Both cells hold positive values, so forall must be true.
+    // Predicate: `p > 0` — references the loop var via ValueRef. Value-iteration
+    // binds `p` to E.x's value / E.y's value per iteration; both are positive.
     let predicate = CompiledExpr::binop(
         BinOp::Gt,
         CompiledExpr::value_ref(loop_var.clone(), Type::Real),
@@ -729,9 +716,8 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
         result,
         Value::Bool(true),
         "user-written `forall p in [E.x, E.y]: p > 0` with positive values \
-         in both cells must evaluate to Bool(true) under cell-iteration; \
-         the remap_cell rewrite of ValueRef($loop) → ValueRef(E.x)/E.y is \
-         observationally equivalent to value-iteration's $loop->value bind"
+         in both cells must evaluate to Bool(true) under value-iteration \
+         (task-2458: ListLiteral no longer triggers cell-iteration)"
     );
 
     // Counterpart: flip one cell negative, expect Bool(false).
