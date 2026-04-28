@@ -339,11 +339,20 @@ fn collect_body_frame_into(
                 collect_body_frame_into(&g.members, frame, depth + 1);
                 collect_body_frame_into(&g.else_members, frame, depth + 1);
             }
-            // Forall variants do NOT contribute the bound variable to the parent
-            // frame — the variable is scoped to the forall body only (child frame).
-            MemberDecl::ForallConnect(_) | MemberDecl::ForallConstraint(_) => {}
             // The remaining variants do not contribute named binders to the
-            // body's name-resolution scope.
+            // enclosing body's name-resolution scope.
+            //
+            // For `ForallConnect`/`ForallConstraint`, the bound variable IS a
+            // binder — but it is scoped to the forall body ONLY (a child frame
+            // built at the walk site in `walk_members_depth`), so it must NOT
+            // leak into this parent frame. They are folded into this group
+            // because the parent-frame contribution is identical (none); the
+            // child-frame construction lives in `walk_members_depth`.
+            //
+            // A future refactor that mistakenly inserts the forall variable
+            // into the parent frame here would silently broaden its lexical
+            // visibility — any maintainer touching this match must preserve
+            // the no-op behavior.
             MemberDecl::Constraint(_)
             | MemberDecl::ConstraintInst(_)
             | MemberDecl::Minimize(_)
@@ -351,7 +360,9 @@ fn collect_body_frame_into(
             | MemberDecl::AssociatedType(_)
             | MemberDecl::Connect(_)
             | MemberDecl::Chain(_)
-            | MemberDecl::MetaBlock(_) => {}
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::ForallConnect(_)
+            | MemberDecl::ForallConstraint(_) => {}
         }
     }
 }
@@ -471,77 +482,53 @@ fn walk_members_depth(
             }
             MemberDecl::ForallConnect(f) => {
                 use reify_syntax::ForallConnectBody;
-                // The collection is evaluated in the outer (parent) scope.
-                walk_expr(&f.collection, frames, diagnostics);
-                // Mirrors the ExprKind::Quantifier arm in walk_expr_depth: if
-                // the bound variable matches a name visible from an enclosing
-                // frame, emit a Shadowing warning before pushing the child
-                // frame. The child span is `f.span` (the ForallConnectDecl
-                // span) — analogous to the Quantifier arm's use of `expr.span`,
-                // and consistent with the TODO at shadow_lint.rs:587-593
-                // proposing to migrate both forms together once a separate
-                // `variable_span` field lands on the AST nodes.
-                if let Some(parent_span) = frames.and_then(|fr| fr.lookup(&f.variable)) {
-                    push_shadow_diagnostic(diagnostics, &f.variable, f.span, parent_span);
-                }
-                // Build a child frame containing the bound variable, then walk
-                // the body's expressions with the child frame on the stack.
-                let mut child: Frame = HashMap::new();
-                child.insert(f.variable.clone(), f.span);
-                let forall_stack = FrameStack {
-                    frame: &child,
-                    parent: frames,
-                };
-                match &f.body {
-                    ForallConnectBody::Connect(c) => {
-                        walk_expr(&c.left.expr, Some(&forall_stack), diagnostics);
-                        walk_expr(&c.right.expr, Some(&forall_stack), diagnostics);
-                        for (_, expr) in &c.params {
-                            walk_expr(expr, Some(&forall_stack), diagnostics);
+                walk_forall_binder(
+                    &f.variable,
+                    f.span,
+                    &f.collection,
+                    frames,
+                    diagnostics,
+                    |frames, diagnostics| match &f.body {
+                        ForallConnectBody::Connect(c) => {
+                            walk_expr(&c.left.expr, frames, diagnostics);
+                            walk_expr(&c.right.expr, frames, diagnostics);
+                            for (_, expr) in &c.params {
+                                walk_expr(expr, frames, diagnostics);
+                            }
                         }
-                    }
-                    ForallConnectBody::Chain(c) => {
-                        for elem in &c.elements {
-                            walk_expr(elem, Some(&forall_stack), diagnostics);
+                        ForallConnectBody::Chain(c) => {
+                            for elem in &c.elements {
+                                walk_expr(elem, frames, diagnostics);
+                            }
                         }
-                    }
-                }
+                    },
+                );
             }
             MemberDecl::ForallConstraint(f) => {
                 use reify_syntax::ForallConstraintBody;
-                // The collection is evaluated in the outer (parent) scope.
-                walk_expr(&f.collection, frames, diagnostics);
-                // Mirrors the ExprKind::Quantifier arm in walk_expr_depth: if
-                // the bound variable matches a name visible from an enclosing
-                // frame, emit a Shadowing warning before pushing the child
-                // frame. See the ForallConnect arm above for the rationale on
-                // the choice of `f.span` as the child span.
-                if let Some(parent_span) = frames.and_then(|fr| fr.lookup(&f.variable)) {
-                    push_shadow_diagnostic(diagnostics, &f.variable, f.span, parent_span);
-                }
-                // Child frame with the bound variable for the body.
-                let mut child: Frame = HashMap::new();
-                child.insert(f.variable.clone(), f.span);
-                let forall_stack = FrameStack {
-                    frame: &child,
-                    parent: frames,
-                };
-                match &f.body {
-                    ForallConstraintBody::Constraint(c) => {
-                        walk_expr(&c.expr, Some(&forall_stack), diagnostics);
-                        if let Some(wc) = &c.where_clause {
-                            walk_expr(&wc.condition, Some(&forall_stack), diagnostics);
+                walk_forall_binder(
+                    &f.variable,
+                    f.span,
+                    &f.collection,
+                    frames,
+                    diagnostics,
+                    |frames, diagnostics| match &f.body {
+                        ForallConstraintBody::Constraint(c) => {
+                            walk_expr(&c.expr, frames, diagnostics);
+                            if let Some(wc) = &c.where_clause {
+                                walk_expr(&wc.condition, frames, diagnostics);
+                            }
                         }
-                    }
-                    ForallConstraintBody::Instantiation(ci) => {
-                        for (_, expr) in &ci.args {
-                            walk_expr(expr, Some(&forall_stack), diagnostics);
+                        ForallConstraintBody::Instantiation(ci) => {
+                            for (_, expr) in &ci.args {
+                                walk_expr(expr, frames, diagnostics);
+                            }
+                            if let Some(wc) = &ci.where_clause {
+                                walk_expr(&wc.condition, frames, diagnostics);
+                            }
                         }
-                        if let Some(wc) = &ci.where_clause {
-                            walk_expr(&wc.condition, Some(&forall_stack), diagnostics);
-                        }
-                    }
-                }
+                    },
+                );
             }
             MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
         }
@@ -690,6 +677,52 @@ fn walk_expr_depth(
         | ExprKind::EnumAccess { .. }
         | ExprKind::Auto { .. } => {}
     }
+}
+
+/// Common scope-management for both `MemberDecl::ForallConnect` and
+/// `MemberDecl::ForallConstraint`: walk the collection in the parent scope,
+/// emit a Shadowing warning if the bound variable shadows an enclosing decl,
+/// then construct a one-element child frame and invoke `body_walker` with the
+/// new `FrameStack` so the body's expressions are walked under the bound
+/// variable.
+///
+/// Mirrors the `ExprKind::Quantifier` arm in [`walk_expr_depth`] (see lines
+/// 593-619): the collection is evaluated in the outer scope (the variable is
+/// not yet bound) and the body sees the variable. The `variable_span` is the
+/// child-side label of the Shadowing diagnostic — currently `f.span` (the
+/// outer ForallXDecl span) for both variants, matching the Quantifier arm's
+/// use of `expr.span` and the TODO at lines 605-611 proposing to migrate both
+/// forms together once a separate `variable_span` field lands on the AST
+/// nodes.
+///
+/// Extracted to consolidate the shadow-detection / child-frame logic in one
+/// place so a future body variant addition (or migration to a narrower
+/// `variable_span`) is a single edit site rather than two parallel ones.
+fn walk_forall_binder(
+    variable: &str,
+    variable_span: SourceSpan,
+    collection: &Expr,
+    frames: Option<&FrameStack>,
+    diagnostics: &mut Vec<Diagnostic>,
+    body_walker: impl FnOnce(Option<&FrameStack>, &mut Vec<Diagnostic>),
+) {
+    // Collection is evaluated in the OUTER scope (variable not yet bound).
+    walk_expr(collection, frames, diagnostics);
+    // Shadow check before pushing the child frame, so the parent_span we
+    // resolve is the enclosing decl rather than the variable itself.
+    if let Some(parent_span) = frames.and_then(|fr| fr.lookup(variable)) {
+        push_shadow_diagnostic(diagnostics, variable, variable_span, parent_span);
+    }
+    // Push a one-element child frame and walk the body under it. The new
+    // stack node lives on this call's stack frame and drops automatically
+    // when `body_walker` returns — same lifetime pattern as Lambda/Quantifier.
+    let mut child: Frame = HashMap::new();
+    child.insert(variable.to_string(), variable_span);
+    let forall_stack = FrameStack {
+        frame: &child,
+        parent: frames,
+    };
+    body_walker(Some(&forall_stack), diagnostics);
 }
 
 /// Push a single Shadowing warning with the canonical message, code, and
