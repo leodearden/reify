@@ -350,6 +350,22 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SPECIALIZATION_FORBIDDEN_DECL`
     /// (see `docs/prds/specialization-scope.md` and spec §8.7).
     SpecializationForbiddenDecl,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs`
+    /// (Phase A candidate enumeration — `enumerate_candidates`).
+    ///
+    /// Canonical message form:
+    /// `"auto type parameter has more than 10 candidates satisfying bound '<TraitNames>'; first 10 alphabetically: <names>"`.
+    ///
+    /// Emitted as `Severity::Error` when the pool of in-scope structures
+    /// satisfying an `auto: TraitName` bound exceeds the cap of 10. The
+    /// diagnostic carries the alphabetically-first 10 FQNs both in the
+    /// human-readable message and in the structured
+    /// [`Diagnostic::candidates`] field, so LSP / MCP consumers can read
+    /// the list without parsing message text.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_POOL_OVERFLOW`
+    /// (see `docs/prds/auto-type-param-resolution.md` §"Phase A").
+    AutoTypeParamPoolOverflow,
 }
 
 /// A diagnostic message with location and optional labels.
