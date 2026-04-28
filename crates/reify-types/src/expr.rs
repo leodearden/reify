@@ -1931,6 +1931,59 @@ mod tests {
 
     // ── end task-2458 step-1 tests ────────────────────────────────────────────
 
+    // ── task-2552: constructor-level ValueRef invariant tests ─────────────────
+
+    /// task-2552: In debug builds, `reflective_cell_list` must panic when any
+    /// element is not a `ValueRef`.
+    ///
+    /// Rationale: the `ReflectiveCellList(_)` no-op arm in
+    /// `expand_purpose_reflective_placeholders` (reify-eval, task-2544) elides
+    /// recursion on the basis that all elements are `ValueRef`s — a non-ValueRef
+    /// element would silently bypass placeholder expansion in release builds.
+    /// Moving the invariant into the constructor (task-2552) protects every
+    /// future caller automatically.
+    ///
+    /// RED before step-2 (constructor has no debug_assert yet).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ReflectiveCellList elements must be ValueRefs")]
+    fn reflective_cell_list_panics_in_debug_when_element_is_not_value_ref() {
+        let cell_a = ValueCellId::new("E", "a");
+        let elements = vec![
+            CompiledExpr::value_ref(cell_a, Type::Real),
+            CompiledExpr::literal(Value::Int(0), Type::Int),
+        ];
+        // Must panic in debug builds because the second element is a Literal,
+        // not a ValueRef.
+        let _rcl =
+            CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+    }
+
+    /// task-2552: In release builds, `debug_assert!` is a no-op, so passing a
+    /// non-ValueRef element must *not* panic — the constructor silently accepts
+    /// the input.
+    ///
+    /// This locks the "no behaviour change in release builds" contract that the
+    /// `ReflectiveCellList(_)` no-op arm in
+    /// `expand_purpose_reflective_placeholders` (reify-eval, task-2544) relies on.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn reflective_cell_list_accepts_non_value_ref_in_release() {
+        let cell_a = ValueCellId::new("E", "a");
+        let elements = vec![
+            CompiledExpr::value_ref(cell_a, Type::Real),
+            CompiledExpr::literal(Value::Int(0), Type::Int),
+        ];
+        let rcl =
+            CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        assert!(
+            matches!(rcl.kind, CompiledExprKind::ReflectiveCellList(_)),
+            "release build must silently construct the RCL without panicking"
+        );
+    }
+
+    // ── end task-2552 tests ───────────────────────────────────────────────────
+
     /// step-3 (task-2289): structurally-equal placeholders share content_hash;
     /// structurally-different placeholders (different `query_kind`) differ.
     #[test]
