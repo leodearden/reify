@@ -282,8 +282,16 @@ where
     }
     for member in members {
         visitor(member);
-        // Recursion into nested SubDecl bodies and GuardedGroup branches is
-        // added in later TDD steps (steps 6 and 8 of task 2368).
+        // Spec §8.7 nested-sub criterion: a nested SubDecl whose own body
+        // is `Some(_)` opens its own specialization scope. Visit the outer
+        // Sub first (so visitor sees the parent before its children), then
+        // descend.
+        if let MemberDecl::Sub(s) = member
+            && let Some(nested) = s.body.as_ref()
+        {
+            walk_members_depth(nested, visitor, depth + 1);
+        }
+        // GuardedGroup recursion is added in step 8.
     }
 }
 
