@@ -15,16 +15,17 @@
 //! Tests in this file rely on the `test-instrumentation` Cargo feature
 //! enabled via the self-dev-dep in `crates/reify-eval/Cargo.toml`.
 
+use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_test_support::builders::{binop, gt, literal, value_ref_typed};
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
-    BinOp, ConstraintNodeId, DiagnosticCode, Freshness, ModulePath, Satisfaction, Severity, Type,
-    Value, ValueCellId,
+    BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness, ModulePath,
+    RealizationNodeId, Satisfaction, Severity, Type, Value, ValueCellId,
 };
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
@@ -483,5 +484,147 @@ fn constraint_violation_does_not_produce_failed_freshness_or_error_event() {
         "(d) §9.3: NO EventKind::Failed event must be recorded for a \
          Violated-only constraint pass; got {} Failed event(s)",
         failed_count
+    );
+}
+
+/// Build a single-realization module with one Box primitive op:
+///   `param width:Length=80mm; param height:Length=100mm; param depth:Length=5mm;`
+///   plus `realization[0] = Box(width, height, depth)`.
+///
+/// `FailingMockGeometryKernel::execute` always returns
+/// `Err(GeometryError::OperationFailed("simulated kernel failure"))`, so the
+/// realization triggers the §9.1 kernel-error path inside
+/// `execute_realization_ops`. The realization NodeId is
+/// `RealizationNodeId::new("KernelFail", 0)`.
+fn one_realization_box_module() -> reify_compiler::CompiledModule {
+    let e = "KernelFail";
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_lit(80.0)),
+            ("height".into(), mm_lit(100.0)),
+            ("depth".into(), mm_lit(5.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_lit(80.0)))
+        .param(e, "height", Type::length(), Some(mm_lit(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_lit(5.0)))
+        .realization(e, 0, vec![box_op])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test_kernel_fail"))
+        .template(template)
+        .build()
+}
+
+/// Regression test pinning the §9.1 kernel-error → `Freshness::Failed`
+/// production path on the realization NodeId.
+///
+/// When `kernel.execute(...)` returns `Err(...)` from
+/// `engine_build.rs::execute_realization_ops`, the engine must:
+///
+///   (a) Mark the realization NodeId as
+///       `Freshness::Failed { error }` in the cache.
+///   (b) The error message must include the wrapped geometry error string
+///       (the same "geometry error: …" prefix already used by the
+///       Diagnostic).
+///   (c) Emit exactly one `EventKind::Failed` event in the journal.
+///   (d) Scope that event to `NodeId::Realization(rnid)`.
+///   (e) The pre-existing `Diagnostic::error("geometry error: …")` must
+///       still be present in `BuildResult.diagnostics` — the existing
+///       diagnostic surface must NOT be removed by the new Failed-write
+///       behaviour.
+///
+/// Implements arch §9.1 lines 868–877 ("kernel.execute(...) Err → mark
+/// realization Failed + emit one error event"). This is the second
+/// Failed-production path (besides the `evaluate_let_bindings` panic
+/// boundary covered by step-11/step-12).
+///
+/// See plan #2330 step-17 / step-18 for the design.
+#[test]
+fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
+    let module = one_realization_box_module();
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let e = "KernelFail";
+    let rnid = RealizationNodeId::new(e, 0);
+    let r_node = NodeId::Realization(rnid.clone());
+
+    let build_result = engine.build(&module, ExportFormat::Step);
+
+    // (a) freshness(NodeId::Realization(rnid)) == Failed { error }.
+    let r_freshness = engine.cache_store().freshness(&r_node);
+    let error_message = match &r_freshness {
+        Freshness::Failed { error } => error.message().to_string(),
+        other => panic!(
+            "(a) §9.1: realization NodeId must be Failed after kernel \
+             error; got {:?}",
+            other
+        ),
+    };
+
+    // (b) the error message wraps the geometry error string.
+    //     `FailingMockGeometryKernel` raises
+    //     `OperationFailed("simulated kernel failure")` and
+    //     `execute_realization_ops` already prefixes "geometry error: ".
+    assert!(
+        error_message.contains("geometry error"),
+        "(b) §9.1: Failed error message must wrap the geometry error \
+         string; got {:?}",
+        error_message
+    );
+    assert!(
+        error_message.contains("simulated kernel failure"),
+        "(b) §9.1: Failed error message must include the kernel's own \
+         error text; got {:?}",
+        error_message
+    );
+
+    // (c) journal records exactly one Failed event.
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count, 1,
+        "(c) §9.1: exactly one Failed event must be recorded for the \
+         kernel-error realization; got {} event(s)",
+        failed_count
+    );
+
+    // (d) the Failed event is scoped to NodeId::Realization(rnid).
+    let r_events = engine.journal().events_for_node(&r_node);
+    let r_failed: Vec<_> = r_events
+        .iter()
+        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
+        .collect();
+    assert_eq!(
+        r_failed.len(),
+        1,
+        "(d) §9.1: the Failed event must be scoped to \
+         NodeId::Realization(rnid); got {} event(s) for {:?}",
+        r_failed.len(),
+        r_node
+    );
+
+    // (e) the existing Diagnostic::error("geometry error: …") survives —
+    //     adding the Failed write must not double-handle and remove the
+    //     existing diagnostic surface.
+    let geom_diags = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("geometry error"))
+        .count();
+    assert!(
+        geom_diags >= 1,
+        "(e) §9.1: the pre-existing Diagnostic::error(\"geometry \
+         error: …\") must still be emitted alongside the Failed write; \
+         got 0 such diagnostics in {:?}",
+        build_result.diagnostics
     );
 }
