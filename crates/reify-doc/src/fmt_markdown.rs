@@ -261,7 +261,7 @@ fn render_toc_groups(
             out.push_str("- [`");
             out.push_str(n);
             out.push_str("`](");
-            out.push_str(&resolve_link(*it));
+            out.push_str(&resolve_link(it));
             out.push_str(")\n");
         }
         out.push('\n');
