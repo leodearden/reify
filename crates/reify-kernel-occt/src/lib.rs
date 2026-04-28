@@ -160,8 +160,8 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 ///
 /// Both the `Centroid` and `CenterOfMass` query arms return their result in this format.
 /// Routing both through this single helper makes it structurally impossible for the two arms
-/// to drift apart — the bit-equality invariant documented in
-/// `reify-types/src/geometry.rs` (`CenterOfMass`: "the result is identical to
+/// to drift apart — the bit-equality invariant documented in the `CenterOfMass`
+/// doc-comment in `reify-types::geometry` ("the result is identical to
 /// `Centroid(handle)`") is upheld by construction rather than by convention.
 fn centroid_json(p: ffi::ffi::Point3) -> String {
     format!("{{\"x\":{},\"y\":{},\"z\":{}}}", p.x, p.y, p.z)
@@ -5608,8 +5608,9 @@ mod tests {
     /// uniform-density solid.
     ///
     /// The `CenterOfMass` kernel arm ignores `density` (bound to `_`) and delegates to
-    /// the same OCCT volume-centroid path as `Centroid` (see `geometry.rs:365–376` for the
-    /// documented bit-equality invariant: "the result is identical to `Centroid(handle)`").
+    /// the same OCCT volume-centroid path as `Centroid` (see the `CenterOfMass` doc-comment in
+    /// `reify-types::geometry` for the documented bit-equality invariant: "the result is
+    /// identical to `Centroid(handle)`").
     ///
     /// This test guards against any future contributor who bypasses the helper and copies an
     /// inline `format!` into one arm but not the other — the test will catch any format
@@ -5647,11 +5648,12 @@ mod tests {
             .expect("CenterOfMass query must not return Err");
 
         // Bit-equal string equality — not just numeric closeness — to lock in that both arms
-        // use exactly the same JSON encoder (geometry.rs:365–376 documents this invariant).
+        // use exactly the same JSON encoder (the CenterOfMass doc-comment in
+        // reify-types::geometry documents this invariant).
         assert_eq!(
             centroid, center_of_mass,
             "CenterOfMass and Centroid must produce bit-equal Value outputs for a uniform-density \
-             solid (documented invariant: geometry.rs:365–376). Got Centroid={centroid:?}, \
+             solid (see CenterOfMass doc-comment in reify-types::geometry). Got Centroid={centroid:?}, \
              CenterOfMass={center_of_mass:?}"
         );
 
