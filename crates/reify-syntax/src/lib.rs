@@ -93,6 +93,41 @@ pub enum MemberDecl {
     ForallConnect(ForallConnectDecl),
     /// `forall v in coll: constraint ...` or `forall v in coll: constraint Inst(...)`
     ForallConstraint(ForallConstraintDecl),
+    /// `match <discriminant> { Pattern => <member> ... }` at decl level (task 2372).
+    ///
+    /// Represents a cluster of same-name declarations produced by an exhaustive
+    /// `match` block. See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
+    /// Tree-sitter grammar / ts_parser lowering is deferred; tests hand-construct
+    /// this variant directly (mirroring `find_named_member_span_hand_constructed_*`).
+    MatchArmDeclGroup(MatchArmDeclGroupDecl),
+}
+
+/// A `match <discriminant> { Pattern => <member> ... }` declaration block (task 2372).
+///
+/// Produces a cluster of same-name guarded declarations when compiled. Each
+/// arm's guard is desugared to `discriminant == EnumType.Variant` (spec §6.4).
+#[derive(Debug, Clone)]
+pub struct MatchArmDeclGroupDecl {
+    /// The expression whose variant value selects the active arm (e.g. `head_type`).
+    pub discriminant: Expr,
+    /// The match arms, in source order.
+    pub arms: Vec<MatchArmDeclArmDecl>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A single arm inside a `MatchArmDeclGroupDecl` (task 2372).
+///
+/// `patterns` uses `Vec<String>` to align with the existing `MatchArm.patterns`
+/// shape in this module. A `|`-pipe form collapses multiple variant idents into a
+/// single arm's `patterns` list.
+#[derive(Debug, Clone)]
+pub struct MatchArmDeclArmDecl {
+    /// One or more variant ident strings (pipe-collapsed into a single arm).
+    pub patterns: Vec<String>,
+    /// The per-arm declaration (e.g. a `Sub` whose name is shared across all arms).
+    pub member: Box<MemberDecl>,
+    pub span: SourceSpan,
 }
 
 /// `where condition { ...members... } else { ...members... }`

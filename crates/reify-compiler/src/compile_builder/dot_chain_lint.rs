@@ -276,8 +276,10 @@ fn walk_members(
                     walk_expr(expr, diagnostics);
                 });
             }
-            // Members with no embedded expressions.
-            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
+            // Members with no embedded expressions (or not yet handled).
+            MemberDecl::AssociatedType(_)
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::MatchArmDeclGroup(_) => {}
         }
     }
 }

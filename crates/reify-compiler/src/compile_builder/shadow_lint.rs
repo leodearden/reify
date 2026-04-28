@@ -339,7 +339,8 @@ fn collect_body_frame_into(
             | MemberDecl::Chain(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
-            | MemberDecl::ForallConstraint(_) => {}
+            | MemberDecl::ForallConstraint(_)
+            | MemberDecl::MatchArmDeclGroup(_) => {}
         }
     }
 }
@@ -485,7 +486,7 @@ fn walk_members_depth(
                     },
                 );
             }
-            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
+            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) | MemberDecl::MatchArmDeclGroup(_) => {}
         }
     }
 }

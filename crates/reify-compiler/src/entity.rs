@@ -1417,6 +1417,8 @@ pub(crate) fn compile_entity(
                     )),
                 );
             }
+            // task 2372 (step-10): match-arm decl-group compilation wired here.
+            reify_syntax::MemberDecl::MatchArmDeclGroup(_) => {}
         }
     }
 
