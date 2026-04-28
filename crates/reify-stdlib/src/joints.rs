@@ -142,12 +142,11 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 // Rejects "coupling" and any other kind
                 _ => return Some(Value::Undef),
             };
-            // Extract ratio from args[1]: accept Real or Int.
-            // NaN/Inf not yet rejected here — step-4 adds ratio_input for that.
-            let ratio_f64 = match &args[1] {
-                Value::Real(r) => *r,
-                Value::Int(i) => *i as f64,
-                _ => return Some(Value::Undef),
+            // Extract ratio: finite, dimensionless numeric (Real/Int/DIMENSIONLESS Scalar).
+            // ratio_input rejects NaN, Inf, and dimensioned Scalars.
+            let ratio_f64 = match ratio_input(&args[1]) {
+                Some(r) => r,
+                None => return Some(Value::Undef),
             };
             // Extract offset: use parent-dimension-keyed helper (length_input / trig_input)
             // so bare Real/Int is accepted in addition to correctly-dimensioned Scalar.
@@ -206,6 +205,29 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         }
         _ => return None,
     })
+}
+
+/// Extract a dimensionless ratio from a `couple` ratio argument.
+///
+/// Accepts:
+/// - `Value::Scalar { dimension: DIMENSIONLESS, .. }` with finite si_value.
+/// - `Value::Real(r)` (finite) — treated as dimensionless ratio directly.
+/// - `Value::Int(i)` — treated as dimensionless ratio directly.
+///
+/// Returns `None` for any other variant (wrong dimension, non-finite, NaN, Inf).
+fn ratio_input(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            if *dimension == DimensionVector::DIMENSIONLESS && si_value.is_finite() {
+                Some(*si_value)
+            } else {
+                None
+            }
+        }
+        Value::Real(r) if r.is_finite() => Some(*r),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
 }
 
 /// Extract metres from a `transform_at` value argument for a Prismatic joint.
