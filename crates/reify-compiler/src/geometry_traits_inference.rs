@@ -72,7 +72,7 @@
 //! `bounded` flag.
 
 use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-use reify_types::{CompiledExpr, CompiledExprKind};
+use reify_types::{CompiledExpr, CompiledExprKind, ValueCellId};
 
 /// The closed v0.1 set of stdlib geometry-conformance marker trait names.
 ///
@@ -310,6 +310,33 @@ pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
     }
 }
 
+/// An environment that maps `ValueCellId`s to pre-resolved `InferredTraits`.
+///
+/// Implemented by the conformance walker to resolve geometry-typed `let`
+/// bindings through the realization op-array. Returns `None` when the id is
+/// not a geometry-typed let (or when the env has no information about the id),
+/// in which case the caller falls back to `InferredTraits::all()` (safe-default).
+pub trait LetBindingEnv {
+    /// Look up the inferred traits for a value cell.
+    ///
+    /// Returns `Some(traits)` if the id is a known geometry-typed let binding
+    /// whose traits can be resolved, or `None` to signal "unknown / use the
+    /// safe default".
+    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits>;
+}
+
+/// An empty `LetBindingEnv` that always returns `None`.
+///
+/// Used by the legacy `infer_traits_for_expr` wrapper and by any call site that
+/// does not need let-binding resolution (e.g. the coverage unit tests).
+pub struct EmptyLetEnv;
+
+impl LetBindingEnv for EmptyLetEnv {
+    fn lookup(&self, _id: &ValueCellId) -> Option<InferredTraits> {
+        None
+    }
+}
+
 /// Walk the inference table over a `CompiledExpr`.
 ///
 /// This is the call-site form used by the conformance walker, which has a
@@ -346,12 +373,30 @@ pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
 /// non-FunctionCall expressions (e.g. inferring traits through a
 /// `let g : Solid = ...` binding) can extend the match arms additively.
 pub fn infer_traits_for_expr(expr: &CompiledExpr) -> InferredTraits {
+    infer_traits_for_expr_in_env(expr, &EmptyLetEnv)
+}
+
+/// Walk the inference table over a `CompiledExpr`, consulting `env` to resolve
+/// `ValueRef` ids to pre-resolved trait sets.
+///
+/// The `ValueRef(id)` arm calls `env.lookup(id)` and falls back to
+/// `InferredTraits::all()` when the env returns `None` — preserving the
+/// existing safe-default behaviour for unbound refs.
+///
+/// All other arms behave identically to [`infer_traits_for_expr`]: the
+/// dispatch table lives here and the env-less wrapper is a thin alias over
+/// `EmptyLetEnv`.
+pub fn infer_traits_for_expr_in_env(
+    expr: &CompiledExpr,
+    env: &dyn LetBindingEnv,
+) -> InferredTraits {
     match &expr.kind {
         CompiledExprKind::FunctionCall { function, args } => {
-            infer_traits_for_function_call(function.name.as_str(), args)
+            infer_traits_for_function_call_in_env(function.name.as_str(), args, env)
         }
+        CompiledExprKind::ValueRef(id) => env.lookup(id).unwrap_or(InferredTraits::all()),
         // Default-Bounded for every other expression kind. See the doc-comment
-        // above for the rationale.
+        // on `infer_traits_for_expr` for the rationale.
         _ => InferredTraits::all(),
     }
 }
@@ -462,10 +507,25 @@ fn infer_geom_ref(geom_ref: &GeomRef, ops: &[CompiledGeometryOp]) -> InferredTra
 ///
 /// `None` is the return value of the `_ =>` arm — the single, audited place
 /// where an unknown name would fall back to Bounded. The private wrapper
-/// [`infer_traits_for_function_call`] maps `None` to `InferredTraits::all()`.
+/// [`infer_traits_for_function_call_in_env`] maps `None` to `InferredTraits::all()`.
 pub fn try_infer_traits_for_function_call(
     name: &str,
     args: &[CompiledExpr],
+) -> Option<InferredTraits> {
+    try_infer_traits_for_function_call_in_env(name, args, &EmptyLetEnv)
+}
+
+/// Env-aware dispatch on the function-call name. Returns `Some(InferredTraits)`
+/// for every explicitly-dispatched name, or `None` for the unknown-name fallback.
+///
+/// The dispatch table lives here; the env-less
+/// [`try_infer_traits_for_function_call`] is a thin alias over `EmptyLetEnv`.
+/// The `env` is threaded into every geometry-arg recursive call so that
+/// `ValueRef` ids inside arg positions resolve via the env.
+pub fn try_infer_traits_for_function_call_in_env(
+    name: &str,
+    args: &[CompiledExpr],
+    env: &dyn LetBindingEnv,
 ) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
@@ -473,15 +533,15 @@ pub fn try_infer_traits_for_function_call(
 
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {
-            let (a, b) = first_two_geometry_args(args);
+            let (a, b) = first_two_geometry_args_in_env(args, env);
             Some(combine_union(a, b))
         }
         "difference" => {
-            let (a, b) = first_two_geometry_args(args);
+            let (a, b) = first_two_geometry_args_in_env(args, env);
             Some(combine_difference(a, b))
         }
         "intersection" => {
-            let (a, b) = first_two_geometry_args(args);
+            let (a, b) = first_two_geometry_args_in_env(args, env);
             Some(combine_intersection(a, b))
         }
 
@@ -497,18 +557,20 @@ pub fn try_infer_traits_for_function_call(
         // every geometry-typed argument; an empty geometry-arg list defaults
         // to `all()` (defensive — well-formed source always supplies at
         // least one argument).
-        "union_all" => Some(fold_geometry_args(args, combine_union)),
-        "intersection_all" => Some(fold_geometry_args(args, combine_intersection)),
+        "union_all" => Some(fold_geometry_args_in_env(args, combine_union, env)),
+        "intersection_all" => {
+            Some(fold_geometry_args_in_env(args, combine_intersection, env))
+        }
 
         // ─── Transform combinators → recurse + combine_transform ────────
         "translate" | "rotate" | "scale" | "rotate_around" => {
-            let t = first_geometry_arg(args);
+            let t = first_geometry_arg_in_env(args, env);
             Some(combine_transform(t))
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
         "fillet" | "chamfer" | "shell" | "draft" | "thicken" => {
-            let t = first_geometry_arg(args);
+            let t = first_geometry_arg_in_env(args, env);
             Some(combine_modify(t))
         }
 
@@ -518,14 +580,14 @@ pub fn try_infer_traits_for_function_call(
         | "mirror"
         | "linear_pattern_2d"
         | "arbitrary_pattern" => {
-            let t = first_geometry_arg(args);
+            let t = first_geometry_arg_in_env(args, env);
             Some(combine_pattern(t))
         }
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
         "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep"
         | "sweep_guided" | "loft" | "loft_guided" | "pipe" => {
-            let t = first_geometry_arg(args);
+            let t = first_geometry_arg_in_env(args, env);
             Some(combine_sweep(t))
         }
 
@@ -543,55 +605,63 @@ pub fn try_infer_traits_for_function_call(
     }
 }
 
-/// Thin private wrapper: dispatch via [`try_infer_traits_for_function_call`]
+/// Thin private wrapper: dispatch via [`try_infer_traits_for_function_call_in_env`]
 /// and collapse `None` to `InferredTraits::all()`.
 ///
 /// This is the single, audited place where unknown geometry function names
 /// fall back to fully-Bounded. The `try_*` companion returns `None` precisely
 /// for the `_ =>` arm, so the coverage test can detect the gap without any
 /// `#[cfg(test)]` branches in production code.
-fn infer_traits_for_function_call(name: &str, args: &[CompiledExpr]) -> InferredTraits {
-    try_infer_traits_for_function_call(name, args).unwrap_or(InferredTraits::all())
+fn infer_traits_for_function_call_in_env(
+    name: &str,
+    args: &[CompiledExpr],
+    env: &dyn LetBindingEnv,
+) -> InferredTraits {
+    try_infer_traits_for_function_call_in_env(name, args, env).unwrap_or(InferredTraits::all())
 }
 
-/// Find the first geometry-typed argument and recurse, defaulting to
-/// `InferredTraits::all()` if no geometry arg is present (defensive — a
+/// Find the first geometry-typed argument and recurse with the env, defaulting
+/// to `InferredTraits::all()` if no geometry arg is present (defensive — a
 /// well-formed call site always has one).
-fn first_geometry_arg(args: &[CompiledExpr]) -> InferredTraits {
+fn first_geometry_arg_in_env(args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
     args.iter()
         .find(|a| a.result_type == reify_types::Type::Geometry)
-        .map(infer_traits_for_expr)
+        .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all())
 }
 
-/// Fold `combine` across every geometry-typed argument (used by the
-/// variadic `union_all` / `intersection_all` dispatch arms). Returns
-/// `InferredTraits::all()` when no geometry arg is present, matching the
-/// defensive default used by the unary/binary helpers above.
-fn fold_geometry_args(
+/// Fold `combine` across every geometry-typed argument with env threading
+/// (used by the variadic `union_all` / `intersection_all` dispatch arms).
+/// Returns `InferredTraits::all()` when no geometry arg is present, matching
+/// the defensive default used by the unary/binary helpers above.
+fn fold_geometry_args_in_env(
     args: &[CompiledExpr],
     combine: fn(InferredTraits, InferredTraits) -> InferredTraits,
+    env: &dyn LetBindingEnv,
 ) -> InferredTraits {
     args.iter()
         .filter(|a| a.result_type == reify_types::Type::Geometry)
-        .map(infer_traits_for_expr)
+        .map(|a| infer_traits_for_expr_in_env(a, env))
         .reduce(combine)
         .unwrap_or(InferredTraits::all())
 }
 
-/// Find the first two geometry-typed arguments and recurse on each,
-/// defaulting to `InferredTraits::all()` if either is missing.
-fn first_two_geometry_args(args: &[CompiledExpr]) -> (InferredTraits, InferredTraits) {
+/// Find the first two geometry-typed arguments and recurse on each with the
+/// env, defaulting to `InferredTraits::all()` if either is missing.
+fn first_two_geometry_args_in_env(
+    args: &[CompiledExpr],
+    env: &dyn LetBindingEnv,
+) -> (InferredTraits, InferredTraits) {
     let mut iter = args
         .iter()
         .filter(|a| a.result_type == reify_types::Type::Geometry);
     let a = iter
         .next()
-        .map(infer_traits_for_expr)
+        .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all());
     let b = iter
         .next()
-        .map(infer_traits_for_expr)
+        .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all());
     (a, b)
 }
