@@ -804,6 +804,32 @@ pub enum Role {
     NewEdge,
 }
 
+/// Per-topology-entity attribute record for v0.2 persistent naming.
+///
+/// One of these is associated with each face/edge produced by a feature,
+/// keyed by `GeometryHandleId` in the runtime `TopologyAttributeTable`.
+///
+/// Fields per PRD lines 52-61:
+///   - `feature_id` — the feature that produced (or last touched) this entity.
+///   - `role` — what part of the feature this entity is.
+///   - `local_index` — 0-based index within `(feature_id, role)`. Tasks 5-8
+///     populate this from per-op routing.
+///   - `user_label` — optional user-supplied name (absorbs v0.1 `name = "..."`
+///     syntax, PRD line 50). `None` is the common default.
+///   - `mod_history` — lineage postfix populated on splits by task 3 (#2571).
+///
+/// Note: deliberately not `Hash` — `Vec<ModEntry>` would force a Hash bound
+/// chain, and TopologyAttribute is never used as a HashMap key (the table
+/// is keyed by GeometryHandleId).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyAttribute {
+    pub feature_id: FeatureId,
+    pub role: Role,
+    pub local_index: u32,
+    pub user_label: Option<String>,
+    pub mod_history: Vec<ModEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
