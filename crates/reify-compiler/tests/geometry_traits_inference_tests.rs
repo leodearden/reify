@@ -930,6 +930,57 @@ fn infer_traits_for_op_self_referential_step_short_circuits_to_safe_default() {
     );
 }
 
+/// Forward-chain `GeomRef::Step` cycles short-circuit to the safe-default
+/// `InferredTraits::all()` rather than stack-overflowing.
+///
+/// # Regression lock (task 2549)
+///
+/// This test explicitly locks the broader "any forward-reference, not just
+/// exact self-reference" case. A future refactor that narrows the guard to
+/// `idx == current_position` (exact self-reference only) would pass the
+/// self-referential test above but fail here, surfacing the regression loudly.
+///
+/// Array:
+/// ```
+/// ops[0] = Modify { Fillet, target: Step(1) }  // forward-reference
+/// ops[1] = Modify { Fillet, target: Step(0) }  // back-edge → cycle
+/// ```
+/// Root = `ops[1]` at `current_position = 1`.
+///
+/// Under the `idx < current_position` guard:
+/// - `infer_op(ops[1], ops, 1)` → `infer_geom_ref(Step(0), ops, 1)`:
+///   `0 < 1` → OK, recurse into `infer_op(ops[0], ops, 0)`.
+/// - `infer_op(ops[0], ops, 0)` → `infer_geom_ref(Step(1), ops, 0)`:
+///   `1 < 0` is false → guard fires → `all()`.
+/// - So `ops[0]` resolves to `combine_modify(all) = bounded_connected`.
+/// - Back at root: `combine_modify(bounded_connected) = bounded_connected`.
+///
+/// **Without the guard** `ops[0]` would recurse into `ops[1]` which recurses
+/// back into `ops[0]`, causing an infinite-recursion stack-overflow.
+#[test]
+fn infer_traits_for_op_forward_chain_step_short_circuits_to_safe_default() {
+    let ops = vec![
+        CompiledGeometryOp::Modify {
+            kind: ModifyKind::Fillet,
+            target: GeomRef::Step(1), // forward-reference: idx > current_position
+            args: vec![],
+        },
+        CompiledGeometryOp::Modify {
+            kind: ModifyKind::Fillet,
+            target: GeomRef::Step(0), // back-edge to ops[0]
+            args: vec![],
+        },
+    ];
+    // ops[0] resolves via guard: Step(1) at pos=0 → all() → combine_modify(all) = bounded_connected
+    // root ops[1]: Step(0) at pos=1 → OK → combine_modify(bounded_connected) = bounded_connected
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::bounded_connected(),
+        "forward-chain GeomRef::Step must short-circuit via guard; \
+         combine_modify(combine_modify(all)) = bounded_connected"
+    );
+}
+
 /// `Sweep` root with empty `profiles` → `bounded_connected` (combine_sweep(all)).
 ///
 /// The `Sweep` arm calls `profiles.first()` which returns `None` for an empty
