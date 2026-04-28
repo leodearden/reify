@@ -42,3 +42,39 @@ trait Connected {}
 // A body that is both Closed and Manifold — the canonical predicate for
 // "watertight" geometry suitable for downstream simulation and manufacturing.
 trait Watertight : Closed + Manifold {}
+
+// ── Runtime conformance helpers (task 2320) ─────────────────────────────────
+//
+// Three monomorphic stdlib helpers query a body's runtime conformance:
+//
+//     is_watertight(g) -> Bool   — body has no open edges and a 2-manifold boundary
+//     is_manifold(g)   -> Bool   — every edge is shared by exactly two faces
+//     is_orientable(g) -> Bool   — boundary admits a consistent global outward normal
+//
+// These are recognised by name (no `fn` declarations live in this file) —
+// see crates/reify-compiler/src/units.rs::GEOMETRY_QUERY_HELPER_NAMES for the
+// canonical name list and crates/reify-eval/src/geometry_ops.rs::
+// try_eval_conformance_query for the kernel-aware eval-time dispatch. The
+// dispatch flows: compiler types the call site as `Type::Bool`, the engine's
+// per-template post-process resolves the geometry-arg ValueRef against the
+// realisation's named-step handle map and round-trips
+// `GeometryQuery::IsWatertight | IsManifold | IsOrientable` through the
+// active kernel (see crates/reify-types/src/geometry.rs for the query enum).
+//
+// User-assertion escape hatch: if the enclosing structure declares the
+// matching marker trait, the helper short-circuits to `Bool(true)` *before*
+// the kernel is consulted — pairing is one-to-one (no trait-DAG propagation):
+//
+//     `is_watertight` ↔ `: Watertight`
+//     `is_manifold`   ↔ `: Manifold`
+//     `is_orientable` ↔ `: Orientable`
+//
+// Note the asymmetry — declaring `: Closed + Manifold` separately does NOT
+// short-circuit `is_watertight` (the runtime rule mirrors task 2321's
+// per-bound `W_TRAIT_USER_ASSERTED` warning).
+//
+// Why no `fn` declarations: a `.ri` `fn` declaration with a body becomes a
+// `CompiledFunction` and is dispatched via `eval_user_function_call` (pure
+// value eval), bypassing the conformance-query surface entirely. We follow
+// the same convention as constructors like `box`/`cylinder` (also recognised
+// by name in `units.rs::GEOMETRY_FUNCTION_NAMES`, not declared here).
