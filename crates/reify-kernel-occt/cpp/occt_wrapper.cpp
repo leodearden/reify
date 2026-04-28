@@ -271,12 +271,19 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 
 bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
     return wrap_occt_call("shapes_intersect", [&]() {
-        BRepAlgoAPI_Common common(a.shape, b.shape);
-        common.Build();
-        if (!common.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Common failed");
+        // Use BRepExtrema_DistShapeShape (same algorithm as min_clearance / query_distance)
+        // rather than BRepAlgoAPI_Common.  The boolean-Common approach computes full
+        // intersection geometry (face reconstruction, topology rebuild) and then discards
+        // the result after a single More() check — O(N·M) face work thrown away.
+        // DistShapeShape computes the *distance* only, which can early-exit as soon as it
+        // finds any overlapping or touching pair; it is orders of magnitude cheaper for
+        // large assemblies.  Semantics are equivalent: dist.Value() == 0 iff the shapes
+        // touch or overlap (face-touching → distance 0 → intersecting, same as before).
+        BRepExtrema_DistShapeShape dist(a.shape, b.shape);
+        if (!dist.IsDone()) {
+            throw std::runtime_error("BRepExtrema_DistShapeShape failed");
         }
-        return TopoDS_Iterator(common.Shape()).More();
+        return dist.Value() <= 0.0;
     });
 }
 

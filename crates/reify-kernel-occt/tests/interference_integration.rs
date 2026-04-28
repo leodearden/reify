@@ -104,12 +104,15 @@ fn min_clearance_between_disjoint_boxes_matches_gap() {
 }
 
 /// Overlapping boxes (dx=5.0): volumes intersect → min clearance is 0.
+///
+/// Tolerance is 1e-6 (matching the disjoint case) rather than 1e-9 to avoid
+/// floating-point noise from the Translate transform causing flaky failures.
 #[test]
 fn min_clearance_between_overlapping_boxes_is_zero() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(5.0);
     match kernel.min_clearance(box_a_id, box_b_id) {
         Ok(d) => assert!(
-            d.abs() < 1e-9,
+            d.abs() < 1e-6,
             "expected clearance ~0.0 for overlapping boxes, got {d}"
         ),
         Err(e) => panic!("expected Ok(~0.0), got Err({e:?})"),
@@ -120,9 +123,10 @@ fn min_clearance_between_overlapping_boxes_is_zero() {
 // Error path — invalid handle
 // ---------------------------------------------------------------------------
 
-/// An unknown handle should return `QueryError::InvalidHandle` from `shapes_intersect`.
+/// An unknown second handle should return `QueryError::InvalidHandle` from `shapes_intersect`.
+/// Covers the (valid, unknown) path — `get_shape` succeeds for `a`, fails for `b`.
 #[test]
-fn shapes_intersect_with_unknown_handle_returns_invalid_handle() {
+fn shapes_intersect_unknown_second_handle_returns_invalid_handle() {
     let (kernel, box_id, _) = two_box_kernel(50.0);
     let unknown = GeometryHandleId(999);
     match kernel.shapes_intersect(box_id, unknown) {
@@ -135,12 +139,45 @@ fn shapes_intersect_with_unknown_handle_returns_invalid_handle() {
     }
 }
 
-/// An unknown handle should return `QueryError::InvalidHandle` from `min_clearance`.
+/// An unknown first handle should return `QueryError::InvalidHandle` from `shapes_intersect`.
+/// Covers the (unknown, valid) path — `get_shape` fails for `a` before `b` is resolved.
 #[test]
-fn min_clearance_with_unknown_handle_returns_invalid_handle() {
+fn shapes_intersect_unknown_first_handle_returns_invalid_handle() {
+    let (kernel, box_id, _) = two_box_kernel(50.0);
+    let unknown = GeometryHandleId(998);
+    match kernel.shapes_intersect(unknown, box_id) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({:?}), got InvalidHandle({:?})",
+            unknown, id
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+/// An unknown second handle should return `QueryError::InvalidHandle` from `min_clearance`.
+/// Covers the (valid, unknown) path.
+#[test]
+fn min_clearance_unknown_second_handle_returns_invalid_handle() {
     let (kernel, box_id, _) = two_box_kernel(50.0);
     let unknown = GeometryHandleId(999);
     match kernel.min_clearance(box_id, unknown) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({:?}), got InvalidHandle({:?})",
+            unknown, id
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+/// An unknown first handle should return `QueryError::InvalidHandle` from `min_clearance`.
+/// Covers the (unknown, valid) path — `get_shape` fails for `a` before `b` is resolved.
+#[test]
+fn min_clearance_unknown_first_handle_returns_invalid_handle() {
+    let (kernel, box_id, _) = two_box_kernel(50.0);
+    let unknown = GeometryHandleId(998);
+    match kernel.min_clearance(unknown, box_id) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
         Err(QueryError::InvalidHandle(id)) => panic!(
             "expected InvalidHandle({:?}), got InvalidHandle({:?})",

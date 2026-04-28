@@ -98,12 +98,14 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
 
-/// Probe whether `a` and `b` have a non-empty BRepAlgoAPI_Common result.
+/// Probe whether `a` and `b` are intersecting (non-positive minimum distance).
 ///
-/// Returns true iff the boolean Common of `a` and `b` has at least one
-/// sub-shape (solid, face, edge, or vertex) as reported by TopoDS_Iterator.
-/// Face-touching pairs are reported as intersecting — no tolerance filtering
-/// at the FFI level; task 2531 layers any tolerance/exclusion semantics on top.
+/// Uses BRepExtrema_DistShapeShape: returns true iff dist.Value() <= 0.0.
+/// This is the same OCCT primitive as `min_clearance` and `query_distance`,
+/// significantly cheaper than a full BRepAlgoAPI_Common boolean because it
+/// computes only distance (not intersection geometry) and can early-exit.
+/// Face-touching pairs (distance == 0) are reported as intersecting.
+/// Tolerance filtering belongs at task 2531's stdlib layer.
 bool shapes_intersect(const OcctShape& a, const OcctShape& b);
 
 // --- Modifications ---

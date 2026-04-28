@@ -312,11 +312,14 @@ impl OcctKernel {
         Ok(ids)
     }
 
-    /// Test whether two shapes have a non-empty BRepAlgoAPI_Common intersection.
+    /// Test whether two shapes are intersecting (non-positive minimum distance).
     ///
-    /// Returns `Ok(true)` iff the boolean Common of `a` and `b` has at least one
-    /// sub-shape (solid, face, edge, or vertex). Face-touching pairs count as
-    /// intersecting — no tolerance filtering at the FFI level; task 2531 layers
+    /// Uses `BRepExtrema_DistShapeShape` — same primitive as `min_clearance` —
+    /// returning `Ok(true)` iff the minimum BREP distance is ≤ 0.0.  This is
+    /// significantly cheaper than a full `BRepAlgoAPI_Common` boolean because it
+    /// computes only distance (not intersection geometry) and can early-exit.
+    /// Face-touching pairs (distance == 0) count as intersecting.
+    /// No tolerance filtering at the FFI level; task 2531 layers
     /// any tolerance/exclusion semantics on top.
     ///
     /// Returns `Err(QueryError::InvalidHandle(id))` if either handle is unknown.
