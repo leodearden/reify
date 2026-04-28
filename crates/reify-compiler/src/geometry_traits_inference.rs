@@ -513,7 +513,11 @@ fn infer_geom_ref(
             if *idx >= current_position {
                 return InferredTraits::all();
             }
-            // Defensive: if idx is out of range (malformed IR), default to all().
+            // After the cycle guard, idx < current_position ≤ ops.len() - 1,
+            // so ops.get(*idx) is always Some(_) here. The unwrap_or is a
+            // redundant safety net — it can no longer be reached through
+            // well-typed call paths but is kept as defense-in-depth.
+            debug_assert!(*idx < ops.len(), "cycle guard should have caught idx >= current_position");
             ops.get(*idx)
                 .map(|op| infer_op(op, ops, *idx))
                 .unwrap_or(InferredTraits::all())
