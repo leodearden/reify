@@ -317,4 +317,54 @@ mod tests {
     fn is_geometry_function_pipe_recognized() {
         assert!(is_geometry_function("pipe"));
     }
+
+    // --- Geometry query helpers (task 2320 step-1) ---
+    //
+    // Sibling list to `GEOMETRY_FUNCTION_NAMES` for the three monomorphic
+    // conformance-query helpers that return `Type::Bool` and dispatch at
+    // eval-time via `reify_eval::geometry_ops::try_eval_conformance_query`.
+
+    #[test]
+    fn is_geometry_query_helper_recognises_is_watertight() {
+        assert!(is_geometry_query_helper("is_watertight"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_recognises_is_manifold() {
+        assert!(is_geometry_query_helper("is_manifold"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_recognises_is_orientable() {
+        assert!(is_geometry_query_helper("is_orientable"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_rejects_constructor_names() {
+        // `box` is a constructor in `GEOMETRY_FUNCTION_NAMES` — it must NOT
+        // satisfy the query-helper predicate, otherwise the two lists would
+        // overlap and `is_geometry_let` would misclassify the let-binding.
+        assert!(!is_geometry_query_helper("box"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_rejects_unrelated_names() {
+        // `volume` happens not to be a member of either list today; this
+        // pins the negative answer so a future addition to the helpers does
+        // not silently widen the predicate.
+        assert!(!is_geometry_query_helper("volume"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_rejects_empty_name() {
+        assert!(!is_geometry_query_helper(""));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_is_case_sensitive() {
+        // Reify function names are snake_case; PascalCase variants must not
+        // match (mirrors the `GEOMETRY_FUNCTION_NAMES` case-sensitivity
+        // contract documented above).
+        assert!(!is_geometry_query_helper("IsWatertight"));
+    }
 }
