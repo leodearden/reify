@@ -2,6 +2,20 @@ import { type Component, createSignal, createMemo, For, Show } from 'solid-js';
 import type { ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 
+/**
+ * Return a short glyph for the non-Final freshness variants.
+ * Intermediate: "⟳" (in-progress); Pending: "⚠" (upstream blocked); Failed: "✕" (error).
+ * Final is never passed here (the Show guard filters it out).
+ */
+function freshnessGlyph(freshness: string): string {
+  switch (freshness) {
+    case 'intermediate': return '⟳';
+    case 'pending': return '⚠';
+    case 'failed': return '✕';
+    default: return freshness;
+  }
+}
+
 export interface PropertyEditorProps {
   values: Record<string, ValueData>;
   selectedEntity: string | null;
@@ -223,6 +237,16 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                           >
                             {val.determinacy}
                           </span>
+                          <Show when={val.freshness !== 'final'}>
+                            <span
+                              class={styles.freshnessBadge}
+                              data-freshness={val.freshness}
+                              data-testid={`freshness-badge-${val.cell_id}`}
+                              aria-label={`freshness ${val.freshness}`}
+                            >
+                              {freshnessGlyph(val.freshness)}
+                            </span>
+                          </Show>
                         </div>
                       )}
                     </For>

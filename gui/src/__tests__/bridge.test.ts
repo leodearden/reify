@@ -105,7 +105,7 @@ describe('bridge commands', () => {
   it('setParameter returns a GuiState with typed arrays', async () => {
     const rawState: RawGuiState = {
       meshes: [{ entity_path: 'Box.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
-      values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w', kind: 'parameter' }],
+      values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w', kind: 'parameter', freshness: 'final' }],
       constraints: [],
       files: [],
       tessellation_diagnostics: [],

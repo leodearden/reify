@@ -18,6 +18,7 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
     type_name: null,
     has_mesh: false,
     trait_geometry: false,
+    freshness: 'final',
     children: [],
     ...overrides,
   };

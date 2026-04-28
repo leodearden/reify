@@ -103,6 +103,7 @@ describe('navigation', () => {
           determinacy: 'determined',
           entity_path: 'Bracket',
           kind: 'Param',
+          freshness: 'final',
         },
         {
           cell_id: 'c2',
@@ -112,6 +113,7 @@ describe('navigation', () => {
           determinacy: 'determined',
           entity_path: 'Bracket',
           kind: 'Param',
+          freshness: 'final',
         },
       ];
       const selectEntity = vi.fn();
