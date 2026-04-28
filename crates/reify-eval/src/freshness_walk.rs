@@ -68,6 +68,14 @@ pub fn propagate_freshness_only(
 ) -> HashSet<NodeId> {
     let mut updated: HashSet<NodeId> = HashSet::new();
     let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
+    // `visited` is allocated PER-CALL — never stashed on the CacheStore or
+    // any persistent collection. This is what makes the walk idempotent
+    // under repeated invocation (step-13 / step-14): once propagation has
+    // settled, the early-cutoff gate (`new == current` below) prunes every
+    // dependent on the second call, returning an empty `updated` set.
+    // Persisting `visited` across calls would (incorrectly) skip cells that
+    // legitimately need to be re-walked when a new edit triggers a fresh
+    // propagation round.
     let mut visited: HashSet<ValueCellId> = HashSet::new();
 
     while let Some(cell) = frontier.pop_front() {
