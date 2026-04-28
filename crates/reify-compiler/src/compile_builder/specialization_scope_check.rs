@@ -74,6 +74,11 @@ fn forbidden_kind_name(member: &MemberDecl) -> Option<&'static str> {
         MemberDecl::Param(_) => Some("param"),
         MemberDecl::Port(_) => Some("port"),
         MemberDecl::Sub(_) => Some("sub"),
+        // LOAD-BEARING: this wildcard arm must stay `None`. A future
+        // MemberDecl variant that should be *permitted* must NOT get an arm
+        // returning `Some` here — the test
+        // `validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope`
+        // catches any accidental broadening.
         _ => None,
     }
 }
