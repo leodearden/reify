@@ -1350,6 +1350,110 @@ mod tests {
         );
     }
 
+    // ── transform_at on Coupling: analytic tests ────────────────────────────
+
+    #[test]
+    fn coupling_prismatic_sign_reversal() {
+        // Counter-mass idiom: ratio=-1 on X-prismatic → translation negated
+        // coupled_value = -1.0 * 5.0 + 0.0 = -5.0 m
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(-1.0)]);
+        let result = eval_builtin("transform_at", &[c, Value::length(5.0)]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [-5.0, 0.0, 0.0],
+            1e-12,
+            "coupling prismatic sign reversal, ratio=-1, v=5m → [-5,0,0]",
+        );
+    }
+
+    #[test]
+    fn coupling_prismatic_with_offset() {
+        // ratio=2.0, offset=1.0m, v=3.0m → coupled = 2*3+1 = 7m → [7,0,0]
+        let c = eval_builtin("couple", &[
+            prismatic_x_joint(),
+            Value::Real(2.0),
+            Value::length(1.0),
+        ]);
+        let result = eval_builtin("transform_at", &[c, Value::length(3.0)]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [7.0, 0.0, 0.0],
+            1e-12,
+            "coupling prismatic ratio=2, offset=1m, v=3m → [7,0,0]",
+        );
+    }
+
+    #[test]
+    fn coupling_prismatic_bare_real_value() {
+        // bare Real(0.5) accepted as 0.5 metres; ratio=1, offset=0 → [0.5,0,0]
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        let result = eval_builtin("transform_at", &[c, Value::Real(0.5)]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.5, 0.0, 0.0],
+            1e-12,
+            "coupling prismatic bare Real(0.5), ratio=1 → [0.5,0,0]",
+        );
+    }
+
+    #[test]
+    fn coupling_revolute_sign_reversal() {
+        // ratio=-1 on Z-revolute → rotation reversed: angle = -π/2
+        // coupled_value = -1.0 * (π/2) + 0 = -π/2
+        // rotation = (cos(-π/4), 0, 0, sin(-π/4))
+        let pi = std::f64::consts::PI;
+        let c = eval_builtin("couple", &[revolute_z_joint(), Value::Real(-1.0)]);
+        let result = eval_builtin("transform_at", &[c, Value::angle(pi / 2.0)]);
+        let exp_w = (-pi / 4.0).cos();
+        let exp_z = (-pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (exp_w, 0.0, 0.0, exp_z),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "coupling revolute sign reversal, ratio=-1, v=π/2 → -π/2",
+        );
+    }
+
+    #[test]
+    fn coupling_revolute_with_offset() {
+        // ratio=1.0, offset=π/4, v=π/4 → coupled = 1*(π/4) + π/4 = π/2
+        // rotation about Z by π/2 = (cos(π/4), 0, 0, sin(π/4))
+        let pi = std::f64::consts::PI;
+        let c = eval_builtin("couple", &[
+            revolute_z_joint(),
+            Value::Real(1.0),
+            Value::angle(pi / 4.0),
+        ]);
+        let result = eval_builtin("transform_at", &[c, Value::angle(pi / 4.0)]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "coupling revolute ratio=1, offset=π/4, v=π/4 → rotation π/2",
+        );
+    }
+
+    #[test]
+    fn coupling_zero_ratio_gives_identity_transform() {
+        // ratio=0 → coupled_value = 0*v + 0 = 0m regardless of v
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(0.0)]);
+        let result = eval_builtin("transform_at", &[c, Value::length(99.0)]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "coupling zero ratio → identity transform",
+        );
+    }
+
     // ── joint_range accessor ─────────────────────────────────────────────────
 
     #[test]
