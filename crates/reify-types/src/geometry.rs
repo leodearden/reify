@@ -765,6 +765,30 @@ impl From<&crate::identity::RealizationNodeId> for FeatureId {
     }
 }
 
+/// Cap orientation for the `Role::Cap` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CapKind {
+    Top,
+    Bottom,
+}
+
+/// Role of a topology entity within its originating feature.
+///
+/// The minimal initial set per PRD line 56. Tasks 5-8 (sweeps, primitives,
+/// local features, booleans) will add per-op variants here as a closed
+/// extension — there is intentionally no `Other(String)` escape hatch so
+/// that selector-resolution exhaustive matching remains auditable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Role {
+    /// A cap face (`top` / `bottom`) of the feature, e.g. extrude end caps.
+    Cap(CapKind),
+    /// A side (lateral) face of the feature.
+    Side,
+    /// An edge created by the feature's construction (e.g. cap-to-side
+    /// boundary edges of an extrude).
+    NewEdge,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
