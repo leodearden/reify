@@ -76,8 +76,10 @@ pub fn compute_diagnostics_with_state(
         .and_then(|name| name.strip_suffix(".ri"))
         .unwrap_or("unnamed");
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+    // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
+    // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
+    // `compile_with_stdlib` below). See task 2525.
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     for err in &parsed.errors {
         diagnostics.push(convert::convert_parse_error(err, source, uri));
     }
@@ -242,8 +244,9 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     // Derive a module name from the URI
     let module_name = module_name_from_uri(uri);
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+    // Parse (prelude-aware so stdlib enum references disambiguate correctly;
+    // pairs with `compile_with_stdlib` below). See task 2525.
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
 
     // Convert parse errors
     for err in &parsed.errors {
