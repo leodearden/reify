@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use reify_types::{Diagnostic, SourceSpan};
+use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
 use crate::entity::satisfies_trait_bound;
 use crate::types::{CompiledTrait, TopologyTemplate};
@@ -116,14 +116,17 @@ pub fn enumerate_candidates(
         !bounds.is_empty(),
         "enumerate_candidates: bounds slice must be non-empty (every type would match an empty bound)"
     );
-    let _ = use_site_span;
-    let _ = diagnostics;
 
     // Visit templates in alphabetically-sorted name order so the result
     // is deterministic regardless of HashMap iteration order.
     let mut sorted_names: Vec<&String> = template_registry.keys().collect();
     sorted_names.sort();
 
+    // Allow `collected` to grow to MAX+1 so the caller can detect
+    // overflow; once the count exceeds MAX we stop iterating because
+    // every later match (if any) would be alphabetically-after the
+    // first MAX (sorted iteration ⇒ first MAX in `collected[0..MAX]`
+    // are exactly the alphabetically-first MAX of the entire pool).
     let mut collected: Vec<String> = Vec::new();
     for name in sorted_names {
         let Some(tmpl) = template_registry.get(name.as_str()) else {
@@ -134,6 +137,12 @@ pub fn enumerate_candidates(
             .all(|b| satisfies_trait_bound(&tmpl.trait_bounds, b, trait_registry))
         {
             collected.push((*name).clone());
+            if collected.len() > MAX_AUTO_TYPE_PARAM_CANDIDATES {
+                // We have one more match than MAX — that's enough to
+                // conclude overflow; further iteration cannot change
+                // the alphabetically-first MAX.
+                break;
+            }
         }
     }
     // Belt-and-suspenders: pin the alphabetical order on the returned
@@ -142,6 +151,24 @@ pub fn enumerate_candidates(
 
     if collected.is_empty() {
         CandidateEnumeration::Empty
+    } else if collected.len() > MAX_AUTO_TYPE_PARAM_CANDIDATES {
+        collected.truncate(MAX_AUTO_TYPE_PARAM_CANDIDATES);
+        let joined_bounds = bounds.join(" + ");
+        let names_list = collected.join(", ");
+        let message = format!(
+            "auto type parameter has more than {max} candidates satisfying bound '{bounds_str}'; first {max} alphabetically: {names}",
+            max = MAX_AUTO_TYPE_PARAM_CANDIDATES,
+            bounds_str = joined_bounds,
+            names = names_list,
+        );
+        let label_message = format!("auto type-param bound '{}' here", joined_bounds);
+        diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(DiagnosticCode::AutoTypeParamPoolOverflow)
+                .with_label(DiagnosticLabel::new(use_site_span, label_message))
+                .with_candidates(collected.clone()),
+        );
+        CandidateEnumeration::Overflow(collected)
     } else {
         CandidateEnumeration::Found(collected)
     }
