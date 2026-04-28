@@ -1641,4 +1641,49 @@ mod tests {
         assert_eq!(cloned.user_label.as_deref(), Some("bottom"));
         assert_eq!(cloned.mod_history.len(), 2);
     }
+
+    fn make_attr(feature: &str, idx: u32) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::new(feature),
+            role: Role::Side,
+            local_index: idx,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn topology_attribute_table_default_is_empty() {
+        let table = TopologyAttributeTable::default();
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn topology_attribute_table_record_then_lookup() {
+        let mut table = TopologyAttributeTable::default();
+        let attr = make_attr("F#realization[0]", 0);
+        table.record(GeometryHandleId(1), attr.clone());
+        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&attr));
+        assert_eq!(table.len(), 1);
+        assert!(!table.is_empty());
+    }
+
+    #[test]
+    fn topology_attribute_table_lookup_unknown_returns_none() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(GeometryHandleId(1), make_attr("F#realization[0]", 0));
+        assert_eq!(table.lookup(GeometryHandleId(99)), None);
+    }
+
+    #[test]
+    fn topology_attribute_table_record_overwrites_last_write_wins() {
+        let mut table = TopologyAttributeTable::default();
+        let first = make_attr("F#realization[0]", 0);
+        let second = make_attr("G#realization[0]", 7);
+        table.record(GeometryHandleId(1), first);
+        table.record(GeometryHandleId(1), second.clone());
+        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&second));
+        assert_eq!(table.len(), 1);
+    }
 }
