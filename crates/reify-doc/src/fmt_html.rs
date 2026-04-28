@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use crate::cross_refs::CrossRefs;
-use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ParamDoc, PortDoc};
+use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemKind, ParamDoc, PortDoc};
 
 /// Hand-written CSS embedded inside the document's `<style>` block.
 ///
@@ -340,36 +340,36 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     }
 
     // Kind-specific body.
-    match item {
-        ItemDoc::Structure { params, ports, constraints, meta, .. }
-        | ItemDoc::Occurrence { params, ports, constraints, meta, .. } => {
+    match &item.kind {
+        ItemKind::Structure { params, ports, constraints, meta, .. }
+        | ItemKind::Occurrence { params, ports, constraints, meta, .. } => {
             render_params_table(out, params);
             render_ports_table(out, ports);
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        ItemDoc::Trait { members, .. } => {
+        ItemKind::Trait { members } => {
             render_trait_members(out, members);
         }
-        ItemDoc::Function { signature, .. } => {
+        ItemKind::Function { signature } => {
             render_function_signature(out, signature);
         }
-        ItemDoc::Enum { variants, .. } => {
+        ItemKind::Enum { variants } => {
             render_enum_variants(out, variants);
         }
-        ItemDoc::Field { type_repr, default_repr, .. } => {
+        ItemKind::Field { type_repr, default_repr } => {
             render_field_body(out, type_repr, default_repr.as_deref());
         }
-        ItemDoc::Purpose { direction, expr_repr, .. } => {
+        ItemKind::Purpose { direction, expr_repr } => {
             render_purpose_body(out, direction, expr_repr);
         }
-        ItemDoc::Unit { base_unit, scale, .. } => {
+        ItemKind::Unit { base_unit, scale } => {
             render_unit_body(out, base_unit, scale);
         }
-        ItemDoc::TypeAlias { type_repr, .. } => {
+        ItemKind::TypeAlias { type_repr } => {
             render_type_alias_body(out, type_repr);
         }
-        ItemDoc::ConstraintDef { expr_repr, .. } => {
+        ItemKind::ConstraintDef { expr_repr } => {
             render_constraint_def_body(out, expr_repr);
         }
     }
