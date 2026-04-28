@@ -106,14 +106,14 @@ pub(crate) fn check_trait_conformance(
 /// `Type::Map(...)`).
 ///
 /// The compiled arg carries the full `CompiledExpr` so the recursive walker can
-/// descend into `OptionSome` / `ListLiteral` / `SetLiteral` / `MapLiteral` nodes
+/// descend into `OptionSome` / `ListLiteral` / `ReflectiveCellList` / `SetLiteral` / `MapLiteral` nodes
 /// and derive `arg_call_name` from any nested `FunctionCall` for the existing
 /// `Real|Int → StructureRef` promotion.
 ///
 /// Conformance strategy:
 /// - `(Type::Option(p), OptionSome(a))` → recurse on inner
 /// - `(Type::Option(_), OptionNone)` → OK (none is always valid for Option<T>)
-/// - `(Type::List(p), ListLiteral(es))` → recurse on each element
+/// - `(Type::List(p), ListLiteral(es) | ReflectiveCellList(es))` → recurse on each element
 /// - `(Type::Set(p), SetLiteral(es))` → recurse on each element
 /// - `(Type::Map(kp, vp), MapLiteral(entries))` → recurse on each (k, v)
 /// - `(Type::TraitObject(req), _)` → leaf check (existing logic)
@@ -239,8 +239,15 @@ fn walk_param_against_arg(
         }
         // none is always valid for any Option<T> param.
         (Type::Option(_), CompiledExprKind::OptionNone) => {}
-        // List wrapper: recurse on each element.
-        (Type::List(inner_p), CompiledExprKind::ListLiteral(elements)) => {
+        // List wrapper: recurse on each element. Covers both user-written
+        // ListLiteral (compile-time) and ReflectiveCellList (post-activation,
+        // task-2458) — RCL behaves identically to ListLiteral at this layer
+        // and is included so future refactors that move activation earlier
+        // do not silently fall through to the type-level fallback (task-2543).
+        (
+            Type::List(inner_p),
+            CompiledExprKind::ListLiteral(elements) | CompiledExprKind::ReflectiveCellList(elements),
+        ) => {
             for elem in elements {
                 walk_param_against_arg(inner_p, elem, ctx);
             }
