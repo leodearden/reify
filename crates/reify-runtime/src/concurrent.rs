@@ -1428,4 +1428,110 @@ mod tests {
             "In-flight tasks should have been aborted, not detached"
         );
     }
+
+    /// Wiring-pin: `execute_with_config` invokes `gating::has_non_final_inputs`
+    /// via the `cache` field on `SchedulerConfig`.
+    ///
+    /// Two nodes at the same level: `node_a` (default CommitIfSlow, absent from
+    /// the cache so `has_non_final_inputs` returns `false` — vacuously runnable)
+    /// and `node_b` (OnlyRunOnFinalInputs override, cache entry with an upstream
+    /// `ValueCellId` at `Freshness::Intermediate { generation: 1 }`).
+    ///
+    /// Expected outcome:
+    /// - `node_b` is in `result.skipped` (gating predicate returns `true`).
+    /// - `node_b` is NOT in `result.changed`.
+    /// - `node_a` is in `result.changed` (vacuously runnable per absence semantics).
+    #[tokio::test]
+    async fn execute_with_config_invokes_gating_via_cache_reference() {
+        use reify_eval::cache::{CachedResult, CacheStore, EvalOutcome, NodeCache, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::{DeterminacyState, Freshness, Value, ValueCellId, VersionId};
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+        use crate::commitment::{NodeCommitmentOverride, NodePolicyOverrides};
+
+        let e = "GATE";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let upstream = ValueCellId::new(e, "upstream");
+
+        // Build CacheStore: upstream cell at Intermediate, node_b reads it
+        let mut cs = CacheStore::new();
+        // upstream: Intermediate, no reads
+        cs.put(
+            NodeId::Value(upstream.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace { reads: vec![] },
+                VersionId(1),
+            ),
+        );
+        // node_b: reads upstream (non-Final) → has_non_final_inputs returns true
+        cs.put(
+            node_b.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace { reads: vec![upstream.clone()] },
+                VersionId(1),
+            ),
+        );
+
+        // Both nodes have empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        // node_b has OnlyRunOnFinalInputs override; node_a has default
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+        let config = SchedulerConfig {
+            node_overrides,
+            cache: Some(&cs),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+
+        struct AllChangedEval;
+        impl AsyncNodeEvaluator for AllChangedEval {
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let evaluator = Arc::new(AllChangedEval);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_b: OnlyRunOnFinalInputs + upstream Intermediate → skipped
+        assert!(
+            result.skipped.contains(&node_b),
+            "node_b should be skipped (OnlyRunOnFinalInputs with Intermediate upstream)"
+        );
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed"
+        );
+
+        // node_a: absent from cache → has_non_final_inputs returns false → runs
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (vacuously runnable, absent from cache)"
+        );
+    }
 }
