@@ -22,7 +22,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::deps::ReverseDependencyIndex;
-use reify_types::ValueCellId;
+use reify_types::{Freshness, ValueCellId};
 
 /// Propagate freshness forward through the dependents of `changed` cells
 /// without recomputing any value, per arch §3.5 lines 432-436.
@@ -88,7 +88,13 @@ pub fn propagate_freshness_only(
 
         for dependent in dependents {
             let current = cache.freshness(&dependent);
-            let new = cache.derive_output_freshness_for_node(&dependent, false, generation);
+            // Cause-bearing variant (arch §9.2 lines 880-890): returns the
+            // upstream `NodeId` chain root for a Pending output. We forward
+            // `cause` through `mark_pending_with_cause` so the §9.2
+            // diagnostic chain is preserved across freshness-only walks
+            // (matching `evaluate_let_bindings`'s pre-eval Pending gate).
+            let (new, cause) =
+                cache.derive_output_freshness_for_node_with_cause(&dependent, false, generation);
 
             // Freshness early cutoff (arch §3.5 lines 432-436): if the
             // newly-derived freshness equals the current freshness the walk
@@ -104,17 +110,45 @@ pub fn propagate_freshness_only(
             // the §7.2/§9.2 truth table — `Freshness::Pending`'s
             // `last_substantive` field is part of the equality and matters
             // for diagnostic-chain correctness.
+            //
+            // Note: the pure helper produces `Pending { last_substantive:
+            // ResultRef::none() }` for any non-Final-input case; the
+            // canonical Pending writers below replace `last_substantive`
+            // with `ResultRef::of_hash(entry.result_hash)`. Comparing
+            // against the pure helper's output is fine here — if the
+            // current freshness is already Pending, then either the
+            // Pending writer's `last_substantive` matches (no write needed)
+            // or `current` is `Pending { ..ResultRef::none() }` from a
+            // prior set_freshness footgun, which the writer will correct
+            // and report as updated.
             if new == current {
                 continue;
             }
 
-            if cache.set_freshness(&dependent, new.clone()) {
+            // Route Pending writes through the canonical Pending writers so
+            // they (a) capture `last_substantive: ResultRef::of_hash(...)`
+            // from the entry's existing `result_hash`, and (b) record the
+            // §9.2 chain root via `pending_cause`. Other variants
+            // (Final / Intermediate) go through `set_freshness` directly.
+            // Failed is never written by the walk — the cause-bearing
+            // helper never returns Failed (only Final / Intermediate /
+            // Pending), so the `_ =>` arm cannot in practice receive
+            // Failed.
+            let wrote = match &new {
+                Freshness::Pending { .. } => match cause.clone() {
+                    Some(c) => cache.mark_pending_with_cause(&dependent, c),
+                    None => cache.mark_pending(&dependent),
+                },
+                _ => cache.set_freshness(&dependent, new.clone()),
+            };
+
+            if wrote {
                 updated.insert(dependent.clone());
                 if let NodeId::Value(vcid) = &dependent {
                     frontier.push_back(vcid.clone());
                 }
             }
-            // If `set_freshness` returns false the entry is absent — nothing
+            // If the writer returns false the entry is absent — nothing
             // to write and nothing to propagate from a non-cached node.
         }
     }
