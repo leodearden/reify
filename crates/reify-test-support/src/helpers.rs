@@ -98,6 +98,23 @@ fn parse_or_panic(source: &str) -> reify_syntax::ParsedModule {
     parse_or_panic_named(source, "test")
 }
 
+/// Parse `source` with the canonical `"test"` module path AND pre-seed the
+/// parser with stdlib enum names via [`reify_compiler::parse_with_stdlib`].
+/// Used by the `_with_stdlib` helpers so prelude/stdlib enum references like
+/// `CorrosionClass.C5` lower to `EnumAccess` rather than `MemberAccess`.
+///
+/// # Panics
+/// Panics if there are any parse errors.
+fn parse_with_stdlib_or_panic(source: &str) -> reify_syntax::ParsedModule {
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    parsed
+}
+
 /// Parse and compile `source` without asserting absence of compile errors.
 /// Returns the compiled module with whatever diagnostics were produced.
 ///
@@ -127,12 +144,14 @@ pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::
 /// Parse and compile `source` with stdlib, without asserting absence of compile errors.
 ///
 /// Like [`compile_source`] but uses `reify_compiler::compile_with_stdlib` so that
-/// stdlib types and traits are available during compilation.
+/// stdlib types and traits are available during compilation, and routes the
+/// parse step through `reify_compiler::parse_with_stdlib` so prelude-stdlib
+/// enum names participate in `EnumAccess` disambiguation.
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
 pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = parse_or_panic(source);
+    let parsed = parse_with_stdlib_or_panic(source);
     reify_compiler::compile_with_stdlib(&parsed)
 }
 
@@ -283,7 +302,10 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 /// Returns the compiled module ready for eval.
 ///
 /// Identical to [`parse_and_compile`] except uses `reify_compiler::compile_with_stdlib`
-/// so that stdlib types and traits are available during compilation.
+/// so that stdlib types and traits are available during compilation, and routes
+/// the parse step through `reify_compiler::parse_with_stdlib` (via
+/// [`compile_source_with_stdlib`]) so prelude-stdlib enum names participate
+/// in `EnumAccess` disambiguation.
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
