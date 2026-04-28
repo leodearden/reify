@@ -28,12 +28,16 @@ use reify_types::Diagnostic;
 /// rejection rule (`Param`/`Port`/`Sub` with body inside a specialization
 /// scope) and pushes [`reify_types::DiagnosticCode::E_SPECIALIZATION_FORBIDDEN_DECL`]
 /// into the supplied `diagnostics` vector.
-// TODO(task-2369): the visitor will push into `diagnostics`, eliminating the
-// need for both allows. The `Vec` (not `&mut [_]`) is the planned signature
-// because 2369 needs `push`; we keep it now so the call site in
-// `compile_with_prelude_context` doesn't churn when 2369 lands.
-#[allow(unused_variables, clippy::ptr_arg)]
+// TODO(task-2369): the visitor body below will be replaced with diagnostic
+// emission that pushes into `diagnostics`. The `Vec` (not `&mut [_]`)
+// signature is the planned shape because 2369 needs `push`; we keep it now
+// so the call site in `compile_with_prelude_context` doesn't churn.
+#[allow(clippy::ptr_arg)]
 pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
+    // Deliberately unused this task — see TODO(task-2369) above. Binding to
+    // `_` makes the dead-ness self-evident at the call site without the
+    // wider `unused_variables` lint allow.
+    let _ = diagnostics;
     for_each_specialization_member(parsed, &mut |_member| {
         // Intentionally a no-op until task 2369. The traversal is wired
         // here so the compile pipeline pays exactly one walk; 2369 will
@@ -60,15 +64,26 @@ where
     F: FnMut(&MemberDecl),
 {
     for decl in &parsed.declarations {
+        // Exhaustive match (no `_ =>`) — if a future declaration kind grows
+        // a `Vec<MemberDecl>` body, the compiler will force a deliberate
+        // decision here instead of silently skipping the new variant.
         let members: &[MemberDecl] = match decl {
             Declaration::Structure(s) => &s.members,
             Declaration::Occurrence(o) => &o.members,
             Declaration::Trait(t) => &t.members,
             Declaration::Purpose(p) => &p.members,
-            // The remaining declaration kinds (Function, Field, Constraint
-            // def, Enum, Unit, TypeAlias, Import) cannot host a `sub`
-            // declaration and therefore cannot open a specialization scope.
-            _ => continue,
+            // The remaining declaration kinds cannot host a `MemberDecl::Sub`
+            // today: their bodies (if any) are typed as `FnBody`,
+            // `FieldSource`, `Vec<Expr>` predicates, etc. — not
+            // `Vec<MemberDecl>`. Therefore none of them can open a
+            // specialization scope.
+            Declaration::Function(_)
+            | Declaration::Field(_)
+            | Declaration::Constraint(_)
+            | Declaration::Enum(_)
+            | Declaration::Unit(_)
+            | Declaration::TypeAlias(_)
+            | Declaration::Import(_) => continue,
         };
         find_specialization_scopes(members, visitor, 0);
     }
@@ -109,20 +124,6 @@ where
     }
 }
 
-/// Test-only hook: count the number of times the specialization-scope
-/// walker invokes its visitor on `parsed`.
-///
-/// Mirrors the iteration shape of [`validate_module`] exactly, swapping the
-/// no-op visitor for an increment-on-each-call counter. With the current
-/// grammar (no `sub a : T { body }` form), `parsed` from `reify_syntax::parse`
-/// always yields zero — the test in `tests` below pins that contract.
-#[cfg(test)]
-fn count_visited_specialization_members(parsed: &ParsedModule) -> usize {
-    let mut count = 0usize;
-    for_each_specialization_member(parsed, &mut |_m| count += 1);
-    count
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,21 +139,9 @@ mod tests {
         // The parser today produces only `body: None` SubDecls (the
         // `sub a : T { body }` form awaits a future grammar update). The
         // pre-pass therefore has no specialization-scope bodies to walk
-        // and must add zero diagnostics.
-        let parsed = parse_module("structure S { sub a = Foo() }");
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        validate_module(&parsed, &mut diagnostics);
-        assert!(
-            diagnostics.is_empty(),
-            "validate_module should emit no diagnostics on a currently-parseable module, got: {diagnostics:?}"
-        );
-    }
-
-    #[test]
-    fn validate_module_visits_zero_specialization_scopes_today() {
-        // Instrumented testing hook: counts the number of times the
-        // walker visitor is called. With every parsed SubDecl having
-        // `body: None`, the count must be zero.
+        // and must add zero diagnostics. This single assertion covers the
+        // contract: with no body=Some, the visitor is never invoked, and
+        // therefore no diagnostics fire.
         let parsed = parse_module(
             "structure S {
                 param x : Scalar = 5mm
@@ -160,10 +149,11 @@ mod tests {
                 sub b : List<Bar>
             }",
         );
-        let count = count_visited_specialization_members(&parsed);
-        assert_eq!(
-            count, 0,
-            "with the current grammar, no SubDecl has body == Some(_), so the visitor must not be called"
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "validate_module should emit no diagnostics on a currently-parseable module, got: {diagnostics:?}"
         );
     }
 }
