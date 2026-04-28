@@ -1250,4 +1250,138 @@ mod tests {
         ];
         assert_recursive_arms(wrappers);
     }
+
+    /// task-2458 step-5 (RED): pins that `expand_purpose_reflective_placeholders`
+    /// produces a `ReflectiveCellList` (not a `ListLiteral`) for a populated
+    /// `subject.params` query. RED until step-6 switches the emission.
+    ///
+    /// CONTRACT: "task-2458: post-expansion shape must be `ReflectiveCellList`
+    /// (not `ListLiteral`) so eval_quantifier's cell-iteration trigger fires only
+    /// on placeholder-derived lists, not on user-written all-ValueRef
+    /// ListLiterals."
+    #[test]
+    fn expand_emits_reflective_cell_list_for_subject_params() {
+        let entity = "Foo";
+        let cell_z = ValueCellId::new(entity, "z");
+        let cell_a = ValueCellId::new(entity, "a");
+
+        // Resolved query: [z, a] in that order (matches expand_prefers_resolved_query
+        // fixture pattern).
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![cell_z.clone(), cell_a.clone()],
+        }];
+
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        for cell in [&cell_z, &cell_a] {
+            value_cells.insert(
+                cell.clone(),
+                ValueCellNode {
+                    id: cell.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(&cell.member),
+                },
+            );
+        }
+
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+
+        // task-2458: must be ReflectiveCellList, NOT ListLiteral.
+        let elements = match &expr.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => elements,
+            other => panic!(
+                "task-2458: post-expansion shape must be `ReflectiveCellList` \
+                 (not `ListLiteral`) so eval_quantifier's cell-iteration trigger \
+                 fires only on placeholder-derived lists, not on user-written \
+                 all-ValueRef ListLiterals; got {:?}",
+                other
+            ),
+        };
+
+        assert_eq!(
+            elements.len(),
+            2,
+            "expanded ReflectiveCellList must have one element per resolved_id"
+        );
+
+        let members: Vec<&str> = elements
+            .iter()
+            .map(|e| match &e.kind {
+                CompiledExprKind::ValueRef(id) => id.member.as_str(),
+                other => panic!("expected ValueRef element, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(
+            members,
+            vec!["z", "a"],
+            "resolved-query order must be preserved in the expanded ReflectiveCellList"
+        );
+
+        assert_eq!(
+            expr.result_type,
+            Type::List(Box::new(Type::Real)),
+            "outer list result_type must be Type::List(Type::Real)"
+        );
+    }
+
+    /// task-2458 step-5 (RED): pins that `expand_purpose_reflective_placeholders`
+    /// produces an *empty* `ReflectiveCellList` (not a `ListLiteral`) for a
+    /// `geometric_params` query where no resolved-query path and no fallback scan
+    /// exists. The empty list falls through to value-iteration's vacuous-true
+    /// path in `eval_quantifier`. RED until step-6 switches the emission.
+    #[test]
+    fn expand_emits_empty_reflective_cell_list_for_geometric_params() {
+        let entity = "Foo";
+        let cell_x = ValueCellId::new(entity, "x");
+
+        // No query for "geometric_params" — geometric_params has no resolution
+        // path yet (task-1904). The function emits an empty list.
+        let queries: Vec<ResolvedSchemaQuery> = Vec::new();
+
+        let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        value_cells.insert(
+            cell_x.clone(),
+            ValueCellNode {
+                id: cell_x.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("x"),
+            },
+        );
+
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "geometric_params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+
+        // task-2458: must be ReflectiveCellList (empty), NOT ListLiteral.
+        let elements = match &expr.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => elements,
+            other => panic!(
+                "task-2458: post-expansion shape must be `ReflectiveCellList` \
+                 (not `ListLiteral`) even for the empty geometric_params case; \
+                 got {:?}",
+                other
+            ),
+        };
+
+        assert!(
+            elements.is_empty(),
+            "geometric_params expansion must produce an empty ReflectiveCellList \
+             (no resolution path exists yet, task-1904)"
+        );
+    }
 }
