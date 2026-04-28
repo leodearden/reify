@@ -793,6 +793,35 @@ mod tests {
         );
     }
 
+    /// Task 2525: `compile_source_with_stdlib` must route the parse step
+    /// through `reify_compiler::parse_with_stdlib` so that prelude/stdlib
+    /// enum names participate in the parser's `EnumAccess` disambiguation
+    /// pass.  A source referencing `CorrosionClass.C5` WITHOUT an inline
+    /// `enum CorrosionClass` declaration must therefore compile cleanly.
+    ///
+    /// Fails today (the helper still uses the prelude-blind `parse`); pins
+    /// the contract that step-8 wires the helper through `parse_with_stdlib`.
+    #[test]
+    fn compile_source_with_stdlib_resolves_prelude_enum_access() {
+        let source = r#"structure def CorrTest : CorrosionResistant {
+            param density : Real = 7850.0
+            param name : String = "test_steel"
+            param corrosion_class : CorrosionClass = CorrosionClass.C5
+        }"#;
+
+        let compiled = super::compile_source_with_stdlib(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "compile_source_with_stdlib should resolve CorrosionClass.C5 against the stdlib prelude (no inline redecl), got errors: {:?}",
+            errors
+        );
+    }
+
     #[test]
     fn test_compile_first_template() {
         let (template, diagnostics) = super::compile_first_template(bracket_source());
