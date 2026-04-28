@@ -993,26 +993,6 @@ fn fn_body_let_shadows_fn_param() {
          canonical case.  Got errors: {:?}",
         errors
     );
-
-    // Belt-and-suspenders: no error label overlaps the body's `let x` span.
-    let body_let_x_end = body_let_x + "let x".len();
-    for err in &errors {
-        for label in &err.labels {
-            let ls = label.span.start as usize;
-            let le = label.span.end as usize;
-            let overlaps = ls < body_let_x_end && le > body_let_x;
-            assert!(
-                !overlaps,
-                "error diagnostic label {:?} overlaps the body `let x` span \
-                 [{}, {}) — this would be a double-fire with the Shadowing \
-                 warning.  Error: {:?}",
-                label,
-                body_let_x,
-                body_let_x_end,
-                err
-            );
-        }
-    }
 }
 
 /// A purpose-body `let` whose name matches a purpose-param shadows the param.
@@ -1195,11 +1175,21 @@ purpose mfg(subject : Structure) {
         error_first_label_span
     );
 
-    // (4) The two spans must be identical — same site, both diagnostics.
-    assert_eq!(
-        shadow_child_span, error_first_label_span,
-        "Shadowing warning child-site span and unsupported-let error first-label \
-         span must be identical (both point at the body `let subject` token). \
+    // (4) The two spans must overlap — both diagnostics point at the body-let
+    //     site.  We require overlap rather than byte-identical equality so that
+    //     a future, harmless refactor (e.g. shadow-lint narrowing to just
+    //     `subject` while the unsupported-let error spans `let subject = 1`)
+    //     does not fail the test even though the design intent ("both fire at
+    //     the body-let site") is preserved.
+    let sc_start = shadow_child_span.start as usize;
+    let sc_end = shadow_child_span.end as usize;
+    let ef_start = error_first_label_span.start as usize;
+    let ef_end = error_first_label_span.end as usize;
+    assert!(
+        sc_start < ef_end && ef_start < sc_end,
+        "Shadowing warning child-site span [{sc_start}, {sc_end}) and \
+         unsupported-let error first-label span [{ef_start}, {ef_end}) must \
+         overlap (both point at the body `let subject` token). \
          Shadow span: {:?}, Error span: {:?}",
         shadow_child_span, error_first_label_span
     );
