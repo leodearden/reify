@@ -251,6 +251,20 @@ impl WarmStatePool {
     /// to `0.0` (matching the cost of entries that round-trip through the (14b) cache-miss arm,
     /// which had no recorded cost), and the eviction loop runs as normal.
     ///
+    /// # Known limitation: `cost_per_byte` is silently reset to `0.0`
+    ///
+    /// This method does **not** accept nor preserve the entry's original `cost_per_byte`.
+    /// For the current pure-LRU eviction policy this is benign — cost is not consulted during
+    /// eviction.  Once cost-weighted LRU is activated (the `cost_per_byte` field exists for that
+    /// purpose; see `insert_entry`'s cost-weighted comparator comment), entries that round-trip
+    /// through the (4c)→(14b) cache-miss arm will systematically look cheaper than fresh
+    /// donations, partially defeating the LRU-stamp-preservation fix this method provides.
+    ///
+    /// FIXME(cost-weighted-lru): extend the signature to accept and thread through the original
+    /// `cost_per_byte` (or add a `checkout_with_lru_stamp_and_cost` variant).  The pinning test
+    /// `donate_preserving_lru_resets_cost_to_zero_known_limitation` documents and will catch this
+    /// regression when cost-weighted LRU lands.
+    ///
     /// # Architecture reference
     /// arch §4.3 line 539 "(4c)→(14b) round-trip"; see also `engine_edit.rs` step (14b) doc
     /// comment block for the rationale behind LRU-stamp preservation on the cache-miss path.
@@ -1453,8 +1467,11 @@ mod tests {
         pool.donate(node_a.clone(), OpaqueState::new(1i32, 100));
         // Sleep to ensure A's donation timestamp is strictly older than B's.
         // Without the sleep, two back-to-back Instant::now() calls may be equal
-        // on coarse-grained clocks, making the eviction order non-deterministic.
-        std::thread::sleep(Duration::from_millis(2));
+        // on coarse-grained clocks (Windows Instant granularity can be ~15 ms;
+        // frequency-scaling CI runners can coalesce consecutive reads too),
+        // making the eviction order non-deterministic.  15 ms is safely above
+        // the worst-case platform resolution while keeping the test fast.
+        std::thread::sleep(Duration::from_millis(15));
         pool.donate(node_b.clone(), OpaqueState::new(2i32, 100));
         // used = 200, budget = 250.
 
@@ -1530,6 +1547,50 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "checkout_with_lru_stamp must have take-semantics: second call returns None"
+        );
+    }
+
+    /// FIXME(cost-weighted-lru): `donate_preserving_lru` currently resets `cost_per_byte`
+    /// to `0.0`, silently discarding any cost recorded at the original donation site.
+    ///
+    /// This is intentional for the **current** pure-LRU eviction policy, where `cost_per_byte`
+    /// is stored but not consulted during eviction.  The assertion below pins the known
+    /// (limited) behaviour so a future cost-weighted-LRU activator cannot silently break it:
+    /// if `donate_preserving_lru` is updated to preserve cost, this test will fail and the
+    /// FIXME can be resolved by updating the assertion or removing the test altogether.
+    ///
+    /// When cost-weighted LRU is enabled, address the matching `FIXME` note in the
+    /// `donate_preserving_lru` doc comment and decide whether to:
+    /// (a) thread the original cost through `checkout_with_lru_stamp` + `donate_preserving_lru`,
+    /// (b) leave the reset and document it as an intentional trade-off.
+    #[test]
+    fn donate_preserving_lru_resets_cost_to_zero_known_limitation() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+
+        // Donate with a non-zero cost.
+        pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 8), 1.5);
+        assert_eq!(
+            pool.cost_per_byte_of(&node_a),
+            Some(1.5),
+            "sanity: cost_per_byte must be recorded at donation time"
+        );
+
+        // Round-trip via checkout_with_lru_stamp + donate_preserving_lru.
+        let (state, stamp) = pool
+            .checkout_with_lru_stamp(&node_a)
+            .expect("A must be in pool after donate_with_cost");
+        pool.donate_preserving_lru(node_a.clone(), state, stamp);
+
+        // KNOWN LIMITATION: cost_per_byte is reset to 0.0 after the round-trip.
+        // Update this assertion (and donate_preserving_lru's signature) when
+        // cost-weighted LRU is activated — see FIXME above.
+        assert_eq!(
+            pool.cost_per_byte_of(&node_a),
+            Some(0.0),
+            "KNOWN LIMITATION: donate_preserving_lru resets cost_per_byte to 0.0; \
+             this is benign while eviction is pure-LRU but becomes a fairness issue \
+             once cost-weighted LRU is enabled — see FIXME in donate_preserving_lru doc"
         );
     }
 }

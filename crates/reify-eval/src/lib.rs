@@ -1452,30 +1452,35 @@ structure S {
     ///
     /// # Hermeticity argument
     ///
-    /// Both `Engine::new(…)` and `WarmStatePool::from_env_or_default()` call
-    /// `std::env::var(BUDGET_ENV_VAR)` in the same test process, so they read
-    /// the same environment — the assertion holds regardless of whether
-    /// `REIFY_WARM_STATE_BUDGET_BYTES` is unset, `"unlimited"`, or a numeric
-    /// string.  Neither branch writes to the env var, so no `temp_env` serial
-    /// guard is needed.
+    /// We snapshot `REIFY_WARM_STATE_BUDGET_BYTES` once before constructing the
+    /// engine, then build the *expected* pool via `from_env_value(snapshot.as_deref())`
+    /// — the same parsing path that `from_env_or_default()` delegates to.  Using a
+    /// pre-captured snapshot eliminates the second `std::env::var` call that would
+    /// otherwise create a TOCTOU window: a hypothetical concurrent test that mutates
+    /// the env var between `Engine::new()` and a separate `from_env_or_default()` call
+    /// would cause a spurious mismatch.  With the snapshot both sides use the same
+    /// parsed value regardless of any intervening mutation.
     ///
     /// # What regressions this catches
     ///
     /// - Replacing `from_env_or_default()` with `WarmStatePool::unlimited()`:
     ///   `engine.budget_bytes()` would return `None`, while
-    ///   `from_env_or_default().budget_bytes()` returns `Some(DEFAULT)` when
+    ///   `from_env_value(snapshot.as_deref())` returns `Some(DEFAULT)` when
     ///   the env var is absent — divergence detected.
     /// - Replacing with `WarmStatePool::new(42)`:
     ///   `engine.budget_bytes()` returns `Some(42)`, while
-    ///   `from_env_or_default().budget_bytes()` returns `Some(DEFAULT)` —
+    ///   `from_env_value(snapshot.as_deref())` returns `Some(DEFAULT)` —
     ///   divergence detected.
     #[test]
     fn engine_new_wires_warm_pool_through_from_env_or_default() {
-        use crate::warm_pool::WarmStatePool;
+        use crate::warm_pool::{WarmStatePool, BUDGET_ENV_VAR};
         use reify_test_support::mocks::MockConstraintChecker;
 
+        // Snapshot the env var before engine construction so both sides share a
+        // single read — avoids TOCTOU with concurrent env-mutating tests.
+        let snapshot = std::env::var(BUDGET_ENV_VAR).ok();
         let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        let expected = WarmStatePool::from_env_or_default();
+        let expected = WarmStatePool::from_env_value(snapshot.as_deref());
 
         assert_eq!(
             engine.warm_pool().budget_bytes(),
@@ -1483,8 +1488,7 @@ structure S {
             "Engine::new must initialise warm_pool via \
              WarmStatePool::from_env_or_default(); a regression to \
              ::unlimited() or ::new(arbitrary) would diverge here \
-             (both sides read the same process env, so the assertion is \
-             hermetic and independent of REIFY_WARM_STATE_BUDGET_BYTES)"
+             (engine and expected pool both resolve from the same env snapshot)"
         );
     }
 }

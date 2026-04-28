@@ -4155,8 +4155,10 @@ mod tests {
         let node_z = NodeId::Value(ValueCellId::new("T", "z"));
 
         // Step 1-2: donate X, then sleep so T_X is strictly older.
+        // 15 ms is safely above worst-case Instant granularity (~15 ms on Windows /
+        // frequency-scaling CI runners) so the LRU ordering is unconditionally observable.
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(15));
 
         // Step 3: capture X's state and its original stamp.
         let (x_state, x_stamp) = pool
@@ -4220,8 +4222,9 @@ mod tests {
         let node_z = NodeId::Value(ValueCellId::new("T", "z"));
 
         // Donate X, sleep, then checkout to capture X's original (old) stamp.
+        // 15 ms ensures strictly-ordered Instants on coarse-grained platforms.
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(15));
         let (x_state, x_stamp) = pool
             .checkout_with_lru_stamp(&node_x)
             .expect("X must be in pool");
