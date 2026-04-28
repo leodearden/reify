@@ -482,6 +482,21 @@ fn walk_param_against_arg_type(
     }
 }
 
+/// RAII guard that pops the top entry from an in-flight Vec when dropped.
+///
+/// Ensures the `push`–`pop` invariant around [`infer_traits_for_expr_in_env`]
+/// in [`RealizationLetEnv::lookup`] is upheld even if the inner call panics.
+/// Used only within `RealizationLetEnv::lookup`.
+struct InFlightGuard<'a> {
+    stack: &'a RefCell<Vec<ValueCellId>>,
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.stack.borrow_mut().pop();
+    }
+}
+
 /// A `LetBindingEnv` that resolves geometry-typed `let` bindings by looking up
 /// their compiled op-arrays in the parent template's `realizations` list.
 ///
@@ -571,8 +586,8 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
             // malformed IR before a stack overflow can occur.
             let expr = cell.default_expr.as_ref()?;
             self.in_flight.borrow_mut().push(id.clone());
+            let _guard = InFlightGuard { stack: &self.in_flight };
             let result = infer_traits_for_expr_in_env(expr, self);
-            self.in_flight.borrow_mut().pop();
             return Some(result);
         }
 
@@ -3939,8 +3954,6 @@ mod tests {
         let mut templates = HashMap::new();
         templates.insert("E".to_string(), &template);
 
-        // Constructs RealizationLetEnv with struct literal — the `in_flight` field
-        // does not exist yet; this intentionally fails to compile in the RED phase.
         let env = RealizationLetEnv {
             templates: &templates,
             in_flight: RefCell::new(Vec::new()),
@@ -3979,8 +3992,6 @@ mod tests {
         let mut templates = HashMap::new();
         templates.insert("E".to_string(), &template);
 
-        // Constructs RealizationLetEnv with struct literal — the `in_flight` field
-        // does not exist yet; this intentionally fails to compile in the RED phase.
         let env = RealizationLetEnv {
             templates: &templates,
             in_flight: RefCell::new(Vec::new()),
@@ -3990,6 +4001,88 @@ mod tests {
             env.lookup(&g_id),
             Some(InferredTraits::all()),
             "chained-cycle let must safe-default to all() rather than stack-overflowing"
+        );
+    }
+
+    /// Non-cyclic chain: `let g = ValueRef(h); let h = difference(box(), box())`.
+    ///
+    /// Asserts that the in-flight guard does **not** short-circuit a non-cyclic
+    /// chain.  `lookup(h)` must resolve to `bounded_only()` — the inferred traits
+    /// of `difference` applied to two bounded primitives — and `lookup(g)` must
+    /// propagate that result rather than safe-defaulting to `all()`.
+    ///
+    /// This test distinguishes a correct guard (fires only when `id` is already
+    /// in the in-flight set) from a guard that fires too eagerly — for example,
+    /// one that returns `None` whenever `in_flight` is non-empty regardless of
+    /// which id is being resolved.  Without this test, both cycle tests pass even
+    /// with such a premature-firing guard because they assert `Some(all())`.
+    ///
+    /// # Fixture rationale
+    ///
+    /// `h`'s `default_expr` is `FunctionCall("difference", [box(), box()])` with
+    /// `result_type: Type::Geometry`.  `infer_traits_for_expr_in_env` dispatches
+    /// on `expr.kind` (not `cell_type`), so the `FunctionCall` arm fires and
+    /// returns `combine_difference(all(), all()) = bounded_only()`.
+    #[test]
+    fn lookup_chained_noncyclic_let_propagates_terminal_traits() {
+        use std::cell::RefCell;
+
+        // box_expr: FunctionCall("box", [], Geometry) → InferredTraits::all()
+        let box_expr = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "box".to_string(),
+                    qualified_name: "std::box".to_string(),
+                },
+                args: vec![],
+            },
+            result_type: Type::Geometry,
+            content_hash: ContentHash(0),
+        };
+
+        // diff_expr: FunctionCall("difference", [box, box]) → bounded_only()
+        let diff_expr = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "difference".to_string(),
+                    qualified_name: "std::difference".to_string(),
+                },
+                args: vec![box_expr.clone(), box_expr],
+            },
+            result_type: Type::Geometry,
+            content_hash: ContentHash(0),
+        };
+
+        let g_id = ValueCellId::new("E", "g");
+        let h_id = ValueCellId::new("E", "h");
+
+        // g: Let Real = ValueRef(h)  — bridges g into the value_cells fallback
+        let g_cell = let_cell_with_ref(g_id.clone(), h_id.clone());
+        // h: Let Real = difference(box(), box())  — terminal, resolves to bounded_only()
+        let h_cell = ValueCellDecl {
+            id: h_id,
+            kind: ValueCellKind::Let,
+            visibility: Visibility::Private,
+            cell_type: Type::Real,
+            default_expr: Some(diff_expr),
+            solver_hints: vec![],
+            span: SourceSpan::empty(0),
+        };
+
+        let template = minimal_template("E", vec![g_cell, h_cell]);
+        let mut templates = HashMap::new();
+        templates.insert("E".to_string(), &template);
+
+        let env = RealizationLetEnv {
+            templates: &templates,
+            in_flight: RefCell::new(Vec::new()),
+        };
+
+        assert_eq!(
+            env.lookup(&g_id),
+            Some(InferredTraits::bounded_only()),
+            "non-cyclic chain g→h→difference(box,box) must propagate bounded_only(), \
+             not short-circuit to all() via premature cycle-guard firing"
         );
     }
 }
