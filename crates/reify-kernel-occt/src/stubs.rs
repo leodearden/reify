@@ -88,6 +88,28 @@ impl OcctKernel {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
+
+    /// Stub interference probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::shapes_intersect` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn shapes_intersect(
+        &self,
+        _a: GeometryHandleId,
+        _b: GeometryHandleId,
+    ) -> Result<bool, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub clearance probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::min_clearance` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn min_clearance(
+        &self,
+        _a: GeometryHandleId,
+        _b: GeometryHandleId,
+    ) -> Result<f64, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
 }
 
 impl Default for OcctKernel {

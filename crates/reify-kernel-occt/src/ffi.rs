@@ -83,6 +83,11 @@ pub mod ffi {
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
 
+        /// Probe whether `a` and `b` have a non-empty BRepAlgoAPI_Common result.
+        /// Returns true iff any sub-shape (TopoDS_Iterator::More()) of the common
+        /// shape exists. Face-touching pairs count as intersecting.
+        fn shapes_intersect(a: &OcctShape, b: &OcctShape) -> Result<bool>;
+
         // --- Modifications ---
         fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
@@ -301,6 +306,12 @@ pub mod ffi {
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
 
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
+
+        /// Minimum BREP distance between `a` and `b` via BRepExtrema_DistShapeShape.
+        /// Separate symbol from query_distance for the kinematic-constraints call
+        /// site (task 2531; see PRD task 7).
+        fn min_clearance(a: &OcctShape, b: &OcctShape) -> Result<f64>;
+
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.

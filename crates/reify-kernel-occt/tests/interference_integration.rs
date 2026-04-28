@@ -66,12 +66,11 @@ fn two_box_kernel(dx: f64) -> (OcctKernel, GeometryHandleId, GeometryHandleId) {
 fn shapes_intersect_returns_true_for_overlapping_boxes() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(5.0);
     let result = kernel.shapes_intersect(box_a_id, box_b_id);
-    assert_eq!(
-        result,
-        Ok(true),
-        "overlapping boxes should intersect, got {:?}",
-        result
-    );
+    match result {
+        Ok(true) => {}
+        Ok(false) => panic!("overlapping boxes should intersect, got Ok(false)"),
+        Err(e) => panic!("overlapping boxes should intersect, got Err({e:?})"),
+    }
 }
 
 /// Two boxes with a 40-unit gap (dx=50.0, box_a x∈[-5,5], box_b x∈[45,55]) should not intersect.
@@ -79,12 +78,11 @@ fn shapes_intersect_returns_true_for_overlapping_boxes() {
 fn shapes_intersect_returns_false_for_disjoint_boxes() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);
     let result = kernel.shapes_intersect(box_a_id, box_b_id);
-    assert_eq!(
-        result,
-        Ok(false),
-        "disjoint boxes should not intersect, got {:?}",
-        result
-    );
+    match result {
+        Ok(false) => {}
+        Ok(true) => panic!("disjoint boxes should not intersect, got Ok(true)"),
+        Err(e) => panic!("disjoint boxes should not intersect, got Err({e:?})"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,8 +94,7 @@ fn shapes_intersect_returns_false_for_disjoint_boxes() {
 #[test]
 fn min_clearance_between_disjoint_boxes_matches_gap() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);
-    let result = kernel.min_clearance(box_a_id, box_b_id);
-    match result {
+    match kernel.min_clearance(box_a_id, box_b_id) {
         Ok(d) => assert!(
             (d - 40.0).abs() < 1e-6,
             "expected clearance ~40.0, got {d}"
@@ -110,8 +107,7 @@ fn min_clearance_between_disjoint_boxes_matches_gap() {
 #[test]
 fn min_clearance_between_overlapping_boxes_is_zero() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(5.0);
-    let result = kernel.min_clearance(box_a_id, box_b_id);
-    match result {
+    match kernel.min_clearance(box_a_id, box_b_id) {
         Ok(d) => assert!(
             d.abs() < 1e-9,
             "expected clearance ~0.0 for overlapping boxes, got {d}"
@@ -129,13 +125,14 @@ fn min_clearance_between_overlapping_boxes_is_zero() {
 fn shapes_intersect_with_unknown_handle_returns_invalid_handle() {
     let (kernel, box_id, _) = two_box_kernel(50.0);
     let unknown = GeometryHandleId(999);
-    let result = kernel.shapes_intersect(box_id, unknown);
-    assert_eq!(
-        result,
-        Err(QueryError::InvalidHandle(unknown)),
-        "expected InvalidHandle(999), got {:?}",
-        result
-    );
+    match kernel.shapes_intersect(box_id, unknown) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({:?}), got InvalidHandle({:?})",
+            unknown, id
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
 }
 
 /// An unknown handle should return `QueryError::InvalidHandle` from `min_clearance`.
@@ -143,11 +140,12 @@ fn shapes_intersect_with_unknown_handle_returns_invalid_handle() {
 fn min_clearance_with_unknown_handle_returns_invalid_handle() {
     let (kernel, box_id, _) = two_box_kernel(50.0);
     let unknown = GeometryHandleId(999);
-    let result = kernel.min_clearance(box_id, unknown);
-    assert_eq!(
-        result,
-        Err(QueryError::InvalidHandle(unknown)),
-        "expected InvalidHandle(999), got {:?}",
-        result
-    );
+    match kernel.min_clearance(box_id, unknown) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({:?}), got InvalidHandle({:?})",
+            unknown, id
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
 }

@@ -97,6 +97,9 @@
 // OCCT distance
 #include <BRepExtrema_DistShapeShape.hxx>
 
+// OCCT topology iterator (used by shapes_intersect)
+#include <TopoDS_Iterator.hxx>
+
 // OCCT conformance queries
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
@@ -263,6 +266,17 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;
+    });
+}
+
+bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
+    return wrap_occt_call("shapes_intersect", [&]() {
+        BRepAlgoAPI_Common common(a.shape, b.shape);
+        common.Build();
+        if (!common.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Common failed");
+        }
+        return TopoDS_Iterator(common.Shape()).More();
     });
 }
 
@@ -1390,6 +1404,16 @@ BBox query_bbox(const OcctShape& shape) {
 double query_distance(const OcctShape& shape1, const OcctShape& shape2) {
     return wrap_occt_call("query_distance", [&]() {
         BRepExtrema_DistShapeShape dist(shape1.shape, shape2.shape);
+        if (!dist.IsDone()) {
+            throw std::runtime_error("BRepExtrema_DistShapeShape failed");
+        }
+        return dist.Value();
+    });
+}
+
+double min_clearance(const OcctShape& a, const OcctShape& b) {
+    return wrap_occt_call("min_clearance", [&]() {
+        BRepExtrema_DistShapeShape dist(a.shape, b.shape);
         if (!dist.IsDone()) {
             throw std::runtime_error("BRepExtrema_DistShapeShape failed");
         }

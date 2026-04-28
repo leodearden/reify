@@ -98,6 +98,14 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
 
+/// Probe whether `a` and `b` have a non-empty BRepAlgoAPI_Common result.
+///
+/// Returns true iff the boolean Common of `a` and `b` has at least one
+/// sub-shape (solid, face, edge, or vertex) as reported by TopoDS_Iterator.
+/// Face-touching pairs are reported as intersecting — no tolerance filtering
+/// at the FFI level; task 2531 layers any tolerance/exclusion semantics on top.
+bool shapes_intersect(const OcctShape& a, const OcctShape& b);
+
 // --- Modifications ---
 
 std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);
@@ -257,6 +265,15 @@ Point3 query_face_centroid(const OcctShape& shape);
 BBox query_bbox(const OcctShape& shape);
 
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
+
+/// Minimum BREP distance between `a` and `b` via BRepExtrema_DistShapeShape.
+///
+/// Semantically identical to `query_distance` today, but a separate symbol for
+/// the kinematic-constraints call site (task 2531; see PRD task 7). Decouples
+/// future evolution (e.g. tolerance-based early-exit, signed clearance, or
+/// per-pair witness points) from the generic query_distance callers.
+double min_clearance(const OcctShape& a, const OcctShape& b);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,

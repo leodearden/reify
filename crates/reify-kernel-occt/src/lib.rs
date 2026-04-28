@@ -311,6 +311,57 @@ impl OcctKernel {
         }
         Ok(ids)
     }
+
+    /// Test whether two shapes have a non-empty BRepAlgoAPI_Common intersection.
+    ///
+    /// Returns `Ok(true)` iff the boolean Common of `a` and `b` has at least one
+    /// sub-shape (solid, face, edge, or vertex). Face-touching pairs count as
+    /// intersecting — no tolerance filtering at the FFI level; task 2531 layers
+    /// any tolerance/exclusion semantics on top.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(id))` if either handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
+    ///
+    /// Part of the kinematic-constraints FFI (docs/prds/kinematic-constraints.md
+    /// task 7). Wrapped by task 2531's stdlib `interferes`/`interferes_with`.
+    pub fn shapes_intersect(
+        &self,
+        a: GeometryHandleId,
+        b: GeometryHandleId,
+    ) -> Result<bool, QueryError> {
+        let s1 = self
+            .get_shape(a)
+            .map_err(|_| QueryError::InvalidHandle(a))?;
+        let s2 = self
+            .get_shape(b)
+            .map_err(|_| QueryError::InvalidHandle(b))?;
+        ffi::ffi::shapes_intersect(s1, s2)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Minimum BREP distance between two shapes via BRepExtrema_DistShapeShape.
+    ///
+    /// Returns `Ok(distance)` — 0.0 for overlapping shapes.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(id))` if either handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
+    ///
+    /// Part of the kinematic-constraints FFI (docs/prds/kinematic-constraints.md
+    /// task 7). Wrapped by task 2531's stdlib `min_clearance`.
+    pub fn min_clearance(
+        &self,
+        a: GeometryHandleId,
+        b: GeometryHandleId,
+    ) -> Result<f64, QueryError> {
+        let s1 = self
+            .get_shape(a)
+            .map_err(|_| QueryError::InvalidHandle(a))?;
+        let s2 = self
+            .get_shape(b)
+            .map_err(|_| QueryError::InvalidHandle(b))?;
+        ffi::ffi::min_clearance(s1, s2)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
 }
 
 #[cfg(has_occt)]
