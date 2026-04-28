@@ -496,6 +496,10 @@ pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
 /// expected to have already extracted the candidate handles (via
 /// `kernel.extract_edges` / `kernel.extract_faces`) and populated the table
 /// (via `edges_at_height_with_tags` or equivalent) before calling this resolver.
+///
+/// # Preconditions
+/// `candidates` must be deduplicated; duplicate handles inflate the match count
+/// and produce spurious split-topology warnings.
 pub fn resolve_unique_by_tag(
     table: &FeatureTagTable,
     candidates: &[GeometryHandleId],
@@ -503,13 +507,18 @@ pub fn resolve_unique_by_tag(
     selector_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<GeometryHandleId> {
-    let matches: Vec<GeometryHandleId> = candidates
-        .iter()
-        .copied()
-        .filter(|id| table.lookup(*id) == Some(&target))
-        .collect();
-    match matches.len() {
-        1 => Some(matches[0]),
+    let mut found: Option<GeometryHandleId> = None;
+    let mut n: usize = 0;
+    for &id in candidates {
+        if table.lookup(id) == Some(&target) {
+            n += 1;
+            if n == 1 {
+                found = Some(id);
+            }
+        }
+    }
+    match n {
+        1 => found,
         n => {
             diagnostics.push(
                 Diagnostic::warning(format!(
@@ -1209,8 +1218,8 @@ mod tests {
         assert_eq!(diag.severity, Severity::Warning, "should be a warning");
         assert_eq!(diag.code, Some(DiagnosticCode::TopologyTagStale), "must carry TopologyTagStale code");
         assert!(
-            diag.message.contains('0') && (diag.message.contains("sub-shapes") || diag.message.contains("selector")),
-            "message should mention '0' match count and sub-shapes/selector, got: {:?}",
+            diag.message.contains("matched 0 "),
+            "message should contain 'matched 0 ' to pin the exact count, got: {:?}",
             diag.message,
         );
         assert!(
@@ -1256,8 +1265,8 @@ mod tests {
         assert_eq!(diag.severity, Severity::Warning, "should be a warning");
         assert_eq!(diag.code, Some(DiagnosticCode::TopologyTagStale), "must carry TopologyTagStale code");
         assert!(
-            diag.message.contains('3'),
-            "message must contain the match count '3', got: {:?}",
+            diag.message.contains("matched 3 "),
+            "message must contain 'matched 3 ' to pin the exact count, got: {:?}",
             diag.message,
         );
         assert!(
