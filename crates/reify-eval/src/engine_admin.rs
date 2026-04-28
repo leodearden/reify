@@ -8,7 +8,7 @@ use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
-    GeometryKernel, OptimizedImpl,
+    GeometryKernel, OptimizedImpl, TopologyAttributeTable,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
