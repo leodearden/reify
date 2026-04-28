@@ -183,7 +183,7 @@ impl Default for EventJournal {
 mod tests {
     use std::time::Instant;
 
-    use reify_types::VersionId;
+    use reify_types::{ErrorRef, VersionId};
 
     use crate::cache::{EvalOutcome, NodeId};
     use crate::journal::*;
@@ -223,10 +223,33 @@ mod tests {
     #[test]
     fn event_kind_failed() {
         let kind = EventKind::Failed {
-            error: "test error".to_string(),
+            error: ErrorRef::new("test error"),
         };
         let _ = format!("{:?}", kind);
         let _ = kind.clone();
+    }
+
+    #[test]
+    fn event_kind_failed_carries_error_ref() {
+        // The payload is an `ErrorRef` — carrying typed error metadata
+        // (including optional `DiagnosticCode`) — not a bare String. Pin
+        // that the typed payload survives Clone/Debug and that the message
+        // round-trips via `error.message()`.
+        let kind = EventKind::Failed {
+            error: ErrorRef::new("test error"),
+        };
+        let cloned = kind.clone();
+        let debug = format!("{:?}", kind);
+        assert!(
+            debug.contains("Failed"),
+            "Debug output should mention Failed: {debug}"
+        );
+        match cloned {
+            EventKind::Failed { error } => {
+                assert_eq!(error.message(), "test error");
+            }
+            other => panic!("expected EventKind::Failed, got {:?}", other),
+        }
     }
 
     #[test]
@@ -627,7 +650,7 @@ mod tests {
         journal.record(make_event(
             "e",
             EventKind::Failed {
-                error: "oops".to_string(),
+                error: ErrorRef::new("oops"),
             },
             0,
         ));
