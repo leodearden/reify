@@ -759,3 +759,80 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
         "user-written forall with one negative cell must evaluate to Bool(false)"
     );
 }
+
+/// task-2458 acceptance: a user-written `forall p in [Bracket.x, Bracket.y]:
+/// determined(p)` (collection is a `ListLiteral` of pure `ValueRef`s) must
+/// evaluate via the value-iteration fallback — binding `p` to each cell's
+/// VALUE — and NOT via cell-iteration (which would rewrite the loop-var's
+/// cell-id under the predicate). The two paths diverge for
+/// `DeterminacyPredicate { cell: $loop_var }`: cell-iteration would rewrite
+/// the cell to `Bracket.x`/`Bracket.y` (both Determined → Bool(true));
+/// value-iteration leaves the predicate intact and looks up `$loop_var.p`
+/// in the determinacy snapshot, finding the planted `Undetermined` state →
+/// `Bool(false)`.
+///
+/// RED before step-4: current `eval_quantifier` triggers cell-iteration on
+/// the ListLiteral-of-ValueRefs shape and returns `Bool(true)`.
+#[test]
+fn forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration() {
+    let cell_x = ValueCellId::new("Bracket", "x");
+    let cell_y = ValueCellId::new("Bracket", "y");
+    let loop_var = ValueCellId::new("$quant0.S", "p");
+
+    // Collection: user-authored ListLiteral of ValueRefs (not a ReflectiveCellList).
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(cell_x.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+        ],
+        Type::List(Box::new(Type::Real)),
+    );
+
+    // Predicate: determined($loop_var) — the path-divergence witness.
+    // - Cell-iteration: remap_cell rewrites $loop_var → Bracket.x/Bracket.y
+    //   (both Determined) → Bool(true).
+    // - Value-iteration: $loop_var is left intact; snapshot lookup finds
+    //   Undetermined → Bool(false).
+    let predicate = CompiledExpr::determinacy_predicate(
+        DeterminacyPredicateKind::Determined,
+        loop_var.clone(),
+    );
+
+    let expr = make_quantifier(
+        QuantifierKind::ForAll,
+        "p",
+        loop_var.clone(),
+        collection,
+        predicate,
+    );
+
+    // Determinacy snapshot: Bracket.x and Bracket.y are Determined;
+    // $loop_var.p is the path-divergence witness — planted as Undetermined.
+    let snapshot = make_determinacy_snapshot(&[
+        (cell_x.clone(), Value::Real(1.0), DeterminacyState::Determined),
+        (cell_y.clone(), Value::Real(2.0), DeterminacyState::Determined),
+        // The witness: value-iteration will evaluate determined($loop_var)
+        // with this cell intact; it finds Undetermined → false.
+        (loop_var.clone(), Value::Undef, DeterminacyState::Undetermined),
+    ]);
+
+    let mut values = ValueMap::new();
+    values.insert(cell_x.clone(), Value::Real(1.0));
+    values.insert(cell_y.clone(), Value::Real(2.0));
+    // No entry for loop_var: value-iteration binds it to the iterated value
+    // (Real(1.0) / Real(2.0)), which the DeterminacyPredicate ignores.
+
+    let functions: Vec<reify_types::CompiledFunction> = Vec::new();
+    let ctx = EvalContext::new(&values, &functions).with_determinacy(&snapshot);
+
+    let result = eval_expr(&expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Bool(false),
+        "task-2458: user-written ListLiteral-of-ValueRefs must route through \
+         value-iteration (not cell-iteration); value-iteration leaves the \
+         DeterminacyPredicate cell intact as $loop_var, which is Undetermined \
+         in the snapshot → Bool(false). Cell-iteration would incorrectly rewrite \
+         the cell to Bracket.x/Bracket.y (both Determined) → Bool(true)."
+    );
+}
