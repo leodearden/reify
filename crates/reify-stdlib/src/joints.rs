@@ -57,16 +57,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // field, so moving the lookup prevents a spurious Undef for coupling.
             match kind {
                 "prismatic" => {
-                    let axis_val = match map.get(&Value::String("axis".to_string())) {
-                        Some(v) => v,
+                    let [nax, nay, naz] = match unit_axis_from_map(map) {
+                        Some(a) => a,
                         None => return Some(Value::Undef),
                     };
-                    let comps = match validate_axis(axis_val) {
-                        Some(c) => c,
-                        None => return Some(Value::Undef),
-                    };
-                    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
-                    let [nax, nay, naz] = [comps[0] / mag, comps[1] / mag, comps[2] / mag];
                     // Accept Length Scalar or bare Real/Int as metres
                     let dist = match length_input(&args[1]) {
                         Some(d) => d,
@@ -96,16 +90,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 "revolute" => {
-                    let axis_val = match map.get(&Value::String("axis".to_string())) {
-                        Some(v) => v,
+                    let [nax, nay, naz] = match unit_axis_from_map(map) {
+                        Some(a) => a,
                         None => return Some(Value::Undef),
                     };
-                    let comps = match validate_axis(axis_val) {
-                        Some(c) => c,
-                        None => return Some(Value::Undef),
-                    };
-                    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
-                    let [nax, nay, naz] = [comps[0] / mag, comps[1] / mag, comps[2] / mag];
                     // Accept Angle Scalar or bare Real/Int as radians
                     let theta = match trig_input(&args[1]) {
                         Some(t) => t,
@@ -130,10 +118,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 "coupling" => {
-                    // Extract the four coupling-map fields with explicit guards.
-                    // Guards for all three fields are required: a Map built by a
-                    // trusted `couple` call always has them, but hand-built Maps
-                    // used in tests or future serialisation paths may not.
+                    // Extract the three coupling-payload fields (kind already matched
+                    // above) with explicit guards. A Map built by a trusted `couple`
+                    // call always has them, but hand-built Maps used in tests or future
+                    // serialisation paths may not.
                     let parent = match map.get(&Value::String("parent".to_string())) {
                         Some(v) => v.clone(),
                         None => return Some(Value::Undef),
@@ -355,6 +343,19 @@ fn length_input(v: &Value) -> Option<f64> {
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
+}
+
+/// Look up the `"axis"` field in a joint map, validate it via [`validate_axis`],
+/// and return the unit-normalized `[x, y, z]` components.
+///
+/// Returns `None` if the field is absent or validation fails.
+/// Both the `"prismatic"` and `"revolute"` arms of `transform_at` call this
+/// helper to avoid duplicating the axis lookup and normalization logic.
+fn unit_axis_from_map(map: &BTreeMap<Value, Value>) -> Option<[f64; 3]> {
+    let axis_val = map.get(&Value::String("axis".to_string()))?;
+    let comps = validate_axis(axis_val)?;
+    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
+    Some([comps[0] / mag, comps[1] / mag, comps[2] / mag])
 }
 
 /// Validate an axis value: must be a Vector3 of dimensionless components,
