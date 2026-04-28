@@ -18,14 +18,15 @@
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
-use reify_eval::cache::NodeId;
+use reify_eval::cache::{CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeId};
 use reify_eval::journal::EventKind;
 use reify_test_support::builders::{binop, gt, literal, value_ref_typed};
 use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
-    BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness, ModulePath,
-    RealizationNodeId, Satisfaction, Severity, Type, Value, ValueCellId,
+    BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness,
+    GeometryHandleId, ModulePath, RealizationNodeId, Satisfaction, Severity, Type, Value,
+    ValueCellId,
 };
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
@@ -627,4 +628,78 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
          got 0 such diagnostics in {:?}",
         build_result.diagnostics
     );
+}
+
+/// `FAILED_REALIZATION_STUB_HANDLE` is the documented sentinel
+/// that `Engine::mark_realization_failed` embeds inside a cold-start
+/// `NodeCache` when no prior `GeometryHandle` exists. This test pins
+/// the const's identity invariants (so `0`-collision regressions are
+/// caught) and pins that the stub never escapes the `Freshness::Failed`
+/// gate during an end-to-end kernel-failure build.
+///
+/// Reviewer (#2330 amendment) flagged that the original
+/// `GeometryHandleId(0)` placeholder was plausibly indistinguishable
+/// from a real first-allocated handle in counters that start at zero.
+/// `FAILED_REALIZATION_STUB_HANDLE` is `u64::MAX - 1` — adjacent to
+/// `GeometryHandleId::INVALID` (`u64::MAX`) but not equal to it, so
+/// `GeometryHandleId::content_hash` does not debug-assert.
+#[test]
+fn failed_realization_stub_handle_is_distinct_from_zero_and_invalid() {
+    // Identity invariants — pin the const in case someone "simplifies" it
+    // back to `GeometryHandleId(0)` or aliases it onto INVALID.
+    assert_ne!(
+        FAILED_REALIZATION_STUB_HANDLE,
+        GeometryHandleId(0),
+        "FAILED_REALIZATION_STUB_HANDLE must NOT be GeometryHandleId(0); \
+         kernels that start handle counters at 0 would conflate the stub \
+         with a real allocated handle"
+    );
+    assert_ne!(
+        FAILED_REALIZATION_STUB_HANDLE,
+        GeometryHandleId::INVALID,
+        "FAILED_REALIZATION_STUB_HANDLE must NOT equal GeometryHandleId::INVALID; \
+         GeometryHandleId::content_hash debug-asserts on INVALID, so embedding \
+         INVALID in a NodeCache::new(...) result would crash"
+    );
+
+    // End-to-end: the stub IS what the cold-start fallback embeds, AND
+    // it is gated by Freshness::Failed.
+    let module = one_realization_box_module();
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let e = "KernelFail";
+    let rnid = RealizationNodeId::new(e, 0);
+    let r_node = NodeId::Realization(rnid.clone());
+
+    let _ = engine.build(&module, ExportFormat::Step);
+
+    // The cache entry exists.
+    let entry = engine
+        .cache_store()
+        .get(&r_node)
+        .expect("cold-start fallback must insert a NodeCache for the failed realization");
+
+    // Freshness gate is Failed — consumers MUST observe this before reading.
+    assert!(
+        matches!(entry.freshness, Freshness::Failed { .. }),
+        "freshness gate must be Failed before consumers reach the stub handle; got {:?}",
+        entry.freshness
+    );
+
+    // The cached result IS the documented stub, not an arbitrary `0` or
+    // INVALID. Pins that `mark_realization_failed` is wired through the
+    // const, not a stray literal.
+    match &entry.result {
+        CachedResult::GeometryHandle(h) => {
+            assert_eq!(
+                *h, FAILED_REALIZATION_STUB_HANDLE,
+                "cold-start failed-realization fallback must embed \
+                 FAILED_REALIZATION_STUB_HANDLE; got {:?}",
+                h
+            );
+        }
+        other => panic!("expected CachedResult::GeometryHandle stub, got {:?}", other),
+    }
 }

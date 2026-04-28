@@ -90,6 +90,34 @@ impl CachedResult {
     }
 }
 
+/// Documented placeholder handle ID used by
+/// [`Engine::mark_realization_failed`] when a kernel error fires before any
+/// successful handle has been allocated for a realization (cold-start path).
+///
+/// The const exists because the cold-start fallback inserts a `NodeCache`
+/// gated by `Freshness::Failed { error }`, but `NodeCache::new` always
+/// content-hashes its `result`, so the result must carry *some* concrete
+/// value. We deliberately avoid:
+///
+/// - `GeometryHandleId(0)` — `0` is plausibly a real handle ID in
+///   kernels that start their counters at zero (and the project has
+///   already had stale-zero export bugs), so consumers that
+///   accidentally bypass the freshness gate could conflate this stub
+///   with a legitimate first-allocated handle.
+/// - `GeometryHandleId::INVALID` (`u64::MAX`) — `GeometryHandleId::content_hash`
+///   debug-asserts on the INVALID sentinel, so it cannot be embedded in a
+///   `NodeCache::new(...)` result.
+///
+/// `u64::MAX - 1` sits adjacent to `INVALID` in the same "absurdly high,
+/// not-allocated" tail region: kernels in this project allocate from low
+/// counters (1, 2, 3, …), so a real allocated handle reaching this value
+/// would require ~2^64 sequential allocations. Consumers MUST still gate
+/// on `Freshness::Failed` before reading the stored handle — this const
+/// is a defence-in-depth, not an escape hatch.
+///
+/// Pinned by `tests/failed_propagation.rs::failed_realization_stub_handle_is_distinct_from_zero_and_invalid`.
+pub const FAILED_REALIZATION_STUB_HANDLE: GeometryHandleId = GeometryHandleId(u64::MAX - 1);
+
 /// Signal indicating whether a node's result changed after re-evaluation.
 /// Used to control dirty propagation (early cutoff).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

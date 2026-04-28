@@ -10,7 +10,7 @@ use reify_types::{
     SourceSpan, ValueMap, VersionId,
 };
 
-use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
+use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
@@ -474,15 +474,15 @@ impl Engine {
     ///   preserving the prior `result` and `dependency_trace`.
     /// - If no entry exists yet (cold-start build before any successful
     ///   handle was produced for this realization): inserts a stub entry
-    ///   with `CachedResult::GeometryHandle(GeometryHandleId(0))` and
-    ///   `Freshness::Failed { error }` directly. The placeholder `0` handle
-    ///   matches the convention used by
-    ///   [`CacheStore::insert_synthetic_realization_entry`] — its concrete
-    ///   value is irrelevant because consumers gate on `Freshness::Failed`
-    ///   before looking at the result. We deliberately avoid
-    ///   `GeometryHandleId::INVALID` here because
-    ///   `GeometryHandleId::content_hash` debug-asserts on the INVALID
-    ///   sentinel, and `NodeCache::new` always content-hashes its result.
+    ///   with `CachedResult::GeometryHandle(FAILED_REALIZATION_STUB_HANDLE)`
+    ///   and `Freshness::Failed { error }` directly. The stub const
+    ///   ([`FAILED_REALIZATION_STUB_HANDLE`] in `cache.rs`) is `u64::MAX - 1`
+    ///   — explicitly **not** `0` (which is plausibly a real handle in
+    ///   counters that start at zero) and not `GeometryHandleId::INVALID`
+    ///   (`u64::MAX`) because `GeometryHandleId::content_hash` debug-asserts
+    ///   on INVALID and `NodeCache::new` always hashes its result.
+    ///   Consumers MUST gate on `Freshness::Failed` before reading the
+    ///   handle — this stub is defence-in-depth, not an escape hatch.
     /// - Records exactly one `EventKind::Failed { error }` event scoped to
     ///   `NodeId::Realization(rid)`. The pre-existing
     ///   `Diagnostic::error("geometry error: …")` from
@@ -503,7 +503,7 @@ impl Engine {
             cache.put(
                 r_node.clone(),
                 NodeCache::new(
-                    CachedResult::GeometryHandle(GeometryHandleId(0)),
+                    CachedResult::GeometryHandle(FAILED_REALIZATION_STUB_HANDLE),
                     Freshness::Failed {
                         error: error.clone(),
                     },
