@@ -9,6 +9,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production (not a standalone `.ri` file re-read).
 
+mod common;
+
+use common::assert_trait_constraint_binop;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
 use reify_types::*;
@@ -26,78 +29,6 @@ fn load_stdlib_module() -> &'static CompiledModule {
         .iter()
         .find(|m| m.path.to_string() == "std/materials/thermal")
         .expect("stdlib should contain std/materials/thermal module")
-}
-
-/// Assert that `trait_def` has a `DefaultKind::Constraint` whose expression is
-/// `BinOp { op: expected_op, left: Ident(expected_member), right: NumberLiteral(rhs) }`
-/// where `|rhs - expected_rhs| <= rhs_epsilon`.
-///
-/// This tightens the constraint-present check: a regression that flips the
-/// operator (`>=` → `>`) or changes the bound (e.g. `0.0` instead of `1500.0`)
-/// will now fail here.
-#[track_caller]
-fn assert_trait_constraint_binop(
-    trait_def: &CompiledTrait,
-    trait_name: &str,
-    expected_member: &str,
-    expected_op: &str,
-    expected_rhs: f64,
-    rhs_epsilon: f64,
-) {
-    use reify_syntax::ExprKind;
-
-    let constraint_default = trait_def
-        .defaults
-        .iter()
-        .find(|d| {
-            if let DefaultKind::Constraint(decl) = &d.kind {
-                matches!(&decl.expr.kind, ExprKind::BinOp { left, .. }
-                    if matches!(&left.kind, ExprKind::Ident(n) if n == expected_member))
-            } else {
-                false
-            }
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "{} must have a constraint default on '{}', got defaults: {:?}",
-                trait_name,
-                expected_member,
-                trait_def
-                    .defaults
-                    .iter()
-                    .map(|d| format!("{:?}", d.kind))
-                    .collect::<Vec<_>>()
-            )
-        });
-
-    if let DefaultKind::Constraint(decl) = &constraint_default.kind
-        && let ExprKind::BinOp { op, left: _, right } = &decl.expr.kind
-    {
-        assert_eq!(
-            op.as_str(),
-            expected_op,
-            "{} constraint op for '{}' should be '{}', got '{}'",
-            trait_name,
-            expected_member,
-            expected_op,
-            op
-        );
-        match &right.kind {
-            ExprKind::NumberLiteral(v) => assert!(
-                (*v - expected_rhs).abs() <= rhs_epsilon,
-                "{} constraint RHS for '{}' should be {} (±{}), got {}",
-                trait_name,
-                expected_member,
-                expected_rhs,
-                rhs_epsilon,
-                v
-            ),
-            other => panic!(
-                "{} constraint RHS for '{}' should be NumberLiteral, got {:?}",
-                trait_name, expected_member, other
-            ),
-        }
-    }
 }
 
 // ─── (a) module loads with zero error diagnostics and non-empty trait_defs ───
