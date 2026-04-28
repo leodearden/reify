@@ -89,6 +89,18 @@ impl Engine {
                         );
                     }
                 }
+                // Task 2320: see `Engine::post_process_conformance_queries`
+                // docstring for the full contract. Mirrored in `build` and
+                // `tessellate_from_values` — keep all four call sites in
+                // sync (follow-up: the broader build/build_snapshot
+                // realization-loop duplication is tracked separately).
+                Engine::post_process_conformance_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
             }
 
             if step_handles.is_empty() {
@@ -128,6 +140,11 @@ impl Engine {
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        // Task 2320: `values` is moved out of `check_result` here so the
+        // per-template post-process can patch conformance-query results
+        // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
+        // before it is moved into the returned `BuildResult` below.
+        let mut values = check_result.values;
 
         let version_id = VersionId(self.next_version_id);
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
@@ -152,7 +169,7 @@ impl Engine {
                         kernel.as_mut(),
                         &realization.operations,
                         &realization.feature_tags,
-                        &check_result.values,
+                        &values,
                         &self.functions,
                         &self.meta_map,
                         &mut step_handles,
@@ -177,6 +194,19 @@ impl Engine {
                         );
                     }
                 }
+                // Task 2320: see `Engine::post_process_conformance_queries`
+                // docstring for the full contract. Mirrored in
+                // `build_snapshot` and `tessellate_from_values` — keep all
+                // four call sites in sync (follow-up: the broader
+                // build/build_snapshot realization-loop duplication is
+                // tracked separately).
+                Engine::post_process_conformance_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
             }
 
             if step_handles.is_empty() {
@@ -207,7 +237,7 @@ impl Engine {
         };
 
         BuildResult {
-            values: check_result.values,
+            values,
             constraint_results: check_result.constraint_results,
             geometry_output,
             diagnostics,
@@ -227,11 +257,19 @@ impl Engine {
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        // Task 2320 amendment: `values` is moved into a local mutable binding
+        // here so `tessellate_from_values` can patch conformance-query results
+        // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
+        // before it is moved into the returned `TessellateResult` below.
+        // Keeps `TessellateResult.values` semantically aligned with
+        // `BuildResult.values` — a reader of either map sees the same
+        // kernel-resolved Bool answers (when a kernel is configured).
+        let mut values = check_result.values;
         self.feature_tag_table = FeatureTagTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
-            &check_result.values,
+            &mut values,
             &self.functions,
             &mut diagnostics,
             &self.meta_map,
@@ -239,7 +277,7 @@ impl Engine {
         );
 
         TessellateResult {
-            values: check_result.values,
+            values,
             constraint_results: check_result.constraint_results,
             meshes,
             diagnostics,
@@ -265,10 +303,18 @@ impl Engine {
     /// Shared helper: execute geometry operations and tessellate each realization.
     ///
     /// Used by both `tessellate_realizations()` and `tessellate_snapshot()`.
+    ///
+    /// `values` is mutable so that conformance-query helpers
+    /// (`is_watertight` / `is_manifold` / `is_orientable`) — whose
+    /// kernel-aware dispatch lives outside the pure-value `eval_expr` path —
+    /// can be patched into the per-template `value_cells`. Reads of `values`
+    /// inside `execute_realization_ops` happen *before* the post-process
+    /// runs, so the patch is observable only on the final `TessellateResult`
+    /// surface — matching the build-pipeline semantics.
     fn tessellate_from_values(
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
         module: &CompiledModule,
-        values: &ValueMap,
+        values: &mut ValueMap,
         functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
         meta_map: &HashMap<String, HashMap<String, String>>,
@@ -329,6 +375,18 @@ impl Engine {
                     }
                 }
             }
+            // Task 2320 amendment: mirrors the `build` / `build_snapshot`
+            // wire-up so `TessellateResult.values` exposes the same
+            // kernel-resolved `Bool` for conformance-query cells as
+            // `BuildResult.values`. See
+            // `Engine::post_process_conformance_queries` docstring.
+            Engine::post_process_conformance_queries(
+                template,
+                &named_steps,
+                values,
+                kernel.as_ref(),
+                diagnostics,
+            );
         }
 
         meshes
@@ -521,6 +579,58 @@ impl Engine {
         });
     }
 
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`.
+    ///
+    /// For each `ValueCellDecl` in `template.value_cells` whose `default_expr`
+    /// is a recognised conformance-query helper (`is_watertight`,
+    /// `is_manifold`, `is_orientable`), this writes the kernel-resolved
+    /// `Value::Bool(_)` answer (or the user-assertion override) into
+    /// `values`, overwriting the `Value::Undef` left behind by the pure
+    /// `eval_expr` path. Cells whose `default_expr` is `None` or whose
+    /// dispatch returns `None` (literal arg, unresolvable cell-member name,
+    /// non-helper function call) are left untouched — see
+    /// [`crate::geometry_ops::try_eval_conformance_query`]'s `None`-return
+    /// contract.
+    ///
+    /// Called once per template from `build` / `build_snapshot` and
+    /// `tessellate_realizations` / `tessellate_snapshot` after each path's
+    /// per-realization loop has populated `named_steps`. Tessellation
+    /// itself does not consume value cells, but the surfaced
+    /// `TessellateResult.values` map *is* read by callers (e.g. GUI
+    /// overlays that show query-helper results next to a mesh), so the
+    /// post-process must run on those paths too — without it, the
+    /// tessellate surface would expose `Value::Undef` for these cells
+    /// while the build surface exposes the kernel-resolved Bool.
+    ///
+    /// Pinned by `tests/conformance_runtime.rs::*` (task 2320 step-11)
+    /// and the tessellate-path coverage in
+    /// `tessellate_realizations_post_processes_conformance_queries`
+    /// (task 2320 amendment).
+    fn post_process_conformance_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_conformance_query(
+                default_expr,
+                &template.trait_bounds,
+                named_steps,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
     /// Tessellate realizations from the current snapshot values, without
     /// re-calling eval().
     ///
@@ -543,12 +653,16 @@ impl Engine {
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
-        // Execute geometry and tessellate
+        // Execute geometry and tessellate. `values` is passed `&mut` so the
+        // post-process inside `tessellate_from_values` can patch
+        // conformance-query results (`is_watertight` / `is_manifold` /
+        // `is_orientable`) before they're surfaced via `TessellateResult`
+        // (task 2320 amendment).
         self.feature_tag_table = FeatureTagTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
-            &values,
+            &mut values,
             &self.functions,
             &mut diagnostics,
             &self.meta_map,

@@ -779,7 +779,15 @@ pub(crate) fn compile_expr_guarded(
                     };
 
                     // Infer a result type — for geometry functions, use a placeholder
-                    let result_type = if is_geometry_function(name) {
+                    let result_type = if is_geometry_query_helper(name) {
+                        // is_watertight / is_manifold / is_orientable: query helpers
+                        // that return Bool. Eval-time dispatch is in
+                        // `reify_eval::geometry_ops::try_eval_conformance_query`.
+                        // Setting the cell type up-front avoids the first-arg
+                        // (Type::Geometry) fallback that would trip
+                        // `assert_value_cell_types_representable`.
+                        Type::Bool
+                    } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else {
                         compiled_args

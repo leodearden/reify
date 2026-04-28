@@ -1180,6 +1180,142 @@ pub(crate) fn compile_geometry_op(
     }
 }
 
+// ── Conformance-query dispatch (task 2320) ──────────────────────────────────
+//
+// `try_eval_conformance_query` is the kernel-aware eval-time dispatch for the
+// stdlib helpers `is_watertight`, `is_manifold`, and `is_orientable`.
+//
+// Architecture: the helpers cannot be evaluated by the pure-value
+// `eval_expr` / `eval_builtin` path because (a) `Type::Geometry` has no
+// corresponding `Value` variant, and (b) the kernel — and therefore
+// `GeometryHandleId`s — only exists behind `Engine.geometry_kernel`. The
+// kernel-aware dispatch must live in the build / check pipeline where the
+// engine has both the kernel and the realisation's per-name
+// `GeometryHandleId` map (`named_steps`). This free function is invoked
+// from `engine_build.rs` after `execute_realization_ops` has populated
+// `named_steps` for a template, and patches the resulting `Value::Bool(_)`
+// into the per-cell `ValueMap`.
+//
+// Helper-name → marker-trait pairing for the user-assertion escape hatch:
+//   `is_watertight` ↔ `"Watertight"`
+//   `is_manifold`   ↔ `"Manifold"`
+//   `is_orientable` ↔ `"Orientable"`
+// Note the asymmetry: `is_watertight` short-circuits **only** on
+// `"Watertight"` — declaring `Closed` or `Manifold` (which `Watertight`
+// refines per `geometry_traits.ri`) is not sufficient. Trait-DAG
+// propagation is intentionally not done here; the simple name-equivalence
+// rule mirrors task 2321's per-bound `W_TRAIT_USER_ASSERTED` warning.
+//
+// Returns:
+//   `Some(Value::Bool(_))` when the dispatch produces a definite answer
+//                          (kernel reply OR user-assertion override).
+//   `Some(Value::Undef)`   when the kernel returned a non-`Bool` (defensive
+//                          downgrade with a Warning diagnostic).
+//   `None`                 when the expression is not a recognised
+//                          conformance-query helper, or the arg shape is
+//                          unsupported (literal, non-`ValueRef`,
+//                          unresolvable cell-member name).  Callers fall
+//                          through to the cell's compiled default.
+pub(crate) fn try_eval_conformance_query(
+    expr: &reify_types::CompiledExpr,
+    template_trait_bounds: &[String],
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // Early-return ordering audit (task 2320 step-8): the kernel is the last
+    // step. Each guard below either short-circuits via `return None` (for
+    // unsupported shapes) or short-circuits via `return Some(Bool(true))`
+    // (for the user-assertion escape hatch). Pinned by the
+    // `try_eval_conformance_query_*_returns_none_no_kernel_call` and
+    // `try_eval_conformance_query_user_assertion_*` tests.
+    //
+    //   1. CompiledExprKind::FunctionCall          (cheapest — pattern match)
+    //   2. recognised helper name                  (string compare)
+    //   3. user-assertion escape hatch             (Vec::any string compare)
+    //   4. single-arg ValueRef shape               (pattern match)
+    //   5. named_steps cell-member lookup          (HashMap::get)
+    //   6. kernel.query(...)                       (the actual round-trip)
+
+    // (1) Must be a FunctionCall — anything else is unsupported.
+    let (function, args) = match &expr.kind {
+        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (2) Must be one of the three recognised helper names. The pairing
+    // with the matching marker trait is fixed.
+    let marker_trait = match function.name.as_str() {
+        "is_watertight" => "Watertight",
+        "is_manifold" => "Manifold",
+        "is_orientable" => "Orientable",
+        _ => return None,
+    };
+
+    // (3) Escape hatch: if the enclosing structure declared the matching
+    // marker trait, skip the kernel query entirely and return Bool(true).
+    // This is intentionally checked *before* arg-shape resolution so the
+    // user-assertion semantic holds even when the arg is otherwise
+    // unresolvable.
+    if template_trait_bounds.iter().any(|t| t == marker_trait) {
+        return Some(reify_types::Value::Bool(true));
+    }
+
+    // (4) Arg shape: we only resolve `is_watertight(<entity>.<member>)`
+    // where `<member>` is a let-bound geometry name in `named_steps`.
+    // Anything else (literals, nested expressions, cross-template idents)
+    // falls through to `None` so the cell stays at its compiled default
+    // (`Value::Undef`) — verified by the integration test
+    // `is_watertight_with_literal_int_arg_falls_through_to_undef` in
+    // `tests/conformance_runtime.rs` (task 2320 step-13/14).
+    if args.len() != 1 {
+        return None;
+    }
+    let cell_id = match &args[0].kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        // Defensive fall-through (task 2320 step-14): literals, nested
+        // expressions, and any non-`ValueRef` shape bail to `None` *before*
+        // any `named_steps` lookup or `kernel.query(...)` round-trip — so
+        // ill-formed conformance-query call sites degrade gracefully rather
+        // than panicking the build.
+        _ => return None,
+    };
+
+    // (5) Resolve the cell-member name to a kernel handle. Absent →
+    // `None` (and the kernel is never consulted).
+    let handle = match named_steps.get(&cell_id.member) {
+        Some(h) => *h,
+        None => return None,
+    };
+
+    // (6) All guards passed: build the matching kernel query and dispatch.
+    let query = match function.name.as_str() {
+        "is_watertight" => reify_types::GeometryQuery::IsWatertight(handle),
+        "is_manifold" => reify_types::GeometryQuery::IsManifold(handle),
+        "is_orientable" => reify_types::GeometryQuery::IsOrientable(handle),
+        // Unreachable — the earlier match already filtered to these three names.
+        _ => return None,
+    };
+
+    match kernel.query(&query) {
+        Ok(reify_types::Value::Bool(b)) => Some(reify_types::Value::Bool(b)),
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}({}) kernel returned non-Bool value {:?}; treating as undefined",
+                function.name, cell_id.member, other
+            )));
+            Some(reify_types::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}({}) kernel query failed: {}",
+                function.name, cell_id.member, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4360,6 +4496,490 @@ mod tests {
             warnings.is_empty(),
             "no Warning diagnostics expected on unknown-name Sub resolution, got: {:?}",
             warnings
+        );
+    }
+
+    // ── try_eval_conformance_query unit tests (task 2320) ────────────────────
+    //
+    // These tests pin the contract of `try_eval_conformance_query`, the
+    // kernel-aware eval-time dispatch surface for the `is_watertight`,
+    // `is_manifold`, `is_orientable` stdlib helpers. Architecture rationale
+    // is captured in the task 2320 plan; the function lives in this module
+    // (rather than `eval_expr`) because the build pipeline owns both the
+    // kernel and the per-realization name → handle map (`named_steps`).
+
+    /// Build a `CompiledExpr` for `is_watertight(<entity>.<member>)`.
+    fn conformance_call(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+    ) -> reify_types::CompiledExpr {
+        let arg = reify_types::CompiledExpr::value_ref(
+            reify_types::ValueCellId::new(entity, member),
+            reify_types::Type::Geometry,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_types::Type::Bool,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn try_eval_conformance_query_kernel_reply_true() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let handle_id = reify_types::GeometryHandleId(7);
+        let kernel = MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "is_watertight(body) with kernel returning Bool(true) must produce Some(Bool(true))"
+        );
+    }
+
+    /// Test-local wrapper around `MockGeometryKernel` that increments a
+    /// counter on every `query()` call. Used to assert that
+    /// `try_eval_conformance_query` short-circuits *before* consulting
+    /// the kernel along the early-return paths (non-helper name, bad
+    /// arg shape, unresolvable cell name, user-asserted marker trait).
+    struct RecordingMockKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        query_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RecordingMockKernel {
+        fn new(inner: reify_test_support::mocks::MockGeometryKernel) -> Self {
+            Self {
+                inner,
+                query_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn query_count(&self) -> usize {
+            self.query_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl reify_types::GeometryKernel for RecordingMockKernel {
+        fn execute(
+            &mut self,
+            op: &reify_types::GeometryOp,
+        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            query: &reify_types::GeometryQuery,
+        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            self.query_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.query(query)
+        }
+
+        fn export(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            format: reify_types::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_types::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+    }
+
+    /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
+    fn conformance_call_literal_arg(helper_name: &str) -> reify_types::CompiledExpr {
+        let arg = reify_types::CompiledExpr::literal(
+            reify_types::Value::Real(1.0),
+            reify_types::Type::Real,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_types::Type::Bool,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn try_eval_conformance_query_non_helper_name_returns_none_no_kernel_call() {
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        // `volume` is a real stdlib function name but NOT one of the three
+        // recognised conformance helpers. The dispatch must return None.
+        let expr = conformance_call("volume", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "non-helper name 'volume' must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted for non-helper names"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_literal_arg_returns_none_no_kernel_call() {
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+
+        // `is_watertight(1.0)` — recognised helper name but the arg is a
+        // literal, not a `ValueRef`. The dispatch must return None *and*
+        // never consult the kernel.
+        let expr = conformance_call_literal_arg("is_watertight");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "is_watertight(<literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_watertight_short_circuits() {
+        // Kernel is configured to return Bool(false) — but the structure
+        // declares `: Watertight`, so the dispatch must short-circuit to
+        // Bool(true) WITHOUT consulting the kernel.
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "TrustedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Watertight".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "user-asserted Watertight must override kernel reply"
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted when the structure asserts Watertight"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_manifold_short_circuits() {
+        let handle_id = reify_types::GeometryHandleId(11);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_manifold", "TrustedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Manifold".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_types::Value::Bool(true)));
+        assert_eq!(kernel.query_count(), 0);
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_orientable_short_circuits() {
+        let handle_id = reify_types::GeometryHandleId(13);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_orientable", "TrustedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Orientable".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_types::Value::Bool(true)));
+        assert_eq!(kernel.query_count(), 0);
+    }
+
+    #[test]
+    fn try_eval_conformance_query_user_assertion_closed_does_not_short_circuit_is_watertight() {
+        // Asymmetry per task 2320 design decision: `is_watertight` short-
+        // circuits ONLY on `Watertight` — declaring the (refined) `Closed`
+        // bound is not sufficient. The kernel must be consulted and its
+        // Bool(false) reply honoured.
+        let handle_id = reify_types::GeometryHandleId(17);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(false));
+        let kernel = RecordingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Closed".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(false)),
+            "is_watertight must NOT be short-circuited by ': Closed'"
+        );
+        assert_eq!(
+            kernel.query_count(),
+            1,
+            "kernel must be consulted exactly once when no matching marker trait is declared"
+        );
+    }
+
+    #[test]
+    fn try_eval_conformance_query_unresolvable_member_returns_none_no_kernel_call() {
+        let handle_id = reify_types::GeometryHandleId(7);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel = RecordingMockKernel::new(inner);
+
+        // `named_steps` contains "body" but the call references "ghost",
+        // which is not present. The dispatch must return None and never
+        // consult the kernel.
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "ghost");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "unresolvable cell-member 'ghost' must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.query_count(),
+            0,
+            "kernel must NOT be consulted when the cell-member name is absent"
+        );
+    }
+
+    /// Failure-mode contract (amend, task 2320): when the kernel returns
+    /// `Ok(value)` with a non-`Bool` value (e.g. a stray `Value::Real`),
+    /// `try_eval_conformance_query` must defensively downgrade to
+    /// `Some(Value::Undef)` and emit exactly one Warning diagnostic naming
+    /// the helper. Pins the `Ok(other)` arm in the source so a regression
+    /// that swaps the downgrade for a panic (or drops the diagnostic)
+    /// would be caught.
+    #[test]
+    fn try_eval_conformance_query_kernel_returns_non_bool_downgrades_with_warning() {
+        let handle_id = reify_types::GeometryHandleId(23);
+        // Seed a non-Bool kernel reply for the IsWatertight query.
+        let kernel = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_types::Value::Real(1.0));
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "non-Bool kernel reply must downgrade to Some(Value::Undef), got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool kernel reply must emit exactly one diagnostic, got {}",
+            diagnostics.len()
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "non-Bool kernel reply must emit a Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("is_watertight"),
+            "diagnostic must mention the helper name, got: {}",
+            diag.message
+        );
+    }
+
+    /// Failure-mode contract (amend, task 2320): when the kernel returns
+    /// `Err(QueryError)`, `try_eval_conformance_query` must defensively
+    /// downgrade to `Some(Value::Undef)` and emit exactly one Warning
+    /// diagnostic naming the helper and surfacing the error message. Pins
+    /// the `Err(err)` arm so a regression swapping the downgrade for a
+    /// panic (or losing the error context in the diagnostic) would fail.
+    #[test]
+    fn try_eval_conformance_query_kernel_query_error_downgrades_with_warning() {
+        let handle_id = reify_types::GeometryHandleId(29);
+        // No `with_query_result` seeding → MockGeometryKernel.query() returns
+        // `Err(QueryError::QueryFailed("no mock result for …"))` for any handle.
+        let kernel = reify_test_support::mocks::MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), handle_id);
+
+        let expr = conformance_call("is_manifold", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &[],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "kernel Err must downgrade to Some(Value::Undef), got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one diagnostic, got {}",
+            diagnostics.len()
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "kernel Err must emit a Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("is_manifold"),
+            "diagnostic must mention the helper name, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
         );
     }
 }
