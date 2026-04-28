@@ -25,7 +25,7 @@ use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// nested specialization scopes and `where { … } else { … }` branches.
 ///
 /// For each member visited inside a specialization scope, if
-/// [`forbidden_kind_name`] returns `Some(kind)`, an
+/// [`forbidden_decl_info`] returns `Some((kind, name, span))`, an
 /// [`DiagnosticCode::SpecializationForbiddenDecl`] error is pushed.
 pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
     for_each_specialization_member(parsed, &mut |member| {
@@ -53,9 +53,7 @@ pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagn
         //
         // - Diagnostic message: `"'<kind>' declaration '<name>' is not permitted in a specialization scope (spec §8.7)"`
         // - Label message: `"forbidden in specialization scope"`
-        if let Some(kind) = forbidden_kind_name(member) {
-            let name = member_name(member);
-            let span = member_span(member);
+        if let Some((kind, name, span)) = forbidden_decl_info(member) {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "'{kind}' declaration '{name}' is not permitted in a specialization scope (spec §8.7)"
@@ -67,56 +65,33 @@ pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagn
     });
 }
 
-/// Returns the kind name string for forbidden specialization-scope member kinds,
-/// or `None` for permitted kinds.
+/// Returns `(kind, name, span)` for the three forbidden specialization-scope
+/// member variants, or `None` for permitted variants.
 ///
-/// Returns `Some("param")`, `Some("port")`, or `Some("sub")` for the three
-/// forbidden variants (spec §8.7 "Not permitted: New param, port, or sub
-/// declarations"). Returns `None` for all other variants (let, constraint,
-/// connect, chain, etc.), which are permitted inside a specialization scope.
+/// Returns `Some(("param"|"port"|"sub", decl_name, decl_span))` for
+/// `MemberDecl::Param`, `::Port`, and `::Sub` (spec §8.7 "Not permitted: New
+/// param, port, or sub declarations"). Returns `None` for all other variants
+/// (let, constraint, connect, chain, etc.), which are permitted.
 ///
 /// # Load-bearing wildcard
 ///
 /// The explicit `_ => None` arm is intentional. A future `MemberDecl` variant
 /// that should be *permitted* must not silently become forbidden because of a
-/// missing arm here. The test `validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope`
+/// missing arm here. The test
+/// `validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope`
 /// guards against accidental broadening — it will catch any new arm that
 /// erroneously returns `Some`.
-fn forbidden_kind_name(member: &MemberDecl) -> Option<&'static str> {
+fn forbidden_decl_info(member: &MemberDecl) -> Option<(&'static str, &str, SourceSpan)> {
     match member {
-        MemberDecl::Param(_) => Some("param"),
-        MemberDecl::Port(_) => Some("port"),
-        MemberDecl::Sub(_) => Some("sub"),
+        MemberDecl::Param(p) => Some(("param", &p.name, p.span)),
+        MemberDecl::Port(p)  => Some(("port",  &p.name, p.span)),
+        MemberDecl::Sub(s)   => Some(("sub",   &s.name, s.span)),
         // LOAD-BEARING: this wildcard arm must stay `None`. A future
         // MemberDecl variant that should be *permitted* must NOT get an arm
         // returning `Some` here — the test
         // `validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope`
         // catches any accidental broadening.
         _ => None,
-    }
-}
-
-/// Returns the name of the declaration (used in the diagnostic message).
-fn member_name(member: &MemberDecl) -> &str {
-    match member {
-        MemberDecl::Param(p) => &p.name,
-        MemberDecl::Port(p) => &p.name,
-        MemberDecl::Sub(s) => &s.name,
-        // Only Param/Port/Sub are forbidden; other arms are unreachable here
-        // (forbidden_kind_name returns None for them). Provide a fallback to
-        // keep the match exhaustive.
-        _ => "<unknown>",
-    }
-}
-
-/// Returns the source span of the declaration (used as the primary label span).
-fn member_span(member: &MemberDecl) -> SourceSpan {
-    match member {
-        MemberDecl::Param(p) => p.span,
-        MemberDecl::Port(p) => p.span,
-        MemberDecl::Sub(s) => s.span,
-        // Fallback for completeness (forbidden_kind_name returns None for these).
-        _ => SourceSpan::empty(0),
     }
 }
 
