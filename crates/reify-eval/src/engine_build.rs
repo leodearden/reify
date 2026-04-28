@@ -41,8 +41,11 @@ impl Engine {
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
-        // Execute geometry operations
-        let version_id = VersionId(self.next_version_id);
+        // Execute geometry operations. Use the snapshot's eval-round id rather
+        // than `self.next_version_id`: build_snapshot consumes `state.snapshot.values`,
+        // so Failed events must carry that snapshot's version, not the un-used
+        // next round that `next_version_id` points at after prior eval/edit calls.
+        let version_id = state.snapshot.version;
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
