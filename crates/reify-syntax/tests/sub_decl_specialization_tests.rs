@@ -16,7 +16,10 @@
 //! (2369: diagnostic emission; 2370: comprehensive forbidden/permitted
 //! coverage) build on this AST contract.
 
-use reify_syntax::{Declaration, MemberDecl, ParamDecl, SubDecl};
+use reify_syntax::{
+    ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, SubDecl,
+    walk_specialization_scope_members,
+};
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
 // ── (a) AST regression: parsed sub forms have body == None ───────────────
@@ -104,4 +107,65 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
         span: dummy_span(),
         content_hash: dummy_hash(),
     }
+}
+
+#[allow(dead_code)]
+fn dummy_expr() -> Expr {
+    Expr {
+        kind: ExprKind::BoolLiteral(true),
+        span: dummy_span(),
+    }
+}
+
+#[allow(dead_code)]
+fn make_let(name: &str) -> MemberDecl {
+    MemberDecl::Let(LetDecl {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        type_expr: None,
+        value: dummy_expr(),
+        where_clause: None,
+        annotations: Vec::new(),
+        span: dummy_span(),
+        content_hash: dummy_hash(),
+    })
+}
+
+#[allow(dead_code)]
+fn make_constraint() -> MemberDecl {
+    MemberDecl::Constraint(ConstraintDecl {
+        label: None,
+        expr: dummy_expr(),
+        where_clause: None,
+        span: dummy_span(),
+        content_hash: dummy_hash(),
+    })
+}
+
+// ── (b) walker visits direct body members ────────────────────────────────
+
+#[test]
+fn walker_visits_direct_body_members() {
+    let body = vec![make_param("p"), make_constraint(), make_let("v")];
+    let sub = make_sub_with_body("scope", Some(body));
+    let mut count = 0usize;
+    walk_specialization_scope_members(&sub, &mut |_m| count += 1);
+    assert_eq!(
+        count, 3,
+        "walker should visit each direct body member exactly once"
+    );
+}
+
+#[test]
+fn walker_no_op_when_body_is_none() {
+    // Bare instantiation (body == None) is NOT a specialization scope —
+    // the walker must not invoke the visitor.
+    let sub = make_sub_with_body("bare", None);
+    let mut count = 0usize;
+    walk_specialization_scope_members(&sub, &mut |_m| count += 1);
+    assert_eq!(
+        count, 0,
+        "walker should not visit anything for body == None"
+    );
 }
