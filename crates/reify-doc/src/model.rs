@@ -884,349 +884,144 @@ mod tests {
     // These are TDD-first: they fail to compile until step 2 adds the methods.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn item_doc_name_returns_variant_name() {
-        let items: Vec<ItemDoc> = vec![
+    /// Returns one of each `ItemDoc` variant with deterministic minimal fields:
+    /// `is_pub: false`, `doc: None`, `annotations: []`, `pragmas: []`, and
+    /// variant-specific fields set to sensible empty/placeholder values.
+    /// Names are the short identifiers used throughout the accessor tests.
+    fn sample_items() -> Vec<ItemDoc> {
+        vec![
             ItemDoc::Structure {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "S".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![], params: vec![],
                 ports: vec![], constraints: vec![], sub_components: vec![],
                 realizations: vec![], meta: vec![],
             },
             ItemDoc::Occurrence {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "O".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![], params: vec![],
                 ports: vec![], constraints: vec![], sub_components: vec![],
                 realizations: vec![], meta: vec![],
             },
             ItemDoc::Trait {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "T".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![], members: vec![],
             },
             ItemDoc::Function {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "F".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![],
-                signature: "fn foo()".into(),
+                signature: "fn f()".into(),
             },
             ItemDoc::Field {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "x".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![],
                 type_repr: "i32".into(), default_repr: None,
             },
             ItemDoc::Purpose {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "P".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![],
                 expr_repr: "cost".into(), direction: "minimize".into(),
             },
             ItemDoc::Enum {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "E".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![], variants: vec![],
             },
             ItemDoc::Unit {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "U".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![],
                 base_unit: "Meter".into(), scale: "1.0".into(),
             },
             ItemDoc::TypeAlias {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "A".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![],
                 type_repr: "f64".into(),
             },
             ItemDoc::ConstraintDef {
-                name: "Foo".into(), doc: None, is_pub: false,
+                name: "C".into(), doc: None, is_pub: false,
                 annotations: vec![], pragmas: vec![],
                 expr_repr: "x > 0".into(),
             },
-        ];
-        for item in &items {
-            assert_eq!(item.name(), "Foo");
+        ]
+    }
+
+    #[test]
+    fn item_doc_name_returns_variant_name() {
+        let expected = ["S", "O", "T", "F", "x", "P", "E", "U", "A", "C"];
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.name(), exp);
         }
     }
 
     #[test]
     fn item_doc_is_pub_returns_variant_visibility() {
-        let true_cases: Vec<ItemDoc> = vec![
-            ItemDoc::Structure {
-                name: "S".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Occurrence {
-                name: "O".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Trait {
-                name: "T".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![], members: vec![],
-            },
-            ItemDoc::Function {
-                name: "F".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![],
-                signature: "fn f()".into(),
-            },
-            ItemDoc::Field {
-                name: "x".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "i32".into(), default_repr: None,
-            },
-            ItemDoc::Purpose {
-                name: "P".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "cost".into(), direction: "minimize".into(),
-            },
-            ItemDoc::Enum {
-                name: "E".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![], variants: vec![],
-            },
-            ItemDoc::Unit {
-                name: "U".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![],
-                base_unit: "Meter".into(), scale: "1.0".into(),
-            },
-            ItemDoc::TypeAlias {
-                name: "A".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "f64".into(),
-            },
-            ItemDoc::ConstraintDef {
-                name: "C".into(), doc: None, is_pub: true,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "x > 0".into(),
-            },
-        ];
-        let false_cases: Vec<ItemDoc> = vec![
-            ItemDoc::Structure {
-                name: "S".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Occurrence {
-                name: "O".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Trait {
-                name: "T".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], members: vec![],
-            },
-            ItemDoc::Function {
-                name: "F".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                signature: "fn f()".into(),
-            },
-            ItemDoc::Field {
-                name: "x".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "i32".into(), default_repr: None,
-            },
-            ItemDoc::Purpose {
-                name: "P".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "cost".into(), direction: "minimize".into(),
-            },
-            ItemDoc::Enum {
-                name: "E".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], variants: vec![],
-            },
-            ItemDoc::Unit {
-                name: "U".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                base_unit: "Meter".into(), scale: "1.0".into(),
-            },
-            ItemDoc::TypeAlias {
-                name: "A".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "f64".into(),
-            },
-            ItemDoc::ConstraintDef {
-                name: "C".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "x > 0".into(),
-            },
-        ];
-        for item in &true_cases {
-            assert!(item.is_pub());
-        }
-        for item in &false_cases {
+        // false cases — all sample_items() have is_pub: false
+        for item in &sample_items() {
             assert!(!item.is_pub());
+        }
+        // true cases — mutate each sample item to set is_pub: true
+        for mut item in sample_items() {
+            match &mut item {
+                ItemDoc::Structure { is_pub, .. }
+                | ItemDoc::Occurrence { is_pub, .. }
+                | ItemDoc::Trait { is_pub, .. }
+                | ItemDoc::Function { is_pub, .. }
+                | ItemDoc::Field { is_pub, .. }
+                | ItemDoc::Purpose { is_pub, .. }
+                | ItemDoc::Enum { is_pub, .. }
+                | ItemDoc::Unit { is_pub, .. }
+                | ItemDoc::TypeAlias { is_pub, .. }
+                | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub = true,
+            }
+            assert!(item.is_pub());
         }
     }
 
     #[test]
     fn item_doc_doc_returns_variant_doc_comment() {
-        let some_cases: Vec<ItemDoc> = vec![
-            ItemDoc::Structure {
-                name: "S".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Occurrence {
-                name: "O".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Trait {
-                name: "T".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![], members: vec![],
-            },
-            ItemDoc::Function {
-                name: "F".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                signature: "fn f()".into(),
-            },
-            ItemDoc::Field {
-                name: "x".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "i32".into(), default_repr: None,
-            },
-            ItemDoc::Purpose {
-                name: "P".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "cost".into(), direction: "minimize".into(),
-            },
-            ItemDoc::Enum {
-                name: "E".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![], variants: vec![],
-            },
-            ItemDoc::Unit {
-                name: "U".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                base_unit: "Meter".into(), scale: "1.0".into(),
-            },
-            ItemDoc::TypeAlias {
-                name: "A".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "f64".into(),
-            },
-            ItemDoc::ConstraintDef {
-                name: "C".into(), doc: Some("doc".into()), is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "x > 0".into(),
-            },
-        ];
-        let none_cases: Vec<ItemDoc> = vec![
-            ItemDoc::Structure {
-                name: "S".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Occurrence {
-                name: "O".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Trait {
-                name: "T".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], members: vec![],
-            },
-            ItemDoc::Function {
-                name: "F".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                signature: "fn f()".into(),
-            },
-            ItemDoc::Field {
-                name: "x".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "i32".into(), default_repr: None,
-            },
-            ItemDoc::Purpose {
-                name: "P".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "cost".into(), direction: "minimize".into(),
-            },
-            ItemDoc::Enum {
-                name: "E".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![], variants: vec![],
-            },
-            ItemDoc::Unit {
-                name: "U".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                base_unit: "Meter".into(), scale: "1.0".into(),
-            },
-            ItemDoc::TypeAlias {
-                name: "A".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                type_repr: "f64".into(),
-            },
-            ItemDoc::ConstraintDef {
-                name: "C".into(), doc: None, is_pub: false,
-                annotations: vec![], pragmas: vec![],
-                expr_repr: "x > 0".into(),
-            },
-        ];
-        for item in &some_cases {
-            assert_eq!(item.doc(), Some("doc"));
-        }
-        for item in &none_cases {
+        // None cases — all sample_items() have doc: None
+        for item in &sample_items() {
             assert_eq!(item.doc(), None);
+        }
+        // Some cases — mutate each sample item to set doc: Some("doc")
+        for mut item in sample_items() {
+            match &mut item {
+                ItemDoc::Structure { doc, .. }
+                | ItemDoc::Occurrence { doc, .. }
+                | ItemDoc::Trait { doc, .. }
+                | ItemDoc::Function { doc, .. }
+                | ItemDoc::Field { doc, .. }
+                | ItemDoc::Purpose { doc, .. }
+                | ItemDoc::Enum { doc, .. }
+                | ItemDoc::Unit { doc, .. }
+                | ItemDoc::TypeAlias { doc, .. }
+                | ItemDoc::ConstraintDef { doc, .. } => *doc = Some("doc".into()),
+            }
+            assert_eq!(item.doc(), Some("doc"));
         }
     }
 
     #[test]
     fn item_doc_annotations_returns_variant_annotations() {
+        // empty cases — all sample_items() have annotations: []
+        for item in &sample_items() {
+            assert!(item.annotations().is_empty());
+        }
+        // one-marker cases — mutate each sample item to add a "marker" annotation
         let marker = AnnotationDoc { name: "marker".to_string(), args: vec![] };
-        let items: Vec<ItemDoc> = vec![
-            ItemDoc::Structure {
-                name: "S".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Occurrence {
-                name: "O".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![], params: vec![],
-                ports: vec![], constraints: vec![], sub_components: vec![],
-                realizations: vec![], meta: vec![],
-            },
-            ItemDoc::Trait {
-                name: "T".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![], members: vec![],
-            },
-            ItemDoc::Function {
-                name: "F".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![],
-                signature: "fn f()".into(),
-            },
-            ItemDoc::Field {
-                name: "x".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![],
-                type_repr: "i32".into(), default_repr: None,
-            },
-            ItemDoc::Purpose {
-                name: "P".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![],
-                expr_repr: "cost".into(), direction: "minimize".into(),
-            },
-            ItemDoc::Enum {
-                name: "E".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![], variants: vec![],
-            },
-            ItemDoc::Unit {
-                name: "U".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![],
-                base_unit: "Meter".into(), scale: "1.0".into(),
-            },
-            ItemDoc::TypeAlias {
-                name: "A".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![],
-                type_repr: "f64".into(),
-            },
-            ItemDoc::ConstraintDef {
-                name: "C".into(), doc: None, is_pub: false,
-                annotations: vec![marker.clone()], pragmas: vec![],
-                expr_repr: "x > 0".into(),
-            },
-        ];
-        for item in &items {
+        for mut item in sample_items() {
+            match &mut item {
+                ItemDoc::Structure { annotations, .. }
+                | ItemDoc::Occurrence { annotations, .. }
+                | ItemDoc::Trait { annotations, .. }
+                | ItemDoc::Function { annotations, .. }
+                | ItemDoc::Field { annotations, .. }
+                | ItemDoc::Purpose { annotations, .. }
+                | ItemDoc::Enum { annotations, .. }
+                | ItemDoc::Unit { annotations, .. }
+                | ItemDoc::TypeAlias { annotations, .. }
+                | ItemDoc::ConstraintDef { annotations, .. } => {
+                    annotations.push(marker.clone());
+                }
+            }
             let anns = item.annotations();
             assert_eq!(anns.len(), 1);
             assert_eq!(anns[0].name, "marker");
@@ -1235,268 +1030,34 @@ mod tests {
 
     #[test]
     fn item_doc_keyword_per_variant() {
-        let cases: Vec<(ItemDoc, &str)> = vec![
-            (
-                ItemDoc::Structure {
-                    name: "S".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], params: vec![],
-                    ports: vec![], constraints: vec![], sub_components: vec![],
-                    realizations: vec![], meta: vec![],
-                },
-                "structure",
-            ),
-            (
-                ItemDoc::Occurrence {
-                    name: "O".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], params: vec![],
-                    ports: vec![], constraints: vec![], sub_components: vec![],
-                    realizations: vec![], meta: vec![],
-                },
-                "occurrence",
-            ),
-            (
-                ItemDoc::Trait {
-                    name: "T".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], members: vec![],
-                },
-                "trait",
-            ),
-            (
-                ItemDoc::Function {
-                    name: "F".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    signature: "fn f()".into(),
-                },
-                "fn",
-            ),
-            (
-                ItemDoc::Field {
-                    name: "x".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    type_repr: "i32".into(), default_repr: None,
-                },
-                "let",
-            ),
-            (
-                ItemDoc::Purpose {
-                    name: "P".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    expr_repr: "cost".into(), direction: "minimize".into(),
-                },
-                "purpose",
-            ),
-            (
-                ItemDoc::Enum {
-                    name: "E".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], variants: vec![],
-                },
-                "enum",
-            ),
-            (
-                ItemDoc::Unit {
-                    name: "U".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    base_unit: "Meter".into(), scale: "1.0".into(),
-                },
-                "unit",
-            ),
-            (
-                ItemDoc::TypeAlias {
-                    name: "A".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    type_repr: "f64".into(),
-                },
-                "type",
-            ),
-            (
-                ItemDoc::ConstraintDef {
-                    name: "C".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    expr_repr: "x > 0".into(),
-                },
-                "constraint",
-            ),
+        let expected = [
+            "structure", "occurrence", "trait", "fn",
+            "let", "purpose", "enum", "unit", "type", "constraint",
         ];
-        for (item, expected_keyword) in &cases {
-            assert_eq!(item.keyword(), *expected_keyword);
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.keyword(), exp);
         }
     }
 
     #[test]
     fn item_doc_group_per_variant() {
-        let cases: Vec<(ItemDoc, &str)> = vec![
-            (
-                ItemDoc::Structure {
-                    name: "S".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], params: vec![],
-                    ports: vec![], constraints: vec![], sub_components: vec![],
-                    realizations: vec![], meta: vec![],
-                },
-                "Structures",
-            ),
-            (
-                ItemDoc::Occurrence {
-                    name: "O".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], params: vec![],
-                    ports: vec![], constraints: vec![], sub_components: vec![],
-                    realizations: vec![], meta: vec![],
-                },
-                "Occurrences",
-            ),
-            (
-                ItemDoc::Trait {
-                    name: "T".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], members: vec![],
-                },
-                "Traits",
-            ),
-            (
-                ItemDoc::Function {
-                    name: "F".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    signature: "fn f()".into(),
-                },
-                "Functions",
-            ),
-            (
-                ItemDoc::Field {
-                    name: "x".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    type_repr: "i32".into(), default_repr: None,
-                },
-                "Constants",
-            ),
-            (
-                ItemDoc::Purpose {
-                    name: "P".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    expr_repr: "cost".into(), direction: "minimize".into(),
-                },
-                "Constants",
-            ),
-            (
-                ItemDoc::Enum {
-                    name: "E".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], variants: vec![],
-                },
-                "Enums",
-            ),
-            (
-                ItemDoc::Unit {
-                    name: "U".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    base_unit: "Meter".into(), scale: "1.0".into(),
-                },
-                "Constants",
-            ),
-            (
-                ItemDoc::TypeAlias {
-                    name: "A".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    type_repr: "f64".into(),
-                },
-                "Constants",
-            ),
-            (
-                ItemDoc::ConstraintDef {
-                    name: "C".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    expr_repr: "x > 0".into(),
-                },
-                "Constants",
-            ),
+        let expected = [
+            "Structures", "Occurrences", "Traits", "Functions",
+            "Constants", "Constants", "Enums", "Constants", "Constants", "Constants",
         ];
-        for (item, expected_group) in &cases {
-            assert_eq!(item.group(), *expected_group);
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.group(), exp);
         }
     }
 
     #[test]
     fn item_doc_kind_slug_per_variant() {
-        let cases: Vec<(ItemDoc, &str)> = vec![
-            (
-                ItemDoc::Structure {
-                    name: "S".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], params: vec![],
-                    ports: vec![], constraints: vec![], sub_components: vec![],
-                    realizations: vec![], meta: vec![],
-                },
-                "structure",
-            ),
-            (
-                ItemDoc::Occurrence {
-                    name: "O".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], params: vec![],
-                    ports: vec![], constraints: vec![], sub_components: vec![],
-                    realizations: vec![], meta: vec![],
-                },
-                "occurrence",
-            ),
-            (
-                ItemDoc::Trait {
-                    name: "T".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], members: vec![],
-                },
-                "trait",
-            ),
-            (
-                ItemDoc::Function {
-                    name: "F".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    signature: "fn f()".into(),
-                },
-                "function",
-            ),
-            (
-                ItemDoc::Field {
-                    name: "x".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    type_repr: "i32".into(), default_repr: None,
-                },
-                "field",
-            ),
-            (
-                ItemDoc::Purpose {
-                    name: "P".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    expr_repr: "cost".into(), direction: "minimize".into(),
-                },
-                "purpose",
-            ),
-            (
-                ItemDoc::Enum {
-                    name: "E".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![], variants: vec![],
-                },
-                "enum",
-            ),
-            (
-                ItemDoc::Unit {
-                    name: "U".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    base_unit: "Meter".into(), scale: "1.0".into(),
-                },
-                "unit",
-            ),
-            (
-                ItemDoc::TypeAlias {
-                    name: "A".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    type_repr: "f64".into(),
-                },
-                "type_alias",
-            ),
-            (
-                ItemDoc::ConstraintDef {
-                    name: "C".into(), doc: None, is_pub: false,
-                    annotations: vec![], pragmas: vec![],
-                    expr_repr: "x > 0".into(),
-                },
-                "constraint_def",
-            ),
+        let expected = [
+            "structure", "occurrence", "trait", "function",
+            "field", "purpose", "enum", "unit", "type_alias", "constraint_def",
         ];
-        for (item, expected_slug) in &cases {
-            assert_eq!(item.kind_slug(), *expected_slug);
+        for (item, &exp) in sample_items().iter().zip(expected.iter()) {
+            assert_eq!(item.kind_slug(), exp);
         }
     }
 }
