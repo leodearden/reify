@@ -82,8 +82,12 @@ impl Manifest {
         for (raw_id, raw_pin) in raw.kernels.into_iter() {
             let id = KernelId::from_str(&raw_id)
                 .map_err(|_| ManifestError::UnknownKernel(raw_id.clone()))?;
-            let version = raw_pin.into_version();
-            if version.trim().is_empty() {
+            // Trim surrounding whitespace before storing: the registry will
+            // string-compare the version, and accepting `" 7.7.0 "` verbatim
+            // would silently break that comparison. A version that is empty
+            // after trimming is rejected (covers both `""` and `"   "`).
+            let version = raw_pin.into_version().trim().to_string();
+            if version.is_empty() {
                 return Err(ManifestError::EmptyVersion(id));
             }
             kernels.insert(id, KernelPin { version });
@@ -122,8 +126,9 @@ pub enum KernelId {
 /// A pinned kernel version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelPin {
-    /// The pinned version, stored as a raw string. The exact comparison
-    /// policy (semver, ABI version, three-part numeric, …) is a registry
+    /// The pinned version, stored as a raw string with any surrounding
+    /// whitespace trimmed by the parser. The exact comparison policy
+    /// (semver, ABI version, three-part numeric, …) is a registry
     /// concern and is not interpreted here.
     pub version: String,
 }
@@ -454,6 +459,25 @@ mod tests {
                 other
             ),
         }
+    }
+
+    /// Pin the policy: surrounding whitespace on a non-empty version is
+    /// trimmed before storage. Downstream consumers (the future kernel
+    /// registry) will string-compare the version, and storing `" 7.7.0 "`
+    /// verbatim would silently break those comparisons.
+    #[test]
+    fn version_with_surrounding_whitespace_is_trimmed() {
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \" 7.7.0 \"\n")
+            .expect("non-empty padded version should parse");
+        let (id, pin) = manifest
+            .kernel_pins()
+            .next()
+            .expect("one pinned kernel expected");
+        assert_eq!(*id, KernelId::Occt);
+        assert_eq!(
+            pin.version, "7.7.0",
+            "stored version must have surrounding whitespace trimmed"
+        );
     }
 
     #[test]
