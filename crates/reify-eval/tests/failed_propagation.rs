@@ -15,13 +15,17 @@
 //! Tests in this file rely on the `test-instrumentation` Cargo feature
 //! enabled via the self-dev-dep in `crates/reify-eval/Cargo.toml`.
 
+use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
-use reify_test_support::builders::{binop, literal, value_ref_typed};
+use reify_test_support::builders::{binop, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, Freshness, ModulePath, Type, Value, ValueCellId};
+use reify_types::{
+    BinOp, ConstraintNodeId, DiagnosticCode, Freshness, ModulePath, Satisfaction, Severity, Type,
+    Value, ValueCellId,
+};
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
 fn one_cell_module() -> reify_compiler::CompiledModule {
@@ -323,5 +327,161 @@ fn panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream() {
         "Pass 2 (5): c's value must NOT be recomputed after the failed \
          re-eval (no Completed{{Changed}} event from Pass 2) — the gate \
          must quiet the downstream subtree per arch §7.2 line 748"
+    );
+}
+
+/// Build a single-template module with one always-false constraint:
+///   `param x : Real = 5.0; constraint c0 : x > 100.0`
+///
+/// `x > 100.0` evaluates to `Bool(false)` for the default `x = 5.0`,
+/// driving `SimpleConstraintChecker` into the `Satisfaction::Violated`
+/// branch with a `DiagnosticCode::ConstraintViolated` Diagnostic.
+fn always_false_constraint_module() -> reify_compiler::CompiledModule {
+    let e = "T";
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(
+                    e,
+                    "x",
+                    Type::Real,
+                    Some(literal(Value::Real(5.0))),
+                )
+                .constraint(
+                    e,
+                    0,
+                    Some("x_gt_100"),
+                    gt(
+                        value_ref_typed(e, "x", Type::Real),
+                        literal(Value::Real(100.0)),
+                    ),
+                )
+                .build(),
+        )
+        .build()
+}
+
+/// Regression test pinning the arch §9.3 separation between constraint
+/// satisfaction and value-cell freshness:
+///
+///   A constraint that evaluates to `false` must produce a
+///   `Satisfaction::Violated` `ConstraintCheckEntry` plus a
+///   `DiagnosticCode::ConstraintViolated` Diagnostic, but it must NOT
+///   touch any node's `Freshness::Failed { .. }` and it must NOT emit
+///   any `EventKind::Failed` event.
+///
+/// `Freshness::Failed` is reserved for evaluation-pipeline failures (panic
+/// boundary, kernel error). Conflating constraint violations with
+/// `Failed` would silently fold two orthogonal channels into one, break
+/// downstream consumers that filter on `EventKind::Failed`, and break
+/// `pending_cause` chains into nodes that should never have been
+/// chain roots.
+///
+/// The constraint pipeline (`SimpleConstraintChecker` →
+/// `ConstraintCheckEntry` → `engine_constraints.rs::push_constraint_result`)
+/// already keeps the two channels separate by construction; this test
+/// pins that contract against future refactors.
+///
+/// See arch `docs/reify-implementation-architecture.md` §9.3 lines 891-905
+/// and the corresponding design decision in plan #2330.
+#[test]
+fn constraint_violation_does_not_produce_failed_freshness_or_error_event() {
+    let module = always_false_constraint_module();
+    let checker = SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let check_result = engine.check(&module);
+
+    let e = "T";
+    let x_id = ValueCellId::new(e, "x");
+    let c0_id = ConstraintNodeId::new(e, 0);
+
+    // Sanity: ensure the test setup actually exercises the violation
+    // pipeline. If this assertion ever flips, the rest of the test
+    // becomes vacuous — we'd be asserting "no Failed produced" by a
+    // pipeline that never ran.
+    let x_value = check_result
+        .values
+        .get(&x_id)
+        .expect("x must be present in CheckResult.values after engine.check");
+    assert_eq!(
+        x_value,
+        &Value::Real(5.0),
+        "test setup: x must hold its default Real(5.0) so the \
+         constraint x > 100.0 actually evaluates to false"
+    );
+
+    // (a) constraint_results contains an entry with Satisfaction::Violated.
+    let violated_entries: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|entry| entry.id == c0_id && entry.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert_eq!(
+        violated_entries.len(),
+        1,
+        "(a) §9.3: exactly one Satisfaction::Violated entry must be \
+         recorded for c0; got constraint_results = {:?}",
+        check_result.constraint_results
+    );
+
+    // (b) diagnostics include exactly one Diagnostic with
+    //     code == Some(DiagnosticCode::ConstraintViolated) and
+    //     Severity::Error. SimpleConstraintChecker emits this on the
+    //     Bool(false) branch (reify-constraints/src/lib.rs:43-49).
+    let constraint_violated_diagnostics: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::ConstraintViolated)
+        })
+        .collect();
+    assert_eq!(
+        constraint_violated_diagnostics.len(),
+        1,
+        "(b) §9.3: exactly one Severity::Error Diagnostic with \
+         code == Some(DiagnosticCode::ConstraintViolated) must be \
+         recorded; got diagnostics = {:?}",
+        check_result.diagnostics
+    );
+
+    // (c) NO cache entry has Freshness::Failed. The two NodeIds we
+    //     might expect to find here are NodeId::Value(x) (param cell)
+    //     and NodeId::Constraint(c0). Neither must be Failed.
+    //
+    //     `freshness()` returns `Freshness::Final` (the default) for
+    //     absent nodes — that is also not Failed, so the assertion
+    //     stays robust whether a constraint-only check populates a
+    //     cache entry for c0 or not.
+    let x_freshness = engine.cache_store().freshness(&NodeId::Value(x_id.clone()));
+    assert!(
+        !matches!(x_freshness, Freshness::Failed { .. }),
+        "(c) §9.3: NodeId::Value(x) must NOT have Freshness::Failed \
+         after a Violated-only constraint pass; got {:?}",
+        x_freshness
+    );
+    let c0_freshness = engine
+        .cache_store()
+        .freshness(&NodeId::Constraint(c0_id.clone()));
+    assert!(
+        !matches!(c0_freshness, Freshness::Failed { .. }),
+        "(c) §9.3: NodeId::Constraint(c0) must NOT have Freshness::Failed \
+         after a Violated-only constraint pass; got {:?}",
+        c0_freshness
+    );
+
+    // (d) journal records ZERO EventKind::Failed events.
+    //     `EventKind::Failed` is reserved for evaluation-pipeline
+    //     failures (arch §9.1-§9.2). A constraint violation must never
+    //     emit one.
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count, 0,
+        "(d) §9.3: NO EventKind::Failed event must be recorded for a \
+         Violated-only constraint pass; got {} Failed event(s)",
+        failed_count
     );
 }
