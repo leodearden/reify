@@ -72,7 +72,8 @@ pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagn
 fn forbidden_kind_name(member: &MemberDecl) -> Option<&'static str> {
     match member {
         MemberDecl::Param(_) => Some("param"),
-        // Port and Sub arms added in steps 6 and 8 respectively.
+        MemberDecl::Port(_) => Some("port"),
+        // Sub arm added in step 8.
         _ => None,
     }
 }
