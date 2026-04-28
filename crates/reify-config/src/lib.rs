@@ -111,4 +111,38 @@ mod tests {
             "empty manifest must have no pinned kernels"
         );
     }
+
+    #[test]
+    fn single_kernel_pin_round_trips() {
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.7.0\"\n")
+            .expect("single-pin TOML should parse");
+        let entries: Vec<(&KernelId, &KernelPin)> = manifest.kernel_pins().collect();
+        assert_eq!(entries.len(), 1, "should have exactly one pinned kernel");
+        let (id, pin) = entries[0];
+        assert_eq!(*id, KernelId::Occt);
+        assert_eq!(pin.version, "7.7.0");
+    }
+
+    #[test]
+    fn multiple_kernel_pins_iterate_in_kernel_id_order() {
+        // Non-canonical text order in the TOML source.
+        let toml = "[kernels]\n\
+                    fidget = \"0.3.4\"\n\
+                    occt = \"7.7.0\"\n\
+                    openvdb = \"11.0\"\n\
+                    manifold = \"2.5\"\n";
+        let manifest = Manifest::from_toml_str(toml).expect("four-pin TOML should parse");
+        let ids: Vec<KernelId> = manifest.kernel_pins().map(|(id, _)| *id).collect();
+        // BTreeMap iteration follows the derived `Ord` on `KernelId`, which is
+        // the variant declaration order.
+        assert_eq!(
+            ids,
+            vec![
+                KernelId::Occt,
+                KernelId::Manifold,
+                KernelId::Fidget,
+                KernelId::OpenVdb,
+            ]
+        );
+    }
 }
