@@ -119,3 +119,66 @@ fn is_orientable_let_resolves_to_bool_true_via_kernel_reply() {
         result.values.get(&cell),
     );
 }
+
+// ── Step-13: negative-path / defensive integration tests ────────────────────
+
+/// Step-13: the kernel's `Value::Bool(false)` reply must propagate through
+/// the post-process unchanged when no matching marker trait is declared.
+/// This exercises the full `kernel.query(...)` round-trip in
+/// `try_eval_conformance_query` (no escape-hatch short-circuit) end-to-end
+/// through `engine_build.rs::post_process_conformance_queries`.
+#[test]
+fn is_watertight_let_honours_kernel_bool_false_reply() {
+    let source =
+        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(body)\n}";
+    let compiled = compile_no_errors(source);
+    // No `: Watertight` bound on the structure, so the escape hatch is
+    // skipped and the kernel's Bool(false) reply is honoured.
+    let mut engine = engine_with_mock_kernel(false);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "watertight");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Bool(false)),
+        "Bracket.watertight must resolve to Bool(false) when the kernel reports the \
+         body is not watertight (no escape-hatch short-circuit), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// Step-13: defensive non-`ValueRef` arg test.
+///
+/// `is_watertight(42)` compiles (per step-4: `result_type = Bool` is forced
+/// regardless of arg shape) and at build-time must fall through to
+/// `Value::Undef` rather than panicking.  Pinned guard inside
+/// `try_eval_conformance_query` rejects non-`ValueRef` args before any
+/// `named_steps` lookup or `kernel.query(...)` round-trip, so the cell
+/// stays at the compiled default left by `eval_expr` (`Value::Undef`).
+///
+/// This pins the v0.1 contract: ill-formed conformance-query call sites
+/// degrade gracefully rather than crashing the build.
+#[test]
+fn is_watertight_with_literal_int_arg_falls_through_to_undef() {
+    let source =
+        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(42)\n}";
+    let compiled = compile_no_errors(source);
+    // Kernel is configured with Bool(true) — but the literal-arg guard in
+    // `try_eval_conformance_query` must short-circuit to None *before* the
+    // kernel is consulted, so this configuration is irrelevant.
+    let mut engine = engine_with_mock_kernel(true);
+
+    // Build must not panic.  The cell value should be Undef, NOT Bool(true)
+    // (which would imply the post-process incorrectly resolved an unsupported
+    // arg shape via the kernel) and NOT a panic in any layer.
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "watertight");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Undef),
+        "Bracket.watertight with a literal-int arg must fall through to Undef, got {:?}",
+        result.values.get(&cell),
+    );
+}
