@@ -26,7 +26,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
     BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness,
     GeometryHandleId, ModulePath, RealizationNodeId, Satisfaction, Severity, Type, Value,
-    ValueCellId,
+    ValueCellId, VersionId,
 };
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
@@ -609,16 +609,16 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
     let rnid = RealizationNodeId::new(e, 0);
     let r_node = NodeId::Realization(rnid.clone());
 
-    let build_result = engine.build(&module, ExportFormat::Step);
+    // Pin the expected eval-round version *before* `build()` runs. After
+    // `Engine::new`, `next_version_id == 0`; `build()` calls `check()` which
+    // calls `eval()`, stamping `snapshot.version = VersionId(0)` and bumping
+    // `next_version_id` to 1. Hardcoding the expectation (rather than reading
+    // `engine.snapshot().version` after `build()` returns) means a future bug
+    // that bumps the version mid-build would fail this assertion instead of
+    // silently tracking the buggy value.
+    let expected_version = VersionId(0);
 
-    // Capture the eval-round version that build() produced. `check()` (called
-    // inside `build()`) runs `eval()` which bumps `next_version_id` by 1 and
-    // stores the pre-bump id into `snapshot.version`. By the time we reach the
-    // kernel-execute loop, `next_version_id == eval_version + 1`.
-    let eval_version = engine
-        .snapshot()
-        .expect("build() must populate eval_state")
-        .version;
+    let build_result = engine.build(&module, ExportFormat::Step);
 
     // (a) freshness(NodeId::Realization(rnid)) == Failed { error }.
     let r_freshness = engine.cache_store().freshness(&r_node);
@@ -650,7 +650,7 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
 
     // (c)/(d)/(f) — shared helper pins the count, node scope, and version
     // tagging contract; see `assert_one_failed_event_at_version`.
-    assert_one_failed_event_at_version(&engine, &r_node, eval_version);
+    assert_one_failed_event_at_version(&engine, &r_node, expected_version);
 
     // (e) the existing Diagnostic::error("geometry error: …") survives —
     //     adding the Failed write must not double-handle and remove the
@@ -707,14 +707,17 @@ fn kernel_execute_error_in_build_snapshot_tags_failed_event_with_snapshot_versio
         .edit_param(ValueCellId::new(e, "width"), mm(90.0))
         .expect("edit_param must succeed on a valid param");
 
-    // Step 3: build_snapshot fires the failing kernel → triggers §9.1 path.
-    let _build_result = engine.build_snapshot(&module, ExportFormat::Step);
-
-    // Capture the canonical eval-round version AFTER build_snapshot updates it.
+    // Capture the canonical eval-round version BEFORE invoking the code under
+    // test. `build_snapshot` must NOT mutate `snapshot.version`, so pinning the
+    // value here means a future bug that bumps version mid-build_snapshot would
+    // fail this assertion instead of silently tracking the buggy value.
     let eval_version = engine
         .snapshot()
         .expect("eval_state must be populated after eval+edit_param")
         .version;
+
+    // Step 3: build_snapshot fires the failing kernel → triggers §9.1 path.
+    let _build_result = engine.build_snapshot(&module, ExportFormat::Step);
 
     // (c)/(d)/(f) — shared helper pins the count, node scope, and version
     // tagging contract; see `assert_one_failed_event_at_version`.
