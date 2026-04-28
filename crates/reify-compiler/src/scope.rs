@@ -154,6 +154,10 @@ impl<'u> CompilationScope<'u> {
     ///
     /// Returns `None` if no cluster has been registered under `name`. This never
     /// consults `self.names`, preserving the separation-from-`names` invariant.
+    ///
+    /// Currently consumed only by tests and future tasks (2373+) that union-type
+    /// match-arm clusters; allowed here to avoid spurious dead-code lint.
+    #[allow(dead_code)]
     pub(crate) fn resolve_match_arm_group(&self, name: &str) -> Option<&GuardedDeclGroup> {
         self.match_arm_groups.get(name)
     }
