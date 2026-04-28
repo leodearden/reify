@@ -156,6 +156,18 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 }
 
 #[cfg(has_occt)]
+/// Encode a `Point3` as the JSON string `{"x":_,"y":_,"z":_}` used by centroid-style queries.
+///
+/// Both the `Centroid` and `CenterOfMass` query arms return their result in this format.
+/// Routing both through this single helper makes it structurally impossible for the two arms
+/// to drift apart — the bit-equality invariant documented in
+/// `reify-types/src/geometry.rs` (`CenterOfMass`: "the result is identical to
+/// `Centroid(handle)`") is upheld by construction rather than by convention.
+fn centroid_json(p: ffi::ffi::Point3) -> String {
+    format!("{{\"x\":{},\"y\":{},\"z\":{}}}", p.x, p.y, p.z)
+}
+
+#[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
 ///
 /// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
@@ -1081,10 +1093,7 @@ impl OcctKernel {
                         .map_err(|e| QueryError::QueryFailed(e.to_string()))?
                 };
                 // Return centroid as a JSON string since Value has no tuple variant
-                Ok(Value::String(format!(
-                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
-                    pt.x, pt.y, pt.z
-                )))
+                Ok(Value::String(centroid_json(pt)))
             }
             GeometryQuery::BoundingBox(id) => {
                 let shape = self
@@ -1124,10 +1133,7 @@ impl OcctKernel {
                     .map_err(|_| QueryError::InvalidHandle(*handle))?;
                 let pt = ffi::ffi::query_centroid(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                Ok(Value::String(format!(
-                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
-                    pt.x, pt.y, pt.z
-                )))
+                Ok(Value::String(centroid_json(pt)))
             }
             GeometryQuery::InertiaTensor { handle, density } => {
                 let shape = self
