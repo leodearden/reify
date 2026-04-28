@@ -4151,6 +4151,91 @@ mod tests {
         );
     }
 
+    /// `drain_into_cache_or_repool` cache-MISS arm: when the cache holds NO
+    /// entry for a node, the staged warm-state is re-donated to the pool via
+    /// `pool.donate_preserving_lru(nid, state, stamp)` — preserving the
+    /// originally-staged `last_accessed` Instant rather than refreshing it
+    /// to `Instant::now()`.
+    ///
+    /// Pins `drain_into_cache_or_repool`'s cache-MISS arm:
+    /// ```text
+    /// else { self.pool.donate_preserving_lru(nid, state, stamp); }
+    /// ```
+    ///
+    /// After drain the pool holds exactly one entry — the re-donated state with
+    /// the original payload bytes AND the original LRU stamp — the cache has no
+    /// warm-state for the node, and the subsequent guard Drop is inert (map was
+    /// emptied by drain, so no double re-donation occurs).
+    ///
+    /// Sibling of `pending_warm_seeds_guard_drain_cache_hit_makes_drop_inert`
+    /// (the cache-HIT counterpart); both together pin the binary `if cache.get(&nid).is_some()`
+    /// dispatch in `drain_into_cache_or_repool`.
+    #[test]
+    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp() {
+        use crate::cache::{CacheStore, NodeId};
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::OpaqueState;
+        use super::PendingWarmSeedsGuard;
+
+        const PAYLOAD: u32 = 0xDEAD_BEEF;
+        const SIZE: usize = 8;
+
+        let mut pool = WarmStatePool::new(1024);
+        let mut cache = CacheStore::new();
+
+        let nid = NodeId::Value(ValueCellId::new("T", "miss_node"));
+
+        // Cache is empty → `cache.get(&nid).is_some()` is false → MISS branch fires.
+        assert!(
+            cache.get(&nid).is_none(),
+            "cache must be empty before drain so the MISS branch is taken"
+        );
+
+        // Capture the exact stamp passed to `insert` so we can assert exact equality
+        // on the re-donated entry's `last_accessed` later.
+        let stamp = std::time::Instant::now();
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp);
+            // Cache MISS → state goes back to pool via `donate_preserving_lru(nid, state, stamp)`.
+            pending.drain_into_cache_or_repool(&mut cache);
+            // Guard drops here with empty map → Drop is a no-op (no double re-donation).
+        }
+
+        // (d) Pool must hold exactly one entry — Drop did NOT re-donate (drain emptied the map).
+        assert_eq!(
+            pool.len(),
+            1,
+            "cache-miss: pool must have exactly one entry after drain + Drop \
+             (Drop must be inert because drain emptied the staging map; \
+              a non-1 count indicates double re-donation by Drop)"
+        );
+
+        // (c) Cache must NOT carry a warm-state for this node — entry went to pool, not cache.
+        assert!(
+            cache.get_warm_state(&nid).is_none(),
+            "cache-miss: cache must have no warm-state for this node \
+             (cache had no entry, so the MISS branch fired and routed to pool)"
+        );
+
+        // (a) + (b) Pool entry must carry the original payload AND the original LRU stamp.
+        let (state, recovered_stamp) = pool
+            .checkout_with_lru_stamp(&nid)
+            .expect("cache-miss: pool must hold the re-donated entry");
+        assert_eq!(
+            state.downcast::<u32>(),
+            Some(PAYLOAD),
+            "cache-miss: warm-state payload must be preserved through drain → re-pool"
+        );
+        assert_eq!(
+            recovered_stamp,
+            stamp,
+            "cache-miss: re-donated entry's LRU stamp must EQUAL the originally-staged \
+             stamp (donate_preserving_lru must NOT refresh to Instant::now())"
+        );
+    }
+
     /// Guard re-donates its staged entries when dropped during a panic unwind.
     ///
     /// This is the end-to-end test for the guard's primary safety contract:
