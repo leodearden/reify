@@ -74,6 +74,33 @@ fn load_from_source_width_value_is_80mm() {
 }
 
 #[test]
+fn load_from_source_resolves_stdlib_enum_access_without_inline_redecl() {
+    // Regression guard for task 2525: the GUI must accept sources that reference
+    // stdlib enums (e.g. `CorrosionClass.C5`) WITHOUT inline redeclarations.
+    // Pre-task, the parser disambiguated `Type.Variant` against the current source's
+    // enum decls only, so without an inline `enum CorrosionClass { ... }`, the parser
+    // produced `MemberAccess` and `compile_with_stdlib` rejected the unresolved name,
+    // making `load_from_source` return `Err`. This test pins that the GUI's parse
+    // step now consults stdlib enums.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Minimal synthetic source — references stdlib enum `CorrosionClass.C5` only,
+    // no inline redecl, no stdlib trait bounds (keeps the test focused on the
+    // parser-disambiguation contract, not on full conformance plumbing).
+    let source = "structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
+
+    let result = session.load_from_source(source, "sample");
+
+    assert!(
+        result.is_ok(),
+        "load_from_source should accept a stdlib enum reference without inline redecl, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
 fn load_from_source_with_invalid_source_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
