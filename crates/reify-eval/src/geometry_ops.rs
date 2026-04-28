@@ -1264,12 +1264,20 @@ pub(crate) fn try_eval_conformance_query(
     // (4) Arg shape: we only resolve `is_watertight(<entity>.<member>)`
     // where `<member>` is a let-bound geometry name in `named_steps`.
     // Anything else (literals, nested expressions, cross-template idents)
-    // falls through to `None` so the cell stays at its compiled default.
+    // falls through to `None` so the cell stays at its compiled default
+    // (`Value::Undef`) — verified by the integration test
+    // `is_watertight_with_literal_int_arg_falls_through_to_undef` in
+    // `tests/conformance_runtime.rs` (task 2320 step-13/14).
     if args.len() != 1 {
         return None;
     }
     let cell_id = match &args[0].kind {
         reify_types::CompiledExprKind::ValueRef(id) => id,
+        // Defensive fall-through (task 2320 step-14): literals, nested
+        // expressions, and any non-`ValueRef` shape bail to `None` *before*
+        // any `named_steps` lookup or `kernel.query(...)` round-trip — so
+        // ill-formed conformance-query call sites degrade gracefully rather
+        // than panicking the build.
         _ => return None,
     };
 
