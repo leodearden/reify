@@ -2,7 +2,9 @@ pub(super) mod checker;
 use checker::*;
 
 use super::*;
-use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr};
+use crate::geometry_traits_inference::{
+    GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
@@ -479,6 +481,63 @@ fn walk_param_against_arg_type(
     }
 }
 
+/// A `LetBindingEnv` that resolves geometry-typed `let` bindings by looking up
+/// their compiled op-arrays in the parent template's `realizations` list.
+///
+/// For non-geometry lets (`ValueCellKind::Let` with a `default_expr`), falls
+/// back to the env-less `infer_traits_for_expr` on the resolved `CompiledExpr`.
+/// For any id that doesn't match a known let or realization, returns `None`
+/// (safe-default: the caller falls back to `InferredTraits::all()`).
+///
+/// # Geometry-let lookup
+///
+/// `compile_entity` Pass 2 explicitly `continue`s past geometry-typed
+/// `MemberDecl::Let`, so geometry lets never enter `value_cells`. They are
+/// lowered in Pass 3 to `Vec<CompiledGeometryOp>` stored on
+/// `RealizationDecl.operations` with `RealizationDecl.name = Some(let_name)`.
+/// `lookup` therefore scans `realizations` first (geometry path) and falls
+/// back to `value_cells` (non-geometry path).
+///
+/// # Chained let
+///
+/// `compile_geometry_call` already handles geometry-let chaining at the AST
+/// level: for `let g = h; let h = union(box, box)`, the realization for `g`
+/// recursively compiles `h`'s init expression and emits the SAME op array
+/// under `realization.name = Some("g")`. No chained-ValueRef walk is needed
+/// here.
+struct RealizationLetEnv<'a> {
+    templates: &'a HashMap<String, &'a TopologyTemplate>,
+}
+
+impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
+    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
+        let template = self.templates.get(id.entity.as_str())?;
+
+        // Geometry-let path: realization with matching name.
+        if let Some(real) = template
+            .realizations
+            .iter()
+            .find(|r| r.name.as_deref() == Some(id.member.as_str()))
+        {
+            return Some(infer_traits_for_op(&real.operations));
+        }
+
+        // Non-geometry-let fallback: value_cells Let with a resolved default_expr.
+        if let Some(cell) = template.value_cells.iter().find(|vc| {
+            vc.id.member == id.member
+                && matches!(vc.kind, ValueCellKind::Let)
+                && vc.default_expr.is_some()
+        }) {
+            // Use env-less inference for the resolved CompiledExpr; no chained
+            // ValueRef walk needed (the let-resolution pass already inlined refs).
+            let expr = cell.default_expr.as_ref()?;
+            return Some(crate::geometry_traits_inference::infer_traits_for_expr(expr));
+        }
+
+        None
+    }
+}
+
 /// Leaf conformance check: verify that `compiled_arg` conforms to `required_trait`.
 ///
 /// Derives `arg_call_name` from `compiled_arg.kind` so that any nested
@@ -547,7 +606,8 @@ fn check_leaf_trait_conformance(
             _ => None,
         };
         if let Some(trait_kind) = geom_trait {
-            let inferred = infer_traits_for_expr(compiled_arg);
+            let env = RealizationLetEnv { templates: ctx.templates };
+            let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
                 if matches!(trait_kind, GeometryTrait::Bounded) {
                     emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
