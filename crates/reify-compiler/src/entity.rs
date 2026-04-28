@@ -1922,6 +1922,9 @@ pub(crate) fn compile_entity(
         pragmas: structure.pragmas.to_vec(),
         // Expose the match-arm cluster map (task 2372 step-10).
         // Always present; production consumers wired in task 2373.
+        // `match_arm_groups` is a `BTreeMap`, so `.values()` yields entries in
+        // lexicographic key order — guaranteeing deterministic iteration of
+        // `TopologyTemplate::match_arm_groups` across compiles.
         match_arm_groups: scope.match_arm_groups.values().cloned().collect(),
     }
 }

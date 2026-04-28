@@ -323,3 +323,123 @@ fn match_arm_decl_group_pipe_patterns_produce_two_arm_cluster() {
         head_group.arms.len()
     );
 }
+
+/// Determinism regression test (review feedback for task 2372).
+///
+/// A structure with multiple match-arm clusters must expose
+/// `TopologyTemplate::match_arm_groups` in deterministic (lexicographic) order,
+/// regardless of the source-order in which the clusters were declared. Backed by
+/// `CompilationScope::match_arm_groups: BTreeMap` so that `.values()` iteration
+/// is key-sorted.
+///
+/// The construction order here is deliberately reversed (`zebra` declared before
+/// `alpha`) so a `HashMap`-backed scope would (with high probability) produce a
+/// non-sorted vec, while a `BTreeMap`-backed scope is guaranteed to produce
+/// `["alpha", "zebra"]`. Compiling twice and asserting the same vec also pins
+/// down run-to-run stability.
+#[test]
+fn match_arm_groups_iteration_order_is_deterministic() {
+    fn build_module() -> ParsedModule {
+        // Two enums, each driving its own match-arm cluster.
+        let zebra_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+            discriminant: make_ident_expr("z_kind"),
+            arms: vec![
+                match_arm_decl("Z1", sub_member("zebra", "ZebraOne")),
+                match_arm_decl("Z2", sub_member("zebra", "ZebraTwo")),
+            ],
+            span: zero_span(),
+            content_hash: ContentHash(0),
+        });
+        let alpha_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+            discriminant: make_ident_expr("a_kind"),
+            arms: vec![
+                match_arm_decl("A1", sub_member("alpha", "AlphaOne")),
+                match_arm_decl("A2", sub_member("alpha", "AlphaTwo")),
+            ],
+            span: zero_span(),
+            content_hash: ContentHash(0),
+        });
+
+        let bolt = Declaration::Structure(StructureDef {
+            name: "Bolt".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            // Note: zebra cluster declared first, alpha second — declaration
+            // order intentionally reverse-lex.
+            members: vec![
+                param_member("z_kind", "ZKind"),
+                param_member("a_kind", "AKind"),
+                zebra_group,
+                alpha_group,
+            ],
+            span: zero_span(),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        });
+
+        ParsedModule {
+            path: ModulePath::single("test_match_arm_decl_determinism"),
+            declarations: vec![
+                Declaration::Enum(EnumDecl {
+                    name: "ZKind".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    variants: vec!["Z1".to_string(), "Z2".to_string()],
+                    span: zero_span(),
+                    content_hash: ContentHash(0),
+                    annotations: vec![],
+                }),
+                Declaration::Enum(EnumDecl {
+                    name: "AKind".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    variants: vec!["A1".to_string(), "A2".to_string()],
+                    span: zero_span(),
+                    content_hash: ContentHash(0),
+                    annotations: vec![],
+                }),
+                empty_structure("ZebraOne"),
+                empty_structure("ZebraTwo"),
+                empty_structure("AlphaOne"),
+                empty_structure("AlphaTwo"),
+                bolt,
+            ],
+            errors: vec![],
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+        }
+    }
+
+    let compile_once = || {
+        let parsed = build_module();
+        let compiled = reify_compiler::compile(&parsed);
+        let bolt = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == "Bolt")
+            .expect("Bolt template should be compiled")
+            .clone();
+        bolt.match_arm_groups
+            .iter()
+            .map(|g| g.name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let order_a = compile_once();
+    let order_b = compile_once();
+
+    assert_eq!(
+        order_a,
+        vec!["alpha".to_string(), "zebra".to_string()],
+        "match_arm_groups must be exposed in lexicographic key order, got {:?}",
+        order_a
+    );
+    assert_eq!(
+        order_a, order_b,
+        "match_arm_groups order must be stable across compiles — got {:?} then {:?}",
+        order_a, order_b
+    );
+}

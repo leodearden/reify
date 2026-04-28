@@ -50,7 +50,14 @@ pub(crate) struct CompilationScope<'u> {
     /// Deliberately separate from `names` so that duplicate-name diagnostics
     /// (task 2375) cannot misfire on cluster members registered here.
     /// Populated by `register_match_arm_group`; queried by `resolve_match_arm_group`.
-    pub(crate) match_arm_groups: HashMap<String, GuardedDeclGroup>,
+    ///
+    /// `BTreeMap` (not `HashMap`) so that iteration over the collected
+    /// `TopologyTemplate::match_arm_groups` is deterministic across compiles —
+    /// snapshot tests, JSON serialization, and downstream union typing (task
+    /// 2373) all depend on a stable order. Mirrors the precedent set by
+    /// `meta_entries` hashing (entity.rs ~line 1656) which sorts keys for the
+    /// same reason.
+    pub(crate) match_arm_groups: BTreeMap<String, GuardedDeclGroup>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -70,7 +77,7 @@ impl<'u> CompilationScope<'u> {
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             has_geometry: false,
-            match_arm_groups: HashMap::new(),
+            match_arm_groups: BTreeMap::new(),
         }
     }
 
