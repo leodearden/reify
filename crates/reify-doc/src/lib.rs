@@ -10,3 +10,4 @@ pub mod fmt_html;
 pub mod fmt_json;
 pub mod fmt_markdown;
 pub mod model;
+pub(crate) mod util;

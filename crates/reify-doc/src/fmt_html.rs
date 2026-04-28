@@ -319,7 +319,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     // first to the reader.  Mirrors `fmt_markdown::render_item`'s ordering.
     let anns = item.annotations();
     if let Some(dep) = find_annotation(anns, "deprecated") {
-        let msg = dep.args.first().map(|s| unquote(s)).unwrap_or("");
+        let msg = dep.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
         out.push_str("<aside class=\"deprecated\"><strong>Deprecated:</strong>");
         if !msg.is_empty() {
             out.push(' ');
@@ -328,7 +328,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         out.push_str("</aside>\n");
     }
     if let Some(opt) = find_annotation(anns, "optimized") {
-        let target = opt.args.first().map(|s| unquote(s)).unwrap_or("");
+        let target = opt.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
         out.push_str("<p class=\"optimized\"><em>Optimized: <code>");
         escape_into(out, target);
         out.push_str("</code></em></p>\n");
@@ -440,15 +440,6 @@ fn find_annotation<'a>(
     anns.iter().find(|a| a.name == name)
 }
 
-/// Strip surrounding `"`s from a rendered string-literal annotation argument.
-/// Mirrors `fmt_markdown::unquote`.
-fn unquote(s: &str) -> &str {
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        &s[1..s.len() - 1]
-    } else {
-        s
-    }
-}
 
 /// Render the `<h3>Parameters</h3>` table.  No-op when `params` is empty.
 ///
@@ -496,7 +487,7 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
             escape_into(out, doc_text);
         }
         if let Some(hint) = find_annotation(&p.annotations, "solver_hint") {
-            let hint_arg = hint.args.first().map(|s| unquote(s)).unwrap_or("");
+            let hint_arg = hint.args.first().map(|s| crate::util::unquote(s)).unwrap_or("");
             if !doc_text.is_empty() {
                 out.push(' ');
             }
