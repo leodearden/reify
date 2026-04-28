@@ -56,6 +56,12 @@ pub fn propagate_freshness_only(
     let mut visited: HashSet<ValueCellId> = HashSet::new();
 
     while let Some(cell) = frontier.pop_front() {
+        // Visited-cells guard: a cell can be enqueued multiple times by
+        // different upstream branches; skip its dependents on the second
+        // visit so we never re-process the same cell. This also ensures
+        // step-3's three-cell chain a→b→c terminates correctly under
+        // diamond shapes (where a downstream cell may be reached from
+        // multiple upstreams).
         if !visited.insert(cell.clone()) {
             continue;
         }
