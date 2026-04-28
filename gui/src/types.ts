@@ -38,6 +38,14 @@ export interface ValueData {
   determinacy: string;
   entity_path: string;
   kind: string;
+  /**
+   * Freshness state of the backing value cell (arch §7.1 lines 716-728).
+   * Wire values: `"final"` | `"intermediate"` | `"pending"` | `"failed"`.
+   * `"final"` is the success state and renders no badge.
+   * See design decision: wire format is a tag-only string (payload fields are
+   * carried by the LSP diagnostic channel, not this wire type).
+   */
+  freshness: string;
 }
 
 /** Status and label of a constraint node. */
@@ -211,6 +219,14 @@ export interface EntityTreeNode {
   has_mesh: boolean;
   /** Heuristic: member is named `"geometry"` AND parent template has `"Physical"` in `trait_bounds`. */
   trait_geometry: boolean;
+  /**
+   * Freshness state of the backing node (arch §7.1 lines 716-728).
+   * Wire values: `"final"` | `"intermediate"` | `"pending"` | `"failed"`.
+   * `"final"` is the success state and renders no badge.
+   * See design decision: wire format is a tag-only string (payload fields are
+   * carried by the LSP diagnostic channel, not this wire type).
+   */
+  freshness: string;
   /** Child nodes (value cells, sub-components, ports, realizations). */
   children: EntityTreeNode[];
 }
