@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::{sanitize_value, tensor_components_f64, trig_input};
@@ -216,6 +218,41 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             }
             let p = quat_mul(a, b);
             sanitize_value(normalize_quaternion(p.0, p.1, p.2, p.3).unwrap_or(Value::Undef))
+        }
+        "orient_to_axis_angle" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            let v_norm = (x * x + y * y + z * z).sqrt();
+            const EPS: f64 = 1e-12;
+            let (axis, angle) = if v_norm < EPS {
+                // Identity: canonical [1,0,0] axis with zero angle.
+                ([1.0, 0.0, 0.0], 0.0)
+            } else {
+                let a = 2.0 * v_norm.atan2(w);
+                ([x / v_norm, y / v_norm, z / v_norm], a)
+            };
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("angle".to_string()),
+                Value::angle(angle),
+            );
+            m.insert(
+                Value::String("axis".to_string()),
+                Value::Vector(vec![
+                    Value::Real(axis[0]),
+                    Value::Real(axis[1]),
+                    Value::Real(axis[2]),
+                ]),
+            );
+            Value::Map(m)
         }
         "orient_slerp" => {
             if args.len() != 3 {
