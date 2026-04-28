@@ -219,6 +219,186 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let p = quat_mul(a, b);
             sanitize_value(normalize_quaternion(p.0, p.1, p.2, p.3).unwrap_or(Value::Undef))
         }
+        "orient_to_euler" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let convention = match &args[0] {
+                Value::String(s) => s.as_str(),
+                _ => return Some(Value::Undef),
+            };
+            let (w, x, y, z) = match &args[1] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            // Quaternion → rotation matrix R (row-major).
+            let r00 = 1.0 - 2.0 * (y * y + z * z);
+            let r01 = 2.0 * (x * y - w * z);
+            let r02 = 2.0 * (x * z + w * y);
+            let r10 = 2.0 * (x * y + w * z);
+            let r11 = 1.0 - 2.0 * (x * x + z * z);
+            let r12 = 2.0 * (y * z - w * x);
+            let r20 = 2.0 * (x * z - w * y);
+            let r21 = 2.0 * (y * z + w * x);
+            let r22 = 1.0 - 2.0 * (x * x + y * y);
+            // Tolerance for asin/acos clamping near singularities. We clamp the
+            // input to [-1, 1] for numerical safety, then detect the singularity
+            // if the clamped value is within EPS_SING of ±1.
+            const EPS_SING: f64 = 1.0e-7;
+            let clamp = |v: f64| {
+                if v > 1.0 {
+                    1.0
+                } else if v < -1.0 {
+                    -1.0
+                } else {
+                    v
+                }
+            };
+            let (a, b, c) = match convention {
+                // ── Tait-Bryan ───────────────────────────────────────────────
+                "xyz" => {
+                    let s = clamp(r02);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        // sin(b) ≈ ±1 → cos(b) ≈ 0
+                        (0.0, bb, r10.atan2(r11))
+                    } else {
+                        ((-r12).atan2(r22), bb, (-r01).atan2(r00))
+                    }
+                }
+                "xzy" => {
+                    let s = clamp(-r01);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, (-r20).atan2(r22))
+                    } else {
+                        (r21.atan2(r11), bb, r02.atan2(r00))
+                    }
+                }
+                "yxz" => {
+                    let s = clamp(-r12);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, (-r01).atan2(r00))
+                    } else {
+                        (r02.atan2(r22), bb, r10.atan2(r11))
+                    }
+                }
+                "yzx" => {
+                    let s = clamp(r10);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, r21.atan2(r22))
+                    } else {
+                        ((-r20).atan2(r00), bb, (-r12).atan2(r11))
+                    }
+                }
+                "zxy" => {
+                    let s = clamp(r21);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, r02.atan2(r00))
+                    } else {
+                        ((-r01).atan2(r11), bb, (-r20).atan2(r22))
+                    }
+                }
+                "zyx" => {
+                    let s = clamp(-r20);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, (-r12).atan2(r11))
+                    } else {
+                        (r10.atan2(r00), bb, r21.atan2(r22))
+                    }
+                }
+                // ── Proper Euler ─────────────────────────────────────────────
+                "xyx" => {
+                    let bb = clamp(r00).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        // β ≈ 0 or π → singularity. Set α = 0.
+                        if r00 > 0.0 {
+                            (0.0, bb, r21.atan2(r11))
+                        } else {
+                            (0.0, bb, (-r21).atan2(r11))
+                        }
+                    } else {
+                        (r10.atan2(-r20), bb, r01.atan2(r02))
+                    }
+                }
+                "xzx" => {
+                    let bb = clamp(r00).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r00 > 0.0 {
+                            (0.0, bb, (-r12).atan2(r11))
+                        } else {
+                            (0.0, bb, r12.atan2(r11))
+                        }
+                    } else {
+                        (r20.atan2(r10), bb, r02.atan2(-r01))
+                    }
+                }
+                "yxy" => {
+                    let bb = clamp(r11).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r11 > 0.0 {
+                            (0.0, bb, (-r20).atan2(r00))
+                        } else {
+                            (0.0, bb, r20.atan2(r00))
+                        }
+                    } else {
+                        (r01.atan2(r21), bb, r10.atan2(-r12))
+                    }
+                }
+                "yzy" => {
+                    let bb = clamp(r11).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r11 > 0.0 {
+                            (0.0, bb, r20.atan2(r00))
+                        } else {
+                            (0.0, bb, (-r20).atan2(r00))
+                        }
+                    } else {
+                        (r21.atan2(-r01), bb, r12.atan2(r10))
+                    }
+                }
+                "zxz" => {
+                    let bb = clamp(r22).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r22 > 0.0 {
+                            (0.0, bb, r10.atan2(r11))
+                        } else {
+                            (0.0, bb, (-r10).atan2(r11))
+                        }
+                    } else {
+                        (r02.atan2(-r12), bb, r20.atan2(r21))
+                    }
+                }
+                "zyz" => {
+                    let bb = clamp(r22).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r22 > 0.0 {
+                            (0.0, bb, r10.atan2(r00))
+                        } else {
+                            (0.0, bb, (-r10).atan2(r00))
+                        }
+                    } else {
+                        (r12.atan2(r02), bb, r21.atan2(-r20))
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+                return Some(Value::Undef);
+            }
+            Value::List(vec![
+                Value::angle(a),
+                Value::angle(b),
+                Value::angle(c),
+            ])
+        }
         "orient_to_axis_angle" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
