@@ -12,7 +12,7 @@
 //! of unit does not affect conformance predicates, but consistency helps readers
 //! understand that any numeric scale would produce the same result.
 
-#![cfg(has_occt)]
+#![cfg(all(has_occt, feature = "test-fixtures"))]
 
 use reify_kernel_occt::OcctKernel;
 use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
@@ -245,9 +245,12 @@ fn vertex_is_not_watertight_but_is_manifold_and_orientable() {
 ///
 /// Uses `OcctKernel::store_circle_face_for_test`, a test-only helper that
 /// wraps `ffi::ffi::make_circle_face` and stores the result in the kernel.
-/// The method is gated by `#[cfg(has_occt)]` (not `test`) because integration
-/// tests link the library in normal build mode, where #[cfg(test)] items are
-/// invisible.
+/// The method is gated by `#[cfg(all(has_occt, any(test, feature = "test-fixtures")))]`.
+/// Integration tests link the library in normal (non-test) build mode, so
+/// `cfg(test)` items are invisible to them; the `test-fixtures` cargo feature
+/// (auto-enabled here via `Cargo.toml`'s self-dev-dep) is what makes these
+/// helpers visible in this test crate while keeping them out of the public
+/// API surface of production consumers.
 #[test]
 fn single_face_is_not_watertight() {
     let mut kernel = OcctKernel::new();
