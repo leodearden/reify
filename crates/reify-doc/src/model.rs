@@ -943,6 +943,54 @@ mod tests {
         ]
     }
 
+    /// Sets the `is_pub` field of any `ItemDoc` variant to `v`.
+    fn set_is_pub(item: &mut ItemDoc, v: bool) {
+        match item {
+            ItemDoc::Structure { is_pub, .. }
+            | ItemDoc::Occurrence { is_pub, .. }
+            | ItemDoc::Trait { is_pub, .. }
+            | ItemDoc::Function { is_pub, .. }
+            | ItemDoc::Field { is_pub, .. }
+            | ItemDoc::Purpose { is_pub, .. }
+            | ItemDoc::Enum { is_pub, .. }
+            | ItemDoc::Unit { is_pub, .. }
+            | ItemDoc::TypeAlias { is_pub, .. }
+            | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub = v,
+        }
+    }
+
+    /// Sets the `doc` field of any `ItemDoc` variant to `doc`.
+    fn set_doc(item: &mut ItemDoc, doc: Option<String>) {
+        match item {
+            ItemDoc::Structure { doc: d, .. }
+            | ItemDoc::Occurrence { doc: d, .. }
+            | ItemDoc::Trait { doc: d, .. }
+            | ItemDoc::Function { doc: d, .. }
+            | ItemDoc::Field { doc: d, .. }
+            | ItemDoc::Purpose { doc: d, .. }
+            | ItemDoc::Enum { doc: d, .. }
+            | ItemDoc::Unit { doc: d, .. }
+            | ItemDoc::TypeAlias { doc: d, .. }
+            | ItemDoc::ConstraintDef { doc: d, .. } => *d = doc,
+        }
+    }
+
+    /// Pushes `ann` onto the `annotations` field of any `ItemDoc` variant.
+    fn push_annotation(item: &mut ItemDoc, ann: AnnotationDoc) {
+        match item {
+            ItemDoc::Structure { annotations, .. }
+            | ItemDoc::Occurrence { annotations, .. }
+            | ItemDoc::Trait { annotations, .. }
+            | ItemDoc::Function { annotations, .. }
+            | ItemDoc::Field { annotations, .. }
+            | ItemDoc::Purpose { annotations, .. }
+            | ItemDoc::Enum { annotations, .. }
+            | ItemDoc::Unit { annotations, .. }
+            | ItemDoc::TypeAlias { annotations, .. }
+            | ItemDoc::ConstraintDef { annotations, .. } => annotations.push(ann),
+        }
+    }
+
     #[test]
     fn item_doc_name_returns_variant_name() {
         let expected = ["S", "O", "T", "F", "x", "P", "E", "U", "A", "C"];
@@ -959,18 +1007,7 @@ mod tests {
         }
         // true cases — mutate each sample item to set is_pub: true
         for mut item in sample_items() {
-            match &mut item {
-                ItemDoc::Structure { is_pub, .. }
-                | ItemDoc::Occurrence { is_pub, .. }
-                | ItemDoc::Trait { is_pub, .. }
-                | ItemDoc::Function { is_pub, .. }
-                | ItemDoc::Field { is_pub, .. }
-                | ItemDoc::Purpose { is_pub, .. }
-                | ItemDoc::Enum { is_pub, .. }
-                | ItemDoc::Unit { is_pub, .. }
-                | ItemDoc::TypeAlias { is_pub, .. }
-                | ItemDoc::ConstraintDef { is_pub, .. } => *is_pub = true,
-            }
+            set_is_pub(&mut item, true);
             assert!(item.is_pub());
         }
     }
@@ -983,18 +1020,7 @@ mod tests {
         }
         // Some cases — mutate each sample item to set doc: Some("doc")
         for mut item in sample_items() {
-            match &mut item {
-                ItemDoc::Structure { doc, .. }
-                | ItemDoc::Occurrence { doc, .. }
-                | ItemDoc::Trait { doc, .. }
-                | ItemDoc::Function { doc, .. }
-                | ItemDoc::Field { doc, .. }
-                | ItemDoc::Purpose { doc, .. }
-                | ItemDoc::Enum { doc, .. }
-                | ItemDoc::Unit { doc, .. }
-                | ItemDoc::TypeAlias { doc, .. }
-                | ItemDoc::ConstraintDef { doc, .. } => *doc = Some("doc".into()),
-            }
+            set_doc(&mut item, Some("doc".into()));
             assert_eq!(item.doc(), Some("doc"));
         }
     }
@@ -1008,20 +1034,7 @@ mod tests {
         // one-marker cases — mutate each sample item to add a "marker" annotation
         let marker = AnnotationDoc { name: "marker".to_string(), args: vec![] };
         for mut item in sample_items() {
-            match &mut item {
-                ItemDoc::Structure { annotations, .. }
-                | ItemDoc::Occurrence { annotations, .. }
-                | ItemDoc::Trait { annotations, .. }
-                | ItemDoc::Function { annotations, .. }
-                | ItemDoc::Field { annotations, .. }
-                | ItemDoc::Purpose { annotations, .. }
-                | ItemDoc::Enum { annotations, .. }
-                | ItemDoc::Unit { annotations, .. }
-                | ItemDoc::TypeAlias { annotations, .. }
-                | ItemDoc::ConstraintDef { annotations, .. } => {
-                    annotations.push(marker.clone());
-                }
-            }
+            push_annotation(&mut item, marker.clone());
             let anns = item.annotations();
             assert_eq!(anns.len(), 1);
             assert_eq!(anns[0].name, "marker");
