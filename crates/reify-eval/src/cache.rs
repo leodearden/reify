@@ -2695,37 +2695,27 @@ mod tests {
         );
     }
 
-    // --- set_freshness does NOT bump pending_transition_count (task #2326 amendment) ---
+    // --- set_freshness precondition: Pending is forbidden (task #2451, step-1) ---
 
+    /// Pins the `set_freshness` precondition guard (S1): passing `Freshness::Pending`
+    /// must panic in debug/test builds. Callers must use `mark_pending` or
+    /// `mark_pending_with_cause` instead, which also derive `last_substantive` and
+    /// increment `pending_transition_count`.
     #[test]
-    fn set_freshness_pending_does_not_bump_pending_transition_count() {
+    #[should_panic(expected = "Pending")]
+    fn set_freshness_panics_when_passed_pending() {
         use reify_types::{ContentHash, Freshness, ResultRef};
 
-        // Insert a node and reset the counter to a known baseline.
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "x"));
         store.put(node.clone(), make_test_node_cache(1, 1));
-        store.reset_pending_transition_count();
-        assert_eq!(
-            store.pending_transition_count(),
-            0,
-            "baseline: counter must be 0 after reset"
-        );
 
-        // Call set_freshness(Pending) — bypasses mark_pending's counter logic intentionally.
+        // Must panic — set_freshness must not accept Pending.
         let _ = store.set_freshness(
             &node,
             Freshness::Pending {
                 last_substantive: ResultRef::of_hash(ContentHash(0)),
             },
-        );
-
-        // Counter must be unchanged — set_freshness is intentionally NOT the path
-        // for Pending transitions (use mark_pending instead).
-        assert_eq!(
-            store.pending_transition_count(),
-            0,
-            "set_freshness must NOT increment pending_transition_count; use mark_pending for that"
         );
     }
 
