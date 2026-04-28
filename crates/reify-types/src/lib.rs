@@ -40,9 +40,9 @@ pub use expr::{
     TAG_REFLECTIVE_CELL_LIST, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
 };
 pub use geometry::{
-    ExportError, ExportFormat, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
-    StepKind, TessError, debug_assert_query_many_invariant,
+    ExportError, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
+    ReprKind, StepKind, TessError, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;

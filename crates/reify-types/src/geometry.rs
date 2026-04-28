@@ -727,6 +727,44 @@ impl FeatureTagTable {
     }
 }
 
+// ----------------------------------------------------------------------
+// v0.2 persistent-naming-v2 (task 2590)
+//
+// New attribute-based topology naming primitives. Coexist with the v0.1
+// `FeatureTag`/`FeatureTagTable` machinery above; the v0.1 path stays in
+// place until selector resolution swaps over (task 2 / #2570) and per-op
+// auto-population lands across tasks 5-8. See
+// `docs/prds/v0_2/persistent-naming-v2.md` lines 46-87 for the design
+// reference.
+// ----------------------------------------------------------------------
+
+/// Path-based feature identifier for v0.2 persistent naming.
+///
+/// Wraps a §6.5 path string (e.g. `Bracket#realization[0]`). Constructed
+/// directly from any node-identity type via `From` impls; tasks 5-8 will
+/// add more From-impls as additional feature-producing node kinds appear.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FeatureId(String);
+
+impl FeatureId {
+    /// Construct a `FeatureId` from any string-like value.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self(path.into())
+    }
+}
+
+impl fmt::Display for FeatureId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&crate::identity::RealizationNodeId> for FeatureId {
+    fn from(id: &crate::identity::RealizationNodeId) -> Self {
+        Self(id.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
