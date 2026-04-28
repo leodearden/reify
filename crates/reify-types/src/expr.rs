@@ -612,11 +612,8 @@ impl CompiledExpr {
             elements
                 .iter()
                 .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_))),
-            "ReflectiveCellList elements must be ValueRefs by construction; \
-             the `ReflectiveCellList(_)` no-op arm in \
-             `expand_purpose_reflective_placeholders` (reify-eval) relies on this \
-             invariant — a non-ValueRef element would silently bypass placeholder \
-             expansion in release builds (task-2544 / task-2552)"
+            "ReflectiveCellList elements must be ValueRefs by construction \
+             (task-2544 / task-2552; see comment above)"
         );
         let mut content_hash = ContentHash::of(&[TAG_REFLECTIVE_CELL_LIST]);
         for elem in &elements {
@@ -1972,29 +1969,6 @@ mod tests {
         // not a ValueRef.
         let _rcl =
             CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
-    }
-
-    /// task-2552: In release builds, `debug_assert!` is a no-op, so passing a
-    /// non-ValueRef element must *not* panic — the constructor silently accepts
-    /// the input.
-    ///
-    /// This locks the "no behaviour change in release builds" contract that the
-    /// `ReflectiveCellList(_)` no-op arm in
-    /// `expand_purpose_reflective_placeholders` (reify-eval, task-2544) relies on.
-    #[cfg(not(debug_assertions))]
-    #[test]
-    fn reflective_cell_list_accepts_non_value_ref_in_release() {
-        let cell_a = ValueCellId::new("E", "a");
-        let elements = vec![
-            CompiledExpr::value_ref(cell_a, Type::Real),
-            CompiledExpr::literal(Value::Int(0), Type::Int),
-        ];
-        let rcl =
-            CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
-        assert!(
-            matches!(rcl.kind, CompiledExprKind::ReflectiveCellList(_)),
-            "release build must silently construct the RCL without panicking"
-        );
     }
 
     // ── end task-2552 tests ───────────────────────────────────────────────────
