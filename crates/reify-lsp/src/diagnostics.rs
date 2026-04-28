@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use reify_constraints::SimpleConstraintChecker;
 use reify_types::{
     ContentHash, ConstraintNodeId, Diagnostic, Freshness, ModulePath, Satisfaction, SourceSpan,
-    ValueCellId, VersionId,
+    VersionId,
 };
 use tower_lsp::lsp_types::{self, Url};
 
@@ -229,15 +229,12 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Build value-cell span lookup map from compiled module, mirroring constraint_spans above.
-    let value_cell_spans: HashMap<ValueCellId, SourceSpan> = compiled
-        .templates
-        .iter()
-        .flat_map(|t| t.value_cells.iter())
-        .map(|vc| (vc.id.clone(), vc.span))
-        .collect();
-
     // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
+    //
+    // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
+    // ordering is deterministic — same compile-defined cell order on every call.
+    // Using a HashMap would yield entries in unstable order, causing flapping in
+    // snapshot tests and non-deterministic output for the user.
     //
     // Final → no emission (success state, no diagnostic by definition).
     // Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
@@ -252,36 +249,38 @@ pub fn compute_diagnostics_with_state(
     // This block is only in `compute_diagnostics_with_state` (persistent engine).
     // The stateless `compute_diagnostics` has no persistent engine, so it has no
     // freshness state to report and this block is intentionally absent there.
-    for (id, &span) in &value_cell_spans {
-        match state.engine.freshness(&reify_eval::cache::NodeId::Value(id.clone())) {
-            Freshness::Failed { error } => {
-                let range = convert::span_to_range(source, span);
-                diagnostics.push(lsp_types::Diagnostic {
-                    range,
-                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-                    code: Some(lsp_types::NumberOrString::String(
-                        "computation-failed".to_string(),
-                    )),
-                    source: Some("reify".to_string()),
-                    message: format!("computation failed: {}", error.message()),
-                    ..Default::default()
-                });
-            }
-            Freshness::Pending { .. } => {
-                let range = convert::span_to_range(source, span);
-                diagnostics.push(lsp_types::Diagnostic {
-                    range,
-                    severity: Some(lsp_types::DiagnosticSeverity::WARNING),
-                    code: Some(lsp_types::NumberOrString::String(
-                        "computation-pending".to_string(),
-                    )),
-                    source: Some("reify".to_string()),
-                    message: "computation pending: upstream dependency failed".to_string(),
-                    ..Default::default()
-                });
-            }
-            Freshness::Final | Freshness::Intermediate { .. } => {
-                // No diagnostic — Final is success, Intermediate is transient (arch §7.2).
+    for template in &compiled.templates {
+        for vc in &template.value_cells {
+            match state.engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
+                Freshness::Failed { error } => {
+                    let range = convert::span_to_range(source, vc.span);
+                    diagnostics.push(lsp_types::Diagnostic {
+                        range,
+                        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                        code: Some(lsp_types::NumberOrString::String(
+                            "computation-failed".to_string(),
+                        )),
+                        source: Some("reify".to_string()),
+                        message: format!("computation failed: {}", error.message()),
+                        ..Default::default()
+                    });
+                }
+                Freshness::Pending { .. } => {
+                    let range = convert::span_to_range(source, vc.span);
+                    diagnostics.push(lsp_types::Diagnostic {
+                        range,
+                        severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                        code: Some(lsp_types::NumberOrString::String(
+                            "computation-pending".to_string(),
+                        )),
+                        source: Some("reify".to_string()),
+                        message: "computation pending: upstream dependency failed".to_string(),
+                        ..Default::default()
+                    });
+                }
+                Freshness::Final | Freshness::Intermediate { .. } => {
+                    // No diagnostic — Final is success, Intermediate is transient (arch §7.2).
+                }
             }
         }
     }

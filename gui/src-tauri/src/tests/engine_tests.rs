@@ -3829,3 +3829,105 @@ fn freshness_wires_through_get_entity_tree_for_realization_failure() {
         );
     }
 }
+
+/// Verify that `get_entity_tree()` correctly surfaces `Freshness::Failed` for
+/// a sub-component value-cell node.
+///
+/// # Why this test exists
+///
+/// Inside `build_template_node`, the freshness lookup for value cells must use
+/// the **instance-scoped** `ValueCellId` (e.g. `Parent.rib.half_h`) rather than
+/// the template-level cell ID (e.g. `Child.half_h`).  The engine cache stores
+/// sub-component cells under `scoped_entity = "{parent}.{sub_name}"` (set by
+/// `elaborate_child_instance` / `elaborate_child_params_only` in unfold.rs),
+/// so querying with the template name always returns the default `Final`.
+///
+/// This test drives `Parent.rib.half_h` (a let binding on a sub-component `rib`
+/// of type `Child`) to `Freshness::Failed` via the `mark_value_cell_failed_for_test`
+/// helper (direct cache injection, since `set_panic_on_eval` does not reach the
+/// `elaborate_child_lets_only` evaluation path), then asserts that
+/// `get_entity_tree()` surfaces `freshness == "failed"` on that node.
+///
+/// The `set_panic_on_eval` mechanism only fires for cells evaluated through
+/// `evaluate_let_bindings` (engine_eval.rs) — sub-component lets go through
+/// `elaborate_child_lets_only` (unfold.rs) which evaluates them directly via
+/// `eval_expr`, bypassing the panic-injection hook.
+#[test]
+fn freshness_wires_through_get_entity_tree_for_sub_component_cell() {
+    // A minimal two-structure module: Parent has a sub-component `rib` of type
+    // `Child`.  Child has a param `height` and a let binding `half_h`.
+    let source = r#"structure Child {
+    param height: Scalar = 10mm
+    let half_h = height / 2
+}
+structure Parent {
+    param width: Scalar = 80mm
+    sub rib = Child(height: width * 0.5)
+}"#;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "parent_child")
+        .expect("load_from_source should succeed");
+
+    // After evaluation, the cache has entries keyed by the instance-scoped path:
+    //   ValueCellId { entity: "Parent.rib", member: "half_h" }
+    // Inject Failed directly — set_panic_on_eval cannot reach this cell because
+    // elaborate_child_lets_only bypasses the panic_on_eval_cells gate.
+    session.mark_value_cell_failed_for_test(
+        ValueCellId::new("Parent.rib", "half_h"),
+        "test-forced failure on sub-component let",
+    );
+
+    // get_entity_tree builds the tree for each root template.
+    // For "Parent", it recurses into "Child" via the "rib" sub-component with
+    // entity_path = "Parent.rib".  The fix ensures that value cells use
+    // ValueCellId::new(entity_path, &cell.id.member) so the lookup
+    // hits "Parent.rib.half_h" (not "Child.half_h").
+    let tree = session.get_entity_tree();
+
+    // Flatten all nodes for inspection.
+    let mut all_nodes = Vec::new();
+    collect_all_nodes(&tree, &mut all_nodes);
+
+    // --- (a) Exactly the injected cell reports freshness="failed" ---
+    let failed_nodes: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| n.freshness == "failed")
+        .collect();
+
+    assert_eq!(
+        failed_nodes.len(),
+        1,
+        "exactly one node must have freshness='failed' after injecting \
+         failure on Parent.rib.half_h; got {} failed node(s): {:?}",
+        failed_nodes.len(),
+        failed_nodes
+            .iter()
+            .map(|n| (&n.entity_path, &n.kind))
+            .collect::<Vec<_>>()
+    );
+
+    // --- (b) The failed node is the sub-component let cell ---
+    let failed_node = failed_nodes[0];
+    assert_eq!(
+        failed_node.entity_path, "Parent.rib.half_h",
+        "the failed node must be 'Parent.rib.half_h'; got '{}'",
+        failed_node.entity_path
+    );
+
+    // --- (c) All other nodes stay at freshness="final" (no leakage) ---
+    for node in &all_nodes {
+        if node.entity_path == "Parent.rib.half_h" {
+            continue;
+        }
+        assert_eq!(
+            node.freshness, "final",
+            "node '{}' (kind='{}') must have freshness='final'; got '{}'",
+            node.entity_path, node.kind, node.freshness
+        );
+    }
+}

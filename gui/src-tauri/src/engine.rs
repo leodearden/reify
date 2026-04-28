@@ -838,9 +838,9 @@ fn build_values(
             let freshness = engine
                 .map(|e| {
                     let node = NodeId::Value(cell.id.clone());
-                    format_freshness(&e.freshness(&node)).to_string()
+                    String::from(format_freshness(&e.freshness(&node)))
                 })
-                .unwrap_or_else(|| "final".to_string());
+                .unwrap_or_else(|| String::from("final"));
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -969,12 +969,20 @@ pub(crate) fn build_template_node(
         let cell_path = format!("{}.{}", entity_path, member);
         let is_geometry_member = member == "geometry";
         let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+        // Use entity_path (the instance path, e.g. "Parent.rib") rather than
+        // cell.id.entity (the template name, e.g. "Child") when constructing
+        // the NodeId for the freshness lookup.  Sub-component cells are keyed
+        // in the engine cache by their instance-scoped path
+        // (`ValueCellId { entity: "Parent.rib", member: "height" }`), which is
+        // what elaborate_child_instance writes via scoped_entity (unfold.rs:326).
+        // Using cell.id.entity would always return Freshness::Final (the
+        // default for unknown nodes) for any sub-component cell.
         let freshness = engine
             .map(|e| {
-                let node = NodeId::Value(cell.id.clone());
-                format_freshness(&e.freshness(&node)).to_string()
+                let node = NodeId::Value(ValueCellId::new(entity_path, &cell.id.member));
+                String::from(format_freshness(&e.freshness(&node)))
             })
-            .unwrap_or_else(|| "final".to_string());
+            .unwrap_or_else(|| String::from("final"));
         children.push(EntityTreeNode {
             entity_path: cell_path,
             kind: cell_kind.to_string(),
@@ -1006,9 +1014,9 @@ pub(crate) fn build_template_node(
         let freshness = engine
             .map(|e| {
                 let node = NodeId::Realization(real.id.clone());
-                format_freshness(&e.freshness(&node)).to_string()
+                String::from(format_freshness(&e.freshness(&node)))
             })
-            .unwrap_or_else(|| "final".to_string());
+            .unwrap_or_else(|| String::from("final"));
         children.push(EntityTreeNode {
             entity_path: real_path,
             kind: "realization".to_string(),
@@ -1262,6 +1270,31 @@ impl EngineSession {
             // Discards the BuildResult — callers read freshness via get_entity_tree().
             let _ = self.engine.build(&compiled, ExportFormat::Step);
         }
+    }
+
+    /// Directly mark a value cell as `Freshness::Failed` in the engine cache.
+    ///
+    /// Use this when you need to inject a Failed state for nodes that cannot be
+    /// forced to fail via `set_panic_on_eval` — specifically, sub-component param
+    /// and let cells that are evaluated inside `elaborate_child_lets_only` /
+    /// `elaborate_child_params_only` (unfold.rs), which bypass the
+    /// `panic_on_eval_cells` check in `evaluate_let_bindings` (engine_eval.rs).
+    ///
+    /// The cell must already exist in the engine cache (i.e. `load_from_source`
+    /// or an equivalent evaluation must have run first); `mark_failed` returns
+    /// `false` for unknown nodes and this method does nothing in that case.
+    ///
+    /// Requires the `test-instrumentation` feature on `reify-eval` (enabled for
+    /// `gui/src-tauri` dev-deps unconditionally per task #2337 pre-1).
+    pub(crate) fn mark_value_cell_failed_for_test(
+        &mut self,
+        cell: reify_types::ValueCellId,
+        error_msg: &str,
+    ) {
+        let node = reify_eval::cache::NodeId::Value(cell);
+        self.engine
+            .cache_store_mut()
+            .mark_failed(&node, reify_types::ErrorRef::new(error_msg));
     }
 }
 
