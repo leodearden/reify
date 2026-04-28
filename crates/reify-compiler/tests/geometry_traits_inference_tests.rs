@@ -895,6 +895,41 @@ fn infer_traits_for_op_geom_ref_step_out_of_range_defaults_to_all() {
     );
 }
 
+/// Self-referential `GeomRef::Step(self_idx)` short-circuits to the
+/// safe-default `InferredTraits::all()` rather than stack-overflowing.
+///
+/// # Regression lock (task 2549)
+///
+/// Array: `[Boolean { Union, left: Step(0), right: Step(0) }]`.
+/// Root = `ops[0]` at `current_position = 0`.
+///
+/// Under the `idx < current_position` guard introduced in task 2549:
+/// - `infer_geom_ref(Step(0), ops, current_position=0)`:
+///   `0 < 0` is false → guard fires → returns `all()` (no recursion).
+/// - Both sides return `all()`, so `combine_union(all, all) = bounded_only`.
+///
+/// **Without the guard** each `Step(0)` would recurse back into the same op,
+/// causing an infinite-recursion stack-overflow (SIGSEGV / fatal runtime error).
+/// This test exists specifically to lock the cycle-guard behaviour: any future
+/// refactor that removes or narrows the guard (e.g. changing `>=` to `==`)
+/// will resurface the stack-overflow regression here.
+#[test]
+fn infer_traits_for_op_self_referential_step_short_circuits_to_safe_default() {
+    let ops = vec![CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),  // self-reference: idx == current_position
+        right: GeomRef::Step(0), // same
+    }];
+    // Each Step(0) fires the cycle guard → all().
+    // combine_union(all, all) = bounded_only.
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::bounded_only(),
+        "self-referential GeomRef::Step must short-circuit to all(); \
+         combine_union(all, all) = bounded_only"
+    );
+}
+
 /// `Sweep` root with empty `profiles` → `bounded_connected` (combine_sweep(all)).
 ///
 /// The `Sweep` arm calls `profiles.first()` which returns `None` for an empty
