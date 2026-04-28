@@ -859,6 +859,27 @@ assert "Test 24b sanity branch 1 (unmatched case) uses exit 2 distinct code" \
 assert "Test 24b sanity branch 2 (count check) uses exit 2 distinct code" \
     bash -c 'target="|| ex""it 2  # sanity: expected"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
 
+# -- Test 26: structural: no literal sleep-31337 / sleep-31339 grep patterns remain ---
+echo ""
+echo "--- Test 26: structural: no literal sentinel grep patterns remain ---"
+
+# After step-4, all [[:space:]]sleep 31337$ and [[:space:]]sleep 31339$ regex
+# patterns in Tests 16a/b, 21a/b, and the safety-net regression test must be
+# replaced by ${_SENT_16} / ${_SENT_21} references. These assertions FAIL until
+# step-4 completes the substitution.
+#
+# Pattern assembled via printf chunks (fixed-string grep -F) so that the
+# contiguous literal "[[:space:]]sleep 31337$" does not appear in source
+# and this assertion line cannot self-match.
+printf -v _sent16_lit_str '%s%s%s%s' '[[:space:]]' 'sleep ' '3133' '7$'
+printf -v _sent21_lit_str '%s%s%s%s' '[[:space:]]' 'sleep ' '3133' '9$'
+
+assert "no literal sleep-31337 grep pattern remains in script" \
+    bash -c '! grep -qF "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_sent16_lit_str"
+
+assert "no literal sleep-31339 grep pattern remains in script" \
+    bash -c '! grep -qF "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_sent21_lit_str"
+
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
 echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
