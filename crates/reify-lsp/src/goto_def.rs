@@ -14,9 +14,11 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let offset = position_to_offset(source, position);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
 
-    // Only needs ParsedModule for declaration spans (compiler discards them)
+    // Only needs ParsedModule for declaration spans (compiler discards them).
+    // Use prelude-aware parse for AST-shape consistency with the rest of
+    // reify-lsp (diagnostics + analysis); see task 2525.
     let module_name = module_name_from_uri(uri);
-    let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
 
     // Try to find the enclosing declaration by checking if the cursor offset
     // falls within a declaration's span. If found, search only that declaration
@@ -78,7 +80,9 @@ pub fn compute_goto_definition_cross_file(
     let (_word_start, word) = find_word_at_offset(source, offset)?;
 
     let module_name = module_name_from_uri(uri);
-    let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+    // Prelude-aware parse for AST-shape consistency across reify-lsp;
+    // see task 2525.
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
 
     let offset_u32 = offset as u32;
 
@@ -156,7 +160,9 @@ pub fn compute_goto_definition_cross_file(
 /// Searches Structure, Occurrence, Function, Enum, Trait, and Field declarations
 /// for a matching name, returning the declaration's span as an LSP Location.
 fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Location> {
-    let parsed = reify_syntax::parse(source, ModulePath::single("_target"));
+    // Prelude-aware parse for AST-shape consistency across reify-lsp;
+    // see task 2525.
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
 
     for decl in &parsed.declarations {
         let (decl_name, span) = match decl {
