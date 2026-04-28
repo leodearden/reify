@@ -721,42 +721,28 @@ impl CacheStore {
 
     /// Derive the output freshness from a **supplied** dependency trace.
     ///
-    /// Implements arch §7.2 (`docs/reify-implementation-architecture.md`, lines 730-749)
-    /// using a freshly-computed `trace` rather than whatever trace is currently cached
-    /// for the output node.  Callers that hold the just-evaluated trace (e.g. the wire
-    /// site in `evaluate_let_bindings`) should prefer this over
+    /// Delegates to [`derive_output_freshness_from_trace_with_cause`] and drops the
+    /// cause, so the §7.2/§9.2 classification logic lives in exactly one place. See
+    /// that method for the full truth table.
+    ///
+    /// Callers that hold the just-evaluated trace (e.g. the wire site in
+    /// `evaluate_let_bindings`) should prefer this over
     /// [`derive_output_freshness_for_node`] to avoid keying off a stale prior trace.
-    ///
-    /// For each `ValueCellId` in `trace.reads`, retrieves the input's freshness via
-    /// [`CacheStore::freshness`] (defaults to `Final` for absent entries — see task #2326),
-    /// then delegates to the pure [`derive_output_freshness`] helper.
-    ///
-    /// Returns the derived freshness:
-    /// - If `still_refining`, always `Intermediate { generation }`.
-    /// - If any input is non-Final, `Intermediate { generation }`.
-    /// - Otherwise, `Final`.
     pub fn derive_output_freshness_from_trace(
         &self,
         trace: &DependencyTrace,
         still_refining: bool,
         generation: u64,
     ) -> Freshness {
-        // `trace` is a parameter (not part of `self`), so iterating `trace.reads` and
-        // calling `self.freshness(...)` are independent `&self` borrows — no conflict.
-        derive_output_freshness(
-            still_refining,
-            trace.reads.iter().map(|read| self.freshness(&NodeId::Value(read.clone()))),
-            generation,
-        )
+        let (f, _) = self.derive_output_freshness_from_trace_with_cause(trace, still_refining, generation);
+        f
     }
 
     /// Derive the output freshness for a cached node by walking its **cached** dependency trace.
     ///
-    /// Implements arch §7.2 (`docs/reify-implementation-architecture.md`, lines 730-749)
-    /// at the cache level: looks up the node's **previously cached** `dependency_trace.reads`
-    /// (the trace from its last evaluation), retrieves each input's freshness via the existing
-    /// [`CacheStore::freshness`] reader (which defaults to `Final` for absent entries — see
-    /// task #2326), then delegates to the pure [`derive_output_freshness`] helper.
+    /// Delegates to [`derive_output_freshness_for_node_with_cause`] and drops the
+    /// cause, so the §7.2/§9.2 classification logic lives in exactly one place. See
+    /// that method for the full truth table.
     ///
     /// **Old-trace semantics:** this method reads the trace that was stored during the
     /// *prior* evaluation of `node_id`, not a freshly-computed one.  At the wire site in
@@ -765,12 +751,8 @@ impl CacheStore {
     /// This method is the right choice for callers that only have a `NodeId` and do not
     /// hold the current trace (e.g. diagnostics, tests that verify post-eval state).
     ///
-    /// Returns the derived freshness per the §7.2/§9.2 truth table — see
-    /// [`derive_output_freshness`] for the full table.
-    ///
-    /// **Absent node fallback:** if `node_id` has no cache entry (no trace exists),
-    /// returns `derive_output_freshness(still_refining, empty, generation)` which yields
-    /// `Final` (no inputs ⇒ all-Final ⇒ Final) — consistent with `freshness()`'s
+    /// **Absent node fallback:** if `node_id` has no cache entry, returns `Final`
+    /// (no inputs ⇒ all-Final ⇒ Final) — consistent with `freshness()`'s
     /// "default Final on absent" contract.
     pub fn derive_output_freshness_for_node(
         &self,
@@ -778,11 +760,8 @@ impl CacheStore {
         still_refining: bool,
         generation: u64,
     ) -> Freshness {
-        let Some(entry) = self.caches.get(node_id) else {
-            // Absent node: no trace, treat as empty-input (§7.2: no inputs ⇒ Final)
-            return derive_output_freshness(still_refining, std::iter::empty(), generation);
-        };
-        self.derive_output_freshness_from_trace(&entry.dependency_trace, still_refining, generation)
+        let (f, _) = self.derive_output_freshness_for_node_with_cause(node_id, still_refining, generation);
+        f
     }
 
     /// Cause-bearing variant of [`derive_output_freshness_for_node`].
