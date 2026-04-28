@@ -1073,13 +1073,12 @@ purpose mfg(subject : Structure) {
 /// other, this test fails.
 ///
 /// Sources:
-/// - fn:      `fn f(x: Scalar) -> Scalar { let x = 2.0 ; x }` (mirror of
-///            `fn_body_let_shadows_fn_param`)
-/// - purpose: `purpose mfg(subject : Structure) { let subject = 1\n
-///            constraint subject > 0 }` (mirror of
-///            `purpose_body_let_shadows_purpose_param`)
+/// - fn: `fn f(x: Scalar) -> Scalar { let x = 2.0 ; x }`
+///   (mirror of `fn_body_let_shadows_fn_param`)
+/// - purpose: `purpose mfg(subject : Structure) { let subject = 1 … }`
+///   (mirror of `purpose_body_let_shadows_purpose_param`)
 ///
-/// Structural assertions (per arm):
+/// Per-arm structural assertions:
 /// * Exactly 1 Shadowing warning.
 /// * Warning has exactly 2 labels (child site + original-decl site).
 /// * Warning message matches the canonical form
@@ -1087,6 +1086,15 @@ purpose mfg(subject : Structure) {
 /// * Child-site label starts AFTER the body `let` keyword.
 /// * Original-decl label starts BEFORE the body `let` keyword (in the
 ///   params signature).
+///
+/// **Cross-arm equality assertions** (the distinguishing feature vs. the two
+/// independent per-arm tests `fn_body_let_shadows_fn_param` /
+/// `purpose_body_let_shadows_purpose_param`):
+/// * Label count must be equal.
+/// * Severity must be equal.
+/// * Diagnostic code must be equal.
+/// * Message template (with the variable name replaced by `'<name>'`) must
+///   be identical — so the two arms can't silently diverge in wording.
 #[test]
 fn fn_and_purpose_body_arm_emit_analogous_shadow_warnings() {
     // ── fn arm ──────────────────────────────────────────────────────────────
@@ -1203,6 +1211,43 @@ purpose mfg(subject : Structure) {
         "purpose arm: child-site span must be at or after body `let subject` (byte {}), got {:?}",
         purpose_body_let,
         purpose_warn.labels[0].span
+    );
+
+    // ── cross-arm symmetry assertions ────────────────────────────────────────
+    // These compare fn_warn and purpose_warn directly to each other — the
+    // distinguishing feature of this *symmetry* test vs. the two independent
+    // per-arm tests.  A change that modifies one arm's diagnostic shape without
+    // the other will fail here even if both arms still satisfy their own
+    // per-arm structural invariants.
+    assert_eq!(
+        fn_warn.labels.len(),
+        purpose_warn.labels.len(),
+        "fn and purpose arms must carry the same number of labels; \
+         fn labels={:?}, purpose labels={:?}",
+        fn_warn.labels,
+        purpose_warn.labels
+    );
+    assert_eq!(
+        fn_warn.severity,
+        purpose_warn.severity,
+        "fn and purpose arms must emit the same diagnostic severity"
+    );
+    assert_eq!(
+        fn_warn.code,
+        purpose_warn.code,
+        "fn and purpose arms must emit the same diagnostic code"
+    );
+    // Strip each arm's variable name before comparing so the canonical message
+    // template can be tested for parity independently of the name.
+    let fn_template = fn_warn.message.replace("'x'", "'<name>'");
+    let purpose_template = purpose_warn.message.replace("'subject'", "'<name>'");
+    assert_eq!(
+        fn_template,
+        purpose_template,
+        "fn and purpose arms must produce the same canonical message template \
+         (fn={:?}, purpose={:?})",
+        fn_warn.message,
+        purpose_warn.message
     );
 }
 
