@@ -830,6 +830,44 @@ pub struct TopologyAttribute {
     pub mod_history: Vec<ModEntry>,
 }
 
+/// Runtime table mapping geometry handle ids to `TopologyAttribute`s.
+///
+/// The v0.2 attribute-based replacement-in-progress for `FeatureTagTable`.
+/// Tasks 5-8 wire per-op auto-population; task 2 (#2570) wires
+/// selector lookup against this table. Mirrors the `FeatureTagTable`
+/// shape (HashMap keyed by `GeometryHandleId`, four-method API) so the
+/// existing call sites can adopt it incrementally.
+#[derive(Debug, Default)]
+pub struct TopologyAttributeTable {
+    entries: HashMap<GeometryHandleId, TopologyAttribute>,
+}
+
+impl TopologyAttributeTable {
+    /// Record that geometry handle `id` carries `attr`.
+    ///
+    /// Overwrites any prior entry for the same id (last-write-wins,
+    /// mirroring `FeatureTagTable::record`). Tasks 3 (#2571) and 4 (#2572)
+    /// will add diagnostics around accidental rebinds.
+    pub fn record(&mut self, id: GeometryHandleId, attr: TopologyAttribute) {
+        self.entries.insert(id, attr);
+    }
+
+    /// Look up the attribute for a given geometry handle, if any.
+    pub fn lookup(&self, id: GeometryHandleId) -> Option<&TopologyAttribute> {
+        self.entries.get(&id)
+    }
+
+    /// Number of entries currently in the table.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns `true` if the table has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
