@@ -2172,6 +2172,39 @@ impl Default for Freshness {
     }
 }
 
+impl Freshness {
+    /// Returns `true` iff this freshness tag is `Final` — the only state in
+    /// which a cached value is authoritative and safe for a downstream
+    /// `OnlyRunOnFinalInputs` node to consume.
+    ///
+    /// Single audit point for the canonical "is final?" check.  Any future
+    /// addition of a fifth `Freshness` variant (e.g. a `Provisional` state,
+    /// see arch §7.1 lines 716–728) only needs to be handled here rather than
+    /// at every `matches!(f, Freshness::Final)` call site.
+    ///
+    /// See arch §7.1 lines 716–728 and §7.3 lines 762–767.
+    pub const fn is_final(&self) -> bool {
+        matches!(self, Freshness::Final)
+    }
+
+    /// Returns `true` iff this freshness tag is `Intermediate` or `Pending` —
+    /// the two "still settling" states that block a downstream
+    /// `OnlyRunOnFinalInputs` node from being scheduled.
+    ///
+    /// `Failed` is explicitly excluded: per arch §9.2 lines 880–890, a
+    /// `Failed` node is a terminal chain-root (not a "still settling" node),
+    /// and downstream nodes appear as `Pending` (forwarding the chain cause)
+    /// rather than as direct readers of a `Failed` cell.  Treating `Failed`
+    /// as non-intermediate keeps the helper consistent with the scheduler's
+    /// single `has_intermediate_inputs: bool` predicate (see
+    /// `reify-runtime/src/concurrent.rs`).
+    ///
+    /// See arch §7.1 lines 716–728 and §9.2 lines 880–890.
+    pub const fn is_intermediate_or_pending(&self) -> bool {
+        matches!(self, Freshness::Intermediate { .. } | Freshness::Pending { .. })
+    }
+}
+
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
 fn sorted_captures(captures: &ValueMap) -> Vec<(&ValueCellId, &Value)> {
     let mut caps: Vec<_> = captures.iter().collect();
@@ -7222,6 +7255,52 @@ mod tests {
             v.format_hover(),
             "25 USD",
             "format_hover() on a Money scalar should render \"25 USD\", not \"25 SI\""
+        );
+    }
+
+    // --- Freshness::is_final / is_intermediate_or_pending tests (task #2356) ---
+
+    #[test]
+    fn freshness_is_final_returns_true_only_for_final() {
+        // is_final() must return true ONLY for Freshness::Final.
+        assert!(
+            Freshness::Final.is_final(),
+            "Final.is_final() must be true"
+        );
+        assert!(
+            !Freshness::Intermediate { generation: 1 }.is_final(),
+            "Intermediate.is_final() must be false"
+        );
+        assert!(
+            !Freshness::Pending { last_substantive: ResultRef::none() }.is_final(),
+            "Pending.is_final() must be false"
+        );
+        assert!(
+            !Freshness::Failed { error: ErrorRef::new("e") }.is_final(),
+            "Failed.is_final() must be false"
+        );
+    }
+
+    #[test]
+    fn freshness_is_intermediate_or_pending_true_for_intermediate_and_pending_only() {
+        // is_intermediate_or_pending() must return true for Intermediate and
+        // Pending, false for Final and Failed (per arch §9.2: Failed is
+        // terminal/chain-root, not a "still settling" state).
+        assert!(
+            Freshness::Intermediate { generation: 1 }.is_intermediate_or_pending(),
+            "Intermediate.is_intermediate_or_pending() must be true"
+        );
+        assert!(
+            Freshness::Pending { last_substantive: ResultRef::none() }.is_intermediate_or_pending(),
+            "Pending.is_intermediate_or_pending() must be true"
+        );
+        assert!(
+            !Freshness::Final.is_intermediate_or_pending(),
+            "Final.is_intermediate_or_pending() must be false"
+        );
+        assert!(
+            !Freshness::Failed { error: ErrorRef::new("e") }.is_intermediate_or_pending(),
+            "Failed.is_intermediate_or_pending() must be false (Failed is terminal, arch §9.2)"
         );
     }
 
