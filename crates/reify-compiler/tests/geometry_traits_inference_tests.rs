@@ -863,6 +863,59 @@ fn infer_traits_for_op_empty_array_defaults_to_all() {
     assert_eq!(infer_traits_for_op(&[]), InferredTraits::all());
 }
 
+/// Out-of-range `GeomRef::Step(idx)` defaults to `InferredTraits::all()`.
+///
+/// The `infer_geom_ref` helper uses `ops.get(*idx)` which returns `None` for
+/// an out-of-range index, falling back to `InferredTraits::all()`. This test
+/// pins that defensive behaviour: if a future refactor changes `.get()` to
+/// `[idx]` the resulting panic (or wrong result) would be caught here.
+///
+/// Array: `[Primitive(Box), Boolean { Union, left: Step(99), right: Step(0) }]`.
+/// Root (`ops.last()`) = Boolean Union.
+/// - `infer_geom_ref(Step(99), ops)` → out of range → `all()`
+/// - `infer_geom_ref(Step(0), ops)` → Primitive(Box) → `all()`
+/// - `combine_union(all, all)` → `bounded_only`
+#[test]
+fn infer_traits_for_op_geom_ref_step_out_of_range_defaults_to_all() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(99), // deliberately out of range
+            right: GeomRef::Step(0),
+        },
+    ];
+    // left = all() (out-of-range safe default), right = all() (Box)
+    // combine_union(all, all) = bounded_only
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::bounded_only(),
+        "out-of-range GeomRef::Step must default to all(); \
+         combine_union(all, all) = bounded_only"
+    );
+}
+
+/// `Sweep` root with empty `profiles` → `bounded_connected` (combine_sweep(all)).
+///
+/// The `Sweep` arm calls `profiles.first()` which returns `None` for an empty
+/// vec, falling back to `InferredTraits::all()` via `unwrap_or`. Then
+/// `combine_sweep(all)` = `bounded_connected`. This test pins that the
+/// documented "safe all() default" branch is actually reached and produces
+/// the expected result.
+#[test]
+fn infer_traits_for_op_sweep_with_empty_profiles_defaults_to_bounded_connected() {
+    let ops = vec![CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![], // deliberately empty
+        args: vec![],
+    }];
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::bounded_connected(),
+        "Sweep with empty profiles must fall back to combine_sweep(all) = bounded_connected"
+    );
+}
+
 // ─── LetBindingEnv / EmptyLetEnv / infer_traits_for_expr_in_env ─────────────
 //
 // These tests exercise the env API introduced in step-5. They are RED until

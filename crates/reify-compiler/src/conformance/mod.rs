@@ -523,15 +523,24 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
         }
 
         // Non-geometry-let fallback: value_cells Let with a resolved default_expr.
+        // Match on both entity and member for symmetry with the realization arm
+        // above (entity is already narrowed by `templates.get(id.entity.as_str())`,
+        // but the explicit check makes the intent self-documenting and adds a
+        // cheap guard against any future refactor that reuses cells across templates).
         if let Some(cell) = template.value_cells.iter().find(|vc| {
-            vc.id.member == id.member
+            vc.id.entity == id.entity
+                && vc.id.member == id.member
                 && matches!(vc.kind, ValueCellKind::Let)
                 && vc.default_expr.is_some()
         }) {
-            // Use env-less inference for the resolved CompiledExpr; no chained
-            // ValueRef walk needed (the let-resolution pass already inlined refs).
+            // Thread the env through the resolved CompiledExpr so that any
+            // ValueRef nested inside a non-geometry let (e.g. a chained let
+            // whose default_expr references a geometry binding) is resolved via
+            // the env rather than silently safe-defaulting to all(). Recursion
+            // is bounded by the number of distinct ValueCellIds; self-reference
+            // is impossible in well-formed compiled IR.
             let expr = cell.default_expr.as_ref()?;
-            return Some(crate::geometry_traits_inference::infer_traits_for_expr(expr));
+            return Some(infer_traits_for_expr_in_env(expr, self));
         }
 
         None
