@@ -627,14 +627,21 @@ impl CacheStore {
     /// has no value/result/trace to seed (see task #2326 design decision). Use
     /// `put(node, NodeCache::new(...))` to insert a fresh entry.
     ///
-    /// # Warning: do not pass `Freshness::Pending` directly
+    /// # Precondition: do not pass `Freshness::Pending`
     ///
-    /// `mark_pending` must be used instead of `set_freshness(node,
-    /// Freshness::Pending { ... })` when transitioning a node to the Pending
-    /// state. `mark_pending` derives `last_substantive` from the current cached
-    /// `result_hash` (ensuring consistency) and increments `pending_transition_count`
-    /// (a diagnostic counter). Passing `Freshness::Pending` through this method
-    /// bypasses both invariants silently.
+    /// `mark_pending` or `mark_pending_with_cause` must be used instead of
+    /// `set_freshness(node, Freshness::Pending { ... })` when transitioning a node
+    /// to the Pending state. Those helpers derive `last_substantive` from the current
+    /// cached `result_hash` (ensuring consistency) and increment
+    /// `pending_transition_count` (a diagnostic counter). This precondition is
+    /// enforced via `debug_assert!` in debug/test builds (task #2451 S1).
+    ///
+    /// **S2 audit (task #2451):** production write paths in `concurrent.rs` and
+    /// `engine_edit.rs` already route all Pending transitions through `mark_pending`
+    /// / `mark_pending_with_cause` (tasks #2326, #2335). `CacheStore::caches` is a
+    /// private field with no public `get_mut` accessor, so external code cannot
+    /// write `freshness` directly. This precondition therefore covers all production
+    /// write sites.
     ///
     /// `restore_final` and `mark_pending` continue to coexist as domain-specific
     /// helpers. `mark_pending` additionally captures `result_hash` into
@@ -643,6 +650,10 @@ impl CacheStore {
     /// retained for readability at its call sites.
     #[must_use = "set_freshness returns false when the node is absent; check or explicitly discard"]
     pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
+        debug_assert!(
+            !matches!(freshness, Freshness::Pending { .. }),
+            "set_freshness must not be passed Pending; use mark_pending or mark_pending_with_cause instead"
+        );
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = freshness;
             true
