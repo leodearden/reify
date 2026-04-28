@@ -371,6 +371,40 @@ pub(crate) fn extract_solver_hints(
     hints
 }
 
+/// Validate that every `discrete_set` / `prefer_stock` solver hint's collection
+/// identifier resolves to a known name in `scope` or `functions`.
+///
+/// For each hint whose kind is **not** `PreferredStrategy`, the collection
+/// identifier is looked up first in the member scope (`scope.resolve`) and
+/// then in the module-level function list (`functions.iter().any(|f| f.name == …)`).
+/// If neither lookup succeeds an `Error` diagnostic is pushed using the same
+/// wording as `compile_expr`'s `Ident` arm — `"unresolved name: <ident>"` with
+/// label `"not found in scope"` — so error-message assertions are uniform
+/// across payload references and ordinary expression references.
+///
+/// `PreferredStrategy` hints are intentionally exempt: spec §12.2 states that
+/// any identifier is accepted at compile time and the back-end emits a runtime
+/// warning for unrecognised strategy names.
+pub(crate) fn validate_solver_hint_collections(
+    hints: &[SolverHint],
+    scope: &CompilationScope,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for hint in hints {
+        if hint.kind == SolverHintKind::PreferredStrategy {
+            continue;
+        }
+        let name = &hint.collection;
+        if scope.resolve(name).is_none() && !functions.iter().any(|f| f.name == *name) {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved name: {}", name))
+                    .with_label(DiagnosticLabel::new(hint.span, "not found in scope")),
+            );
+        }
+    }
+}
+
 /// Emit a deprecation warning for a use-site reference to a deprecated entity.
 ///
 /// Format: `use of deprecated <kind> '<name>': <message>` (with message)
@@ -458,5 +492,64 @@ mod tests {
             vec![reify_types::AnnotationArg::Bool(true)],
         );
         assert!(!is_valid_optimized(&a));
+    }
+
+    // ── validate_solver_hint_collections unit tests ──────────────────────────
+
+    fn make_hint(kind: SolverHintKind, collection: &str) -> SolverHint {
+        SolverHint {
+            kind,
+            collection: collection.to_string(),
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    /// PreferredStrategy hints are exempt from collection name validation.
+    #[test]
+    fn validate_collections_skips_preferred_strategy() {
+        let hints = vec![make_hint(SolverHintKind::PreferredStrategy, "bogus_xyz_strategy")];
+        let scope = CompilationScope::new("Test");
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "PreferredStrategy should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// A name registered in scope resolves cleanly.
+    #[test]
+    fn validate_collections_accepts_name_in_scope() {
+        let hints = vec![make_hint(SolverHintKind::DiscreteSet, "my_collection")];
+        let mut scope = CompilationScope::new("Test");
+        scope.register("my_collection", Type::Real);
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "name in scope should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// An unresolvable discrete_set collection name emits an Error diagnostic.
+    #[test]
+    fn validate_collections_errors_on_unresolvable_name() {
+        let hints = vec![make_hint(SolverHintKind::DiscreteSet, "ghost_collection")];
+        let scope = CompilationScope::new("Test");
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1, "expected exactly 1 diagnostic");
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, reify_types::Severity::Error, "should be Error");
+        assert!(
+            d.message.contains("unresolved name") && d.message.contains("ghost_collection"),
+            "unexpected message: {}",
+            d.message
+        );
     }
 }

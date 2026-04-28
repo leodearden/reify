@@ -717,6 +717,7 @@ pub(crate) fn compile_entity(
                 let lowered_annotations = lower_annotations(&param.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "param", diagnostics);
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                 let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
@@ -797,6 +798,7 @@ pub(crate) fn compile_entity(
                 let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "let", diagnostics);
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                 let decl = ValueCellDecl {
                     id,
