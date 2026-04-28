@@ -1,14 +1,19 @@
 // Split from lib.rs (task 2032) — build methods.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    CompiledFunction, Diagnostic, DiagnosticLabel, ExportFormat, FeatureTag, FeatureTagTable,
-    GeometryHandleId, GeometryKernel, Mesh, SourceSpan, ValueMap,
+    CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat, FeatureTag,
+    FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel, Mesh, RealizationNodeId,
+    SourceSpan, ValueMap, VersionId,
 };
 
+use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
+use crate::deps::DependencyTrace;
 use crate::geometry_ops::compile_geometry_op;
+use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::{BuildResult, Engine, TessellateResult};
 
 impl Engine {
@@ -37,6 +42,7 @@ impl Engine {
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
         // Execute geometry operations
+        let version_id = VersionId(self.next_version_id);
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -53,6 +59,7 @@ impl Engine {
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
+                    let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
@@ -66,7 +73,21 @@ impl Engine {
                         &mut self.feature_tag_table,
                         realization.name.as_deref(),
                         realization.span,
+                        &mut kernel_error,
                     );
+                    // Arch §9.1 lines 868–877: kernel error on a realization →
+                    // mark realization NodeId as Failed { error } and emit one
+                    // EventKind::Failed event. The Diagnostic::error("geometry
+                    // error: …") inside `execute_realization_ops` is preserved.
+                    if let Some(error) = kernel_error {
+                        Engine::mark_realization_failed(
+                            &mut self.cache,
+                            &mut self.journal,
+                            &realization.id,
+                            error,
+                            version_id,
+                        );
+                    }
                 }
             }
 
@@ -108,6 +129,7 @@ impl Engine {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
 
+        let version_id = VersionId(self.next_version_id);
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
@@ -125,6 +147,7 @@ impl Engine {
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
+                    let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
@@ -138,7 +161,21 @@ impl Engine {
                         &mut self.feature_tag_table,
                         realization.name.as_deref(),
                         realization.span,
+                        &mut kernel_error,
                     );
+                    // Arch §9.1 lines 868–877: kernel error on a realization →
+                    // mark realization NodeId as Failed { error } and emit one
+                    // EventKind::Failed event. The Diagnostic::error("geometry
+                    // error: …") inside `execute_realization_ops` is preserved.
+                    if let Some(error) = kernel_error {
+                        Engine::mark_realization_failed(
+                            &mut self.cache,
+                            &mut self.journal,
+                            &realization.id,
+                            error,
+                            version_id,
+                        );
+                    }
                 }
             }
 
@@ -254,6 +291,12 @@ impl Engine {
             let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
             for realization in &template.realizations {
                 let handle_start = step_handles.len();
+                // Tessellate paths do not propagate kernel errors into
+                // `Freshness::Failed` today (arch §9.1 wires that on the
+                // build path only — see `Engine::build` / `Engine::build_snapshot`).
+                // Pass `&mut None` so `execute_realization_ops` collects the
+                // diagnostic but no caller acts on the kernel error here.
+                let mut kernel_error: Option<ErrorRef> = None;
                 Engine::execute_realization_ops(
                     kernel.as_mut(),
                     &realization.operations,
@@ -267,6 +310,7 @@ impl Engine {
                     feature_tag_table,
                     realization.name.as_deref(),
                     realization.span,
+                    &mut kernel_error,
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -315,6 +359,17 @@ impl Engine {
     /// a later realization with the same name shadows the earlier one in
     /// `named_steps`.  Pinned by
     /// `execute_realization_ops_duplicate_name_shadows_previous`.
+    ///
+    /// **`kernel_error_out`** (arch §9.1 lines 868–877): when
+    /// `kernel.execute(...)` returns `Err(...)`, the helper additionally writes
+    /// `Some(ErrorRef::new("geometry error: …"))` to `*kernel_error_out` so the
+    /// caller can mark the realization NodeId as `Freshness::Failed { error }`
+    /// in the eval cache and emit a single `EventKind::Failed` event.  When
+    /// the loop completes without a kernel error (success or compile-only
+    /// failure), `*kernel_error_out` is left untouched (typically `None`).  The
+    /// caller is responsible for the cache + journal writes because the
+    /// realization NodeId, cache, and journal are not threaded into this
+    /// helper — see `Engine::mark_realization_failed` for the wire site.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
@@ -329,6 +384,7 @@ impl Engine {
         feature_tag_table: &mut FeatureTagTable,
         realization_name: Option<&str>,
         realization_span: SourceSpan,
+        kernel_error_out: &mut Option<ErrorRef>,
     ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
@@ -352,11 +408,21 @@ impl Engine {
                         step_handles.push(handle.id);
                     }
                     Err(e) => {
+                        let err_msg = format!("geometry error: {}", e);
                         diagnostics.push(
-                            Diagnostic::error(format!("geometry error: {}", e)).with_label(
+                            Diagnostic::error(err_msg.clone()).with_label(
                                 DiagnosticLabel::new(realization_span, "in this realization"),
                             ),
                         );
+                        // Arch §9.1 lines 868–877: surface the kernel error to the
+                        // caller so the realization NodeId can be marked Failed in
+                        // the eval cache and a single EventKind::Failed event emitted.
+                        // First-error-wins inside a single realization: if a later
+                        // call into this helper somehow triggers another kernel error
+                        // (it won't — we `break` immediately), the first one is kept.
+                        if kernel_error_out.is_none() {
+                            *kernel_error_out = Some(ErrorRef::new(err_msg));
+                        }
                         break;
                     }
                 },
@@ -392,6 +458,67 @@ impl Engine {
                 named_steps.insert(name.to_string(), last);
             }
         }
+    }
+
+    /// Mark a realization NodeId as `Freshness::Failed { error }` in the eval
+    /// cache and emit a single `EventKind::Failed` event in the journal.
+    ///
+    /// Implements arch §9.1 lines 868–877 (kernel.execute(...) Err → mark
+    /// realization Failed + emit one error event). Called from `build` and
+    /// `build_snapshot` after `execute_realization_ops` surfaced a kernel
+    /// error via the `kernel_error_out` parameter.
+    ///
+    /// Behavior:
+    /// - If a cache entry already exists under `NodeId::Realization(rid)`:
+    ///   uses [`CacheStore::mark_failed`] to flip `freshness` in place,
+    ///   preserving the prior `result` and `dependency_trace`.
+    /// - If no entry exists yet (cold-start build before any successful
+    ///   handle was produced for this realization): inserts a stub entry
+    ///   with `CachedResult::GeometryHandle(GeometryHandleId(0))` and
+    ///   `Freshness::Failed { error }` directly. The placeholder `0` handle
+    ///   matches the convention used by
+    ///   [`CacheStore::insert_synthetic_realization_entry`] — its concrete
+    ///   value is irrelevant because consumers gate on `Freshness::Failed`
+    ///   before looking at the result. We deliberately avoid
+    ///   `GeometryHandleId::INVALID` here because
+    ///   `GeometryHandleId::content_hash` debug-asserts on the INVALID
+    ///   sentinel, and `NodeCache::new` always content-hashes its result.
+    /// - Records exactly one `EventKind::Failed { error }` event scoped to
+    ///   `NodeId::Realization(rid)`. The pre-existing
+    ///   `Diagnostic::error("geometry error: …")` from
+    ///   `execute_realization_ops` is left unchanged on `BuildResult.diagnostics`.
+    ///
+    /// Pinned by
+    /// `tests/failed_propagation.rs::kernel_execute_error_marks_realization_failed_and_emits_one_error_event`.
+    fn mark_realization_failed(
+        cache: &mut CacheStore,
+        journal: &mut EventJournal,
+        rid: &RealizationNodeId,
+        error: ErrorRef,
+        version: VersionId,
+    ) {
+        let r_node = NodeId::Realization(rid.clone());
+        // Try the in-place mutation first; if no entry exists, create a stub.
+        if !cache.mark_failed(&r_node, error.clone()) {
+            cache.put(
+                r_node.clone(),
+                NodeCache::new(
+                    CachedResult::GeometryHandle(GeometryHandleId(0)),
+                    Freshness::Failed {
+                        error: error.clone(),
+                    },
+                    DependencyTrace::default(),
+                    version,
+                ),
+            );
+        }
+        journal.record(EvalEvent {
+            timestamp: Instant::now(),
+            node_id: r_node,
+            kind: EventKind::Failed { error },
+            version,
+            payload: None,
+        });
     }
 
     /// Tessellate realizations from the current snapshot values, without
@@ -485,6 +612,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
@@ -532,6 +660,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         assert_eq!(
@@ -597,6 +726,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         assert!(
@@ -673,6 +803,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -741,6 +872,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -810,6 +942,7 @@ mod tests {
             &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         assert!(diagnostics.is_empty(), "expected no diagnostics");
@@ -867,6 +1000,7 @@ mod tests {
             &mut feature_tag_table,
             Some("bad"),
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         assert!(
@@ -938,6 +1072,7 @@ mod tests {
             &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
+            &mut None,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -958,6 +1093,7 @@ mod tests {
             &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
+            &mut None,
         );
         let h2 = named_steps["body"];
 
@@ -1050,6 +1186,7 @@ mod tests {
             &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
+            &mut None,
         );
         let h1 = named_steps["body"];
         assert!(
@@ -1072,6 +1209,7 @@ mod tests {
             &mut feature_tag_table,
             Some("body"),
             SourceSpan::new(0, 0),
+            &mut None,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -1139,6 +1277,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             realization_span,
+            &mut None,
         );
 
         // Find the compile-failure Error diagnostic.
@@ -1217,6 +1356,7 @@ mod tests {
             &mut feature_tag_table,
             None,
             realization_span,
+            &mut None,
         );
 
         // Find the kernel-error Error diagnostic.
