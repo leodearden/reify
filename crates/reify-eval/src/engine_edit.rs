@@ -663,9 +663,12 @@ impl Drop for PendingWarmSeedsGuard<'_> {
         tracing::warn!(
             target: "reify_eval::engine_edit",
             count = len,
+            hint = "if fired from inside edit_source this typically indicates \
+                    a panic or early-return between steps (4c) and (14b); \
+                    other call sites that drop without draining (e.g. unit \
+                    tests) trigger the same WARN benignly",
             "PendingWarmSeedsGuard safety-net fired: re-donating staged \
-             warm-pool entries from Drop (likely panic / early-return \
-             between edit_source steps 4c and 14b)"
+             warm-pool entries from Drop"
         );
         for (nid, (state, stamp)) in self.map.drain() {
             self.pool.donate_preserving_lru(nid, state, stamp);
