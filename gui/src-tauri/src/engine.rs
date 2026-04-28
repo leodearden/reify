@@ -1239,6 +1239,30 @@ impl EngineSession {
             self.last_check = Some(check_result);
         }
     }
+
+    /// Trigger the full build path (check + geometry ops) without writing any
+    /// output file, so that realization `NodeId`s are marked `Freshness::Failed`
+    /// in the engine cache when a kernel error occurs.
+    ///
+    /// `build_gui_state` uses `tessellate_snapshot`, which does NOT propagate
+    /// kernel errors into `Freshness::Failed` (arch §9.1 / engine_build.rs
+    /// comment "Tessellate paths do not propagate kernel errors into
+    /// `Freshness::Failed` today — build path only").  This helper provides
+    /// the build path so integration tests can drive a realization to Failed
+    /// and then verify that `get_entity_tree()` surfaces that freshness.
+    ///
+    /// The `ExportFormat::Step` format is arbitrary — only the cache side-effect
+    /// (marking `NodeId::Realization(...)` as `Freshness::Failed`) matters.
+    /// The `BuildResult` is intentionally discarded; call `get_entity_tree()`
+    /// or `engine.freshness(node)` after this to inspect the cache.
+    ///
+    /// No-op when no module is loaded.
+    pub(crate) fn build_for_freshness_test(&mut self) {
+        if let Some(compiled) = self.compiled.as_ref().cloned() {
+            // Discards the BuildResult — callers read freshness via get_entity_tree().
+            let _ = self.engine.build(&compiled, ExportFormat::Step);
+        }
+    }
 }
 
 /// Parse a "Entity.member" string into a ValueCellId.

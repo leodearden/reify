@@ -3730,3 +3730,102 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
         }
     }
 }
+
+// --- Freshness wiring through get_entity_tree (step-19) ---
+
+/// Helper: recursively collect all nodes from a tree into a flat vec.
+fn collect_all_nodes<'a>(nodes: &'a [EntityTreeNode], out: &mut Vec<&'a EntityTreeNode>) {
+    for n in nodes {
+        out.push(n);
+        collect_all_nodes(&n.children, out);
+    }
+}
+
+/// End-to-end freshness wiring test for the entity-tree realization channel.
+///
+/// Forces a realization to fail via the build path (not the tessellate path,
+/// which does NOT propagate kernel errors into `Freshness::Failed` — see
+/// arch §9.1 and `engine_build.rs` comment "Tessellate paths do not propagate
+/// kernel errors into `Freshness::Failed` today").
+///
+/// After `build_for_freshness_test()` calls `engine.build()`, the engine cache
+/// should have `NodeId::Realization(rnid)` marked as `Freshness::Failed`.
+/// `get_entity_tree()` → `build_template_node()` reads realization freshness via
+/// `engine.freshness(&NodeId::Realization(real.id.clone()))` (wired in step-8).
+///
+/// Assertions:
+/// (a) Exactly one node in the full tree has `freshness == "failed"`.
+/// (b) That node has `kind == "realization"` and `entity_path == "Bracket#realization[0]"`.
+/// (c) Every other node has `freshness == "final"` (no leakage to params/lets/root).
+#[test]
+fn freshness_wires_through_get_entity_tree_for_realization_failure() {
+    let checker = SimpleConstraintChecker;
+    // FailingMockGeometryKernel causes all geometry operations to fail, which
+    // makes engine.build() call mark_realization_failed on the realization.
+    let kernel = FailingMockGeometryKernel;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even with failing kernel \
+                 (tessellation errors are captured, not returned as Err)");
+
+    // tessellate_snapshot (called inside build_gui_state / load_from_source)
+    // does NOT propagate kernel errors into Freshness::Failed — that is wired
+    // on the build path only (arch §9.1 / engine_build.rs).
+    // Call build_for_freshness_test() to trigger engine.build() which marks
+    // the realization as Freshness::Failed in the engine cache.
+    session.build_for_freshness_test();
+
+    let tree = session.get_entity_tree();
+    assert_eq!(tree.len(), 1, "bracket has one root template");
+
+    // Flatten the full tree for inspection.
+    let mut all_nodes = Vec::new();
+    collect_all_nodes(&tree, &mut all_nodes);
+
+    // --- (a) Exactly one node is failed ---
+    let failed_nodes: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| n.freshness == "failed")
+        .collect();
+
+    assert_eq!(
+        failed_nodes.len(),
+        1,
+        "exactly one node must have freshness='failed' after a kernel-error build; \
+         got {} failed node(s): {:?}",
+        failed_nodes.len(),
+        failed_nodes
+            .iter()
+            .map(|n| (&n.entity_path, &n.kind))
+            .collect::<Vec<_>>()
+    );
+
+    // --- (b) The failed node is the realization whose kernel call failed ---
+    let failed_node = failed_nodes[0];
+    assert_eq!(
+        failed_node.kind, "realization",
+        "the failed node must have kind='realization'; got kind='{}'",
+        failed_node.kind
+    );
+    assert_eq!(
+        failed_node.entity_path, "Bracket#realization[0]",
+        "the failed realization path must be 'Bracket#realization[0]'; \
+         got '{}'",
+        failed_node.entity_path
+    );
+
+    // --- (c) All other nodes stay at freshness="final" (no leakage) ---
+    for node in &all_nodes {
+        if node.entity_path == "Bracket#realization[0]" {
+            continue; // already checked above
+        }
+        assert_eq!(
+            node.freshness, "final",
+            "node '{}' (kind='{}') must have freshness='final' after a \
+             single-realization kernel failure; got '{}'",
+            node.entity_path, node.kind, node.freshness
+        );
+    }
+}
