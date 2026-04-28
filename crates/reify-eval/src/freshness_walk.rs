@@ -127,7 +127,7 @@ mod tests {
     use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
     use crate::deps::{DependencyTrace, ReverseDependencyIndex};
     use reify_types::{
-        DeterminacyState, Freshness, Value, ValueCellId, VersionId,
+        ContentHash, DeterminacyState, ErrorRef, Freshness, ResultRef, Value, ValueCellId, VersionId,
     };
     use std::collections::HashSet;
 
@@ -442,6 +442,81 @@ mod tests {
         assert_eq!(
             b_after_value, b_before_value,
             "cached Value must be byte-identical (no value recomputation occurred)"
+        );
+    }
+
+    /// Step-9: When an upstream node is Failed, the walk must record the
+    /// downstream node as Pending and forward the Failed NodeId via the
+    /// `pending_cause` side-table (arch §9.2 lines 880-890).
+    ///
+    /// 2-cell chain `a → b`: a present and Final initially, b present and
+    /// Intermediate. Mark a as Failed via `mark_failed`. Walk from `{a}`.
+    ///
+    /// Asserts:
+    /// - `b.freshness == Pending { last_substantive: ResultRef::of_hash(b_prev_hash) }`
+    ///   (the value-bearing form set by `mark_pending_with_cause`).
+    /// - `b.pending_cause == Some(NodeId::Value(a))`.
+    /// - `updated` set contains `Value(b)`.
+    #[test]
+    fn failed_upstream_propagates_pending_with_cause() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        let mut cache = CacheStore::new();
+        // Seed `a` with Final and `b` with Intermediate; both have concrete
+        // payloads so `result_hash` carries a non-trivial value.
+        put_value_entry_with_payload(
+            &mut cache,
+            &a,
+            Value::Real(5.0),
+            Freshness::Final,
+            vec![],
+            VersionId(1),
+        );
+        put_value_entry_with_payload(
+            &mut cache,
+            &b,
+            Value::Real(10.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+            VersionId(1),
+        );
+
+        // Snapshot b's prior result_hash for the Pending.last_substantive check.
+        let b_node = NodeId::Value(b.clone());
+        let b_prev_hash: ContentHash = cache.get(&b_node).expect("b cached").result_hash;
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+
+        // Mark a as Failed via the canonical writer.
+        let a_node = NodeId::Value(a.clone());
+        assert!(cache.mark_failed(&a_node, ErrorRef::new("synthetic")));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        assert!(
+            updated.contains(&b_node),
+            "updated must contain Value(b), got: {:?}",
+            updated
+        );
+        assert_eq!(
+            cache.freshness(&b_node),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(b_prev_hash),
+            },
+            "b must be Pending with last_substantive set to its prior result_hash \
+             (arch §9.2: mark_pending_with_cause captures the current cached hash)"
+        );
+        assert_eq!(
+            cache.pending_cause(&b_node),
+            Some(a_node),
+            "b's pending_cause must be Some(Value(a)) — the chain root for arch §9.2"
         );
     }
 }
