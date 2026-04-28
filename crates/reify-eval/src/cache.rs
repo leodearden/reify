@@ -2690,36 +2690,105 @@ mod tests {
         );
     }
 
-    // --- derive_output_freshness Pending/Failed classification (task #2328, step-3) ---
+    // --- derive_output_freshness §9.2 carve-out (task #2330 step-5) ---
 
-    /// Guards against regressions that would special-case Pending or Failed away from
-    /// the non-Final classification. Arch §7.2 says "any input != Final" — all three
-    /// non-Final variants (Intermediate, Pending, Failed) must propagate to Intermediate.
+    /// Pins the §9.2 carve-out (rewritten from the §7.2 truth-table coverage of task
+    /// #2328): Failed and Pending inputs now produce a Pending output rather than
+    /// Intermediate. Intermediate inputs continue to produce Intermediate.
+    ///
+    /// The cause-bearing variant is exercised by
+    /// `derive_output_freshness_with_cause_returns_failing_node` below.
     #[test]
     fn derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final() {
         use reify_types::{ErrorRef, Freshness, ResultRef};
         let g = 9u64;
 
-        // Intermediate input → Intermediate output
+        // Intermediate input → Intermediate output (§7.2 unchanged for this row).
         assert_eq!(
             derive_output_freshness(false, [Freshness::Intermediate { generation: 0 }].into_iter(), g),
             Freshness::Intermediate { generation: g },
             "Intermediate input must yield Intermediate output"
         );
 
-        // Pending input → Intermediate output
+        // Pending input → Pending output (§7.2 line 748 + §9.2 line 890 carve-out).
+        // Chain forwarding is at the `_with_cause` layer; the pure helper drops the chain.
         assert_eq!(
             derive_output_freshness(false, [Freshness::Pending { last_substantive: ResultRef::none() }].into_iter(), g),
-            Freshness::Intermediate { generation: g },
-            "Pending input must yield Intermediate output (Pending is non-Final per §7.2)"
+            Freshness::Pending { last_substantive: ResultRef::none() },
+            "Pending input must yield Pending output per §7.2 line 748 (downstream subtree quieted)"
         );
 
-        // Failed input → Intermediate output
+        // Failed input → Pending output (§9.2 line 890 carve-out).
         assert_eq!(
             derive_output_freshness(false, [Freshness::Failed { error: ErrorRef::new("type mismatch") }].into_iter(), g),
-            Freshness::Intermediate { generation: g },
-            "Failed input must yield Intermediate output (Failed is non-Final per §7.2)"
+            Freshness::Pending { last_substantive: ResultRef::none() },
+            "Failed input must yield Pending output per §9.2 line 890 carve-out"
         );
+    }
+
+    /// Pins the cause-bearing variant `derive_output_freshness_with_cause`:
+    /// Failed input contributes its own NodeId as the chain root; Pending input
+    /// forwards the upstream entry's `pending_cause`; all-Final inputs return None.
+    #[test]
+    fn derive_output_freshness_with_cause_returns_failing_node() {
+        use reify_types::{ErrorRef, Freshness, ResultRef};
+        let g = 9u64;
+
+        let leaf = NodeId::Value(ValueCellId::new("T", "leaf"));
+        let mid = NodeId::Value(ValueCellId::new("T", "mid"));
+
+        // (a) Failed input → (Pending{none()}, Some(failing_node))
+        let (fresh, cause) = derive_output_freshness_with_cause(
+            false,
+            [(
+                leaf.clone(),
+                Freshness::Failed { error: ErrorRef::new("boom") },
+                None,
+            )]
+            .into_iter(),
+            g,
+        );
+        assert_eq!(
+            fresh,
+            Freshness::Pending { last_substantive: ResultRef::none() },
+            "Failed input must yield Pending output per §9.2"
+        );
+        assert_eq!(
+            cause,
+            Some(leaf.clone()),
+            "Failed input must contribute its own NodeId as the chain root"
+        );
+
+        // (b) Pending input with upstream pending_cause → (Pending{...}, Some(leaf))
+        // The mid node is itself Pending and carries pending_cause = Some(leaf).
+        let (fresh2, cause2) = derive_output_freshness_with_cause(
+            false,
+            [(
+                mid.clone(),
+                Freshness::Pending { last_substantive: ResultRef::none() },
+                Some(leaf.clone()),
+            )]
+            .into_iter(),
+            g,
+        );
+        assert!(
+            matches!(fresh2, Freshness::Pending { .. }),
+            "Pending input must yield Pending output"
+        );
+        assert_eq!(
+            cause2,
+            Some(leaf.clone()),
+            "Pending input must forward the upstream pending_cause"
+        );
+
+        // (c) All-Final inputs → (Final, None)
+        let (fresh3, cause3) = derive_output_freshness_with_cause(
+            false,
+            [(leaf.clone(), Freshness::Final, None)].into_iter(),
+            g,
+        );
+        assert_eq!(fresh3, Freshness::Final, "All-Final inputs must yield Final");
+        assert_eq!(cause3, None, "All-Final inputs have no chain cause");
     }
 
     // --- derive_output_freshness_from_trace tests (task #2328 amendment) ---
