@@ -10,6 +10,10 @@ reify-types.workspace = true
 reify-expr.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+# v0.2 persistent-naming-v2 (task 2590): the propagation helper in
+# `topology_attribute_propagation` consumes `BooleanOpHistoryRecords`
+# from reify-kernel-occt, which forces a normal-dep relationship.
+reify-kernel-occt.workspace = true
 tracing.workspace = true
 
 [features]
@@ -19,6 +23,5 @@ test-instrumentation = []
 # Self-dev-dep enables `test-instrumentation`-gated accessors (e.g. Engine::last_guard_phase_group_evals) in integration tests; see src/engine_admin.rs
 reify-eval = { path = ".", features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
-reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
