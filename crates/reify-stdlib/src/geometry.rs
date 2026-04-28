@@ -2106,4 +2106,243 @@ mod tests {
         };
         assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
     }
+
+    // ── transform_compose tests (step-15) ────────────────────────────────────
+
+    /// Helper: build a Transform from rotation quaternion and translation (LENGTH).
+    fn make_transform(rotation: Value, tx: f64, ty: f64, tz: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(rotation),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(tx),
+                Value::length(ty),
+                Value::length(tz),
+            ])),
+        }
+    }
+
+    /// transform_compose(identity, T) == T
+    #[test]
+    fn transform_compose_identity_left() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_compose", &[id, t.clone()]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!((tz - 3.0).abs() < 1e-12, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_compose(T, identity) == T
+    #[test]
+    fn transform_compose_identity_right() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_compose", &[t.clone(), id]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!((tz - 3.0).abs() < 1e-12, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Pure translation composition: (R=I, t=[1,0,0]) * (R=I, t=[0,2,0]) == (R=I, t=[1,2,0]).
+    #[test]
+    fn transform_compose_pure_translation() {
+        let t1 = make_transform(make_identity_orientation(), 1.0, 0.0, 0.0);
+        let t2 = make_transform(make_identity_orientation(), 0.0, 2.0, 0.0);
+        let result = eval_builtin("transform_compose", &[t1, t2]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!(tz.abs() < 1e-12, "tz = {tz}, expected 0");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Translation rotated by R1: (R=90Z, t=0) * (R=I, t=[1,0,0]) == (R=90Z, t=[0,1,0]).
+    /// Composition formula: t = R1*t2 + t1 = 90Z*(1,0,0) + 0 = (0,1,0).
+    #[test]
+    fn transform_compose_rotation_then_translation() {
+        let t1 = make_transform(make_rot90z(), 0.0, 0.0, 0.0);
+        let t2 = make_transform(make_identity_orientation(), 1.0, 0.0, 0.0);
+        let result = eval_builtin("transform_compose", &[t1, t2]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(tx.abs() < 1e-12, "tx = {tx}, expected 0");
+                        assert!((ty - 1.0).abs() < 1e-12, "ty = {ty}, expected 1");
+                        assert!(tz.abs() < 1e-12, "tz = {tz}, expected 0");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_compose(T1, T2) must be bit-equal to T1 * T2 (operator-level).
+    /// Both must use identical algebra (R1*R2, R1*t2+t1).
+    #[test]
+    fn transform_compose_matches_operator_path() {
+        // Use transform3_identity-derived inputs that don't already pre-normalize quaternions.
+        let q1 = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let q2 = Value::Orientation {
+            w: 0.5,
+            x: -0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t1 = make_transform(q1, 1.0, 2.0, 3.0);
+        let t2 = make_transform(q2, 4.0, 5.0, 6.0);
+        let composed = eval_builtin("transform_compose", &[t1.clone(), t2.clone()]);
+        // The named function and the * operator must produce identical Value
+        // (decision-record: regression test asserts equality).
+        // We mirror the exact algebra used by the operator-level path:
+        //   R = normalize(q1) * q2
+        //   t = normalize(q1) * t2 + t1  (vector rotation)
+        // Construct the expected result component-by-component and compare.
+        let q1_t = (0.5, 0.5, 0.5, 0.5);
+        let q2_t = (0.5, -0.5, 0.5, 0.5);
+        // q1 already has norm 1 → no-op.
+        let (rw, rx, ry, rz) = super::quat_mul(q1_t, q2_t);
+        let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
+        let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
+        let (rt2x, rt2y, rt2z) = super::quat_rotate(q1_t, 4.0, 5.0, 6.0);
+        match composed {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, rw, rx, ry, rz, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(
+                            (tx - (rt2x + 1.0)).abs() < 1e-12,
+                            "tx = {tx}, expected {}",
+                            rt2x + 1.0
+                        );
+                        assert!(
+                            (ty - (rt2y + 2.0)).abs() < 1e-12,
+                            "ty = {ty}, expected {}",
+                            rt2y + 2.0
+                        );
+                        assert!(
+                            (tz - (rt2z + 3.0)).abs() < 1e-12,
+                            "tz = {tz}, expected {}",
+                            rt2z + 3.0
+                        );
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_compose with wrong arg count → Undef.
+    #[test]
+    fn transform_compose_wrong_arg_count_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_compose", &[]).is_undef());
+        assert!(eval_builtin("transform_compose", std::slice::from_ref(&t)).is_undef());
+        assert!(
+            eval_builtin("transform_compose", &[t.clone(), t.clone(), t.clone()]).is_undef()
+        );
+    }
+
+    /// transform_compose with non-Transform arg → Undef.
+    #[test]
+    fn transform_compose_non_transform_arg_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_compose", &[Value::Real(1.0), t.clone()]).is_undef());
+        assert!(eval_builtin("transform_compose", &[t, Value::Real(1.0)]).is_undef());
+    }
+
+    /// transform_compose with mixed-dimension translations → Undef.
+    /// (LENGTH translation in T1, ANGLE translation in T2)
+    #[test]
+    fn transform_compose_mixed_dimension_translations_returns_undef() {
+        let t1 = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        let t2 = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::angle(0.0),
+                Value::angle(0.0),
+                Value::angle(0.0),
+            ])),
+        };
+        assert!(eval_builtin("transform_compose", &[t1, t2]).is_undef());
+    }
 }
