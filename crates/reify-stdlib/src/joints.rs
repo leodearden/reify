@@ -1422,6 +1422,133 @@ mod tests {
         );
     }
 
+    // ── transform_at on Coupling: validation rejections ─────────────────────
+
+    /// Build a minimal coupling Map by hand for testing defense-in-depth guards.
+    fn make_coupling_fixture(
+        parent: Value,
+        ratio: Value,
+        offset: Value,
+    ) -> Value {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(Value::String("offset".to_string()), offset);
+        m.insert(Value::String("parent".to_string()), parent);
+        m.insert(Value::String("ratio".to_string()), ratio);
+        Value::Map(m)
+    }
+
+    #[test]
+    fn transform_at_coupling_angle_to_prismatic_parent_returns_undef() {
+        // Angle Scalar passed to a coupling whose parent is prismatic
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("transform_at", &[c, Value::angle(1.0)]).is_undef(),
+            "Angle to prismatic coupling should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_length_to_revolute_parent_returns_undef() {
+        // Length Scalar passed to a coupling whose parent is revolute
+        let c = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
+            "Length to revolute coupling should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_mass_value_returns_undef() {
+        use reify_types::DimensionVector;
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        assert!(
+            eval_builtin("transform_at", &[c, mass]).is_undef(),
+            "MASS Scalar to coupling should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_nan_value_returns_undef() {
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("transform_at", &[c, Value::Real(f64::NAN)]).is_undef(),
+            "NaN value to coupling should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_inf_value_returns_undef() {
+        let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("transform_at", &[c, Value::Real(f64::INFINITY)]).is_undef(),
+            "Inf value to coupling should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_sliding_parent_kind_returns_undef() {
+        // Defense-in-depth: hand-built coupling Map with parent kind="sliding"
+        use std::collections::BTreeMap;
+        let mut sliding = BTreeMap::new();
+        sliding.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        sliding.insert(Value::String("axis".to_string()), axis_x_unit());
+        let c = make_coupling_fixture(
+            Value::Map(sliding),
+            Value::Real(1.0),
+            Value::length(0.0),
+        );
+        assert!(
+            eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
+            "coupling with sliding parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_missing_parent_key_returns_undef() {
+        // Defense-in-depth: hand-built coupling Map without parent key
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(Value::String("ratio".to_string()), Value::Real(1.0));
+        m.insert(Value::String("offset".to_string()), Value::length(0.0));
+        // no "parent" key
+        assert!(
+            eval_builtin("transform_at", &[Value::Map(m), Value::length(1.0)]).is_undef(),
+            "coupling missing parent key should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_missing_ratio_key_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(Value::String("parent".to_string()), prismatic_x_joint());
+        m.insert(Value::String("offset".to_string()), Value::length(0.0));
+        // no "ratio" key
+        assert!(
+            eval_builtin("transform_at", &[Value::Map(m), Value::length(1.0)]).is_undef(),
+            "coupling missing ratio key should return Undef"
+        );
+    }
+
+    #[test]
+    fn transform_at_coupling_missing_offset_key_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(Value::String("parent".to_string()), prismatic_x_joint());
+        m.insert(Value::String("ratio".to_string()), Value::Real(1.0));
+        // no "offset" key
+        assert!(
+            eval_builtin("transform_at", &[Value::Map(m), Value::length(1.0)]).is_undef(),
+            "coupling missing offset key should return Undef"
+        );
+    }
+
     // ── transform_at on Coupling: analytic tests ────────────────────────────
 
     #[test]
