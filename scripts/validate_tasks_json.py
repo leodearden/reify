@@ -121,11 +121,32 @@ def main() -> None:
 
     if args.check_subtasks:
         for tag_name, tasks_list, known_ids in tag_results:
+            # Build subtasks_by_parent so _validate_subtasks can resolve dotted
+            # deps of the form "<parent>.<subtask>" that tm-core emits for
+            # cross-task and sibling-subtask dependencies.
+            subtasks_by_parent: dict[str, set[str]] = {}
+            for t in tasks_list:
+                tid = t.get("id")
+                if isinstance(tid, str) and re.fullmatch(r"\d+", tid):
+                    subtasks_by_parent[tid] = {
+                        s["id"]
+                        for s in (t.get("subtasks") or [])
+                        if isinstance(s, dict)
+                        and isinstance(s.get("id"), str)
+                        and re.fullmatch(r"\d+", s["id"]) is not None
+                    }
             for task in tasks_list:
                 subtasks = task.get("subtasks", [])
                 if subtasks:
                     parent_id = task.get("id", "?")
-                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name)
+                    _validate_subtasks(
+                        subtasks,
+                        known_ids,
+                        parent_id,
+                        errors,
+                        tag_context=tag_name,
+                        subtasks_by_parent=subtasks_by_parent,
+                    )
 
     if errors:
         for err in errors:
@@ -220,10 +241,15 @@ def _validate_subtasks(
     errors: list,
     *,
     tag_context: str = "",
+    subtasks_by_parent: "dict[str, set[str]] | None" = None,
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
-    Subtask deps may reference sibling subtask IDs or parent-task IDs.
+    Subtask deps may reference sibling subtask IDs, parent-task IDs, or the
+    dotted ``<parent>.<subtask>`` form that tm-core emits for cross-task and
+    sibling-subtask dependencies.  ``subtasks_by_parent`` maps each known
+    top-level task id to its set of valid subtask ids and is required to resolve
+    the dotted form.
     ``tag_context`` is the enclosing tag name (e.g. ``"master"``) and is
     prepended to error messages when set.
     """
@@ -259,7 +285,9 @@ def _validate_subtasks(
         else:
             known_subtask_ids.add(sid)
 
-    # Invariant 2 for subtasks (deps may be sibling subtask ids or parent task ids).
+    # Invariant 2 for subtasks (deps may be sibling subtask ids, parent task ids,
+    # or dotted <parent>.<subtask> refs emitted by tm-core).
+    _dotted_re = re.compile(r"(\d+)\.(\d+)")
     allowed_ids = known_subtask_ids | parent_task_ids
     for sub in subtasks:
         sid = sub.get("id", "?")
@@ -274,10 +302,22 @@ def _validate_subtasks(
                 errors.append(
                     f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
-            elif dep not in allowed_ids:
-                errors.append(
-                    f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
-                )
+            elif dep in allowed_ids:
+                pass  # simple sibling subtask id or top-level task id
+            else:
+                # Accept dotted <parent>.<subtask> form when both halves resolve.
+                m = _dotted_re.fullmatch(dep)
+                if (
+                    m
+                    and subtasks_by_parent is not None
+                    and m.group(1) in parent_task_ids
+                    and m.group(2) in subtasks_by_parent.get(m.group(1), set())
+                ):
+                    pass  # valid dotted cross-task or same-parent subtask ref
+                else:
+                    errors.append(
+                        f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
+                    )
 
 
 if __name__ == "__main__":
