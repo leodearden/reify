@@ -312,6 +312,28 @@ mod tests {
         );
     }
 
+    /// Regression guard for task 2525: `compute_diagnostics` must accept sources
+    /// that reference stdlib enums (e.g. `CorrosionClass.C5`) WITHOUT inline
+    /// redeclarations.
+    ///
+    /// Pre-task, the parser disambiguated `Type.Variant` against the current
+    /// source's enum decls only, so the lowered AST carried `MemberAccess`
+    /// instead of `EnumAccess` and the downstream `compile_with_stdlib` emitted
+    /// an unresolved-name error diagnostic for `CorrosionClass`.
+    #[test]
+    fn compute_diagnostics_resolves_stdlib_enum_access_without_inline_redecl() {
+        let source = "structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
+        let diags = compute_diagnostics(source, &test_uri());
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "stdlib enum reference without inline redecl should produce no error diagnostics, got: {errors:?}"
+        );
+    }
+
     #[test]
     fn syntax_error_produces_diagnostic() {
         let source = "structure {";
