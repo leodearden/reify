@@ -513,13 +513,19 @@ pub struct GuardedDeclArm {
     pub arm_type: Type,
 }
 
-/// A logical cluster of same-name declarations produced by an exhaustive
-/// `match` block at decl level (task 2372).
+/// A logical cluster of same-name declarations produced by a `match` block at
+/// decl level (task 2372).
 ///
 /// See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
 /// Stored in `CompilationScope::match_arm_groups` — separate from the regular
 /// `names` map so that future duplicate-name diagnostics (task 2375) cannot
 /// misfire on cluster members.
+///
+/// **Exhaustiveness:** is *not* enforced here — a non-exhaustive `match`
+/// compiles silently with the omitted variants having no arm guard. Spec §6.4
+/// requires exhaustiveness; that check is scheduled for a follow-up task once
+/// union typing (task 2373) lands and provides the type-level union to
+/// compare patterns against.
 #[derive(Debug, Clone)]
 pub struct GuardedDeclGroup {
     /// The shared logical name of all arms (e.g. `"head"`).

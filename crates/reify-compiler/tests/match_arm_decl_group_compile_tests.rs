@@ -324,6 +324,74 @@ fn match_arm_decl_group_pipe_patterns_produce_two_arm_cluster() {
     );
 }
 
+/// Pattern-validation diagnostic (review feedback for task 2372).
+///
+/// A pattern that does not name a variant of the discriminant's enum must
+/// produce a diagnostic, not silently compile to an always-false guard.
+#[test]
+fn match_arm_decl_group_unknown_variant_pattern_emits_diagnostic() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            // 'Hexx' is a typo — not a variant of HeadType.
+            match_arm_decl("Hexx", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_unknown_variant"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let unknown_variant_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("not a variant") && msg.contains("hexx")
+        })
+        .collect();
+    assert!(
+        !unknown_variant_diags.is_empty(),
+        "expected a diagnostic naming the unknown variant 'Hexx', got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
 /// Determinism regression test (review feedback for task 2372).
 ///
 /// A structure with multiple match-arm clusters must expose

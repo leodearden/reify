@@ -2073,6 +2073,34 @@ fn compile_match_arm_decl_group(
     let discriminant_ref =
         CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
 
+    // Validate every arm's pattern against the discriminant enum's variants
+    // before compiling guards. A typo like `Hexx` would otherwise compile to a
+    // guard that is unconditionally false, with no diagnostic emitted. We only
+    // emit (we do not return), so that downstream compilation can continue and
+    // surface follow-on issues in one pass.
+    let known_enum_variants: Option<&[String]> = enum_defs
+        .iter()
+        .find(|e| e.name == enum_type_name)
+        .map(|e| e.variants.as_slice());
+    if let Some(variants) = known_enum_variants {
+        for arm in &m.arms {
+            for pat in &arm.patterns {
+                if !variants.iter().any(|v| v == pat) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm pattern '{}' is not a variant of enum '{}'",
+                            pat, enum_type_name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            arm.span,
+                            "unknown enum variant",
+                        )),
+                    );
+                }
+            }
+        }
+    }
+
     let mut group_arms: Vec<GuardedDeclArm> = Vec::with_capacity(m.arms.len());
 
     for arm in &m.arms {
