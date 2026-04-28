@@ -1504,6 +1504,79 @@ mod tests {
         assert!(eval_builtin("orient_compose", &[q, inf_q]).is_undef());
     }
 
+    // ── orient_inverse tests (step-3) ──────────────────────────────────────
+
+    #[test]
+    fn orient_inverse_identity_is_identity() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(eval_builtin("orient_inverse", &[id]), 1.0, 0.0, 0.0, 0.0);
+    }
+
+    /// Inverse of 90°z = (cos(π/4), 0, 0, sin(π/4)) is (cos(π/4), 0, 0, -sin(π/4)),
+    /// representing -90°z (axis-angle equivalent of conjugate for a unit quaternion).
+    #[test]
+    fn orient_inverse_90deg_z_is_conjugate() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90z = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_inverse", &[q90z]),
+            s,
+            0.0,
+            0.0,
+            -s
+        );
+    }
+
+    /// q ∘ inverse(q) ≈ identity (sign-insensitive due to double-cover).
+    #[test]
+    fn orient_inverse_compose_q_inv_q_is_identity() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let q_inv = eval_builtin("orient_inverse", &[q.clone()]);
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[q, q_inv]),
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    #[test]
+    fn orient_inverse_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_inverse", &[]).is_undef());
+        assert!(
+            eval_builtin("orient_inverse", &[q.clone(), q]).is_undef(),
+            "2 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_inverse_non_orientation_returns_undef() {
+        assert!(eval_builtin("orient_inverse", &[Value::Real(1.0)]).is_undef());
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
