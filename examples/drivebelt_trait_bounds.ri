@@ -21,21 +21,6 @@
 // This file is auto-discovered by crates/reify-compiler/tests/examples_smoke.rs
 // (walks examples/*.ri) and the dedicated integration test at
 // crates/reify-eval/tests/drivebelt_trait_bounds.rs.
-//
-// Enum note: CorrosionClass and BiocompatibilityClass are declared in the stdlib
-// (std.materials.chemical), but the parser resolves EnumAccess nodes (e.g.
-// `CorrosionClass.C5`) from the *current source file* only.  Re-declaring the
-// enums here (identical to the stdlib definitions) is safe — no duplicate-enum
-// diagnostic is emitted, and the compiler's resolution_enums has the prelude
-// entry first so stdlib types win.  See materials_chemical_tests.rs for the
-// same pattern and rationale.
-// TODO(task #2525): drop the inline redecls below once the parser consults
-// prelude/stdlib enums for EnumAccess disambiguation.
-
-// ── Enum re-declarations (for parser EnumAccess resolution) ─────────────────
-
-enum CorrosionClass { C1, C2, C3, C4, C5 }
-enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
 
 // ── (1) Composed-bound integration: DriveBelt ────────────────────────────────
 
@@ -153,8 +138,7 @@ structure def BorosilicateGlass : OpticallyCharacterized {
 //   CorrosionResistant : MaterialSpec
 //
 // density and name are shared via the MaterialSpec diamond merge.
-// The enum-typed params use the CorrosionClass and BiocompatibilityClass enums
-// declared at the top of this file (re-declared from std.materials.chemical).
+// The enum-typed params use stdlib enums from std.materials.chemical.
 //
 // Neither Biocompatible nor CorrosionResistant inject numeric constraints —
 // they are classification traits, not contractual bound traits.
