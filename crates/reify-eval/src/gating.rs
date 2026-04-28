@@ -15,11 +15,28 @@
 
 use std::collections::HashSet;
 
-use crate::cache::{CacheStore, NodeId};
+use crate::cache::{CacheStore, NodeCache, NodeId};
 use reify_types::ValueCellId;
+
+/// Inner predicate: returns `true` iff any input listed in `entry`'s
+/// `dependency_trace.reads` is non-Final in `cache`.
+///
+/// This is the shared kernel called by both [`has_non_final_inputs`] and
+/// [`unblocked_gated_nodes`] so each performs only a single `cache.get` per
+/// node.
+fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
+    entry
+        .dependency_trace
+        .reads
+        .iter()
+        .any(|read: &ValueCellId| !cache.freshness(&NodeId::Value(read.clone())).is_final())
+}
 
 /// Returns `true` iff any of `node`'s recorded `dependency_trace.reads`
 /// input cells is non-Final in `cache`.
+///
+/// "Non-Final" means any of `Freshness::Intermediate`, `Pending`, or `Failed`.
+/// The name reflects the actual predicate: `!is_final()` on every input.
 ///
 /// A non-Final input means the cached value is not yet authoritative, so a
 /// node with `OnlyRunOnFinalInputs` policy must not be scheduled yet.
@@ -45,17 +62,15 @@ use reify_types::ValueCellId;
 /// keeps this helper aligned with the scheduler's single `bool` predicate
 /// (see `reify-runtime/src/concurrent.rs`).
 ///
+/// The canonical end-to-end witness is
+/// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
+///
 /// See arch §7.3 lines 762–767 and §3.5 line 436.
-pub fn has_intermediate_inputs(cache: &CacheStore, node: &NodeId) -> bool {
-    let entry = match cache.get(node) {
-        Some(e) => e,
-        None => return false,
-    };
-    entry
-        .dependency_trace
-        .reads
-        .iter()
-        .any(|read: &ValueCellId| !cache.freshness(&NodeId::Value(read.clone())).is_final())
+pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
+    match cache.get(node) {
+        Some(entry) => entry_has_non_final_inputs(cache, entry),
+        None => false,
+    }
 }
 
 /// Returns the subset of `gated` nodes whose dependency inputs are all-Final —
@@ -63,17 +78,25 @@ pub fn has_intermediate_inputs(cache: &CacheStore, node: &NodeId) -> bool {
 ///
 /// A gated node is included in the result iff **both** conditions hold:
 /// 1. It has a cache entry (it has been evaluated at least once).
-/// 2. `has_intermediate_inputs(cache, node)` returns `false` (all inputs are Final).
+/// 2. [`has_non_final_inputs`]`(cache, node)` returns `false` (all inputs are Final).
 ///
 /// The "must have a cache entry" requirement distinguishes "newly unblocked
 /// because the freshness walk transitioned its inputs" from the cold-start
 /// case where the node simply has never been evaluated.  See arch §3.5 line
 /// 436.
 ///
+/// Each candidate performs exactly one `cache.get` lookup (via the shared
+/// [`entry_has_non_final_inputs`] kernel), avoiding the redundant double-lookup
+/// that would occur from calling `cache.get(node).is_some()` followed by a
+/// separate `has_non_final_inputs(cache, node)`.
+///
 /// # Type parameters
 ///
 /// `I` is any iterator over `&NodeId` references — callers can pass a slice,
 /// a `Vec`, a `HashSet`, etc.
+///
+/// The canonical end-to-end witness is
+/// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §3.5 line 436 ("freshness propagation can unlock gated work").
 pub fn unblocked_gated_nodes<'a, I>(cache: &CacheStore, gated: I) -> HashSet<NodeId>
@@ -82,8 +105,12 @@ where
 {
     gated
         .into_iter()
-        .filter(|node| cache.get(node).is_some() && !has_intermediate_inputs(cache, node))
-        .cloned()
+        .filter_map(|node| {
+            cache
+                .get(node)
+                .filter(|entry| !entry_has_non_final_inputs(cache, entry))
+                .map(|_| node.clone())
+        })
         .collect()
 }
 
@@ -113,11 +140,11 @@ mod tests {
         );
     }
 
-    // ── has_intermediate_inputs unit tests (step-3) ───────────────────────────
+    // ── has_non_final_inputs unit tests (step-3) ───────────────────────────
 
     /// (a) All inputs Final → false.
     #[test]
-    fn has_intermediate_inputs_all_final_returns_false() {
+    fn has_non_final_inputs_all_final_returns_false() {
         let e = "T";
         let a = ValueCellId::new(e, "a");
         let b = ValueCellId::new(e, "b");
@@ -127,14 +154,14 @@ mod tests {
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
-            !has_intermediate_inputs(&cache, &NodeId::Value(b.clone())),
+            !has_non_final_inputs(&cache, &NodeId::Value(b.clone())),
             "all-Final inputs must return false"
         );
     }
 
     /// (b) One Intermediate input → true.
     #[test]
-    fn has_intermediate_inputs_one_intermediate_returns_true() {
+    fn has_non_final_inputs_one_intermediate_returns_true() {
         let e = "T";
         let a = ValueCellId::new(e, "a");
         let b = ValueCellId::new(e, "b");
@@ -144,14 +171,14 @@ mod tests {
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
-            has_intermediate_inputs(&cache, &NodeId::Value(b.clone())),
+            has_non_final_inputs(&cache, &NodeId::Value(b.clone())),
             "one Intermediate input must return true"
         );
     }
 
     /// (c) One Pending input → true.
     #[test]
-    fn has_intermediate_inputs_one_pending_returns_true() {
+    fn has_non_final_inputs_one_pending_returns_true() {
         let e = "T";
         let a = ValueCellId::new(e, "a");
         let b = ValueCellId::new(e, "b");
@@ -161,14 +188,14 @@ mod tests {
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
-            has_intermediate_inputs(&cache, &NodeId::Value(b.clone())),
+            has_non_final_inputs(&cache, &NodeId::Value(b.clone())),
             "one Pending input must return true"
         );
     }
 
     /// (d) One Failed input → true.
     #[test]
-    fn has_intermediate_inputs_one_failed_returns_true() {
+    fn has_non_final_inputs_one_failed_returns_true() {
         let e = "T";
         let a = ValueCellId::new(e, "a");
         let b = ValueCellId::new(e, "b");
@@ -178,20 +205,20 @@ mod tests {
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
-            has_intermediate_inputs(&cache, &NodeId::Value(b.clone())),
+            has_non_final_inputs(&cache, &NodeId::Value(b.clone())),
             "one Failed input must return true (Failed is non-Final)"
         );
     }
 
     /// (e) Node has no cache entry → false (vacuously runnable).
     #[test]
-    fn has_intermediate_inputs_node_absent_returns_false() {
+    fn has_non_final_inputs_node_absent_returns_false() {
         let e = "T";
         let b = ValueCellId::new(e, "b");
         let cache = CacheStore::new();
 
         assert!(
-            !has_intermediate_inputs(&cache, &NodeId::Value(b.clone())),
+            !has_non_final_inputs(&cache, &NodeId::Value(b.clone())),
             "absent node must return false (vacuously runnable)"
         );
     }
@@ -199,7 +226,7 @@ mod tests {
     /// (f) Node has cache entry but empty dependency_trace.reads → false
     ///     (param-like node with no upstream inputs).
     #[test]
-    fn has_intermediate_inputs_empty_reads_returns_false() {
+    fn has_non_final_inputs_empty_reads_returns_false() {
         let e = "T";
         let a = ValueCellId::new(e, "a");
 
@@ -207,7 +234,7 @@ mod tests {
         put_value_entry(&mut cache, &a, Freshness::Final, vec![]);
 
         assert!(
-            !has_intermediate_inputs(&cache, &NodeId::Value(a.clone())),
+            !has_non_final_inputs(&cache, &NodeId::Value(a.clone())),
             "empty reads (param-like) must return false"
         );
     }
@@ -301,7 +328,7 @@ mod tests {
     /// (e) Gated node not in cache → excluded from result (not "newly unblocked").
     ///
     /// The contract surface: a node absent from the cache has never been
-    /// evaluated; it is "vacuously runnable" per `has_intermediate_inputs` but
+    /// evaluated; it is "vacuously runnable" per `has_non_final_inputs` but
     /// NOT "newly unblocked by the freshness walk", so it must NOT appear in
     /// `unblocked_gated_nodes`.
     #[test]
@@ -322,18 +349,18 @@ mod tests {
 
     // ── gating_composes_with_freshness_walk_in_isolation (step-7) ────────────
 
-    /// Pins the cross-module composition of `has_intermediate_inputs` /
+    /// Pins the cross-module composition of `has_non_final_inputs` /
     /// `unblocked_gated_nodes` with `propagate_freshness_only` without
     /// needing the full Engine fixture.
     ///
     /// Three-cell synthetic chain: `a` (Intermediate{1}), `c` (Intermediate{1}),
     /// `b` (Intermediate{1}, reads=[a, c]).
     ///
-    /// (i) Before any walk: `has_intermediate_inputs(b)` = true,
+    /// (i) Before any walk: `has_non_final_inputs(b)` = true,
     ///     `unblocked_gated_nodes([b])` = empty.
     /// (ii) Flip `a` → Final; walk from {a}; b is still Intermediate (c blocks).
     /// (iii) Flip `c` → Final; walk from {c}; b becomes Final,
-    ///       `has_intermediate_inputs(b)` = false,
+    ///       `has_non_final_inputs(b)` = false,
     ///       `unblocked_gated_nodes([b])` = {b}.
     #[test]
     fn gating_composes_with_freshness_walk_in_isolation() {
@@ -364,7 +391,7 @@ mod tests {
 
         // (i) Before any walk.
         assert!(
-            has_intermediate_inputs(&cache, &b_node),
+            has_non_final_inputs(&cache, &b_node),
             "(i) b has Intermediate inputs before any walk"
         );
         assert!(
@@ -385,7 +412,7 @@ mod tests {
             "(ii) b must still be Intermediate (c still blocks)"
         );
         assert!(
-            has_intermediate_inputs(&cache, &b_node),
+            has_non_final_inputs(&cache, &b_node),
             "(ii) b still has intermediate input (c)"
         );
         assert!(
@@ -410,7 +437,7 @@ mod tests {
             "(iii) b must be Final after both inputs are Final"
         );
         assert!(
-            !has_intermediate_inputs(&cache, &b_node),
+            !has_non_final_inputs(&cache, &b_node),
             "(iii) b must have no intermediate inputs"
         );
         let unblocked = unblocked_gated_nodes(&cache, &gated);

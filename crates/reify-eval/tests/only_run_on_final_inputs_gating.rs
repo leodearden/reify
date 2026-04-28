@@ -2,7 +2,7 @@
 //!
 //! Exercises the composition of:
 //! - `reify_eval::freshness_walk::propagate_freshness_only` (from task #2335)
-//! - `reify_eval::gating::has_intermediate_inputs` and `unblocked_gated_nodes`
+//! - `reify_eval::gating::has_non_final_inputs` and `unblocked_gated_nodes`
 //!   (from task #2356)
 //!
 //! over a real `Engine` cache populated by cold `Engine::eval()`.
@@ -18,10 +18,10 @@
 //!
 //! ## Key invariants pinned
 //!
-//! - `has_intermediate_inputs(b) = true` while any input is non-Final.
+//! - `has_non_final_inputs(b) = true` while any input is non-Final.
 //! - `unblocked_gated_nodes([b]) = {}` until all inputs are Final.
 //! - After both inputs become Final via the freshness walk,
-//!   `has_intermediate_inputs(b) = false` and `unblocked_gated_nodes([b]) = {b}`.
+//!   `has_non_final_inputs(b) = false` and `unblocked_gated_nodes([b]) = {b}`.
 //! - b's `result_hash` and cached `Value` are byte-identical to the pre-injection
 //!   snapshot throughout — no value evaluator ran during the walk-driven unblock
 //!   (arch §3.5 line 432: "the input hash for downstream nodes is unchanged, so
@@ -76,10 +76,10 @@ fn three_cell_module() -> reify_compiler::CompiledModule {
 /// 3. Assert gating helpers block b before any walk.
 /// 4. Flip a→Final; run `propagate_freshness_only` from {a}.
 ///    - b transitions Pending → Intermediate{1} (c still blocks), appears in `updated`.
-///    - `has_intermediate_inputs(b)` is still true; `unblocked_gated_nodes` is empty.
+///    - `has_non_final_inputs(b)` is still true; `unblocked_gated_nodes` is empty.
 /// 5. Flip c→Final; run `propagate_freshness_only` from {c}.
 ///    - b transitions Intermediate{1} → Final; `updated` contains b.
-///    - `has_intermediate_inputs(b)` = false; `unblocked_gated_nodes([b])` = {b}.
+///    - `has_non_final_inputs(b)` = false; `unblocked_gated_nodes([b])` = {b}.
 /// 6. Witness: b's `result_hash` and `Value` are byte-identical to pre-injection
 ///    snapshot — no value evaluator was invoked during either walk.
 #[test]
@@ -162,7 +162,7 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     let gated = vec![b_node.clone()];
 
     assert!(
-        gating::has_intermediate_inputs(engine.cache_store(), &b_node),
+        gating::has_non_final_inputs(engine.cache_store(), &b_node),
         "b has Intermediate inputs (a, c) before any walk"
     );
     assert!(
@@ -212,7 +212,7 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
 
     // Gating helpers still block b (c is still Intermediate).
     assert!(
-        gating::has_intermediate_inputs(engine.cache_store(), &b_node),
+        gating::has_non_final_inputs(engine.cache_store(), &b_node),
         "b still has Intermediate input (c) after first walk"
     );
     assert!(
@@ -252,7 +252,7 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
 
     // Gating helpers now unblock b.
     assert!(
-        !gating::has_intermediate_inputs(engine.cache_store(), &b_node),
+        !gating::has_non_final_inputs(engine.cache_store(), &b_node),
         "b must have no intermediate inputs after both inputs are Final"
     );
     let unblocked = gating::unblocked_gated_nodes(engine.cache_store(), &gated);
