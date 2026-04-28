@@ -704,6 +704,34 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::TopologyTagStale).unwrap();
         assert_eq!(s, "\"TopologyTagStale\"");
     }
+
+    // --- SpecializationForbiddenDecl tests (task 2369 — E_SPECIALIZATION_FORBIDDEN_DECL) ---
+    // Pairs with the rejection rule in
+    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::SpecializationForbiddenDecl` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::SpecializationForbiddenDecl)`.
+    /// Shape mirrors `diagnostic_code_topology_tag_stale_with_code_round_trips`;
+    /// a future enum reorganisation that drops `SpecializationForbiddenDecl` is
+    /// caught here.
+    #[test]
+    fn diagnostic_code_specialization_forbidden_decl_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::SpecializationForbiddenDecl);
+        assert_eq!(d.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::SpecializationForbiddenDecl` serializes as
+    /// `"SpecializationForbiddenDecl"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_specialization_forbidden_decl_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::SpecializationForbiddenDecl).unwrap();
+        assert_eq!(s, "\"SpecializationForbiddenDecl\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
