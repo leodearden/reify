@@ -2641,10 +2641,18 @@ mod tests {
         }
     }
 
-    /// transform_compose(T1, T2) must be bit-equal to T1 * T2 (operator-level).
-    /// Both must use identical algebra (R1*R2, R1*t2+t1).
+    /// transform_compose(T1, T2) numerically matches the (R1*R2, R1*t2+t1)
+    /// formula used by the `Transform * Transform` operator in reify-expr.
+    ///
+    /// This test does NOT invoke the operator code path itself — `eval_mul`
+    /// is private to reify-expr and not callable from this crate's unit
+    /// tests. Instead, it asserts numeric equivalence with the same algebra,
+    /// using the same shared helpers (quat_mul / quat_rotate). The
+    /// kinematic_stdlib_smoke E2E test in `crates/reify-eval/tests` is the
+    /// place that drives the actual operator path through the eval pipeline
+    /// and compares against `transform_compose`'s output.
     #[test]
-    fn transform_compose_matches_operator_path() {
+    fn transform_compose_matches_named_function_formula() {
         // Use transform3_identity-derived inputs that don't already pre-normalize quaternions.
         let q1 = Value::Orientation {
             w: 0.5,
@@ -2661,9 +2669,7 @@ mod tests {
         let t1 = make_transform(q1, 1.0, 2.0, 3.0);
         let t2 = make_transform(q2, 4.0, 5.0, 6.0);
         let composed = eval_builtin("transform_compose", &[t1.clone(), t2.clone()]);
-        // The named function and the * operator must produce identical Value
-        // (decision-record: regression test asserts equality).
-        // We mirror the exact algebra used by the operator-level path:
+        // Mirror the exact algebra used by the operator-level path:
         //   R = normalize(q1) * q2
         //   t = normalize(q1) * t2 + t1  (vector rotation)
         // Construct the expected result component-by-component and compare.

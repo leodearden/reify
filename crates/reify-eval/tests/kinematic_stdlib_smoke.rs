@@ -29,6 +29,8 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `t_id`           = `transform3_identity()`
 ///   `t_unit_x`       = `transform3(r_id, vec3(1mm, 0mm, 0mm))`
 ///   `t_composed`     = `transform_compose(t_unit_x, t_unit_x)` → translation [2mm, 0, 0]
+///   `t_composed_op`  = `t_unit_x * t_unit_x` (operator-level path) — must
+///                      equal `t_composed` value-for-value.
 ///   `t_inv`          = `transform_inverse(t_unit_x)` → translation [-1mm, 0, 0]
 ///   `twist`          = `transform_log(t_unit_x)` → Map { angular=[0,0,0], linear=[1mm,0,0] }
 ///   `t_round`        = `transform_exp(twist)` → Transform ≈ t_unit_x
@@ -43,10 +45,11 @@ structure def Kinematic {
     let r_composed = orient_compose(r_z90, r_z90)
     let r_inv      = orient_inverse(r_z90)
 
-    let t_id       = transform3_identity()
-    let t_unit_x   = transform3(r_id, vec3(1mm, 0mm, 0mm))
-    let t_composed = transform_compose(t_unit_x, t_unit_x)
-    let t_inv      = transform_inverse(t_unit_x)
+    let t_id          = transform3_identity()
+    let t_unit_x      = transform3(r_id, vec3(1mm, 0mm, 0mm))
+    let t_composed    = transform_compose(t_unit_x, t_unit_x)
+    let t_composed_op = t_unit_x * t_unit_x
+    let t_inv         = transform_inverse(t_unit_x)
 
     let twist      = transform_log(t_unit_x)
     let t_round    = transform_exp(twist)
@@ -211,6 +214,18 @@ fn kinematic_stdlib_smoke_e2e() {
         t_co_trans,
         DimensionVector::LENGTH,
         "t_composed translation dim",
+    );
+
+    // t_composed_op = t_unit_x * t_unit_x must be Value-equal to
+    // transform_compose(t_unit_x, t_unit_x). This is the regression test
+    // that the named-function path and the operator path stay in sync —
+    // it lives at the eval-pipeline level because reify-expr's eval_mul
+    // is private to that crate and not callable from reify-stdlib unit
+    // tests.
+    let t_co_op = get_value(v, "t_composed_op");
+    assert_eq!(
+        t_co_op, t_co,
+        "t_unit_x * t_unit_x must equal transform_compose(t_unit_x, t_unit_x); got {t_co_op:?} vs {t_co:?}"
     );
 
     // t_inv = inverse(t_unit_x) → translation [-1mm, 0, 0]
