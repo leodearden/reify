@@ -206,10 +206,7 @@ mod tests {
         ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl,
         SubDecl, StructureDef,
     };
-    use reify_types::{
-        ContentHash, Diagnostic, DiagnosticCode, ModulePath, PortDirection, Severity, SourceSpan,
-        SpannedIdent,
-    };
+    use reify_types::{ContentHash, Diagnostic, DiagnosticCode, ModulePath, Severity, SourceSpan};
 
     fn parse_module(source: &str) -> ParsedModule {
         reify_syntax::parse(source, ModulePath::single("test"))
