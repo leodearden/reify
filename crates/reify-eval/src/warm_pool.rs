@@ -27,7 +27,9 @@ pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 pub enum WarmPoolEvent {
     /// A warm state was donated to the pool (insertion).
     Donated { node_id: NodeId, size_bytes: usize },
-    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    /// A warm-state pool entry was evicted — either because LRU eviction kicked in
+    /// to free budget, OR because the same key was overwritten by a subsequent donate
+    /// call (the prior entry is the victim whose state was discarded).
     Evicted { node_id: NodeId, size_bytes: usize },
 }
 
@@ -263,7 +265,10 @@ impl WarmStatePool {
     /// FIXME(cost-weighted-lru): extend the signature to accept and thread through the original
     /// `cost_per_byte` (or add a `checkout_with_lru_stamp_and_cost` variant).  The pinning test
     /// `donate_preserving_lru_resets_cost_to_zero_known_limitation` documents and will catch this
-    /// regression when cost-weighted LRU lands.
+    /// regression when cost-weighted LRU lands.  Note: this limitation now also applies to the
+    /// same-key-overwrite path — since `insert_entry` emits `Evicted` on overwrite (task 2456),
+    /// a downstream byte-accounting consumer will see the displaced entry's cost as `0.0` in the
+    /// `Evicted` event's bookkeeping, making the cost loss observable in telemetry.
     ///
     /// # Architecture reference
     /// arch §4.3 line 539 "(4c)→(14b) round-trip"; see also `engine_edit.rs` step (14b) doc
@@ -302,8 +307,16 @@ impl WarmStatePool {
         // Capture a clone for telemetry emission after the move into pool.insert.
         let node_id_for_event = node_id.clone();
 
-        // If this node already has an entry, remove the old one first
+        // If this node already has an entry, remove the old one first and emit an
+        // Evicted event for the displaced entry so byte-accounting consumers can
+        // maintain the invariant Σ Donated.size − Σ Evicted.size = used_bytes.
+        // The emit must happen BEFORE the LRU loop so the drained sequence reads
+        // "overwrite-victim evicted → optional LRU pressure evictions → donation".
         if let Some(old) = self.pool.remove(&node_id) {
+            self.push_event(WarmPoolEvent::Evicted {
+                node_id: node_id.clone(),
+                size_bytes: old.size_bytes,
+            });
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
@@ -1547,6 +1560,141 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "checkout_with_lru_stamp must have take-semantics: second call returns None"
+        );
+    }
+
+    // --- Task 2456: emit Evicted on same-key overwrite ---
+
+    /// `donate_preserving_lru` emits overwrite-Evicted symmetrically via `insert_entry`.
+    ///
+    /// Donate Y via `donate(Y, state)`, drain, then call
+    /// `donate_preserving_lru(Y, state2, some_stamp)` directly (without checkout)
+    /// to trigger the overwrite path — assert `[Evicted{Y,50}, Donated{Y,80}]`.
+    ///
+    /// Guards the design decision "localize the change to insert_entry" — all three
+    /// donate variants funnel through the shared core so the overwrite-Evicted fires
+    /// symmetrically regardless of which public API is used.  `donate_with_cost` is
+    /// covered transitively by `donate_same_node_emits_evicted_then_donated_on_overwrite`
+    /// (which calls `donate`, a thin wrapper around `donate_with_cost`).
+    #[test]
+    fn donate_preserving_lru_emits_overwrite_evicted() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_y = NodeId::Value(ValueCellId::new("T", "y"));
+        let stamp = std::time::Instant::now();
+
+        pool.donate(node_y.clone(), OpaqueState::new(0u8, 50));
+        pool.drain_events(); // clear setup
+
+        // Call donate_preserving_lru directly on an already-present key.
+        pool.donate_preserving_lru(node_y.clone(), OpaqueState::new(0u8, 80), stamp);
+        let events = pool.drain_events();
+
+        assert_eq!(
+            events,
+            vec![
+                WarmPoolEvent::Evicted {
+                    node_id: node_y.clone(),
+                    size_bytes: 50,
+                },
+                WarmPoolEvent::Donated {
+                    node_id: node_y,
+                    size_bytes: 80,
+                },
+            ],
+            "donate_preserving_lru same-key overwrite must emit Evicted then Donated"
+        );
+    }
+
+    /// Same-key overwrite combined with LRU pressure: ordering invariant and accounting.
+    ///
+    /// Setup: budget=200, donate A(100) + B(100) → used=200 (at budget). Drain.
+    /// Donate A again with size=200: the overwrite reclaims A's old 100 bytes
+    /// (used drops to 100), then 100+200=300>200 → LRU loop evicts B (used drops to 0),
+    /// then A(200) is inserted (used=200).
+    ///
+    /// Expected drained sequence (exact order):
+    ///   [Evicted{A, 100} (overwrite), Evicted{B, 100} (LRU), Donated{A, 200}]
+    ///
+    /// This pins the design decision "overwrite-Evicted goes BEFORE the LRU loop"
+    /// and verifies accounting balance after both kinds of Evicted fire in one insert.
+    #[test]
+    fn same_key_overwrite_with_lru_pressure_emits_overwrite_evicted_first() {
+        let mut pool = WarmStatePool::new(200);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(0u8, 100));
+        let setup = pool.drain_events();
+        assert_eq!(setup.len(), 2, "setup: 2 Donated events");
+        assert_eq!(pool.used_bytes(), 200, "setup: used=200 at budget");
+
+        // Donate A again with size=200: triggers overwrite-Evicted(A,100) then LRU-Evicted(B,100)
+        pool.donate(node_a.clone(), OpaqueState::new(0u8, 200));
+        let events = pool.drain_events();
+
+        assert_eq!(
+            events,
+            vec![
+                WarmPoolEvent::Evicted {
+                    node_id: node_a.clone(),
+                    size_bytes: 100,
+                },
+                WarmPoolEvent::Evicted {
+                    node_id: node_b,
+                    size_bytes: 100,
+                },
+                WarmPoolEvent::Donated {
+                    node_id: node_a,
+                    size_bytes: 200,
+                },
+            ],
+            "overwrite-Evicted must precede LRU-Evicted, which must precede Donated"
+        );
+        assert_eq!(
+            pool.used_bytes(),
+            200,
+            "used_bytes must equal new entry size after both kinds of Evicted"
+        );
+    }
+
+    /// Same-key overwrite must emit `Evicted{old_size}` then `Donated{new_size}`.
+    ///
+    /// The overwrite-evicted event is required for byte-accounting consumers
+    /// to maintain the invariant `Σ Donated.size − Σ Evicted.size = used_bytes`.
+    ///
+    /// Fails on the unpatched code because no Evicted event is emitted today.
+    #[test]
+    fn donate_same_node_emits_evicted_then_donated_on_overwrite() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_x = NodeId::Value(ValueCellId::new("T", "x"));
+
+        // First donation: setup.
+        pool.donate(node_x.clone(), OpaqueState::new(0u8, 100));
+        pool.drain_events(); // Clear the setup Donated event.
+
+        // Second donation of the *same* node: should emit Evicted(old) then Donated(new).
+        pool.donate(node_x.clone(), OpaqueState::new(0u8, 300));
+
+        let events = pool.drain_events();
+        assert_eq!(
+            events,
+            vec![
+                WarmPoolEvent::Evicted {
+                    node_id: node_x.clone(),
+                    size_bytes: 100,
+                },
+                WarmPoolEvent::Donated {
+                    node_id: node_x,
+                    size_bytes: 300,
+                },
+            ],
+            "same-key overwrite must emit Evicted{{old_size}} THEN Donated{{new_size}}"
+        );
+        assert_eq!(
+            pool.used_bytes(),
+            300,
+            "used_bytes must reflect only the new entry after overwrite"
         );
     }
 
