@@ -369,6 +369,40 @@ mod tests {
         );
     }
 
+    // ── step-13: canonical message format pin ────────────────────────────────
+
+    /// Pins the exact wire-format strings produced by validate_module for a
+    /// Param-inside-spec-scope fixture. Uses full equality (not substring match)
+    /// so any future producer/doc-comment drift fails loudly.
+    ///
+    /// Mirrors `shadow_diagnostic_message_format_is_pinned` in
+    /// `crates/reify-compiler/tests/shadowing_warning_tests.rs`.
+    #[test]
+    fn validate_module_diagnostic_message_format_is_pinned() {
+        let p_span = param_span();
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_param("x", p_span)],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1);
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.message,
+            "'param' declaration 'x' is not permitted in a specialization scope (spec \u{a7}8.7)",
+            "diagnostic message must exactly match the canonical form"
+        );
+        assert_eq!(diagnostics[0].labels.len(), 1);
+        assert_eq!(
+            d.labels[0].message,
+            "forbidden in specialization scope",
+            "label message must exactly match"
+        );
+    }
+
     // ── step-11: nested specialization scope ─────────────────────────────────
 
     /// An inner `sub` with its own body (nested specialization scope) inside an
