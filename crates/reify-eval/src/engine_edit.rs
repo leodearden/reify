@@ -4056,6 +4056,84 @@ mod tests {
         );
     }
 
+    /// `drain_into_cache_or_repool` cache-HIT arm: when the cache already holds
+    /// an entry for a node, the staged warm-state is donated to the cache via
+    /// `cache.donate_warm_state`, NOT re-donated to the pool.
+    ///
+    /// Pins engine_edit.rs lines 617-618:
+    /// ```text
+    /// if cache.get(&nid).is_some() { cache.donate_warm_state(&nid, state); }
+    /// ```
+    ///
+    /// After drain the pool is empty (the cache-hit branch fired, not the
+    /// pool re-donation branch), the warm-state is retrievable from the cache,
+    /// and the subsequent guard Drop is inert (map was emptied by drain).
+    #[test]
+    fn pending_warm_seeds_guard_drain_cache_hit_makes_drop_inert() {
+        use crate::cache::{CachedResult, CacheStore, NodeCache, NodeId};
+        use crate::deps::DependencyTrace;
+        use crate::warm_pool::WarmStatePool;
+        use reify_types::{DeterminacyState, Freshness, OpaqueState, Value, VersionId};
+        use super::PendingWarmSeedsGuard;
+
+        const PAYLOAD: u32 = 0xCAFEBABE;
+        const SIZE: usize = 8;
+
+        let mut pool = WarmStatePool::new(1024);
+        let mut cache = CacheStore::new();
+
+        let nid = NodeId::Value(ValueCellId::new("T", "hit_node"));
+
+        // Pre-populate the cache so `cache.get(&nid).is_some()` is true.
+        cache.put(
+            nid.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(0),
+            ),
+        );
+        assert!(cache.get(&nid).is_some(), "cache entry must exist before drain");
+
+        {
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(
+                nid.clone(),
+                OpaqueState::new(PAYLOAD, SIZE),
+                std::time::Instant::now(),
+            );
+            // Cache HIT → state goes to cache, NOT to pool.
+            pending.drain_into_cache_or_repool(&mut cache);
+            // Guard drops here with empty map → Drop is a no-op.
+        }
+
+        // (a) Pool must be empty: the cache-hit branch did NOT re-donate to pool.
+        assert_eq!(
+            pool.used_bytes(),
+            0,
+            "cache-hit: pool must remain empty after drain (entry went to cache)"
+        );
+
+        // (b) Warm-state must now be retrievable from the cache.
+        let warm = cache
+            .get_warm_state(&nid)
+            .expect("cache-hit: warm-state must be in cache after drain");
+        assert_eq!(
+            warm.downcast::<u32>(),
+            Some(PAYLOAD),
+            "cache-hit: warm-state payload must be preserved"
+        );
+
+        // (c) After the guard has dropped (end of block above), the pool is
+        //     still empty — Drop was inert because the map was empty after drain.
+        assert_eq!(
+            pool.used_bytes(),
+            0,
+            "cache-hit: pool must still be empty after guard Drop (Drop was inert)"
+        );
+    }
+
     /// Guard re-donates its staged entries when dropped during a panic unwind.
     ///
     /// This is the end-to-end test for the guard's primary safety contract:
