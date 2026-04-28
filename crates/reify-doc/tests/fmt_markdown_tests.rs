@@ -1903,36 +1903,21 @@ fn split_mode_multi_module_prefixes_and_backlinks() {
 /// `#Board`).
 #[test]
 fn split_mode_per_item_cross_refs_use_filename_links() {
-    let fastener = ItemDoc::Trait {
-        name: "Fastener".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![],
-        members: vec![],
+    let fastener = ItemDoc {
+        header: ItemHeader { name: "Fastener".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec![] },
     };
-    let bolt = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let bolt = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
-    let board = ItemDoc::Structure {
-        name: "Board".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let board = ItemDoc {
+        header: ItemHeader { name: "Board".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
-    let mcu = ItemDoc::Occurrence {
-        name: "MCU".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let mcu = ItemDoc {
+        header: ItemHeader { name: "MCU".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Occurrence { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![ModuleDoc {
@@ -2007,28 +1992,18 @@ fn split_mode_per_item_cross_refs_use_filename_links() {
 #[test]
 fn multi_module_split_per_item_cross_refs_use_relative_paths() {
     // alpha: Bolt (Structure), LocalT (Trait — same-module reference)
-    let bolt = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![], params: vec![], ports: vec![],
-        constraints: vec![], sub_components: vec![], realizations: vec![],
-        meta: vec![],
+    let bolt = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
-    let local_t = ItemDoc::Trait {
-        name: "LocalT".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![],
-        members: vec![],
+    let local_t = ItemDoc {
+        header: ItemHeader { name: "LocalT".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec![] },
     };
     // beta: Fastener (Trait — cross-module reference from alpha/Bolt)
-    let fastener = ItemDoc::Trait {
-        name: "Fastener".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![], pragmas: vec![],
-        members: vec![],
+    let fastener = ItemDoc {
+        header: ItemHeader { name: "Fastener".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec![] },
     };
     let model = DocModel {
         modules: vec![
@@ -2115,36 +2090,19 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
 #[test]
 fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
     // Two modules each declare a trait named `Shared` — genuine ambiguity.
-    let shared_alpha = ItemDoc::Trait {
-        name: "Shared".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        members: vec![],
+    let shared_alpha = ItemDoc {
+        header: ItemHeader { name: "Shared".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec![] },
     };
-    let shared_beta = ItemDoc::Trait {
-        name: "Shared".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        members: vec![],
+    let shared_beta = ItemDoc {
+        header: ItemHeader { name: "Shared".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Trait { members: vec![] },
     };
     // Conformer lives in alpha; its cross-ref target name "Shared" is
     // ambiguous because alpha::Shared and beta::Shared both exist.
-    let bolt = ItemDoc::Structure {
-        name: "Bolt".into(),
-        doc: None,
-        is_pub: true,
-        annotations: vec![],
-        pragmas: vec![],
-        params: vec![],
-        ports: vec![],
-        constraints: vec![],
-        sub_components: vec![],
-        realizations: vec![],
-        meta: vec![],
+    let bolt = ItemDoc {
+        header: ItemHeader { name: "Bolt".into(), doc: None, is_pub: true, annotations: vec![], pragmas: vec![] },
+        kind: ItemKind::Structure { params: vec![], ports: vec![], constraints: vec![], sub_components: vec![], realizations: vec![], meta: vec![] },
     };
     let model = DocModel {
         modules: vec![
