@@ -3825,4 +3825,135 @@ mod tests {
         );
         assert_eq!(d.labels[0].span, span);
     }
+
+    /// Build a minimal `TopologyTemplate` for cycle-guard tests.
+    ///
+    /// The template has no realizations so `RealizationLetEnv::lookup` always
+    /// falls through to the value_cells arm — the arm containing the recursive
+    /// call to `infer_traits_for_expr_in_env(expr, self)`.  All other fields are
+    /// zeroed/empty; they are irrelevant to the cycle-guard path.
+    fn minimal_template(name: &str, cells: Vec<ValueCellDecl>) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    /// Build a `Let`-kind `ValueCellDecl` whose `default_expr` is a `ValueRef`
+    /// pointing at `ref_id`.  Used to construct cycle fixtures in the tests below.
+    fn let_cell_with_ref(id: ValueCellId, ref_id: ValueCellId) -> ValueCellDecl {
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Let,
+            visibility: Visibility::Private,
+            cell_type: Type::Real,
+            default_expr: Some(CompiledExpr::value_ref(ref_id, Type::Real)),
+            solver_hints: vec![],
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// Cycle guard: a self-referential `let` binding (`let g : Real = ValueRef(g)`)
+    /// must not overflow the stack; the in-flight visited set terminates the cycle
+    /// and `lookup` returns the safe-default `Some(InferredTraits::all())`.
+    ///
+    /// # Why the value_cells path is exercised
+    ///
+    /// Entity "E" has no geometry realization for "g" (no realization in the
+    /// template), so the realization arm is skipped and `lookup` falls through to
+    /// the value_cells arm — the arm that contains the recursive call to
+    /// `infer_traits_for_expr_in_env(expr, self)`.
+    ///
+    /// # Why `Type::Real`
+    ///
+    /// A non-geometry type confirms the fixture bypasses the realization arm
+    /// and only exercises the value_cells fallback where the recursion lives.
+    ///
+    /// # Assertion rationale
+    ///
+    /// `Some(InferredTraits::all())` is the safe-default propagation chain:
+    /// inner `lookup` hits the in-flight guard → returns `None` →
+    /// `infer_traits_for_expr_in_env(...).unwrap_or(all())` returns `all()` →
+    /// outer `lookup` wraps in `Some`.
+    #[test]
+    fn lookup_self_referential_let_returns_safe_default_without_overflow() {
+        use std::cell::RefCell;
+
+        // let g : Real = ValueRef(g)  — direct self-reference
+        let g_id = ValueCellId::new("E", "g");
+        let template = minimal_template("E", vec![let_cell_with_ref(g_id.clone(), g_id.clone())]);
+
+        let mut templates = HashMap::new();
+        templates.insert("E".to_string(), &template);
+
+        // Constructs RealizationLetEnv with struct literal — the `in_flight` field
+        // does not exist yet; this intentionally fails to compile in the RED phase.
+        let env = RealizationLetEnv {
+            templates: &templates,
+            in_flight: RefCell::new(Vec::new()),
+        };
+
+        assert_eq!(
+            env.lookup(&g_id),
+            Some(InferredTraits::all()),
+            "self-referential let must safe-default to all() rather than stack-overflowing"
+        );
+    }
+
+    /// Cycle guard: a chained-cycle let (`let g = ValueRef(h); let h = ValueRef(g)`)
+    /// must not overflow the stack; the in-flight visited set terminates the cycle
+    /// at re-entry and `lookup` returns the safe-default `Some(InferredTraits::all())`.
+    ///
+    /// Pins that the guard handles cycles longer than direct self-reference.
+    /// The assertion shape is identical to the self-referential test; both produce
+    /// `Some(InferredTraits::all())`.
+    #[test]
+    fn lookup_chained_cycle_let_returns_safe_default_without_overflow() {
+        use std::cell::RefCell;
+
+        // let g : Real = ValueRef(h)
+        // let h : Real = ValueRef(g)
+        let g_id = ValueCellId::new("E", "g");
+        let h_id = ValueCellId::new("E", "h");
+        let template = minimal_template(
+            "E",
+            vec![
+                let_cell_with_ref(g_id.clone(), h_id.clone()),
+                let_cell_with_ref(h_id.clone(), g_id.clone()),
+            ],
+        );
+
+        let mut templates = HashMap::new();
+        templates.insert("E".to_string(), &template);
+
+        // Constructs RealizationLetEnv with struct literal — the `in_flight` field
+        // does not exist yet; this intentionally fails to compile in the RED phase.
+        let env = RealizationLetEnv {
+            templates: &templates,
+            in_flight: RefCell::new(Vec::new()),
+        };
+
+        assert_eq!(
+            env.lookup(&g_id),
+            Some(InferredTraits::all()),
+            "chained-cycle let must safe-default to all() rather than stack-overflowing"
+        );
+    }
 }
