@@ -98,6 +98,65 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
 
+// --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
+
+/// Records the per-parent face/edge correspondence emitted by a single
+/// `BRepAlgoAPI_*` boolean. Each record is a flat tuple of
+/// `(parent_index, parent_subshape_index, result_subshape_index)` for
+/// Modified/Generated, or `(parent_index, parent_subshape_index)` for
+/// Deleted — all 0-based, packed into `std::vector<uint32_t>`.
+///
+/// We materialize the records EAGERLY at construction time because
+/// `BRepAlgoAPI_*::Modified()/Generated()/IsDeleted()` query maps tied
+/// to the algorithm object's lifetime. Once the algorithm goes out of
+/// scope the maps are gone, so we can't lazily query them later.
+///
+/// `result` owns the fused shape; `boolean_op_history_take_result_shape`
+/// hands it off to the kernel via `std::move`. Subsequent queries to
+/// `result` after take are illegal (it is a moved-from `unique_ptr`).
+struct BooleanOpHistory {
+    std::unique_ptr<OcctShape> result;
+    std::vector<uint32_t> face_modified;
+    std::vector<uint32_t> face_generated;
+    std::vector<uint32_t> face_deleted;
+    std::vector<uint32_t> edge_modified;
+    std::vector<uint32_t> edge_generated;
+    std::vector<uint32_t> edge_deleted;
+};
+
+/// Run `BRepAlgoAPI_Fuse` on `left` and `right`, materializing the result
+/// shape AND the Modified/Generated/Deleted records for each parent's
+/// faces and edges into a single `BooleanOpHistory`.
+///
+/// Each parent's faces are walked in canonical TopExp `face_map()` order
+/// (1-based, deduplicated by `IsSame`); the per-record indices are
+/// 0-based at the FFI boundary. Result-side indices come from the result
+/// shape's cached `face_map()`/`edge_map()`. Modified records map a
+/// parent sub-shape to one or more result sub-shapes; Generated records
+/// map a parent sub-shape to NEW result sub-shapes (e.g. section walls);
+/// Deleted records carry only `(parent_index, parent_subshape_index)`
+/// because the parent has no result analogue. Empty result-side lookups
+/// (a child shape that BRepAlgoAPI reports but that doesn't appear in
+/// the result `face_map`/`edge_map`) are silently skipped.
+std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& left, const OcctShape& right);
+
+/// Move the result shape out of the history wrapper. Returns the freshly
+/// constructed `OcctShape` for the kernel to register; subsequent calls
+/// observe an empty `unique_ptr`.
+std::unique_ptr<OcctShape> boolean_op_history_take_result_shape(BooleanOpHistory& history);
+
+/// Six accessors returning the flat record buffers as `rust::Vec<uint32_t>`
+/// (deep-copied at the FFI boundary). Each Modified/Generated buffer holds
+/// flat groups of 3 `uint32_t`s `(parent_index, parent_subshape_index,
+/// result_subshape_index)`; Deleted buffers hold groups of 2
+/// `(parent_index, parent_subshape_index)`.
+rust::Vec<uint32_t> boolean_op_history_face_modified(const BooleanOpHistory& history);
+rust::Vec<uint32_t> boolean_op_history_face_generated(const BooleanOpHistory& history);
+rust::Vec<uint32_t> boolean_op_history_face_deleted(const BooleanOpHistory& history);
+rust::Vec<uint32_t> boolean_op_history_edge_modified(const BooleanOpHistory& history);
+rust::Vec<uint32_t> boolean_op_history_edge_generated(const BooleanOpHistory& history);
+rust::Vec<uint32_t> boolean_op_history_edge_deleted(const BooleanOpHistory& history);
+
 /// Probe whether `a` and `b` are intersecting (non-positive minimum distance).
 ///
 /// Uses BRepExtrema_DistShapeShape: returns true iff dist.Value() <= 0.0.

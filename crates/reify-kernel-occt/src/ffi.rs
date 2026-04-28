@@ -67,6 +67,14 @@ pub mod ffi {
         /// Opaque vector of shapes for passing N shapes across FFI.
         type OcctShapeVec;
 
+        /// Opaque container holding the BRepAlgoAPI history records
+        /// (Modified/Generated/Deleted for faces and edges) plus the
+        /// fused result shape. Records are materialized eagerly at
+        /// construction time because the BRepAlgoAPI tracking maps are
+        /// tied to the algorithm object's lifetime — once that's gone,
+        /// the maps are gone too.
+        type BooleanOpHistory;
+
         // --- OcctShapeVec builder + reader ---
         fn new_shape_vec() -> UniquePtr<OcctShapeVec>;
         fn shape_vec_push(vec: Pin<&mut OcctShapeVec>, shape: &OcctShape);
@@ -82,6 +90,38 @@ pub mod ffi {
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
+
+        // --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
+
+        /// Run `BRepAlgoAPI_Fuse` on `left` and `right`, eagerly capturing
+        /// the per-parent face/edge Modified/Generated/Deleted records
+        /// alongside the fused result shape.
+        fn boolean_fuse_with_history(
+            left: &OcctShape,
+            right: &OcctShape,
+        ) -> Result<UniquePtr<BooleanOpHistory>>;
+
+        /// Move the result shape out of the history wrapper for
+        /// registration in the kernel's shape table. Subsequent
+        /// `_take_result_shape` calls return an empty pointer.
+        fn boolean_op_history_take_result_shape(
+            history: Pin<&mut BooleanOpHistory>,
+        ) -> UniquePtr<OcctShape>;
+
+        /// Modified records for parent faces (flat groups of 3 u32:
+        /// `parent_index, parent_subshape_index, result_subshape_index`).
+        fn boolean_op_history_face_modified(history: &BooleanOpHistory) -> Vec<u32>;
+        /// Generated records for parent faces (flat groups of 3).
+        fn boolean_op_history_face_generated(history: &BooleanOpHistory) -> Vec<u32>;
+        /// Deleted records for parent faces (flat groups of 2 u32:
+        /// `parent_index, parent_subshape_index`).
+        fn boolean_op_history_face_deleted(history: &BooleanOpHistory) -> Vec<u32>;
+        /// Modified records for parent edges (flat groups of 3).
+        fn boolean_op_history_edge_modified(history: &BooleanOpHistory) -> Vec<u32>;
+        /// Generated records for parent edges (flat groups of 3).
+        fn boolean_op_history_edge_generated(history: &BooleanOpHistory) -> Vec<u32>;
+        /// Deleted records for parent edges (flat groups of 2).
+        fn boolean_op_history_edge_deleted(history: &BooleanOpHistory) -> Vec<u32>;
 
         /// Probe whether `a` and `b` are intersecting (non-positive minimum distance)
         /// via BRepExtrema_DistShapeShape. Returns true iff dist.Value() <= 0.0.

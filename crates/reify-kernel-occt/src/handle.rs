@@ -14,6 +14,7 @@
 //! implements `GeometryKernel`, so it can be used anywhere a boxed kernel
 //! is expected.
 
+use crate::BooleanOpHistoryRecords;
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
@@ -59,6 +60,11 @@ enum OcctRequest {
     ExtractFaces {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
+    },
+    BooleanFuseWithHistory {
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        reply: oneshot::Sender<Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError>>,
     },
 }
 
@@ -226,6 +232,31 @@ impl OcctKernelHandle {
         )?
     }
 
+    /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
+    /// fused-result handle id alongside the per-parent face/edge history
+    /// records (Modified / Generated / Deleted) emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::boolean_fuse_with_history`] across the
+    /// kernel-thread channel. Result handle is registered with
+    /// `ReprKind::Solid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2590, step-14).
+    pub fn boolean_fuse_with_history(
+        &self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<(GeometryHandleId, BooleanOpHistoryRecords), GeometryError> {
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::BooleanFuseWithHistory { left, right, reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
     /// Execute a geometry operation on the kernel thread.
     ///
     /// # Panics
@@ -298,6 +329,10 @@ impl OcctKernelHandle {
                     }
                     OcctRequest::ExtractFaces { handle, reply } => {
                         let result = kernel.extract_faces(handle);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::BooleanFuseWithHistory { left, right, reply } => {
+                        let result = kernel.boolean_fuse_with_history(left, right);
                         let _ = reply.send(result);
                     }
                 }

@@ -30,6 +30,11 @@ pub use floor_constants::RUST_GUARD_MARKER;
 mod handle;
 #[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
+// v0.2 persistent-naming-v2 BRepAlgoAPI history records (task 2590).
+// Always exported from the crate root so callers in either build mode
+// (`has_occt` and stub) can name the types; the stub variant of
+// `OcctKernelHandle::boolean_fuse_with_history` returns
+// `Err(OperationFailed("OCCT not available"))`.
 #[cfg(has_occt)]
 use floor_constants::{CPP_LINE_WIRE_MIN_LENGTH_SQ, RUST_LINE_WIRE_MIN_LENGTH_SQ};
 /// Compile-time invariant: the Rust primary floor must stay strictly below the C++ floor.
@@ -169,6 +174,83 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 /// their inline `format!` because no such cross-arm equality contract applies to them.
 fn centroid_json(p: ffi::ffi::Point3) -> String {
     format!("{{\"x\":{},\"y\":{},\"z\":{}}}", p.x, p.y, p.z)
+}
+
+// --- BRepAlgoAPI history records (v0.2 persistent-naming-v2, task 2590) ---
+
+/// One BRepAlgoAPI Modified or Generated record: a parent sub-shape (face
+/// or edge) at index `parent_subshape_index` of parent `parent_index`
+/// gives rise to a result sub-shape at index `result_subshape_index` in
+/// the fused result. All indices are 0-based and follow the canonical
+/// `TopExp::MapShapes(.., TopAbs_FACE | TopAbs_EDGE, ..)` order
+/// (deduplicated by `IsSame`).
+///
+/// `parent_index` is `0` for the left operand, `1` for the right operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryRecord {
+    pub parent_index: u8,
+    pub parent_subshape_index: u32,
+    pub result_subshape_index: u32,
+}
+
+/// One BRepAlgoAPI Deleted record: a parent sub-shape at
+/// `parent_subshape_index` of parent `parent_index` was consumed by the
+/// boolean operation and has no analogue in the result.
+///
+/// `parent_index` is `0` for the left operand, `1` for the right operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletedRecord {
+    pub parent_index: u8,
+    pub parent_subshape_index: u32,
+}
+
+/// All BRepAlgoAPI history records for a single boolean operation,
+/// split by sub-shape kind (face / edge) and by record kind
+/// (Modified / Generated / Deleted).
+///
+/// Returned by [`OcctKernel::boolean_fuse_with_history`] and
+/// [`OcctKernelHandle::boolean_fuse_with_history`]. Consumed by
+/// `reify_eval::propagate_attributes_via_brepalgoapi_history` to copy
+/// parent topology attributes onto the result handles after a
+/// constructive boolean.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BooleanOpHistoryRecords {
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+}
+
+#[cfg(has_occt)]
+/// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,
+/// result_subshape_index)` triples — as emitted by the C++ wrapper —
+/// into typed `HistoryRecord`s.
+///
+/// Trailing partial groups (length not a multiple of 3) are discarded
+/// via `chunks_exact`; the wrapper guarantees full triples, so this is
+/// a defense-in-depth no-op rather than a permitted code path.
+fn decode_history_records(flat: Vec<u32>) -> Vec<HistoryRecord> {
+    flat.chunks_exact(3)
+        .map(|c| HistoryRecord {
+            parent_index: c[0] as u8,
+            parent_subshape_index: c[1],
+            result_subshape_index: c[2],
+        })
+        .collect()
+}
+
+#[cfg(has_occt)]
+/// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index)`
+/// pairs into typed `DeletedRecord`s.  Mirrors `decode_history_records`.
+fn decode_deleted_records(flat: Vec<u32>) -> Vec<DeletedRecord> {
+    flat.chunks_exact(2)
+        .map(|c| DeletedRecord {
+            parent_index: c[0] as u8,
+            parent_subshape_index: c[1],
+        })
+        .collect()
 }
 
 #[cfg(has_occt)]
@@ -380,6 +462,67 @@ impl OcctKernel {
             .map_err(|_| QueryError::InvalidHandle(b))?;
         ffi::ffi::min_clearance(s1, s2)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
+    /// fused-result handle alongside the per-parent face/edge history
+    /// records (Modified / Generated / Deleted).
+    ///
+    /// The result handle is registered with `ReprKind::Solid` (matching
+    /// the existing `boolean_fuse` arm of `execute(GeometryOp::Union)`).
+    /// The history records describe the parent ↔ result correspondence
+    /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
+    /// `.IsDeleted()` for each parent's faces and edges; consumers (the
+    /// v0.2 propagation helper in `reify-eval`) use them to copy parent
+    /// topology attributes onto the result handles.
+    ///
+    /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
+    /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
+    /// if the OCCT call fails.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2590, step-14). Cut and
+    /// Common siblings land in task 8 per docs/prds/v0_2/persistent-naming-v2.md.
+    pub fn boolean_fuse_with_history(
+        &mut self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
+        // Run the FFI call inside a scope that drops the immutable borrow
+        // before we mutate `self` via `store_with_repr`.
+        let (result_shape, records) = {
+            let l = self.get_shape(left)?;
+            let r = self.get_shape(right)?;
+            let mut history = ffi::ffi::boolean_fuse_with_history(l, r)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::boolean_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::boolean_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::boolean_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::boolean_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::boolean_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::boolean_op_history_edge_deleted(&history));
+            // Take the result shape last, after all record buffers have
+            // been read off — `take_result_shape` leaves `history` with
+            // an empty result pointer, but the record buffers are still
+            // live (separate `std::vector`s in the wrapper).
+            let result_shape = ffi::ffi::boolean_op_history_take_result_shape(history.pin_mut());
+            let records = BooleanOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
     }
 }
 
