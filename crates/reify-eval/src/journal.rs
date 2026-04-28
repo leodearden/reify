@@ -41,11 +41,14 @@ pub enum EventKind {
     CacheHit,
     /// A warm-start state was used for evaluation.
     WarmStartUsed,
-    /// A warm-state pool entry was evicted (LRU eviction kicked in to free budget).
+    /// A warm-state pool entry was evicted — either because LRU eviction kicked in to
+    /// free budget, OR because the same key was overwritten by a subsequent donate call
+    /// (the prior entry being the victim whose state was discarded).
     ///
     /// Translation contract: when the engine translator converts a `WarmPoolEvent::Evicted`
     /// into an `EvalEvent`, `EvalEvent.node_id` **must** be the evicted node (the victim
     /// whose state was discarded), not the donating node that triggered the eviction.
+    /// This applies equally to LRU-eviction victims and same-key-overwrite victims.
     Evicted { size_bytes: usize },
     /// A warm state was donated to the pool (insertion or topology-removal donation).
     ///
