@@ -71,7 +71,7 @@
 //! will fire automatically once the inference reports the missing
 //! `bounded` flag.
 
-use crate::types::PrimitiveKind;
+use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_types::{CompiledExpr, CompiledExprKind};
 
 /// The closed v0.1 set of stdlib geometry-conformance marker trait names.
@@ -353,6 +353,92 @@ pub fn infer_traits_for_expr(expr: &CompiledExpr) -> InferredTraits {
         // Default-Bounded for every other expression kind. See the doc-comment
         // above for the rationale.
         _ => InferredTraits::all(),
+    }
+}
+
+/// Walk the inference table over a compiled geometry op-array.
+///
+/// This is the **inverse** of the `infer_traits_for_expr` FunctionCall arm —
+/// same dispatch table (same `combine_*` helpers and `infer_primitive` lookup)
+/// but keyed by `CompiledGeometryOp` variant instead of function-call name.
+///
+/// # Root convention
+///
+/// The op-array represents a geometry construction tree where `ops.last()` is
+/// the **root** (the final result). Recursion follows `GeomRef::Step(idx)` back
+/// into earlier ops in the array.
+///
+/// # Safe defaults
+///
+/// - Empty array → `InferredTraits::all()` (defensive; compiler never emits an
+///   empty realization).
+/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (safe-default: sub-component
+///   geometry is not chased through the call stack; doing so would require
+///   resolving cross-entity references that are out of scope here).
+/// - Out-of-range `GeomRef::Step(idx)` → `InferredTraits::all()` (defensive;
+///   well-formed IR never produces an out-of-range index).
+pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
+    match ops.last() {
+        None => InferredTraits::all(),
+        Some(op) => infer_op(op, ops),
+    }
+}
+
+/// Dispatch on a single `CompiledGeometryOp`, recursing back into `ops` for
+/// `GeomRef::Step` references. Doc: see [`infer_traits_for_op`].
+fn infer_op(op: &CompiledGeometryOp, ops: &[CompiledGeometryOp]) -> InferredTraits {
+    match op {
+        CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
+
+        CompiledGeometryOp::Boolean { op: bool_op, left, right } => {
+            let a = infer_geom_ref(left, ops);
+            let b = infer_geom_ref(right, ops);
+            match bool_op {
+                BooleanOp::Union => combine_union(a, b),
+                BooleanOp::Difference => combine_difference(a, b),
+                BooleanOp::Intersection => combine_intersection(a, b),
+            }
+        }
+
+        CompiledGeometryOp::Modify { target, .. } => {
+            combine_modify(infer_geom_ref(target, ops))
+        }
+
+        CompiledGeometryOp::Transform { target, .. } => {
+            combine_transform(infer_geom_ref(target, ops))
+        }
+
+        CompiledGeometryOp::Pattern { target, .. } => {
+            combine_pattern(infer_geom_ref(target, ops))
+        }
+
+        CompiledGeometryOp::Sweep { profiles, .. } => {
+            // Sweep inherits traits from the first profile (bounded, connected
+            // geometry swept along a finite path stays bounded and connected).
+            let profile = profiles
+                .first()
+                .map(|r| infer_geom_ref(r, ops))
+                .unwrap_or(InferredTraits::all());
+            combine_sweep(profile)
+        }
+
+        // Curve constructors are 1-D primitives; return safe all() default.
+        CompiledGeometryOp::Curve { .. } => InferredTraits::all(),
+    }
+}
+
+/// Resolve a `GeomRef` within an op-array, returning the inferred traits for
+/// the referenced op. `GeomRef::Sub(_)` returns the safe all() default.
+fn infer_geom_ref(geom_ref: &GeomRef, ops: &[CompiledGeometryOp]) -> InferredTraits {
+    match geom_ref {
+        GeomRef::Step(idx) => {
+            // Defensive: if idx is out of range (malformed IR), default to all().
+            ops.get(*idx)
+                .map(|op| infer_op(op, ops))
+                .unwrap_or(InferredTraits::all())
+        }
+        // Sub-component geometry is not chased through the call stack.
+        GeomRef::Sub(_) => InferredTraits::all(),
     }
 }
 
