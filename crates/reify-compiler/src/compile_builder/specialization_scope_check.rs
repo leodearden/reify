@@ -14,7 +14,7 @@ use reify_syntax::{
     Declaration, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule,
     walk_specialization_scope_members,
 };
-use reify_types::Diagnostic;
+use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
 /// Pre-pass entry point: walk every specialization scope in `parsed`.
 ///
@@ -24,25 +24,81 @@ use reify_types::Diagnostic;
 /// to [`walk_specialization_scope_members`], which itself recurses into
 /// nested specialization scopes and `where { … } else { … }` branches.
 ///
-/// This task ships the visitor as a no-op. Task 2369 populates the actual
-/// rejection rule (`Param`/`Port`/`Sub` with body inside a specialization
-/// scope) and pushes [`reify_types::DiagnosticCode::E_SPECIALIZATION_FORBIDDEN_DECL`]
-/// into the supplied `diagnostics` vector.
-// TODO(task-2369): the visitor body below will be replaced with diagnostic
-// emission that pushes into `diagnostics`. The `Vec` (not `&mut [_]`)
-// signature is the planned shape because 2369 needs `push`; we keep it now
-// so the call site in `compile_with_prelude_context` doesn't churn.
-#[allow(clippy::ptr_arg)]
+/// For each member visited inside a specialization scope, if
+/// [`forbidden_kind_name`] returns `Some(kind)`, an
+/// [`DiagnosticCode::SpecializationForbiddenDecl`] error is pushed.
 pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
-    // Deliberately unused this task — see TODO(task-2369) above. Binding to
-    // `_` makes the dead-ness self-evident at the call site without the
-    // wider `unused_variables` lint allow.
-    let _ = diagnostics;
-    for_each_specialization_member(parsed, &mut |_member| {
-        // Intentionally a no-op until task 2369. The traversal is wired
-        // here so the compile pipeline pays exactly one walk; 2369 will
-        // replace this body with the rejection-rule logic.
+    for_each_specialization_member(parsed, &mut |member| {
+        // # Wording pin
+        //
+        // The format string below is pinned by
+        // `validate_module_diagnostic_message_format_is_pinned` in this file's
+        // inline tests. The label message `"forbidden in specialization scope"` is
+        // pinned by the same test. Any drift between these literals and the test's
+        // expectations will surface as a test failure — do not change one without
+        // updating the other.
+        //
+        // - Diagnostic message: `"'<kind>' declaration '<name>' is not permitted in a specialization scope (spec §8.7)"`
+        // - Label message: `"forbidden in specialization scope"`
+        if let Some(kind) = forbidden_kind_name(member) {
+            let name = member_name(member);
+            let span = member_span(member);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "'{kind}' declaration '{name}' is not permitted in a specialization scope (spec §8.7)"
+                ))
+                .with_code(DiagnosticCode::SpecializationForbiddenDecl)
+                .with_label(DiagnosticLabel::new(span, "forbidden in specialization scope")),
+            );
+        }
     });
+}
+
+/// Returns the kind name string for forbidden specialization-scope member kinds,
+/// or `None` for permitted kinds.
+///
+/// Returns `Some("param")`, `Some("port")`, or `Some("sub")` for the three
+/// forbidden variants (spec §8.7 "Not permitted: New param, port, or sub
+/// declarations"). Returns `None` for all other variants (let, constraint,
+/// connect, chain, etc.), which are permitted inside a specialization scope.
+///
+/// # Load-bearing wildcard
+///
+/// The explicit `_ => None` arm is intentional. A future `MemberDecl` variant
+/// that should be *permitted* must not silently become forbidden because of a
+/// missing arm here. The test `validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope`
+/// guards against accidental broadening — it will catch any new arm that
+/// erroneously returns `Some`.
+fn forbidden_kind_name(member: &MemberDecl) -> Option<&'static str> {
+    match member {
+        MemberDecl::Param(_) => Some("param"),
+        // Port and Sub arms added in steps 6 and 8 respectively.
+        _ => None,
+    }
+}
+
+/// Returns the name of the declaration (used in the diagnostic message).
+fn member_name(member: &MemberDecl) -> &str {
+    match member {
+        MemberDecl::Param(p) => &p.name,
+        MemberDecl::Port(p) => &p.name,
+        MemberDecl::Sub(s) => &s.name,
+        // Only Param/Port/Sub are forbidden; other arms are unreachable here
+        // (forbidden_kind_name returns None for them). Provide a fallback to
+        // keep the match exhaustive.
+        _ => "<unknown>",
+    }
+}
+
+/// Returns the source span of the declaration (used as the primary label span).
+fn member_span(member: &MemberDecl) -> SourceSpan {
+    match member {
+        MemberDecl::Param(p) => p.span,
+        MemberDecl::Port(p) => p.span,
+        MemberDecl::Sub(s) => s.span,
+        // Fallback for completeness (forbidden_kind_name returns None for these).
+        _ => SourceSpan::empty(0),
+    }
 }
 
 /// Iterate every member visited by the specialization-scope walker across
