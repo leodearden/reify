@@ -479,6 +479,132 @@ mod tests {
         );
     }
 
+    /// Step-11: A Failed node is terminal — the walk must NOT re-derive it
+    /// (which would silently flip Failed → Final/Intermediate/Pending based
+    /// on its inputs and destroy the chain-root invariant) but MUST still
+    /// propagate FROM it to its downstream dependents.
+    ///
+    /// 3-cell chain `a → b → c`, all initially `Intermediate { generation: 1 }`.
+    /// Mark `b` as Failed via `mark_failed`. Snapshot b's freshness and
+    /// `pending_cause` (== None per `mark_failed`'s contract). After flipping
+    /// `a` to Final and walking from `{a}`:
+    ///
+    /// Asserts:
+    /// - `b.freshness` is STILL `Failed { error: ErrorRef::new("b is broken") }`
+    ///   (walk did NOT recompute it).
+    /// - `b.pending_cause` is STILL `None` (walk did NOT touch the side-table).
+    /// - `c.freshness == Pending { last_substantive: ResultRef::of_hash(c_prev_hash) }`
+    ///   AND `c.pending_cause == Some(NodeId::Value(b))` — the walk DID
+    ///   propagate FROM Failed b to c, treating Failed b as the chain root.
+    ///
+    /// Pins arch §9.2 lines 880-890 (Failed is terminal, downstream Pending
+    /// propagation continues with the Failed leaf as chain root) and
+    /// `mark_failed`'s contract at cache.rs:545-566.
+    #[test]
+    fn failed_node_is_terminal_and_skipped_during_walk() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let c = ValueCellId::new(e, "c");
+
+        let mut cache = CacheStore::new();
+        put_value_entry_with_payload(
+            &mut cache,
+            &a,
+            Value::Real(5.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+            VersionId(1),
+        );
+        put_value_entry_with_payload(
+            &mut cache,
+            &b,
+            Value::Real(10.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+            VersionId(1),
+        );
+        put_value_entry_with_payload(
+            &mut cache,
+            &c,
+            Value::Real(20.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![b.clone()],
+            VersionId(1),
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+        reverse_index.add(b.clone(), NodeId::Value(c.clone()));
+
+        let a_node = NodeId::Value(a.clone());
+        let b_node = NodeId::Value(b.clone());
+        let c_node = NodeId::Value(c.clone());
+
+        // Snapshot c's prior result_hash for the Pending.last_substantive check.
+        let c_prev_hash: ContentHash = cache.get(&c_node).expect("c cached").result_hash;
+
+        // Mark b as Failed via the canonical writer; this clears
+        // `pending_cause` per cache.rs:561.
+        let b_error = ErrorRef::new("b is broken");
+        assert!(cache.mark_failed(&b_node, b_error.clone()));
+        assert_eq!(
+            cache.freshness(&b_node),
+            Freshness::Failed { error: b_error.clone() },
+            "sanity: b must be Failed before the walk"
+        );
+        assert_eq!(
+            cache.pending_cause(&b_node),
+            None,
+            "sanity: mark_failed clears pending_cause (cache.rs:561)"
+        );
+
+        // Flip a to Final; this is the edge that triggers the walk.
+        assert!(cache.set_freshness(&a_node, Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+
+        // (i) b's freshness must STILL be Failed — the walk must skip it as
+        //     a write target (re-derivation would destroy the chain root).
+        assert_eq!(
+            cache.freshness(&b_node),
+            Freshness::Failed { error: b_error },
+            "b must STILL be Failed — walk must not re-derive a Failed node"
+        );
+        // (ii) b's pending_cause must remain None — Failed nodes are chain
+        //      roots, never forwarders (arch §9.2 + mark_failed contract).
+        assert_eq!(
+            cache.pending_cause(&b_node),
+            None,
+            "b's pending_cause must remain None — Failed is a chain root, not a forwarder"
+        );
+        // (iii) c must be Pending with last_substantive set to its prior
+        //       result_hash, and its pending_cause must point at b (the
+        //       Failed leaf). The walk DID still propagate FROM b to c.
+        assert_eq!(
+            cache.freshness(&c_node),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(c_prev_hash),
+            },
+            "c must be Pending with last_substantive = ResultRef::of_hash(c_prev_hash) \
+             (arch §9.2: mark_pending_with_cause captures the cached hash)"
+        );
+        assert_eq!(
+            cache.pending_cause(&c_node),
+            Some(b_node.clone()),
+            "c's pending_cause must be Some(Value(b)) — Failed b is the chain root"
+        );
+        assert!(
+            updated.contains(&c_node),
+            "updated must contain Value(c) — the walk propagated from Failed b to c, got: {:?}",
+            updated
+        );
+    }
+
     /// Step-9: When an upstream node is Failed, the walk must record the
     /// downstream node as Pending and forward the Failed NodeId via the
     /// `pending_cause` side-table (arch §9.2 lines 880-890).
