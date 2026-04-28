@@ -7,6 +7,7 @@ pub(crate) mod dot_chain_lint;
 pub(crate) mod entities_phase;
 pub(crate) mod enums_phase;
 pub(crate) mod fields_phase;
+pub(crate) mod forall_walk;
 pub(crate) mod functions_phase;
 pub(crate) mod hash;
 pub(crate) mod post_passes;

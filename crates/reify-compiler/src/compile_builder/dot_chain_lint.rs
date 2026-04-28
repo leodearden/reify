@@ -170,6 +170,10 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
 ///   * `Port`: `frame_expr` + nested `members` (recursive).
 ///   * `Connect`: `left.expr`, `right.expr`, `params[*].1`.
 ///   * `Chain`: each `elements[*]`.
+///   * `ForallConnect`: `collection` + every body expr (delegated to
+///     [`super::forall_walk::walk_forall_connect_body`]).
+///   * `ForallConstraint`: `collection` + every body expr (delegated to
+///     [`super::forall_walk::walk_forall_constraint_body`]).
 ///   * `AssociatedType`/`MetaBlock`: no expressions, no-op.
 ///
 /// Recursion into nested `GuardedGroup`/`Port` member lists is bounded by
@@ -181,7 +185,7 @@ fn walk_members(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    use reify_syntax::{ForallConnectBody, ForallConstraintBody, MemberDecl};
+    use reify_syntax::MemberDecl;
     if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
         return;
     }
@@ -262,39 +266,15 @@ fn walk_members(
             }
             MemberDecl::ForallConnect(f) => {
                 walk_expr(&f.collection, diagnostics);
-                match &f.body {
-                    ForallConnectBody::Connect(c) => {
-                        walk_expr(&c.left.expr, diagnostics);
-                        walk_expr(&c.right.expr, diagnostics);
-                        for (_, expr) in &c.params {
-                            walk_expr(expr, diagnostics);
-                        }
-                    }
-                    ForallConnectBody::Chain(c) => {
-                        for elem in &c.elements {
-                            walk_expr(elem, diagnostics);
-                        }
-                    }
-                }
+                super::forall_walk::walk_forall_connect_body(&f.body, |expr| {
+                    walk_expr(expr, diagnostics);
+                });
             }
             MemberDecl::ForallConstraint(f) => {
                 walk_expr(&f.collection, diagnostics);
-                match &f.body {
-                    ForallConstraintBody::Constraint(c) => {
-                        walk_expr(&c.expr, diagnostics);
-                        if let Some(wc) = &c.where_clause {
-                            walk_expr(&wc.condition, diagnostics);
-                        }
-                    }
-                    ForallConstraintBody::Instantiation(ci) => {
-                        for (_, expr) in &ci.args {
-                            walk_expr(expr, diagnostics);
-                        }
-                        if let Some(wc) = &ci.where_clause {
-                            walk_expr(&wc.condition, diagnostics);
-                        }
-                    }
-                }
+                super::forall_walk::walk_forall_constraint_body(&f.body, |expr| {
+                    walk_expr(expr, diagnostics);
+                });
             }
             // Members with no embedded expressions.
             MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}

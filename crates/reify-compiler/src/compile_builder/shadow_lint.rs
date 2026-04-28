@@ -481,52 +481,30 @@ fn walk_members_depth(
                 }
             }
             MemberDecl::ForallConnect(f) => {
-                use reify_syntax::ForallConnectBody;
                 walk_forall_binder(
                     &f.variable,
                     f.span,
                     &f.collection,
                     frames,
                     diagnostics,
-                    |frames, diagnostics| match &f.body {
-                        ForallConnectBody::Connect(c) => {
-                            walk_expr(&c.left.expr, frames, diagnostics);
-                            walk_expr(&c.right.expr, frames, diagnostics);
-                            for (_, expr) in &c.params {
-                                walk_expr(expr, frames, diagnostics);
-                            }
-                        }
-                        ForallConnectBody::Chain(c) => {
-                            for elem in &c.elements {
-                                walk_expr(elem, frames, diagnostics);
-                            }
-                        }
+                    |frames, diagnostics| {
+                        super::forall_walk::walk_forall_connect_body(&f.body, |expr| {
+                            walk_expr(expr, frames, diagnostics);
+                        });
                     },
                 );
             }
             MemberDecl::ForallConstraint(f) => {
-                use reify_syntax::ForallConstraintBody;
                 walk_forall_binder(
                     &f.variable,
                     f.span,
                     &f.collection,
                     frames,
                     diagnostics,
-                    |frames, diagnostics| match &f.body {
-                        ForallConstraintBody::Constraint(c) => {
-                            walk_expr(&c.expr, frames, diagnostics);
-                            if let Some(wc) = &c.where_clause {
-                                walk_expr(&wc.condition, frames, diagnostics);
-                            }
-                        }
-                        ForallConstraintBody::Instantiation(ci) => {
-                            for (_, expr) in &ci.args {
-                                walk_expr(expr, frames, diagnostics);
-                            }
-                            if let Some(wc) = &ci.where_clause {
-                                walk_expr(&wc.condition, frames, diagnostics);
-                            }
-                        }
+                    |frames, diagnostics| {
+                        super::forall_walk::walk_forall_constraint_body(&f.body, |expr| {
+                            walk_expr(expr, frames, diagnostics);
+                        });
                     },
                 );
             }
