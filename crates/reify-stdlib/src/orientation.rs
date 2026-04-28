@@ -1339,6 +1339,151 @@ mod tests {
         );
     }
 
+    // ── orient_compose tests (step-1) ──────────────────────────────────────
+
+    /// Identity composed on the left should yield the right operand.
+    #[test]
+    fn orient_compose_identity_left() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[id, q]),
+            0.5,
+            0.5,
+            0.5,
+            0.5
+        );
+    }
+
+    /// Identity composed on the right should yield the left operand.
+    #[test]
+    fn orient_compose_identity_right() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[q, id]),
+            0.5,
+            0.5,
+            0.5,
+            0.5
+        );
+    }
+
+    /// Composing two 90° rotations about the same axis yields a 180° rotation
+    /// about that axis. For axis=z: q90 = (cos(π/4), 0, 0, sin(π/4)),
+    /// q180 = (cos(π/2), 0, 0, sin(π/2)) = (0, 0, 0, 1).
+    /// Sign-insensitive because the macro must absorb the antipodal double-cover.
+    #[test]
+    fn orient_compose_two_90deg_z_equals_180deg_z() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90 = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[q90.clone(), q90]),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    #[test]
+    fn orient_compose_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[]).is_undef());
+        assert!(eval_builtin("orient_compose", &[q.clone()]).is_undef());
+        assert!(
+            eval_builtin("orient_compose", &[q.clone(), q.clone(), q]).is_undef(),
+            "3 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_compose_non_orientation_first_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[Value::Real(1.0), q]).is_undef());
+    }
+
+    #[test]
+    fn orient_compose_non_orientation_second_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[q, Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn orient_compose_nan_component_returns_undef() {
+        let nan_q = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[nan_q, q]).is_undef());
+    }
+
+    #[test]
+    fn orient_compose_inf_component_returns_undef() {
+        let inf_q = Value::Orientation {
+            w: 1.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[q, inf_q]).is_undef());
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
