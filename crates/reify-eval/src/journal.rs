@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use reify_types::VersionId;
+use reify_types::{ErrorRef, VersionId};
 
 use crate::cache::{EvalOutcome, NodeId};
 
@@ -35,8 +35,12 @@ pub enum EventKind {
     Completed { outcome: EvalOutcome },
     /// Evaluation of a node was cancelled.
     Cancelled,
-    /// Evaluation of a node failed with an error message.
-    Failed { error: String },
+    /// Evaluation of a node failed with the given error.
+    ///
+    /// Carries an `ErrorRef` (typed error metadata, optionally including a
+    /// `DiagnosticCode`) rather than a bare string — see arch §8.2 (error
+    /// event kind) and §9.1–§9.2 (Failed production / Pending propagation).
+    Failed { error: ErrorRef },
     /// A cache hit was used instead of re-evaluating.
     CacheHit,
     /// A warm-start state was used for evaluation.
