@@ -1324,20 +1324,44 @@ structure S {
     /// with `code == "computation-pending"` for a cell that is Pending because its
     /// upstream dependency failed (Failed leaf → Pending consumer, arch §9.2).
     ///
-    /// Setup: force `Bracket.width` (a param) to fail → `Bracket.volume` becomes
-    /// Pending because `volume = width * height * thickness` depends on `width`.
+    /// Setup: use a custom let-chain source (`S.base` → `S.derived`) so that
+    /// `set_panic_on_eval(S.base)` (a let cell) causes `S.base` to fail and
+    /// `S.derived` to become Pending.
     ///
-    /// This test is intentionally RED before step-18.
+    /// Note: `set_panic_on_eval` only affects `let` cells (evaluated in the
+    /// let-binding evaluation loop) — not `param` cells.  Hence we use a
+    /// dedicated let-chain source rather than bracket_source (where `width` is
+    /// a param and would not be affected by `set_panic_on_eval`).
     #[cfg(any(test, feature = "test-instrumentation"))]
     #[test]
     fn compute_diagnostics_with_state_emits_pending_diagnostic_for_pending_cell() {
-        // Forcing the `width` param to fail makes `volume` Pending (arch §9.2).
-        let width_id = ValueCellId::new("Bracket", "width");
-        let mut state = build_eval_state_with_failed_cell(width_id);
+        // Source with a let-chain: S.derived depends on S.base.
+        // Forcing S.base (a let) to fail makes S.derived Pending (arch §9.2).
+        // Module name "test" matches what compute_diagnostics_with_state derives
+        // from "file:///test.ri" (strip ".ri" suffix).
+        let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
+        let base_id = ValueCellId::new("S", "base");
+
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+        // Pass 1: cold eval — initialises cache (all cells → Final).
+        let _ = engine.eval(&compiled);
+
+        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
+        engine.set_panic_on_eval(base_id);
+        let _ = engine.eval(&compiled);
+
+        // Package into EvalState with matching hash so next call uses eval_cached.
+        let mut state = EvalState::new();
+        state.engine = engine;
+        state.last_content_hash = Some(compiled.content_hash);
+        state.version_counter = 2;
 
         let uri = test_uri();
-        let source = reify_test_support::bracket_source();
-
         let result = compute_diagnostics_with_state(&mut state, source, &uri);
 
         let pending_diags: Vec<_> = result
@@ -1354,7 +1378,7 @@ structure S {
         assert!(
             !pending_diags.is_empty(),
             "expected at least one 'computation-pending' WARNING diagnostic \
-             (Bracket.volume is Pending because Bracket.width failed), \
+             (S.derived is Pending because S.base failed), \
              got zero; all diagnostics: {:#?}",
             result.diagnostics
         );
