@@ -39,8 +39,8 @@
 //! - **GuardedGroup members are siblings, not children.** `where { … } else
 //!   { … }` registers all branch members into the SAME parent frame
 //!   (mutually-exclusive siblings per match-arm desugaring), not as a child
-//!   scope. Same-name entries across the two branches overwrite in the frame
-//!   without producing a shadow.
+//!   scope. Same-name entries across the two branches use first-seen semantics:
+//!   the THEN-branch occurrence wins; the ELSE-branch entry is a no-op.
 
 use std::collections::HashMap;
 
@@ -258,9 +258,10 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
 /// Spec §6.4: `where { … } else { … }` branches register members into the
 /// same parent scope as siblings under mutually-exclusive guards — they are
 /// NOT a child scope and MUST NOT shadow each other. We therefore fold both
-/// branches into the same frame (silently overwriting on duplicate names —
-/// duplicate detection is the existing duplicate-decl error path's job, not
-/// this lint's).
+/// branches into the same frame using first-seen semantics (`entry().or_insert`):
+/// the THEN-branch occurrence wins; the ELSE-branch entry is a no-op for any
+/// name already present. Duplicate-decl detection remains the existing
+/// duplicate-decl error path's responsibility, not this lint's.
 ///
 /// Spec §8.8 (trait-merge exclusion): we walk ONLY the supplied `members`
 /// list; trait member sets are never injected here, so a structure that
@@ -284,16 +285,16 @@ fn collect_body_frame_into(
     for member in members {
         match member {
             MemberDecl::Param(p) => {
-                frame.insert(p.name.clone(), p.span);
+                frame.entry(p.name.clone()).or_insert(p.span);
             }
             MemberDecl::Let(l) => {
-                frame.insert(l.name.clone(), l.span);
+                frame.entry(l.name.clone()).or_insert(l.span);
             }
             MemberDecl::Sub(s) => {
-                frame.insert(s.name.clone(), s.span);
+                frame.entry(s.name.clone()).or_insert(s.span);
             }
             MemberDecl::Port(p) => {
-                frame.insert(p.name.clone(), p.span);
+                frame.entry(p.name.clone()).or_insert(p.span);
                 // Port-internal members live in the port's own scope, not the
                 // enclosing entity's scope, so we do NOT fold them upward.
                 // The `walk_members_depth` arm for Port pushes a port-internal
@@ -305,11 +306,13 @@ fn collect_body_frame_into(
                 // Both branches register into the SAME parent frame as
                 // siblings (spec §6.4 — match-arm-style guarded decls
                 // are mutually-exclusive siblings, NOT a child scope).
-                // Same-name decls across the two branches silently
-                // overwrite in the frame; we do NOT flag intra-frame
-                // duplicates here — those belong to the existing
-                // duplicate-decl error path. Recurse so nested groups
-                // also fold into the same parent frame.
+                // First-seen semantics (`entry().or_insert`) ensure the
+                // THEN-branch occurrence wins: the ELSE-branch recursive
+                // call is a no-op for any name already present in the
+                // frame. We do NOT flag intra-frame duplicates here —
+                // those belong to the existing duplicate-decl error path.
+                // Recurse so nested groups also fold into the same parent
+                // frame.
                 collect_body_frame_into(&g.members, frame, depth + 1);
                 collect_body_frame_into(&g.else_members, frame, depth + 1);
             }
