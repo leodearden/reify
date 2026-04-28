@@ -1869,6 +1869,251 @@ mod tests {
         assert!(eval_builtin("orient_exp", &[inf_v]).is_undef());
     }
 
+    // ── orient_slerp tests (step-9) ────────────────────────────────────────
+
+    /// slerp(a, b, 0) == a (start endpoint).
+    #[test]
+    fn orient_slerp_t_zero_returns_a() {
+        let a = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let b = Value::Orientation {
+            w: std::f64::consts::FRAC_1_SQRT_2,
+            x: 0.0,
+            y: 0.0,
+            z: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[a, b, Value::Real(0.0)]),
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    /// slerp(a, b, 1) == b (end endpoint).
+    #[test]
+    fn orient_slerp_t_one_returns_b() {
+        let a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let bw = std::f64::consts::FRAC_1_SQRT_2;
+        let b = Value::Orientation {
+            w: bw,
+            x: 0.0,
+            y: 0.0,
+            z: bw,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[a, b, Value::Real(1.0)]),
+            bw,
+            0.0,
+            0.0,
+            bw,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    /// slerp(identity, 90°z, 0.5) == 45°z quaternion (cos(π/8), 0, 0, sin(π/8)).
+    #[test]
+    fn orient_slerp_midpoint_identity_to_90deg_z_is_45deg_z() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90 = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let cos_pi_8 = (std::f64::consts::PI / 8.0).cos();
+        let sin_pi_8 = (std::f64::consts::PI / 8.0).sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[id, q90, Value::Real(0.5)]),
+            cos_pi_8,
+            0.0,
+            0.0,
+            sin_pi_8,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    /// slerp with antipodal endpoints: slerp(identity, -identity, 0.5) takes the
+    /// short path → returned quaternion is close to identity (not far from it).
+    #[test]
+    fn orient_slerp_antipodal_short_path() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let neg_id = Value::Orientation {
+            w: -1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        // Antipodal pair represents the same rotation; midpoint should be close
+        // to identity (sign-insensitive).
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[id, neg_id, Value::Real(0.5)]),
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    /// t accepts a DIMENSIONLESS Scalar in addition to a Real.
+    #[test]
+    fn orient_slerp_accepts_dimensionless_scalar_t() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90 = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let t = Value::Scalar {
+            si_value: 0.5,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let cos_pi_8 = (std::f64::consts::PI / 8.0).cos();
+        let sin_pi_8 = (std::f64::consts::PI / 8.0).sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[id, q90, t]),
+            cos_pi_8,
+            0.0,
+            0.0,
+            sin_pi_8,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    #[test]
+    fn orient_slerp_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_slerp", &[]).is_undef());
+        assert!(eval_builtin("orient_slerp", &[q.clone()]).is_undef());
+        assert!(eval_builtin("orient_slerp", &[q.clone(), q.clone()]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_slerp",
+                &[q.clone(), q.clone(), Value::Real(0.5), Value::Real(0.0)],
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_non_orientation_a_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[Value::Real(1.0), q, Value::Real(0.5)]).is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_non_orientation_b_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[q, Value::Real(1.0), Value::Real(0.5)]).is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_non_numeric_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin(
+                "orient_slerp",
+                &[q.clone(), q, Value::String("half".to_string())],
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_dimensioned_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let t_angle = Value::Scalar {
+            si_value: 0.5,
+            dimension: DimensionVector::ANGLE,
+        };
+        assert!(eval_builtin("orient_slerp", &[q.clone(), q, t_angle]).is_undef());
+    }
+
+    #[test]
+    fn orient_slerp_nan_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[q.clone(), q, Value::Real(f64::NAN)]).is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_inf_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[q.clone(), q, Value::Real(f64::INFINITY)]).is_undef()
+        );
+    }
+
     // ── normalize_quaternion near-zero tests ────────────────────────────────
 
     /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
