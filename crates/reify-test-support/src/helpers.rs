@@ -76,7 +76,15 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
-/// Walk every top-level expression in all `Structure` declarations of a parsed module.
+/// Visit the root-level expression of each `Param` default and `Let` value
+/// in all `Structure` declarations of a parsed module.
+///
+/// The name **`visit_structure_member_root_exprs`** is intentional: this helper
+/// visits only the *root* `Expr` node of each qualifying member — it does **not**
+/// recurse into sub-expressions (operands of `BinOp`, arguments of `FunctionCall`,
+/// branches of `Conditional`, etc.).  If `EnumAccess` (or any other node of
+/// interest) appears inside a nested expression such as `foo(CorrosionClass.C5)`,
+/// this helper will *not* find it.
 ///
 /// For each [`reify_syntax::Declaration::Structure`] in `module.declarations`, this function
 /// iterates the structure's `members` and calls `visit` with a reference to:
@@ -107,13 +115,13 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
 ///
 /// ```ignore
 /// let mut enum_accesses: Vec<(String, String)> = Vec::new();
-/// walk_structure_exprs(&parsed, |expr| {
+/// visit_structure_member_root_exprs(&parsed, |expr| {
 ///     if let reify_syntax::ExprKind::EnumAccess { type_name, variant } = &expr.kind {
 ///         enum_accesses.push((type_name.clone(), variant.clone()));
 ///     }
 /// });
 /// ```
-pub fn walk_structure_exprs<F: FnMut(&reify_syntax::Expr)>(
+pub fn visit_structure_member_root_exprs<F: FnMut(&reify_syntax::Expr)>(
     module: &reify_syntax::ParsedModule,
     mut visit: F,
 ) {
@@ -1498,18 +1506,18 @@ mod tests {
         super::assert_no_type_cascade(&diags, &["anything"]);
     }
 
-    // ── walk_structure_exprs ──────────────────────────────────────────────
+    // ── visit_structure_member_root_exprs ─────────────────────────────────
 
-    /// walk_structure_exprs visits the visitor exactly once for a structure
-    /// containing one Param with a default expression.  The visited Expr's kind
-    /// must be a NumberLiteral (the default value 1.5).
+    /// visit_structure_member_root_exprs visits the visitor exactly once for a
+    /// structure containing one Param with a default expression.  The visited
+    /// Expr's kind must be a NumberLiteral (the default value 1.5).
     #[test]
-    fn walk_structure_exprs_visits_param_default() {
+    fn visit_structure_member_root_exprs_visits_param_default() {
         let source = "structure S { param x: Real = 1.5 }";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut visited: Vec<reify_syntax::Expr> = vec![];
-        super::walk_structure_exprs(&module, |expr| {
+        super::visit_structure_member_root_exprs(&module, |expr| {
             visited.push(expr.clone());
         });
         assert_eq!(
@@ -1525,16 +1533,16 @@ mod tests {
         );
     }
 
-    /// walk_structure_exprs visits the visitor exactly once for a structure
-    /// containing one Let binding.  The visited Expr's kind must be a
+    /// visit_structure_member_root_exprs visits the visitor exactly once for a
+    /// structure containing one Let binding.  The visited Expr's kind must be a
     /// StringLiteral matching the bound value.
     #[test]
-    fn walk_structure_exprs_visits_let_value() {
+    fn visit_structure_member_root_exprs_visits_let_value() {
         let source = r#"structure S { let x = "hello" }"#;
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut visited: Vec<reify_syntax::Expr> = vec![];
-        super::walk_structure_exprs(&module, |expr| {
+        super::visit_structure_member_root_exprs(&module, |expr| {
             visited.push(expr.clone());
         });
         assert_eq!(
@@ -1550,15 +1558,15 @@ mod tests {
         );
     }
 
-    /// walk_structure_exprs must NOT call the visitor for a Param that has no
-    /// default expression (type-annotated-only param, `default == None`).
+    /// visit_structure_member_root_exprs must NOT call the visitor for a Param
+    /// that has no default expression (type-annotated-only param, `default == None`).
     #[test]
-    fn walk_structure_exprs_skips_param_without_default() {
+    fn visit_structure_member_root_exprs_skips_param_without_default() {
         let source = "structure S { param x: Real }";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut call_count = 0usize;
-        super::walk_structure_exprs(&module, |_expr| {
+        super::visit_structure_member_root_exprs(&module, |_expr| {
             call_count += 1;
         });
         assert_eq!(
@@ -1568,17 +1576,17 @@ mod tests {
         );
     }
 
-    /// walk_structure_exprs visits members in declaration order and covers both
-    /// Param defaults and Let values in a mixed-member structure.
+    /// visit_structure_member_root_exprs visits members in declaration order and
+    /// covers both Param defaults and Let values in a mixed-member structure.
     /// Asserts count == 3 (two param defaults + one let value) and that the
     /// NumberLiteral values match in source order.
     #[test]
-    fn walk_structure_exprs_visits_each_member_in_declaration_order() {
+    fn visit_structure_member_root_exprs_visits_each_member_in_declaration_order() {
         let source = "structure S {\n    param a: Real = 1.0\n    let b = 2.0\n    param c: Real = 3.0\n}";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut values: Vec<f64> = vec![];
-        super::walk_structure_exprs(&module, |expr| {
+        super::visit_structure_member_root_exprs(&module, |expr| {
             if let reify_syntax::ExprKind::NumberLiteral(v) = &expr.kind {
                 values.push(*v);
             }
@@ -1594,15 +1602,15 @@ mod tests {
         assert_eq!(values[2], 3.0, "third visited expr must be param c default (3.0)");
     }
 
-    /// walk_structure_exprs is a no-op (visitor never called) when the module
-    /// contains only non-Structure declarations (here, a top-level enum).
+    /// visit_structure_member_root_exprs is a no-op (visitor never called) when
+    /// the module contains only non-Structure declarations (here, a top-level enum).
     #[test]
-    fn walk_structure_exprs_no_op_when_module_has_no_structure() {
+    fn visit_structure_member_root_exprs_no_op_when_module_has_no_structure() {
         let source = "enum Foo { Bar }";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut call_count = 0usize;
-        super::walk_structure_exprs(&module, |_expr| {
+        super::visit_structure_member_root_exprs(&module, |_expr| {
             call_count += 1;
         });
         assert_eq!(
@@ -1612,18 +1620,18 @@ mod tests {
         );
     }
 
-    /// walk_structure_exprs skips Constraint members as documented.  A structure
-    /// with one param (no default), one bare `constraint`, and one `let` should
-    /// produce exactly one visitor call — for the `let` value only.  This pins
-    /// the documented contract that other member kinds are silently ignored.
+    /// visit_structure_member_root_exprs skips Constraint members as documented.
+    /// A structure with one param (no default), one bare `constraint`, and one
+    /// `let` should produce exactly one visitor call — for the `let` value only.
+    /// This pins the documented contract that other member kinds are silently ignored.
     #[test]
-    fn walk_structure_exprs_skips_non_targeted_member_kinds() {
+    fn visit_structure_member_root_exprs_skips_non_targeted_member_kinds() {
         // param has no default → skipped; constraint → skipped; let → visited.
         let source = "structure S {\n    param x : Real\n    constraint x > 0\n    let y = 2.0\n}";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut call_count = 0usize;
-        super::walk_structure_exprs(&module, |_expr| {
+        super::visit_structure_member_root_exprs(&module, |_expr| {
             call_count += 1;
         });
         assert_eq!(

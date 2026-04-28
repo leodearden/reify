@@ -113,26 +113,26 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     );
 
     // (b) Exactly two EnumAccess nodes — CorrosionClass.C5 and
-    // BiocompatibilityClass.USP_Class_VI. Asserted as a set so adding new
-    // members to the fixture (param defaults OR let values) that introduce
-    // unrelated EnumAccess nodes will fail loudly here rather than silently
-    // change a count.
-    let mut enum_accesses: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
-    reify_test_support::walk_structure_exprs(&parsed, |expr| {
+    // BiocompatibilityClass.USP_Class_VI. Collected into a Vec and sorted so
+    // that order differences between fixture changes do not matter, while
+    // duplicate emission (e.g. the parser emitting CorrosionClass.C5 twice)
+    // is still caught — a duplicate would make the Vec longer than expected
+    // and fail the assert_eq.
+    let mut enum_accesses: Vec<(String, String)> = Vec::new();
+    reify_test_support::visit_structure_member_root_exprs(&parsed, |expr| {
         if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
-            enum_accesses.insert((type_name.clone(), variant.clone()));
+            enum_accesses.push((type_name.clone(), variant.clone()));
         }
     });
-    let expected: std::collections::HashSet<(String, String)> = [
+    enum_accesses.sort();
+    let mut expected: Vec<(String, String)> = vec![
         ("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string()),
         ("CorrosionClass".to_string(), "C5".to_string()),
-    ]
-    .into_iter()
-    .collect();
+    ];
+    expected.sort();
     assert_eq!(
         enum_accesses, expected,
-        "expected exactly the prelude EnumAccess set, got: {:?}",
+        "expected exactly the prelude EnumAccess entries (sorted), got: {:?}",
         enum_accesses
     );
 
