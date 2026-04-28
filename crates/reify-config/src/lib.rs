@@ -253,6 +253,23 @@ mod tests {
     }
 
     #[test]
+    fn malformed_toml_returns_parse_error_with_diagnostic_text() {
+        // Unclosed [kernels — never reaches the kernels-walk; toml::from_str
+        // surfaces a syntax error.
+        let err = Manifest::from_toml_str("[kernels\nocct = \"7.7\"\n")
+            .expect_err("malformed TOML should be rejected");
+        match err {
+            ManifestError::Parse(msg) => {
+                assert!(
+                    !msg.is_empty(),
+                    "Parse error message must carry diagnostic text"
+                );
+            }
+            other => panic!("expected ManifestError::Parse(_), got {:?}", other),
+        }
+    }
+
+    #[test]
     fn empty_version_string_rejected() {
         let err = Manifest::from_toml_str("[kernels]\nocct = \"\"\n")
             .expect_err("empty version string should be rejected");
