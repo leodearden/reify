@@ -112,7 +112,7 @@ mod tests {
     use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
     use crate::deps::{DependencyTrace, ReverseDependencyIndex};
     use reify_types::{
-        DeterminacyState, Freshness, Type, Value, ValueCellId, VersionId,
+        DeterminacyState, Freshness, Value, ValueCellId, VersionId,
     };
     use std::collections::HashSet;
 
@@ -123,7 +123,6 @@ mod tests {
         freshness: Freshness,
         reads: Vec<ValueCellId>,
     ) {
-        let _ = Type::Real;
         cache.put(
             NodeId::Value(cell.clone()),
             NodeCache::new(
@@ -131,6 +130,27 @@ mod tests {
                 freshness,
                 DependencyTrace { reads },
                 VersionId(1),
+            ),
+        );
+    }
+
+    /// Helper: insert a Value-cell entry with the given concrete `Value`,
+    /// freshness, reads, and basis_version. Used by step-7's snapshot test.
+    fn put_value_entry_with_payload(
+        cache: &mut CacheStore,
+        cell: &ValueCellId,
+        value: Value,
+        freshness: Freshness,
+        reads: Vec<ValueCellId>,
+        basis_version: VersionId,
+    ) {
+        cache.put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(value, DeterminacyState::Determined),
+                freshness,
+                DependencyTrace { reads },
+                basis_version,
             ),
         );
     }
@@ -319,6 +339,94 @@ mod tests {
         assert!(
             !updated.contains(&NodeId::Value(b.clone())),
             "b must NOT be in updated set — its freshness derived back to the same value"
+        );
+    }
+
+    /// Step-7: the walk must not recompute values, mutate `result_hash`,
+    /// or bump `basis_version`. Only `freshness` is touched.
+    ///
+    /// 2-cell chain `a → b` with concrete `Value::Real(5.0)` / `Value::Real(10.0)`
+    /// payloads and `basis_version = VersionId(7)`. Snapshot each cached entry
+    /// before the walk; after running the walk that flips `a` to Final and
+    /// updates `b` to Final, assert byte-identical equality on the snapshotted
+    /// `result_hash`, the inner `Value`, and `basis_version`.
+    ///
+    /// Pins arch §3.5 line 432: "the input hash for downstream nodes is
+    /// unchanged, so no value recomputation occurs."
+    #[test]
+    fn walk_does_not_recompute_values_or_bump_basis_version() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let basis = VersionId(7);
+
+        let mut cache = CacheStore::new();
+        put_value_entry_with_payload(
+            &mut cache,
+            &a,
+            Value::Real(5.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+            basis,
+        );
+        put_value_entry_with_payload(
+            &mut cache,
+            &b,
+            Value::Real(10.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+            basis,
+        );
+
+        // Snapshot b's entry BEFORE the walk.
+        let b_node = NodeId::Value(b.clone());
+        let b_before = cache.get(&b_node).expect("b must be cached").clone();
+        let b_before_hash = b_before.result_hash;
+        let b_before_basis = b_before.basis_version;
+        let b_before_value = match &b_before.result {
+            CachedResult::Value(v, _) => v.clone(),
+            other => panic!("expected CachedResult::Value, got {:?}", other),
+        };
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        assert!(
+            updated.contains(&b_node),
+            "sanity: b must be updated by the walk, got: {:?}",
+            updated
+        );
+        assert_eq!(
+            cache.freshness(&b_node),
+            Freshness::Final,
+            "sanity: b must be Final after the walk"
+        );
+
+        // Snapshot b's entry AFTER the walk — every non-freshness field must be
+        // byte-identical to the pre-walk snapshot.
+        let b_after = cache.get(&b_node).expect("b must still be cached").clone();
+        assert_eq!(
+            b_after.result_hash, b_before_hash,
+            "result_hash must be byte-identical (no value recomputation occurred)"
+        );
+        assert_eq!(
+            b_after.basis_version, b_before_basis,
+            "basis_version must be byte-identical (the walk does NOT bump versions)"
+        );
+        let b_after_value = match &b_after.result {
+            CachedResult::Value(v, _) => v.clone(),
+            other => panic!("expected CachedResult::Value, got {:?}", other),
+        };
+        assert_eq!(
+            b_after_value, b_before_value,
+            "cached Value must be byte-identical (no value recomputation occurred)"
         );
     }
 }
