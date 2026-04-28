@@ -620,7 +620,7 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
             | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
             | "$_abs_awk" "{print \$1}" \
             | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
-        "$_abs_sleep" 0.5
+        "$_abs_sleep" 1.0
 
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
@@ -649,7 +649,7 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
             | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
             | "$_abs_awk" "{print \$1}" \
             | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
-        "$_abs_sleep" 0.5
+        "$_abs_sleep" 1.0
 
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
