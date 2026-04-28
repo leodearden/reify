@@ -29,6 +29,11 @@ pub struct Manifest {
 impl Manifest {
     /// Parse a `reify.toml` document from a string.
     pub fn from_toml_str(s: &str) -> Result<Manifest, ManifestError> {
+        // Render `toml::de::Error` to a string instead of wrapping the type
+        // directly: its `Display` impl already includes line/column context,
+        // and storing the rendered form keeps the toml-crate type out of
+        // `ManifestError`'s public surface (so a future swap of toml crates
+        // would not be a breaking change for downstream consumers).
         let raw: ManifestRaw =
             toml::from_str(s).map_err(|e| ManifestError::Parse(e.to_string()))?;
         let mut kernels: BTreeMap<KernelId, KernelPin> = BTreeMap::new();
