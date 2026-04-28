@@ -8,3 +8,6 @@ description = "Pure-data documentation model types for the reify doc tool"
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
