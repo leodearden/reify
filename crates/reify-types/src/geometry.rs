@@ -1452,4 +1452,53 @@ mod tests {
         let copy = r.clone();
         assert_eq!(r, copy);
     }
+
+    #[test]
+    fn mod_entry_constructs_with_feature_id_and_split_index() {
+        let entry = ModEntry {
+            splitting_feature_id: FeatureId::new("Boss#realization[0]"),
+            split_index: 3,
+        };
+        assert_eq!(
+            entry.splitting_feature_id,
+            FeatureId::new("Boss#realization[0]")
+        );
+        assert_eq!(entry.split_index, 3);
+    }
+
+    #[test]
+    fn mod_entry_split_index_distinguishes_entries() {
+        let a = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 0,
+        };
+        let b = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 1,
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mod_entry_feature_id_distinguishes_entries() {
+        let a = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 0,
+        };
+        let b = ModEntry {
+            splitting_feature_id: FeatureId::new("b"),
+            split_index: 0,
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mod_entry_clone_preserves_value() {
+        let a = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 7,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
 }
