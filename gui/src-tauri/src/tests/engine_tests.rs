@@ -2,13 +2,14 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_with_width,
-    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
+    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_violating,
+    bracket_source_with_width, warn_source_with_unknown_port_type,
+    warn_source_with_unknown_port_type_with_width,
 };
 use reify_compiler::find_template;
 use reify_types::ExportFormat;
 
-use reify_types::{DiagnosticInfo, SourceLocationInfo};
+use reify_types::{DiagnosticInfo, SourceLocationInfo, ValueCellId};
 
 use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder};
 
@@ -3626,5 +3627,106 @@ fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
             "unresolved-source diagnostic must have code == Some(\"unresolved-source\"), got {:?}",
             diag.code
         );
+    }
+}
+
+// --- Freshness wiring through build_gui_state (step-7 / step-8) ---
+
+/// End-to-end freshness wiring test: forced panic on a `let` cell must surface
+/// as `freshness == "failed"` on the corresponding `ValueData`, every other
+/// value must stay at `"final"`, and cells that participate in a violated
+/// constraint must NOT be reported as `"failed"` (arch §9.3 separation).
+///
+/// This test is intentionally RED in step-7 (before the engine ref is threaded
+/// through `build_values` in step-8): assertion (a) fails because `build_values`
+/// currently hardcodes `freshness: "final"` for all cells.  Once step-8 wires
+/// `engine.freshness()` through, all three assertions pass.
+#[test]
+fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
+    // Use the violating source so there is a real Violated constraint entry
+    // in the GuiState — this lets us check the constraint-vs-Failed separation
+    // (assertion c) as well as the basic failed-freshness wiring (assertions a, b).
+    let source = bracket_source_violating();
+
+    let checker = SimpleConstraintChecker;
+    // No geometry kernel — freshness wiring is independent of tessellation.
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    session
+        .load_from_source(&source, "bracket")
+        .expect("bracket_source_violating should compile and load");
+
+    // Force `Bracket.volume` (the only `let` in bracket_source) to panic on
+    // the next eval cycle.
+    let volume_id = ValueCellId::new("Bracket", "volume");
+    session.set_panic_on_eval_for_test(volume_id.clone());
+
+    // Re-run evaluation so the forced panic takes effect.
+    session.recheck_for_test();
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed even after forced panic");
+
+    // --- (a) Failed cell must report freshness == "failed" ---
+    let volume = state
+        .values
+        .iter()
+        .find(|v| v.name == "volume")
+        .expect("should have a 'volume' ValueData");
+
+    assert_eq!(
+        volume.freshness, "failed",
+        "volume must have freshness='failed' after forced panic; \
+         this assertion is RED in step-7 and turns GREEN in step-8"
+    );
+
+    // --- (b) No leakage: all other cells stay at "final" ---
+    for v in &state.values {
+        if v.name == "volume" {
+            continue; // already checked above
+        }
+        assert_eq!(
+            v.freshness, "final",
+            "value '{}' must have freshness='final' (no leakage from forced panic), got '{}'",
+            v.name, v.freshness
+        );
+    }
+
+    // --- (c) Constraint-violated cells must NOT appear in the failed set ---
+    //
+    // bracket_source_violating() sets thickness=1mm, violating `thickness > 2mm`.
+    // The `thickness` param is Satisfaction::Violated but its Freshness must
+    // remain Final (it was set successfully; the violation is a logical check,
+    // not a computation failure — arch §9.3).
+    let violated_constraints: Vec<_> = state
+        .constraints
+        .iter()
+        .filter(|c| c.status == "Violated")
+        .collect();
+
+    assert!(
+        !violated_constraints.is_empty(),
+        "expected at least one Violated constraint from bracket_source_violating; \
+         got {} constraints: {:?}",
+        state.constraints.len(),
+        state.constraints.iter().map(|c| &c.status).collect::<Vec<_>>()
+    );
+
+    // For every cell referenced by a violated constraint, check that its
+    // freshness is NOT "failed" (constraint violation ≠ Freshness::Failed).
+    for vc in &violated_constraints {
+        for param_id in &vc.parameter_ids {
+            let cell_data = state.values.iter().find(|v| v.cell_id == *param_id);
+            if let Some(cell) = cell_data {
+                assert_ne!(
+                    cell.freshness, "failed",
+                    "cell '{}' is referenced by violated constraint '{}' but must NOT \
+                     have freshness='failed' — constraint violations stay on the \
+                     Satisfaction::Violated channel (arch §9.3)",
+                    param_id, vc.node_id
+                );
+            }
+        }
     }
 }

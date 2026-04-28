@@ -1155,6 +1155,39 @@ impl EngineSession {
     pub(crate) fn inject_compiled_for_test(&mut self, compiled: CompiledModule) {
         self.compiled = Some(compiled);
     }
+
+    /// Register a cell to panic during the next eval cycle.
+    ///
+    /// Thin wrapper around [`reify_eval::Engine::set_panic_on_eval`] for
+    /// integration tests that need to drive a specific value cell to
+    /// `Freshness::Failed` without bypassing the `EngineSession` wrapper.
+    ///
+    /// Only callable when the `test-instrumentation` feature is active on
+    /// `reify-eval` (enabled unconditionally for `gui/src-tauri` dev-deps
+    /// per task #2337 pre-1).  Call `recheck_for_test` after this to
+    /// re-run the evaluation with the forced panic in effect.
+    pub(crate) fn set_panic_on_eval_for_test(&mut self, cell: reify_types::ValueCellId) {
+        self.engine.set_panic_on_eval(cell);
+    }
+
+    /// Re-run `engine.check` on the current compiled module and update `last_check`.
+    ///
+    /// Used by tests that inject test-instrumentation state (e.g. via
+    /// `set_panic_on_eval_for_test`) and then need to trigger a fresh
+    /// evaluation so the injected state takes effect before calling
+    /// `build_gui_state`.
+    ///
+    /// Clones `self.compiled` to avoid the borrow conflict between
+    /// `self.engine` (needs `&mut`) and `self.compiled` (provides
+    /// `&CompiledModule` for the check call) — the clone cost is acceptable
+    /// in test code.  No-op when no module is loaded.
+    pub(crate) fn recheck_for_test(&mut self) {
+        if let Some(compiled) = self.compiled.as_ref().cloned() {
+            let check_result = self.engine.check(&compiled);
+            self.compiled = Some(compiled);
+            self.last_check = Some(check_result);
+        }
+    }
 }
 
 /// Parse a "Entity.member" string into a ValueCellId.
