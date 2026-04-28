@@ -1011,6 +1011,87 @@ fn deprecated_annotation_emits_callout() {
     );
 }
 
+/// `@deprecated("first" + "second")` — a pathological multi-quote concat arg —
+/// must NOT have the outer quotes stripped by `unquote`.  The naïve
+/// `fmt_html::unquote` would strip the leading and trailing `"`, yielding
+/// `first" + "second`; the escape-aware helper returns the arg unchanged, so
+/// `escape_into` encodes all four `"` as `&quot;`.
+///
+/// This test FAILS with the current naive local `unquote` and PASSES once the
+/// call site delegates to `crate::util::unquote` (escape-aware).
+#[test]
+fn deprecated_annotation_pathological_concat_arg_renders_unchanged() {
+    let item = ItemDoc::Structure {
+        name: "OldThing".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![AnnotationDoc {
+            name: "deprecated".into(),
+            args: vec!["\"first\" + \"second\"".into()],
+        }],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let out = render_one_item(item);
+
+    // POSITIVE: all four `"` characters are HTML-escaped — unquote left the
+    // input unchanged and escape_into encoded every quote.
+    assert!(
+        out.contains("&quot;first&quot; + &quot;second&quot;"),
+        "expected all four `\"` chars as `&quot;` entities; got:\n{out}"
+    );
+    // NEGATIVE: the buggy partial strip would produce `first&quot;` immediately
+    // after `Deprecated:` (leading `"` eaten by naive unquote).
+    assert!(
+        !out.contains("Deprecated:</strong> first&quot;"),
+        "naive unquote strip detected — leading `\"` was incorrectly eaten; got:\n{out}"
+    );
+}
+
+/// `@optimized("first" + "second")` — same pathological arg as the deprecated
+/// test — must leave the arg unchanged through `unquote` and emit all four
+/// `&quot;` entities inside the `<code>` block.
+///
+/// This test FAILS with the current naive local `unquote` and PASSES once the
+/// call site delegates to `crate::util::unquote` (escape-aware).
+#[test]
+fn optimized_annotation_pathological_concat_arg_renders_unchanged() {
+    let item = ItemDoc::Structure {
+        name: "Bolt".into(),
+        doc: None,
+        is_pub: true,
+        annotations: vec![AnnotationDoc {
+            name: "optimized".into(),
+            args: vec!["\"first\" + \"second\"".into()],
+        }],
+        pragmas: vec![],
+        params: vec![],
+        ports: vec![],
+        constraints: vec![],
+        sub_components: vec![],
+        realizations: vec![],
+        meta: vec![],
+    };
+    let out = render_one_item(item);
+
+    // POSITIVE: all four `"` chars are encoded inside the <code> block.
+    assert!(
+        out.contains("<em>Optimized: <code>&quot;first&quot; + &quot;second&quot;</code></em>"),
+        "expected all four `\"` chars as `&quot;` inside <code>; got:\n{out}"
+    );
+    // NEGATIVE: the buggy partial strip would produce `first&quot;` at the
+    // start of the <code> content.
+    assert!(
+        !out.contains("<code>first&quot;"),
+        "naive unquote strip detected — leading `\"` was incorrectly eaten; got:\n{out}"
+    );
+}
+
 /// `@optimized("target")` annotation must render an italicized note with
 /// the target wrapped in `<code>`, positioned BETWEEN the H2 heading and
 /// the doc paragraph.
