@@ -156,6 +156,33 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             };
             normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
         }
+        "orient_log" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            // log(q) = (axis * angle) where angle = 2*atan2(|v|, w), axis = v/|v|.
+            // Near identity (|v| ≈ 0), use leading-order Taylor: log ≈ 2*(x,y,z).
+            let v_norm = (x * x + y * y + z * z).sqrt();
+            const EPS: f64 = 1e-12;
+            let (lx, ly, lz) = if v_norm < EPS {
+                (2.0 * x, 2.0 * y, 2.0 * z)
+            } else {
+                let angle = 2.0 * v_norm.atan2(w);
+                let scale = angle / v_norm;
+                (scale * x, scale * y, scale * z)
+            };
+            if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
+                return Some(Value::Undef);
+            }
+            Value::Vector(vec![Value::Real(lx), Value::Real(ly), Value::Real(lz)])
+        }
         "orient_inverse" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
