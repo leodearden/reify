@@ -214,8 +214,16 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if !wx.is_finite() || !wy.is_finite() || !wz.is_finite() {
                 return Some(Value::Undef);
             }
-            // Extract linear: must be Vector3 (preserve dimension; for now, accept LENGTH or DIMENSIONLESS).
-            // Spec: linear must be LENGTH (or DIMENSIONLESS for unit-less twists).
+            // Extract linear: must be Vector3 with a single shared dimension.
+            //
+            // Twist linear convention (polymorphic, mirrored on transform_log):
+            //   • LENGTH       — canonical (matches Twist type in the doc reference)
+            //   • DIMENSIONLESS — accepted for unit-less twists / numerical work
+            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            //
+            // This matches transform_log, which preserves the input translation's
+            // dimension verbatim — so the round-trip log↔exp works for both
+            // LENGTH and DIMENSIONLESS Transforms.
             let (lin_items, _lin_dim_first) = match linear_val {
                 Value::Vector(items) if items.len() == 3 => {
                     let dim0 = items[0].dimension();
@@ -227,7 +235,6 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 _ => return Some(Value::Undef),
             };
             let lin_dim = lin_items[0].dimension();
-            // Permit LENGTH or DIMENSIONLESS (test expects strict LENGTH for typed cases; ANGLE is rejected).
             if lin_dim != DimensionVector::LENGTH && lin_dim != DimensionVector::DIMENSIONLESS {
                 return Some(Value::Undef);
             }

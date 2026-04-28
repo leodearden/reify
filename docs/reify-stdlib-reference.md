@@ -264,6 +264,22 @@ dimensionless rotation and `Length` translation. The same `Map` shape is
 returned by `joint_jacobian` (§13.1) so that solver code can compose twists
 and Jacobian columns uniformly.
 
+**Linear-component dimension convention.** `transform_log` preserves the
+input `Transform`'s translation dimension on `linear` verbatim, and
+`transform_exp` accepts `linear` with the same polymorphic policy:
+
+| `linear` dimension | accepted? | notes                                   |
+|--------------------|-----------|-----------------------------------------|
+| `Length`           | ✓         | canonical — matches the `Twist` type    |
+| `Dimensionless`    | ✓         | unit-less twists / numerical work       |
+| `Angle`, `Mass`, … | ✗         | rejected as `Undef`                     |
+
+The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
+policies, so a `Transform` whose translation is `Dimensionless` will round-trip
+through a `Dimensionless` linear, and likewise for `Length`. `joint_jacobian`
+always emits `Dimensionless` on both `angular` and `linear` because joint
+parameters are unit-less in the joint's local frame.
+
 ### 3.2 `std.geometry.primitive`
 
 **3D solids:**
