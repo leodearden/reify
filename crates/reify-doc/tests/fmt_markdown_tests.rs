@@ -2411,8 +2411,20 @@ fn assert_or_update_snapshot_normalizes_crlf_in_actual() {
 /// (CRLF actual + LF expected) — together the two tests provide independent
 /// coverage of each `replace()` call so that deleting either one surfaces a
 /// failure.
+///
+/// NOTE: when `UPDATE_SNAPSHOTS=1` is set, `assert_or_update_snapshot_at`
+/// takes the early-return write path (it overwrites the file with the
+/// normalised `actual` and returns before reaching the comparison branch),
+/// so this regression check would be silently bypassed.  Guard with an
+/// early return so the test is skipped rather than silently vacuous.
 #[test]
 fn assert_or_update_snapshot_normalizes_crlf_in_expected() {
+    if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
+        // The helper's UPDATE_SNAPSHOTS branch writes `actual` to disk and
+        // returns before reaching the expected-arm normalisation under test.
+        // Skip rather than run a vacuous assertion.
+        return;
+    }
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("crlf_expected.txt");
     // Write CRLF bytes to the file, simulating a Windows checkout with
