@@ -28,7 +28,11 @@ use reify_types::Diagnostic;
 /// rejection rule (`Param`/`Port`/`Sub` with body inside a specialization
 /// scope) and pushes [`reify_types::DiagnosticCode::E_SPECIALIZATION_FORBIDDEN_DECL`]
 /// into the supplied `diagnostics` vector.
-#[allow(unused_variables)] // TODO(task-2369): visitor will push into `diagnostics`
+// TODO(task-2369): the visitor will push into `diagnostics`, eliminating the
+// need for both allows. The `Vec` (not `&mut [_]`) is the planned signature
+// because 2369 needs `push`; we keep it now so the call site in
+// `compile_with_prelude_context` doesn't churn when 2369 lands.
+#[allow(unused_variables, clippy::ptr_arg)]
 pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnostic>) {
     for_each_specialization_member(parsed, &mut |_member| {
         // Intentionally a no-op until task 2369. The traversal is wired
