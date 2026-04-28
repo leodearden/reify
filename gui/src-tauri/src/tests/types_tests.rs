@@ -67,6 +67,7 @@ fn value_data_serializes_with_expected_fields() {
         determinacy: "determined".to_string(),
         entity_path: "Bracket".to_string(),
         kind: "Param".to_string(),
+        freshness: "final".to_string(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));

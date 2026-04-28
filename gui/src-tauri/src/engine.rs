@@ -827,6 +827,8 @@ fn build_values(
                 determinacy: format_determinacy(determinacy),
                 entity_path: cell.id.entity.clone(),
                 kind: cell_kind_gui_str(cell.kind).to_string(),
+                // Populated with real freshness in step-8 when engine ref is threaded through.
+                freshness: "final".to_string(),
             });
         }
     }
@@ -936,6 +938,8 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: is_geometry_member && parent_has_physical,
             children: vec![],
+            // Populated with real freshness in step-8 when engine ref is threaded through.
+            freshness: "final".to_string(),
         });
     }
 
@@ -963,6 +967,8 @@ pub(crate) fn build_template_node(
             has_mesh: true,
             trait_geometry: false,
             children: vec![],
+            // Populated with real freshness in step-8 when engine ref is threaded through.
+            freshness: "final".to_string(),
         });
     }
 
@@ -1002,6 +1008,8 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: false,
             children: sub_children,
+            // Populated with real freshness in step-8 when engine ref is threaded through.
+            freshness: "final".to_string(),
         });
     }
 
@@ -1016,6 +1024,8 @@ pub(crate) fn build_template_node(
             has_mesh: false,
             trait_geometry: false,
             children: vec![],
+            // Populated with real freshness in step-8 when engine ref is threaded through.
+            freshness: "final".to_string(),
         });
     }
 
@@ -1027,6 +1037,8 @@ pub(crate) fn build_template_node(
         has_mesh: !template.realizations.is_empty(),
         trait_geometry: false,
         children,
+        // Populated with real freshness in step-8 when engine ref is threaded through.
+        freshness: "final".to_string(),
     }
 }
 

@@ -93,6 +93,11 @@ pub struct ValueData {
     pub determinacy: String,
     pub entity_path: String,
     pub kind: String,
+    /// Computation freshness tag — one of `"final"`, `"intermediate"`,
+    /// `"pending"`, or `"failed"`. Defaults to `"final"` (matching
+    /// `Freshness::default() = Final`). See arch §7.1 lines 716-728 and
+    /// the task #2337 design decision on tag-only wire format.
+    pub freshness: String,
 }
 
 /// A constraint with its check status.
@@ -158,6 +163,11 @@ pub struct EntityTreeNode {
     pub trait_geometry: bool,
     /// Child nodes (value cells, sub-components, ports of this template).
     pub children: Vec<EntityTreeNode>,
+    /// Computation freshness tag — one of `"final"`, `"intermediate"`,
+    /// `"pending"`, or `"failed"`. Defaults to `"final"` (matching
+    /// `Freshness::default() = Final`). See arch §7.1 lines 716-728 and
+    /// the task #2337 design decision on tag-only wire format.
+    pub freshness: String,
 }
 
 /// Source span (byte offsets) for an entity in the source file.
