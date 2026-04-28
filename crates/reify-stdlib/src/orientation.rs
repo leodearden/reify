@@ -248,15 +248,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             // input to [-1, 1] for numerical safety, then detect the singularity
             // if the clamped value is within EPS_SING of ±1.
             const EPS_SING: f64 = 1.0e-7;
-            let clamp = |v: f64| {
-                if v > 1.0 {
-                    1.0
-                } else if v < -1.0 {
-                    -1.0
-                } else {
-                    v
-                }
-            };
+            let clamp = |v: f64| v.clamp(-1.0, 1.0);
             let (a, b, c) = match convention {
                 // ── Tait-Bryan ───────────────────────────────────────────────
                 "xyz" => {
@@ -1791,7 +1783,7 @@ mod tests {
             z: 0.0,
         };
         assert!(eval_builtin("orient_compose", &[]).is_undef());
-        assert!(eval_builtin("orient_compose", &[q.clone()]).is_undef());
+        assert!(eval_builtin("orient_compose", std::slice::from_ref(&q)).is_undef());
         assert!(
             eval_builtin("orient_compose", &[q.clone(), q.clone(), q]).is_undef(),
             "3 args should return Undef"
@@ -1896,7 +1888,7 @@ mod tests {
             y: 0.5,
             z: 0.5,
         };
-        let q_inv = eval_builtin("orient_inverse", &[q.clone()]);
+        let q_inv = eval_builtin("orient_inverse", std::slice::from_ref(&q));
         assert_orientation_approx!(
             eval_builtin("orient_compose", &[q, q_inv]),
             1.0,
@@ -2062,7 +2054,7 @@ mod tests {
                 Value::Real(case[1]),
                 Value::Real(case[2]),
             ]);
-            let q = eval_builtin("orient_exp", &[v.clone()]);
+            let q = eval_builtin("orient_exp", std::slice::from_ref(&v));
             let v_back = eval_builtin("orient_log", &[q]);
             match v_back {
                 Value::Vector(items) if items.len() == 3 => {
@@ -2102,7 +2094,7 @@ mod tests {
             y: 0.5,
             z: 0.5,
         };
-        let v = eval_builtin("orient_log", &[q.clone()]);
+        let v = eval_builtin("orient_log", std::slice::from_ref(&q));
         let q_back = eval_builtin("orient_exp", &[v]);
         assert_orientation_approx!(q_back, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-12);
     }
@@ -2291,7 +2283,7 @@ mod tests {
             z: 0.0,
         };
         assert!(eval_builtin("orient_slerp", &[]).is_undef());
-        assert!(eval_builtin("orient_slerp", &[q.clone()]).is_undef());
+        assert!(eval_builtin("orient_slerp", std::slice::from_ref(&q)).is_undef());
         assert!(eval_builtin("orient_slerp", &[q.clone(), q.clone()]).is_undef());
         assert!(
             eval_builtin(

@@ -2798,7 +2798,7 @@ mod tests {
             z: 0.5,
         };
         let t = make_transform(q.clone(), 1.5, 2.5, -3.5);
-        let inv = eval_builtin("transform_inverse", &[t.clone()]);
+        let inv = eval_builtin("transform_inverse", std::slice::from_ref(&t));
         let back = eval_builtin("transform_inverse", &[inv]);
         match back {
             Value::Transform {
@@ -2832,7 +2832,7 @@ mod tests {
             z: 0.5,
         };
         let t = make_transform(q, 1.5, 2.5, -3.5);
-        let inv = eval_builtin("transform_inverse", &[t.clone()]);
+        let inv = eval_builtin("transform_inverse", std::slice::from_ref(&t));
         let composed = eval_builtin("transform_compose", &[t, inv]);
         match composed {
             Value::Transform {
@@ -3158,7 +3158,7 @@ mod tests {
             z: 0.5,
         };
         let t = make_transform(q.clone(), 1.5, -2.5, 3.0);
-        let twist = eval_builtin("transform_log", &[t.clone()]);
+        let twist = eval_builtin("transform_log", std::slice::from_ref(&t));
         let back = eval_builtin("transform_exp", &[twist]);
         match back {
             Value::Transform {
