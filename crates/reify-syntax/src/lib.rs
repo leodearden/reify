@@ -245,6 +245,48 @@ pub fn find_named_member_span<'a>(
     find_named_member_span_depth(members, name, 0)
 }
 
+/// Visit every member of a specialization-scope body (spec §8.7).
+///
+/// A `SubDecl` whose `body.is_some()` opens a specialization scope; this
+/// walker iterates its members, invoking `visitor` on each one. When the
+/// `body` is `None` (bare instantiation or collection form), the walker is
+/// a no-op — those forms are not specialization scopes.
+///
+/// In later steps the walker will recurse into:
+///   * `MemberDecl::Sub(s)` whose `s.body.is_some()` — nested specialization
+///     scopes (spec §8.7 nested-sub criterion).
+///   * `MemberDecl::GuardedGroup(g)` — both `g.members` (the `where { … }`
+///     branch) and `g.else_members` (the `else { … }` branch). Both branches
+///     are siblings inside the enclosing specialization scope.
+///
+/// The walker does NOT recurse into `PortDecl.members`; port bodies have
+/// their own grammar and are themselves forbidden inside a specialization
+/// scope (the rejection rule lives in task 2369). Recursion is bounded by
+/// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological
+/// input — same convention as [`find_named_member_span`].
+pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
+where
+    F: FnMut(&'a MemberDecl),
+{
+    if let Some(body) = sub.body.as_ref() {
+        walk_members_depth(body, visitor, 0);
+    }
+}
+
+fn walk_members_depth<'a, F>(members: &'a [MemberDecl], visitor: &mut F, depth: usize)
+where
+    F: FnMut(&'a MemberDecl),
+{
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return;
+    }
+    for member in members {
+        visitor(member);
+        // Recursion into nested SubDecl bodies and GuardedGroup branches is
+        // added in later TDD steps (steps 6 and 8 of task 2368).
+    }
+}
+
 fn find_named_member_span_depth<'a>(
     members: &'a [MemberDecl],
     name: &str,
