@@ -73,3 +73,99 @@ fn enum_names_empty_prelude_yields_no_items() {
     assert_eq!(ctx.enum_names().count(), 0);
     assert_eq!(ctx.resolution_enums().len(), 0);
 }
+
+// ─── step-5: reify_compiler::parse_with_stdlib end-to-end ─────────────────
+
+/// Walk every expression node in a parsed module's structures and apply
+/// `visitor` to it.  Used to count `EnumAccess` nodes for the parse_with_stdlib
+/// integration test.
+fn walk_struct_exprs<F: FnMut(&reify_syntax::ExprKind)>(
+    module: &reify_syntax::ParsedModule,
+    visitor: &mut F,
+) {
+    for decl in &module.declarations {
+        if let reify_syntax::Declaration::Structure(s) = decl {
+            for member in &s.members {
+                if let reify_syntax::MemberDecl::Param(p) = member
+                    && let Some(default) = &p.default
+                {
+                    visitor(&default.kind);
+                }
+            }
+        }
+    }
+}
+
+/// `reify_compiler::parse_with_stdlib` parses a source referencing
+/// `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI` (both
+/// declared only in the stdlib prelude — NOT in this source string) and
+/// produces:
+///   (a) zero parse errors
+///   (b) two `EnumAccess` nodes — one for each stdlib enum reference
+///   (c) zero `Severity::Error` diagnostics when the result is fed to
+///       `compile_with_stdlib`
+///
+/// This is the canonical end-to-end signal that the prelude-aware parser
+/// actually unblocks the inline-redecl workaround in materials_chemical_tests.rs.
+/// Test fails to compile until step-6 lands `reify_compiler::parse_with_stdlib`.
+#[test]
+fn parse_with_stdlib_resolves_stdlib_enum_access_without_inline_redecls() {
+    use reify_syntax::ExprKind;
+    use reify_types::Severity;
+
+    let source = r#"
+structure def TitaniumImplant : Biocompatible + CorrosionResistant {
+    param density : Real = 4500.0
+    param name : String = "titanium"
+    param biocompatibility_class : BiocompatibilityClass = BiocompatibilityClass.USP_Class_VI
+    param corrosion_class : CorrosionClass = CorrosionClass.C5
+}
+"#;
+
+    let parsed =
+        reify_compiler::parse_with_stdlib(source, ModulePath::single("parse_with_stdlib_test"));
+
+    // (a) Zero parse errors.
+    assert!(
+        parsed.errors.is_empty(),
+        "parse_with_stdlib should produce no parse errors, got: {:?}",
+        parsed.errors
+    );
+
+    // (b) Two EnumAccess nodes — CorrosionClass.C5 and BiocompatibilityClass.USP_Class_VI.
+    let mut enum_accesses: Vec<(String, String)> = Vec::new();
+    walk_struct_exprs(&parsed, &mut |kind| {
+        if let ExprKind::EnumAccess { type_name, variant } = kind {
+            enum_accesses.push((type_name.clone(), variant.clone()));
+        }
+    });
+    assert_eq!(
+        enum_accesses.len(),
+        2,
+        "expected exactly 2 EnumAccess nodes (CorrosionClass.C5 + BiocompatibilityClass.USP_Class_VI), got: {:?}",
+        enum_accesses
+    );
+    assert!(
+        enum_accesses.contains(&("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string())),
+        "expected EnumAccess for BiocompatibilityClass.USP_Class_VI, got: {:?}",
+        enum_accesses
+    );
+    assert!(
+        enum_accesses.contains(&("CorrosionClass".to_string(), "C5".to_string())),
+        "expected EnumAccess for CorrosionClass.C5, got: {:?}",
+        enum_accesses
+    );
+
+    // (c) Zero error-severity diagnostics from compile_with_stdlib.
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile_with_stdlib should produce no Error diagnostics for prelude-aware-parsed source, got: {:?}",
+        errors
+    );
+}
