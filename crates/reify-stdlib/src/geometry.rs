@@ -2890,4 +2890,257 @@ mod tests {
         assert!(eval_builtin("transform_log", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("transform_log", &[make_identity_orientation()]).is_undef());
     }
+
+    // ── transform_exp tests (step-21) ────────────────────────────────────────
+
+    /// Helper: build a twist Map with given angular & linear vectors.
+    fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![
+                Value::Real(angular[0]),
+                Value::Real(angular[1]),
+                Value::Real(angular[2]),
+            ]),
+        );
+        let make_lin = |v: f64| -> Value {
+            if linear_dim.is_dimensionless() {
+                Value::Real(v)
+            } else {
+                Value::Scalar {
+                    si_value: v,
+                    dimension: linear_dim,
+                }
+            }
+        };
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![make_lin(linear[0]), make_lin(linear[1]), make_lin(linear[2])]),
+        );
+        Value::Map(m)
+    }
+
+    /// transform_exp(zero twist) == identity transform.
+    #[test]
+    fn transform_exp_zero_twist_is_identity() {
+        let zero = make_twist([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let result = eval_builtin("transform_exp", &[zero]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-12, "translation[{i}] = {v}, expected 0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_exp(angular=[0,0,π/2], linear=0) → 90°z rotation, zero translation.
+    #[test]
+    fn transform_exp_pure_rotation() {
+        let twist = make_twist(
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
+            [0.0, 0.0, 0.0],
+            DimensionVector::LENGTH,
+        );
+        let result = eval_builtin("transform_exp", &[twist]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected 0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_exp(angular=0, linear=[1,2,3]) → (identity, [1,2,3] m).
+    #[test]
+    fn transform_exp_pure_translation() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        let result = eval_builtin("transform_exp", &[twist]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!((tz - 3.0).abs() < 1e-12, "tz = {tz}, expected 3");
+                        // Verify dimension is LENGTH.
+                        assert_eq!(items[0].dimension(), DimensionVector::LENGTH);
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: transform_log(transform_exp(twist)) ≈ twist for several non-trivial twists.
+    #[test]
+    fn transform_exp_log_round_trip() {
+        let twists = [
+            ([0.1, 0.2, 0.3], [1.0, 2.0, 3.0]),
+            ([0.5, -0.3, 0.7], [-1.0, 0.5, 2.0]),
+            ([0.01, 0.02, 0.03], [0.1, 0.1, 0.1]),
+        ];
+        for (i, (ang, lin)) in twists.iter().enumerate() {
+            let twist = make_twist(*ang, *lin, DimensionVector::LENGTH);
+            let t = eval_builtin("transform_exp", &[twist]);
+            let back = eval_builtin("transform_log", &[t]);
+            let ang_back = map_vec3_components(&back, "angular");
+            let lin_back = map_vec3_components(&back, "linear");
+            for j in 0..3 {
+                assert!(
+                    (ang_back[j] - ang[j]).abs() < 1e-10,
+                    "case {i}: angular[{j}] = {}, expected {}",
+                    ang_back[j],
+                    ang[j]
+                );
+                assert!(
+                    (lin_back[j] - lin[j]).abs() < 1e-10,
+                    "case {i}: linear[{j}] = {}, expected {}",
+                    lin_back[j],
+                    lin[j]
+                );
+            }
+        }
+    }
+
+    /// Round-trip: transform_exp(transform_log(T)) ≈ T (with sign_insensitive on rotation).
+    #[test]
+    fn transform_log_exp_round_trip() {
+        // Use a non-axis-aligned rotation to exercise the general case.
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q.clone(), 1.5, -2.5, 3.0);
+        let twist = eval_builtin("transform_log", &[t.clone()]);
+        let back = eval_builtin("transform_exp", &[twist]);
+        match back {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.5).abs() < 1e-10, "tx = {tx}, expected 1.5");
+                        assert!((ty - (-2.5)).abs() < 1e-10, "ty = {ty}, expected -2.5");
+                        assert!((tz - 3.0).abs() < 1e-10, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_exp with Map missing "angular" key → Undef.
+    #[test]
+    fn transform_exp_missing_angular_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with Map missing "linear" key → Undef.
+    #[test]
+    fn transform_exp_missing_linear_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::Real(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with non-DIMENSIONLESS angular dimension → Undef.
+    #[test]
+    fn transform_exp_angular_wrong_dimension_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of DIMENSIONLESS
+        );
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with non-LENGTH linear dimension → Undef.
+    #[test]
+    fn transform_exp_linear_wrong_dimension_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::Real(0.0); 3]),
+        );
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::angle(0.0); 3]), // ANGLE instead of LENGTH
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with NaN component → Undef.
+    #[test]
+    fn transform_exp_nan_angular_returns_undef() {
+        let twist = make_twist([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(eval_builtin("transform_exp", &[twist]).is_undef());
+    }
+
+    #[test]
+    fn transform_exp_inf_linear_returns_undef() {
+        let twist = make_twist([0.0, 0.0, 0.0], [f64::INFINITY, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(eval_builtin("transform_exp", &[twist]).is_undef());
+    }
+
+    /// transform_exp with wrong arg count → Undef.
+    #[test]
+    fn transform_exp_wrong_arg_count_returns_undef() {
+        let twist = make_twist([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(eval_builtin("transform_exp", &[]).is_undef());
+        assert!(eval_builtin("transform_exp", &[twist.clone(), twist]).is_undef());
+    }
 }
