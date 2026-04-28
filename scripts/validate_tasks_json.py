@@ -148,9 +148,9 @@ def main() -> None:
 def _validate_tasks(tasks: list, errors: list, context: str) -> tuple:
     """Validate invariants 1-3 for a flat list of tasks.
 
-    Returns a tuple of (known_ids, subtasks_by_parent) where:
-    - known_ids is the set of known string IDs (for use by subtask validation)
-    - subtasks_by_parent maps each task id to the set of its subtask ids
+    Returns ``(known_ids, subtasks_by_parent)`` where ``known_ids`` is the set
+    of valid top-level string IDs and ``subtasks_by_parent`` maps each parent
+    task ID to the set of its valid subtask IDs (for use by subtask validation).
     """
     prefix = f"{context}: " if context else ""
 

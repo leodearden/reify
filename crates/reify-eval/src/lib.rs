@@ -5,6 +5,7 @@ pub mod demand;
 pub mod deps;
 pub mod dirty;
 pub mod freshness_walk;
+pub mod gating;
 mod engine_admin;
 mod engine_build;
 mod engine_constraints;
