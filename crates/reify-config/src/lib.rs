@@ -8,3 +8,17 @@
 //!
 //! See the doc comment on [`Manifest`] (added in later steps) for the on-disk
 //! schema and worked examples.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_parses_to_empty_manifest() {
+        let manifest = Manifest::from_toml_str("").expect("empty input should parse");
+        assert!(
+            manifest.kernel_pins().next().is_none(),
+            "empty manifest must have no pinned kernels"
+        );
+    }
+}
