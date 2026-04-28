@@ -647,11 +647,15 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// `eval_user_fn_recursion_depth_exceeded` test).
 ///
 /// Two iteration modes:
-/// - **Cell-iteration mode (task-2289):** when `collection.kind` is a
-///   `ListLiteral` whose elements are all `ValueRef`s — the post-activation
-///   shape produced by `activate_purpose`'s expansion of a
-///   `PurposeReflectiveAggregation` placeholder — iterate over the *cell IDs*
-///   rather than the values. Per iteration:
+/// - **Cell-iteration mode (task-2289, narrowed in task-2458):** when
+///   `collection.kind` is `ReflectiveCellList` and the list is non-empty —
+///   the post-activation shape produced exclusively by
+///   `expand_purpose_reflective_placeholders`. Trigger narrowed from
+///   "any `ListLiteral` whose elements are all `ValueRef`s" to the dedicated
+///   `ReflectiveCellList` variant (task-2458). User-written `ListLiteral`s of
+///   pure `ValueRef`s now fall through to value-iteration, restoring
+///   value-binding semantics for hand-authored quantifier collections.
+///   Per iteration:
 ///     1. Clone the predicate.
 ///     2. Call `predicate_clone.remap_cell(variable_id, cell_id)` so any
 ///        `DeterminacyPredicate { cell: $loop_var }` is rewritten to point at
@@ -676,18 +680,18 @@ fn eval_quantifier(
     predicate: &CompiledExpr,
     ctx: &EvalContext,
 ) -> Value {
-    // ── Cell-iteration mode (task-2289) ───────────────────────────────────
-    if let CompiledExprKind::ListLiteral(list_elements) = &collection.kind
+    // ── Cell-iteration mode (task-2289, trigger narrowed in task-2458) ──────
+    // Fires only on `ReflectiveCellList` — the variant emitted exclusively by
+    // `expand_purpose_reflective_placeholders`. User-written `ListLiteral`s of
+    // `ValueRef`s now fall through to the value-iteration path below.
+    if let CompiledExprKind::ReflectiveCellList(list_elements) = &collection.kind
         && !list_elements.is_empty()
-        && list_elements
-            .iter()
-            .all(|e| matches!(e.kind, CompiledExprKind::ValueRef(_)))
     {
         let cell_ids: Vec<ValueCellId> = list_elements
             .iter()
             .map(|e| match &e.kind {
                 CompiledExprKind::ValueRef(id) => id.clone(),
-                _ => unreachable!("checked by all() above"),
+                _ => unreachable!("ReflectiveCellList elements must be ValueRef by construction"),
             })
             .collect();
 

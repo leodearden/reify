@@ -552,7 +552,8 @@ fn make_determinacy_snapshot(
     map
 }
 
-/// task-2289 step-8: forall over `[ValueRef(E,a), ValueRef(E,b)]` with
+/// task-2289 step-8 (collection updated to ReflectiveCellList in task-2458):
+/// forall over `[ValueRef(E,a), ValueRef(E,b)]` (as `ReflectiveCellList`) with
 /// `determined($loop_var)` and `(E,a)=Determined`, `(E,b)=Undetermined`
 /// → `Bool(false)` (and NO debug_assert panic).
 #[test]
@@ -563,8 +564,10 @@ fn forall_cell_iteration_with_determinacy_predicate_returns_false_when_one_undet
     // Synthetic loop-var cell — what the quantifier currently binds.
     let loop_var = ValueCellId::new("$quant0.S", "p");
 
-    // Collection: ListLiteral of two ValueRefs (post-activation shape).
-    let collection = CompiledExpr::list_literal(
+    // Collection: ReflectiveCellList of two ValueRefs (post-activation shape,
+    // task-2458: narrowed from ListLiteral to ReflectiveCellList so the
+    // cell-iteration trigger only fires on placeholder-derived lists).
+    let collection = CompiledExpr::reflective_cell_list(
         vec![
             CompiledExpr::value_ref(cell_a.clone(), Type::Real),
             CompiledExpr::value_ref(cell_b.clone(), Type::Real),
@@ -611,7 +614,8 @@ fn forall_cell_iteration_with_determinacy_predicate_returns_false_when_one_undet
     );
 }
 
-/// task-2289 step-8: exists over `[ValueRef(E,a), ValueRef(E,b)]` with
+/// task-2289 step-8 (collection updated to ReflectiveCellList in task-2458):
+/// exists over `[ValueRef(E,a), ValueRef(E,b)]` (as `ReflectiveCellList`) with
 /// `determined($loop_var)` and `(E,a)=Determined`, `(E,b)=Undetermined`
 /// → `Bool(true)` (the Determined element short-circuits the exists).
 #[test]
@@ -620,7 +624,8 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
     let cell_b = ValueCellId::new("Bracket", "b");
     let loop_var = ValueCellId::new("$quant0.S", "p");
 
-    let collection = CompiledExpr::list_literal(
+    // Collection: ReflectiveCellList (task-2458: narrowed from ListLiteral).
+    let collection = CompiledExpr::reflective_cell_list(
         vec![
             CompiledExpr::value_ref(cell_a.clone(), Type::Real),
             CompiledExpr::value_ref(cell_b.clone(), Type::Real),
@@ -662,9 +667,14 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
     );
 }
 
-/// task-2289 amendment: pin the cell-iteration heuristic for a *user-written*
-/// `forall p in [E.x, E.y]: p > 0`-style expression that happens to share
-/// the post-activation shape (`ListLiteral` of pure `ValueRef`s).
+/// task-2458 acceptance: user-written `forall p in [E.x, E.y]: p > 0`
+/// (collection is a `ListLiteral` of `ValueRef`s) routes through the
+/// value-iteration fallback — task-2458 narrowed the cell-iteration trigger
+/// to the placeholder-derived `ReflectiveCellList` variant, so this
+/// user-source shape no longer matches. The arithmetic-predicate result is
+/// observationally equivalent under both paths; the path divergence is
+/// exercised separately by
+/// `forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration`.
 ///
 /// The cell-iteration branch keys off the structural shape, not a marker —
 /// so user-written code matching the same shape also routes through
