@@ -75,9 +75,21 @@ pub fn propagate_freshness_only(
             let current = cache.freshness(&dependent);
             let new = cache.derive_output_freshness_for_node(&dependent, false, generation);
 
+            // Freshness early cutoff (arch §3.5 lines 432-436): if the
+            // newly-derived freshness equals the current freshness the walk
+            // halts at this node and does NOT propagate to its dependents.
+            //
+            // The strict `==` comparison is correct because `Freshness`
+            // derives `PartialEq`, so a single `generation` parameter is
+            // threaded through the whole walk: an Intermediate{1} input that
+            // produces an Intermediate{1} output cuts off, but an
+            // Intermediate{1} → Intermediate{2} change would not (yielding a
+            // legitimate generation-bumping transition that *should*
+            // propagate). DO NOT WEAKEN this comparison without re-deriving
+            // the §7.2/§9.2 truth table — `Freshness::Pending`'s
+            // `last_substantive` field is part of the equality and matters
+            // for diagnostic-chain correctness.
             if new == current {
-                // Freshness early cutoff: nothing changed at this node, so
-                // we do not propagate further along this branch.
                 continue;
             }
 
