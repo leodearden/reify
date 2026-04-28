@@ -97,3 +97,42 @@ structure def Bracket {
     // Cap is exposed at 10 (sanity-check the public constant).
     assert_eq!(MAX_AUTO_TYPE_PARAM_CANDIDATES, 10);
 }
+
+// ─── step-3: single-candidate result ──────────────────────────────────────
+
+/// When exactly one in-scope structure declares conformance to the
+/// required trait, the result is `Found(vec!["ORingSeal"])` and no
+/// diagnostic is emitted. Pins both the variant choice and the exact
+/// contents of the candidate Vec.
+#[test]
+fn enumerate_returns_found_with_single_candidate_for_trait_bound() {
+    let source = r#"
+trait Seal {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = compile_source(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let mut diagnostics = Vec::new();
+    let result = enumerate_candidates(
+        &["Seal".to_string()],
+        &template_registry,
+        &trait_registry,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        CandidateEnumeration::Found(vec!["ORingSeal".to_string()]),
+        "expected exactly one candidate 'ORingSeal'"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "Found path with no overflow should emit no diagnostics, got: {:?}",
+        diagnostics
+    );
+}
