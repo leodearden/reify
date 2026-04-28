@@ -757,17 +757,26 @@ impl CacheStore {
 
 /// Derive output freshness from `still_refining` flag and input freshnesses.
 ///
-/// Implements arch §7.2 lines 730-749 (`docs/reify-implementation-architecture.md`):
+/// Implements arch §7.2 lines 730-749 with the §9.2 line 890 carve-out
+/// (`docs/reify-implementation-architecture.md`):
 ///
-/// | `still_refining` | any input `!= Final` | output                     |
-/// |------------------|----------------------|----------------------------|
-/// | `true`           | –                    | `Intermediate { generation }` |
-/// | `false`          | `true`               | `Intermediate { generation }` |
-/// | `false`          | `false` (all Final)  | `Final`                    |
+/// | `still_refining` | any input Failed | any input Pending | any input Intermediate | output                     |
+/// |------------------|------------------|-------------------|------------------------|----------------------------|
+/// | `true`           | –                | –                 | –                      | `Intermediate { generation }` |
+/// | `false`          | `true`           | –                 | –                      | `Pending { last_substantive: ResultRef::none() }` (§9.2) |
+/// | `false`          | `false`          | `true`            | –                      | `Pending { last_substantive: ResultRef::none() }` (§7.2) |
+/// | `false`          | `false`          | `false`           | `true`                 | `Intermediate { generation }` |
+/// | `false`          | `false`          | `false`           | `false` (all Final)    | `Final`                    |
 ///
-/// Note: Pending and Failed both count as non-Final per §7.2 — see the
-/// `derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final`
-/// unit test for truth-table coverage across all 4 input variants.
+/// Note: Failed and Pending are carved out of the §7.2 "any non-Final → Intermediate"
+/// rule per §9.2 line 890 (Failed) and §7.2 line 748 (Pending). Both produce a Pending
+/// output so the downstream subtree is naturally quieted. Chain forwarding (the cause
+/// NodeId) is handled at the `_with_cause` layer; the pure helper drops the chain and
+/// returns `Pending { last_substantive: ResultRef::none() }`.
+///
+/// See the `derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final`
+/// unit test for truth-table coverage across all 4 input variants and the
+/// `derive_output_freshness_with_cause_returns_failing_node` test for chain semantics.
 pub fn derive_output_freshness(
     still_refining: bool,
     input_freshnesses: impl IntoIterator<Item = Freshness>,
@@ -776,15 +785,103 @@ pub fn derive_output_freshness(
     if still_refining {
         return Freshness::Intermediate { generation };
     }
-    // Pending and Failed both count as non-Final per §7.2 — see step-3 truth-table coverage.
-    // The `!matches!(_, Final)` discriminator covers all three non-Final variants in a single predicate.
-    if input_freshnesses
-        .into_iter()
-        .any(|f| !matches!(f, Freshness::Final))
-    {
+    // Single pass: classify the strongest non-Final input we see.
+    let mut saw_failed = false;
+    let mut saw_pending = false;
+    let mut saw_intermediate = false;
+    for f in input_freshnesses {
+        match f {
+            Freshness::Final => {}
+            Freshness::Intermediate { .. } => saw_intermediate = true,
+            Freshness::Pending { .. } => saw_pending = true,
+            Freshness::Failed { .. } => saw_failed = true,
+        }
+    }
+    // §9.2 carve-out: Failed input → Pending output (chain handled at the _with_cause layer).
+    if saw_failed {
+        return Freshness::Pending { last_substantive: ResultRef::none() };
+    }
+    // §7.2 line 748: Pending input → Pending output (chain forwarded at _with_cause layer).
+    if saw_pending {
+        return Freshness::Pending { last_substantive: ResultRef::none() };
+    }
+    // §7.2 main rule: Intermediate input → Intermediate output.
+    if saw_intermediate {
         return Freshness::Intermediate { generation };
     }
     Freshness::Final
+}
+
+/// Cause-bearing variant of [`derive_output_freshness`].
+///
+/// Returns both the derived `Freshness` AND the upstream `NodeId` (if any) that
+/// drove the Pending output. The chain semantics are:
+///
+/// - **Failed input** contributes its own `NodeId` as the chain root (regardless of
+///   whether the input also has a `pending_cause` — Failed nodes are themselves the
+///   root, not a forwarder).
+/// - **Pending input** forwards the upstream entry's `pending_cause` (or `None` if
+///   the upstream chain was never recorded). The Pending node's own NodeId is not
+///   used as the cause — only a Failed leaf is a chain root.
+/// - All other input combinations return `(freshness, None)`.
+///
+/// When multiple non-Final inputs are present, the **first Failed** input wins;
+/// otherwise the **first Pending** input wins. This deterministic ordering matches
+/// the iteration order over `trace.reads` at the wire site.
+///
+/// See arch §9.2 lines 880-890 and arch §7.2 line 748.
+pub fn derive_output_freshness_with_cause(
+    still_refining: bool,
+    inputs: impl IntoIterator<Item = (NodeId, Freshness, Option<NodeId>)>,
+    generation: u64,
+) -> (Freshness, Option<NodeId>) {
+    if still_refining {
+        return (Freshness::Intermediate { generation }, None);
+    }
+    let mut failed_cause: Option<NodeId> = None;
+    let mut pending_cause: Option<NodeId> = None;
+    let mut saw_pending = false;
+    let mut saw_intermediate = false;
+    for (id, freshness, upstream_cause) in inputs {
+        match freshness {
+            Freshness::Final => {}
+            Freshness::Intermediate { .. } => saw_intermediate = true,
+            Freshness::Pending { .. } => {
+                saw_pending = true;
+                if pending_cause.is_none() {
+                    // Pending forwards the upstream entry's pending_cause; the Pending
+                    // node's own NodeId is NOT used (only Failed leaves are chain roots).
+                    pending_cause = upstream_cause;
+                }
+            }
+            Freshness::Failed { .. } => {
+                if failed_cause.is_none() {
+                    // Failed contributes its OWN NodeId as the chain root.
+                    failed_cause = Some(id);
+                }
+            }
+        }
+    }
+    // §9.2 carve-out: any Failed input → Pending output, with Failed NodeId as chain root.
+    if let Some(cause) = failed_cause {
+        return (
+            Freshness::Pending { last_substantive: ResultRef::none() },
+            Some(cause),
+        );
+    }
+    // §7.2 line 748: any Pending input → Pending output, with the upstream cause forwarded.
+    // Cause may be `None` if the upstream chain was never recorded — that yields
+    // `(Pending, None)` (sentinel for "chain incomplete").
+    if saw_pending {
+        return (
+            Freshness::Pending { last_substantive: ResultRef::none() },
+            pending_cause,
+        );
+    }
+    if saw_intermediate {
+        return (Freshness::Intermediate { generation }, None);
+    }
+    (Freshness::Final, None)
 }
 
 /// Compute the input hash for a value cell expression.
