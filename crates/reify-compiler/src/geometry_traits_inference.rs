@@ -422,22 +422,34 @@ pub fn infer_traits_for_expr_in_env(
 ///   resolving cross-entity references that are out of scope here).
 /// - Out-of-range `GeomRef::Step(idx)` → `InferredTraits::all()` (defensive;
 ///   well-formed IR never produces an out-of-range index).
+/// - Self-referential or forward-chain `GeomRef::Step(idx)` (`idx >=
+///   current_position`) → `InferredTraits::all()` (defensive; well-formed
+///   SSA-style construction guarantees `idx < current_position`, so any
+///   violation is malformed IR that would otherwise infinite-recurse).
 pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
     match ops.last() {
         None => InferredTraits::all(),
-        Some(op) => infer_op(op, ops),
+        Some(op) => infer_op(op, ops, ops.len() - 1),
     }
 }
 
 /// Dispatch on a single `CompiledGeometryOp`, recursing back into `ops` for
 /// `GeomRef::Step` references. Doc: see [`infer_traits_for_op`].
-fn infer_op(op: &CompiledGeometryOp, ops: &[CompiledGeometryOp]) -> InferredTraits {
+///
+/// `current_position` is the index of `op` within `ops`. It is threaded
+/// through all recursive calls so that `infer_geom_ref` can enforce the
+/// `idx < current_position` SSA-style invariant.
+fn infer_op(
+    op: &CompiledGeometryOp,
+    ops: &[CompiledGeometryOp],
+    current_position: usize,
+) -> InferredTraits {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
 
         CompiledGeometryOp::Boolean { op: bool_op, left, right } => {
-            let a = infer_geom_ref(left, ops);
-            let b = infer_geom_ref(right, ops);
+            let a = infer_geom_ref(left, ops, current_position);
+            let b = infer_geom_ref(right, ops, current_position);
             match bool_op {
                 BooleanOp::Union => combine_union(a, b),
                 BooleanOp::Difference => combine_difference(a, b),
@@ -446,15 +458,15 @@ fn infer_op(op: &CompiledGeometryOp, ops: &[CompiledGeometryOp]) -> InferredTrai
         }
 
         CompiledGeometryOp::Modify { target, .. } => {
-            combine_modify(infer_geom_ref(target, ops))
+            combine_modify(infer_geom_ref(target, ops, current_position))
         }
 
         CompiledGeometryOp::Transform { target, .. } => {
-            combine_transform(infer_geom_ref(target, ops))
+            combine_transform(infer_geom_ref(target, ops, current_position))
         }
 
         CompiledGeometryOp::Pattern { target, .. } => {
-            combine_pattern(infer_geom_ref(target, ops))
+            combine_pattern(infer_geom_ref(target, ops, current_position))
         }
 
         CompiledGeometryOp::Sweep { profiles, .. } => {
@@ -462,7 +474,7 @@ fn infer_op(op: &CompiledGeometryOp, ops: &[CompiledGeometryOp]) -> InferredTrai
             // geometry swept along a finite path stays bounded and connected).
             let profile = profiles
                 .first()
-                .map(|r| infer_geom_ref(r, ops))
+                .map(|r| infer_geom_ref(r, ops, current_position))
                 .unwrap_or(InferredTraits::all());
             combine_sweep(profile)
         }
@@ -474,12 +486,36 @@ fn infer_op(op: &CompiledGeometryOp, ops: &[CompiledGeometryOp]) -> InferredTrai
 
 /// Resolve a `GeomRef` within an op-array, returning the inferred traits for
 /// the referenced op. `GeomRef::Sub(_)` returns the safe all() default.
-fn infer_geom_ref(geom_ref: &GeomRef, ops: &[CompiledGeometryOp]) -> InferredTraits {
+///
+/// # Cycle guard — `idx < current_position` invariant
+///
+/// Well-formed SSA-style op-arrays are constructed bottom-up: every
+/// `GeomRef::Step(idx)` in a valid array refers to a strictly earlier op
+/// (`idx < current_position`). A violation (`idx >= current_position`) means
+/// the IR is malformed — either a self-reference (`idx == current_position`)
+/// or a forward-chain that loops back. Both cases would infinite-recurse
+/// without this guard, so we short-circuit to `InferredTraits::all()` to
+/// match the safe-default convention used by every other defensive arm in
+/// this module.
+///
+/// When recursing into a well-formed reference, `idx` becomes the new
+/// `current_position`, tightening the invariant monotonically.
+fn infer_geom_ref(
+    geom_ref: &GeomRef,
+    ops: &[CompiledGeometryOp],
+    current_position: usize,
+) -> InferredTraits {
     match geom_ref {
         GeomRef::Step(idx) => {
+            // Cycle guard: reject self-referential or forward-chain Step.
+            // Well-formed IR guarantees idx < current_position (SSA-style
+            // bottom-up construction). Violation → safe default all().
+            if *idx >= current_position {
+                return InferredTraits::all();
+            }
             // Defensive: if idx is out of range (malformed IR), default to all().
             ops.get(*idx)
-                .map(|op| infer_op(op, ops))
+                .map(|op| infer_op(op, ops, *idx))
                 .unwrap_or(InferredTraits::all())
         }
         // Sub-component geometry is not chased through the call stack.
