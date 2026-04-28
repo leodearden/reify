@@ -35,12 +35,11 @@ impl Manifest {
         for (raw_id, raw_pin) in raw.kernels.into_iter() {
             let id = KernelId::from_str(&raw_id)
                 .map_err(|_| ManifestError::UnknownKernel(raw_id.clone()))?;
-            kernels.insert(
-                id,
-                KernelPin {
-                    version: raw_pin.into_version(),
-                },
-            );
+            let version = raw_pin.into_version();
+            if version.trim().is_empty() {
+                return Err(ManifestError::EmptyVersion(id));
+            }
+            kernels.insert(id, KernelPin { version });
         }
         Ok(Manifest { kernels })
     }
@@ -85,6 +84,11 @@ pub enum ManifestError {
     /// can quote it back to the user. Lookup is canonical-lowercase
     /// only — `OCCT` and `truck` both surface as `UnknownKernel`.
     UnknownKernel(String),
+    /// A `[kernels]` entry pinned an empty or whitespace-only version
+    /// string. Empty pins are almost always an authoring mistake; the
+    /// task-level decision is to reject them at parse time so they
+    /// never reach the registry.
+    EmptyVersion(KernelId),
 }
 
 impl fmt::Display for ManifestError {
@@ -98,6 +102,13 @@ impl fmt::Display for ManifestError {
                     f,
                     "unknown kernel id '{}' in [kernels] (expected one of: occt, manifold, fidget, openvdb)",
                     key
+                )
+            }
+            ManifestError::EmptyVersion(id) => {
+                write!(
+                    f,
+                    "kernel '{}' in [kernels] has an empty version string",
+                    id
                 )
             }
         }
