@@ -2438,4 +2438,142 @@ mod tests {
         };
         assert!(eval_builtin("transform_compose", &[t1, t2]).is_undef());
     }
+
+    // ── transform_inverse tests (step-17) ────────────────────────────────────
+
+    /// transform_inverse(identity) == identity.
+    #[test]
+    fn transform_inverse_identity_is_identity() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let result = eval_builtin("transform_inverse", &[id]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-12, "translation[{i}] = {v}, expected 0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_inverse((R=90Z, t=[1,0,0])) has R = -90Z (conjugate of 90Z) and t = -R^-1 * (1,0,0) = (0,1,0).
+    /// Computation: R^-1 = conj(R) = (s, 0, 0, -s). R^-1 * (1,0,0) = quat_rotate(R^-1, (1,0,0)) = (0,-1,0).
+    /// t_inv = -R^-1 * t = -(0,-1,0) = (0,1,0).
+    #[test]
+    fn transform_inverse_90z_with_translation() {
+        let t = make_transform(make_rot90z(), 1.0, 0.0, 0.0);
+        let result = eval_builtin("transform_inverse", &[t]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, -s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(tx.abs() < 1e-12, "tx = {tx}, expected 0");
+                        assert!((ty - 1.0).abs() < 1e-12, "ty = {ty}, expected 1");
+                        assert!(tz.abs() < 1e-12, "tz = {tz}, expected 0");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// inverse(inverse(T)) ≈ T (round-trip with sign_insensitive on rotation).
+    #[test]
+    fn transform_inverse_round_trip() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q.clone(), 1.5, 2.5, -3.5);
+        let inv = eval_builtin("transform_inverse", &[t.clone()]);
+        let back = eval_builtin("transform_inverse", &[inv]);
+        match back {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.5).abs() < 1e-12, "tx = {tx}, expected 1.5");
+                        assert!((ty - 2.5).abs() < 1e-12, "ty = {ty}, expected 2.5");
+                        assert!((tz - (-3.5)).abs() < 1e-12, "tz = {tz}, expected -3.5");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// compose(T, inverse(T)) ≈ identity for an arbitrary T.
+    #[test]
+    fn transform_inverse_compose_t_inv_t_is_identity() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q, 1.5, 2.5, -3.5);
+        let inv = eval_builtin("transform_inverse", &[t.clone()]);
+        let composed = eval_builtin("transform_compose", &[t, inv]);
+        match composed {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected ~0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_inverse with wrong arg count → Undef.
+    #[test]
+    fn transform_inverse_wrong_arg_count_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_inverse", &[]).is_undef());
+        assert!(eval_builtin("transform_inverse", &[t.clone(), t]).is_undef());
+    }
+
+    /// transform_inverse with non-Transform arg → Undef.
+    #[test]
+    fn transform_inverse_non_transform_arg_returns_undef() {
+        assert!(eval_builtin("transform_inverse", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("transform_inverse", &[make_identity_orientation()]).is_undef());
+    }
 }
