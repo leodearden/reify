@@ -4141,13 +4141,9 @@ mod tests {
     /// entry on the next call — i.e. the guard's `Drop` fired during unwind and
     /// re-donated the checked-out state.
     ///
-    /// # Why this test uses unsafe
-    ///
-    /// `std::panic::catch_unwind` requires its closure to be `UnwindSafe`.
-    /// `&mut WarmStatePool` is `!UnwindSafe`, so we wrap the closure in
-    /// `AssertUnwindSafe` and pass the pool via a raw pointer that is valid for
-    /// the entire test frame.  The raw deref is sound: `pool` outlives the
-    /// closure, and no other reference to `pool` exists while the closure runs.
+    /// `AssertUnwindSafe<F>` is unconditionally `UnwindSafe` for any `F`, so
+    /// capturing `&mut pool` directly is sufficient — no raw-pointer indirection
+    /// required.
     #[test]
     fn pending_warm_seeds_guard_redonates_on_panic() {
         use crate::cache::NodeId;
@@ -4163,24 +4159,19 @@ mod tests {
         pool.donate(node_id.clone(), OpaqueState::new(0xCAFEu32, 4));
 
         // Simulate step (4c): checkout → guard live → panic → Drop re-donates.
-        {
-            // SAFETY: `pool` is alive for the entire test; the raw pointer does
-            // not escape the `AssertUnwindSafe` closure.
-            let pool_ptr: *mut WarmStatePool = &mut pool;
-            let nid = node_id.clone();
-            let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                let pool_ref = unsafe { &mut *pool_ptr };
-                let mut guard = PendingWarmSeedsGuard::new(pool_ref);
-                let (state, stamp) = guard
-                    .pool_mut()
-                    .checkout_with_lru_stamp(&nid)
-                    .expect("state should be in pool before panic");
-                guard.insert(nid.clone(), state, stamp);
-                // Simulate a panic inside edit_source between steps (4c) and (14b).
-                panic!("simulated mid-edit panic");
-            }));
-            assert!(result.is_err(), "catch_unwind must catch the panic");
-        }
+        // AssertUnwindSafe wraps the closure unconditionally, so &mut pool can
+        // be captured directly without a raw-pointer indirection.
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = PendingWarmSeedsGuard::new(&mut pool);
+            let (state, stamp) = guard
+                .pool_mut()
+                .checkout_with_lru_stamp(&node_id)
+                .expect("state should be in pool before panic");
+            guard.insert(node_id.clone(), state, stamp);
+            // Simulate a panic inside edit_source between steps (4c) and (14b).
+            panic!("simulated mid-edit panic");
+        }));
+        assert!(result.is_err(), "catch_unwind must catch the panic");
 
         // After the unwind, the guard's Drop must have re-donated the entry.
         let recovered = pool
