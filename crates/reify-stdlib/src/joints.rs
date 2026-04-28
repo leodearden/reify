@@ -54,7 +54,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 _ => return Some(Value::Undef),
             };
             match kind {
-                "prismatic" | "revolute" => transform_at_simple_joint(map, &args[1]),
+                "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
@@ -82,17 +82,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     };
                     // Validate the stored parent kind — defense-in-depth against
                     // hand-built Map fixtures with invalid parent kinds.
-                    let parent_is_prismatic = match parent_map.get(&Value::String("kind".to_string())) {
-                        Some(Value::String(s)) => match s.as_str() {
-                            "prismatic" => true,
-                            "revolute" => false,
-                            _ => return Some(Value::Undef),
-                        },
+                    // Extracting the kind as a &str (rather than a bool) means this
+                    // is the single validation point; transform_at_simple_joint
+                    // receives the already-validated kind and never re-reads it.
+                    let parent_kind = match parent_map.get(&Value::String("kind".to_string())) {
+                        Some(Value::String(s))
+                            if matches!(s.as_str(), "prismatic" | "revolute") =>
+                        {
+                            s.as_str()
+                        }
                         _ => return Some(Value::Undef),
                     };
                     // Extract v_si from args[1] via dimension-appropriate helper;
                     // both helpers reject wrong-dim Scalars and non-finite values.
-                    let v_si = if parent_is_prismatic {
+                    let v_si = if parent_kind == "prismatic" {
                         match length_input(&args[1]) {
                             Some(d) => d,
                             None => return Some(Value::Undef),
@@ -113,7 +116,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     if !coupled_si.is_finite() {
                         return Some(Value::Undef);
                     }
-                    let coupled_value = if parent_is_prismatic {
+                    let coupled_value = if parent_kind == "prismatic" {
                         Value::length(coupled_si)
                     } else {
                         Value::angle(coupled_si)
@@ -122,7 +125,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     // Termination is guaranteed: `couple` rejects coupling parents
                     // at construction, so the recursion always reaches a
                     // prismatic/revolute arm at depth 1.
-                    transform_at_simple_joint(parent_map, &coupled_value)
+                    transform_at_simple_joint(parent_kind, parent_map, &coupled_value)
                 }
                 _ => Value::Undef,
             }
@@ -391,18 +394,18 @@ fn axis_angle_quaternion(nax: f64, nay: f64, naz: f64, theta: f64) -> Value {
 
 /// Evaluate `transform_at` for a simple (prismatic or revolute) joint map.
 ///
-/// Looks up `"kind"` from `map`, dispatches on `"prismatic"` / `"revolute"`, and
-/// returns the computed `Value::Transform`.  Returns `Value::Undef` for any
-/// unknown kind, missing axis, or invalid value argument.
+/// Dispatches on the pre-validated `kind` string (`"prismatic"` or `"revolute"`).
+/// The caller is responsible for validating that `kind` is one of these two values;
+/// passing a pre-validated `kind` keeps joint-kind validation in exactly one place
+/// (the caller's match / guard) so a future new simple-joint kind only needs to be
+/// added to the caller and this match — not to both separately.
+/// Returns `Value::Undef` as a defence-in-depth fallback for any unrecognised kind,
+/// and for any missing axis or invalid value argument.
 ///
 /// This helper is also the terminal dispatch target for the coupling arm of
 /// `transform_at` — `couple` rejects coupling parents at construction, so the
 /// recursion always reaches this helper at depth 1, guaranteeing termination.
-fn transform_at_simple_joint(map: &BTreeMap<Value, Value>, value: &Value) -> Value {
-    let kind = match map.get(&Value::String("kind".to_string())) {
-        Some(Value::String(s)) => s.as_str(),
-        _ => return Value::Undef,
-    };
+fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &Value) -> Value {
     match kind {
         "prismatic" => {
             let [nax, nay, naz] = match unit_axis_from_map(map) {
