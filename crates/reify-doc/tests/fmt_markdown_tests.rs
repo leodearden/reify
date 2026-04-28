@@ -2385,3 +2385,31 @@ fn assert_or_update_snapshot_normalizes_crlf_in_actual() {
     // message.
     assert_or_update_snapshot("crlf_normalization_smoke.txt", actual);
 }
+
+/// Regression: `assert_or_update_snapshot` must normalise `\r\n` → `\n` in
+/// the **on-disk expected** before comparing with the in-memory LF `actual`.
+///
+/// Background: on a Windows checkout with `core.autocrlf=true` a committed
+/// LF golden is silently translated to CRLF on disk.  Without the `expected`
+/// normalisation the helper would panic with a snapshot-mismatch even though
+/// the logical content is identical.  This test exercises `assert_or_update_snapshot_at`
+/// (the path-taking primitive) directly, passing an LF `actual` against a
+/// runtime-created CRLF on-disk file, so that removing the
+/// `s.replace("\r\n", "\n")` in the `Ok(s) => …` arm causes the test to fail.
+///
+/// NOTE: this is the inverse of `assert_or_update_snapshot_normalizes_crlf_in_actual`
+/// (CRLF actual + LF expected) — together the two tests provide independent
+/// coverage of each `replace()` call so that deleting either one surfaces a
+/// failure.
+#[test]
+fn assert_or_update_snapshot_normalizes_crlf_in_expected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("crlf_expected.txt");
+    // Write CRLF bytes to the file, simulating a Windows checkout with
+    // core.autocrlf=true that has silently re-encoded a committed LF golden.
+    std::fs::write(&path, "line1\r\nline2\r\n").expect("write CRLF file");
+    // LF-only actual — what the formatter actually produces on all platforms.
+    // Without the expected-arm normalisation the helper panics (CRLF ≠ LF);
+    // with it both sides become "line1\nline2\n" and the assertion succeeds.
+    assert_or_update_snapshot_at(&path, "line1\nline2\n");
+}
