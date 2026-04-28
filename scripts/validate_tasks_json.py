@@ -42,6 +42,8 @@ import re
 import sys
 import collections
 
+_DOTTED_DEP_RE = re.compile(r"(\d+)\.(\d+)")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -210,7 +212,6 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
 
     # Invariant 2: every dep is a string referencing a known id.  Dotted
     # ``<parent>.<subtask>`` form is also accepted when both halves resolve.
-    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for task in tasks:
         tid = task.get("id", "?")
         deps_raw = task.get("dependencies", [])
@@ -227,7 +228,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
                 continue
             if dep in known_ids:
                 continue
-            m = dotted_re.fullmatch(dep)
+            m = _DOTTED_DEP_RE.fullmatch(dep)
             if m and m.group(1) in known_ids and m.group(2) in subtasks_by_parent.get(m.group(1), set()):
                 continue
             errors.append(
@@ -289,7 +290,6 @@ def _validate_subtasks(
     # Invariant 2 for subtasks (deps may be sibling subtask ids, parent task ids,
     # or dotted <parent>.<subtask> form when subtasks_by_parent is provided).
     allowed_ids = known_subtask_ids | parent_task_ids
-    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for sub in subtasks:
         sid = sub.get("id", "?")
         deps_raw = sub.get("dependencies", [])
@@ -307,7 +307,7 @@ def _validate_subtasks(
                 pass
             else:
                 # Also accept dotted <parent>.<subtask> form.
-                m = dotted_re.fullmatch(dep)
+                m = _DOTTED_DEP_RE.fullmatch(dep)
                 if (
                     m
                     and subtasks_by_parent is not None
