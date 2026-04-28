@@ -1550,6 +1550,48 @@ mod tests {
         );
     }
 
+    // --- Task 2456: emit Evicted on same-key overwrite ---
+
+    /// Same-key overwrite must emit `Evicted{old_size}` then `Donated{new_size}`.
+    ///
+    /// The overwrite-evicted event is required for byte-accounting consumers
+    /// to maintain the invariant `Σ Donated.size − Σ Evicted.size = used_bytes`.
+    ///
+    /// Fails on the unpatched code because no Evicted event is emitted today.
+    #[test]
+    fn donate_same_node_emits_evicted_then_donated_on_overwrite() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_x = NodeId::Value(ValueCellId::new("T", "x"));
+
+        // First donation: setup.
+        pool.donate(node_x.clone(), OpaqueState::new(0u8, 100));
+        pool.drain_events(); // Clear the setup Donated event.
+
+        // Second donation of the *same* node: should emit Evicted(old) then Donated(new).
+        pool.donate(node_x.clone(), OpaqueState::new(0u8, 300));
+
+        let events = pool.drain_events();
+        assert_eq!(
+            events,
+            vec![
+                WarmPoolEvent::Evicted {
+                    node_id: node_x.clone(),
+                    size_bytes: 100,
+                },
+                WarmPoolEvent::Donated {
+                    node_id: node_x,
+                    size_bytes: 300,
+                },
+            ],
+            "same-key overwrite must emit Evicted{{old_size}} THEN Donated{{new_size}}"
+        );
+        assert_eq!(
+            pool.used_bytes(),
+            300,
+            "used_bytes must reflect only the new entry after overwrite"
+        );
+    }
+
     /// FIXME(cost-weighted-lru): `donate_preserving_lru` currently resets `cost_per_byte`
     /// to `0.0`, silently discarding any cost recorded at the original donation site.
     ///
