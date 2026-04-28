@@ -17,11 +17,14 @@
 //! kept in the sibling file `geometry_traits_tests.rs`; this file is reserved
 //! for the inference pipeline.
 
-use reify_compiler::PrimitiveKind;
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
+    SweepKind, TransformKind,
+};
 use reify_compiler::geometry_traits_inference::{
     GeometryTrait, InferredTraits, combine_difference, combine_intersection, combine_modify,
     combine_pattern, combine_sweep, combine_transform, combine_union, infer_primitive,
-    infer_traits_for_expr,
+    infer_traits_for_expr, infer_traits_for_op,
 };
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
@@ -589,6 +592,169 @@ fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
 }
 
 // ─── GEOMETRY_FUNCTION_NAMES ↔ infer_traits_for_function_call coverage ──────
+
+// ─── infer_traits_for_op — op-array walker unit tests ───────────────────────
+//
+// These tests exercise `infer_traits_for_op` introduced in step-3. They are
+// RED until that function is added to `geometry_traits_inference.rs`.
+
+/// A single `Primitive` op at the root → `InferredTraits::all()`.
+/// All current primitive kinds are fully Bounded+Connected+Convex.
+#[test]
+fn infer_traits_for_op_handles_primitive_root() {
+    let ops = vec![CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![],
+    }];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::all());
+}
+
+/// Boolean `Union` at root: two box primitives via `GeomRef::Step`.
+/// `combine_union(all, all)` → `bounded_only` (connected+convex dropped).
+#[test]
+fn infer_traits_for_op_handles_boolean_union_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_only());
+}
+
+/// Boolean `Intersection` at root: `combine_intersection(all, all)` →
+/// bounded+convex (connected dropped).
+#[test]
+fn infer_traits_for_op_handles_boolean_intersection_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Intersection,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        },
+    ];
+    let result = infer_traits_for_op(&ops);
+    assert_eq!(
+        result,
+        InferredTraits { bounded: true, connected: false, convex: true },
+        "intersection of two all-trait ops must be bounded+convex (connected dropped)"
+    );
+}
+
+/// Boolean `Difference` at root: `combine_difference(all, all)` →
+/// bounded_only (bounded inherited from left only).
+#[test]
+fn infer_traits_for_op_handles_boolean_difference_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Difference,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_only());
+}
+
+/// `Modify` root (e.g. Fillet): `combine_modify(all)` →
+/// bounded_connected (convex dropped).
+#[test]
+fn infer_traits_for_op_handles_modify_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Modify {
+            kind: ModifyKind::Fillet,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_connected());
+}
+
+/// `Transform` root: `combine_transform(all)` → all three preserved.
+#[test]
+fn infer_traits_for_op_handles_transform_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::all());
+}
+
+/// `Pattern` root: `combine_pattern(all)` → bounded_only
+/// (connected+convex dropped — multiple disjoint copies).
+#[test]
+fn infer_traits_for_op_handles_pattern_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_only());
+}
+
+/// `Sweep` root (e.g. Extrude): `combine_sweep(all)` →
+/// bounded_connected (convex dropped).
+#[test]
+fn infer_traits_for_op_handles_sweep_root() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_connected());
+}
+
+/// `Curve` root → safe default `InferredTraits::all()` (1-D primitives,
+/// not a solid geometry — inferred as fully safe).
+#[test]
+fn infer_traits_for_op_handles_curve_root() {
+    let ops = vec![CompiledGeometryOp::Curve {
+        kind: CurveKind::Arc,
+        args: vec![],
+    }];
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::all());
+}
+
+/// `GeomRef::Sub(_)` in a boolean op returns the safe default `all()` —
+/// we don't chase sub-component geometry through the call stack.
+/// Here, Union(Sub("x"), Step(0)): left = all() (Sub safe-default),
+/// right = all() (Box), combine_union(all, all) = bounded_only.
+#[test]
+fn infer_traits_for_op_geom_ref_sub_defaults_to_all() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Sub("x".to_string()),
+            right: GeomRef::Step(0),
+        },
+    ];
+    // Sub("x") defaults to all(), combine_union(all, all) = bounded_only
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_only());
+}
+
+/// Empty op array → safe default `InferredTraits::all()`.
+#[test]
+fn infer_traits_for_op_empty_array_defaults_to_all() {
+    assert_eq!(infer_traits_for_op(&[]), InferredTraits::all());
+}
 
 // ─── Tripwire / expectation-pinning: ValueRef safe-default ──────────────────
 
