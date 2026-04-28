@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::diagnostics::DiagnosticCode;
 use crate::dimension::DimensionVector;
 use crate::expr::CompiledExpr;
 use crate::hash::ContentHash;
@@ -2065,19 +2066,30 @@ impl ResultRef {
 
 /// Opaque nominal wrapper for an evaluation failure stored in [`Freshness::Failed`].
 ///
-/// Wraps the existing [`EvalError`] with a private inner field.  The only
-/// public accessor is `message() -> &str`; `Display` is delegated to the
-/// inner `EvalError`.  Use `ErrorRef::from(eval_error)` or `.into()` for
-/// ergonomic conversion from any site that already holds an `EvalError`.
+/// Wraps the existing [`EvalError`] with a private inner field.  The
+/// public accessors are `message() -> &str` and `code() -> Option<DiagnosticCode>`;
+/// `Display` is delegated to the inner `EvalError`.  Use
+/// `ErrorRef::from(eval_error)` or `.into()` for ergonomic conversion from
+/// any site that already holds an `EvalError`.
 ///
-/// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
+/// The optional `code` field carries an opaque [`DiagnosticCode`] so that
+/// downstream consumers can match on a typed identifier rather than a
+/// substring of the message text. See arch §9.2 lines 880-890 and
+/// spec §9.6 lines 1799-1819.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ErrorRef(EvalError);
+pub struct ErrorRef {
+    error: EvalError,
+    code: Option<DiagnosticCode>,
+}
 
 impl ErrorRef {
-    /// Construct an `ErrorRef` from a plain message string.
+    /// Construct an `ErrorRef` from a plain message string. The diagnostic
+    /// code defaults to `None`; use [`ErrorRef::with_code`] to attach one.
     pub fn new(message: impl Into<String>) -> Self {
-        ErrorRef(EvalError(message.into()))
+        ErrorRef {
+            error: EvalError(message.into()),
+            code: None,
+        }
     }
 
     /// Returns the error message string.
@@ -2085,25 +2097,37 @@ impl ErrorRef {
     /// Delegates to [`EvalError::message`] so the wrapper depends on
     /// `EvalError`'s API rather than its tuple-field representation.
     pub fn message(&self) -> &str {
-        self.0.message()
+        self.error.message()
+    }
+
+    /// Returns the optional diagnostic code attached to this error.
+    pub fn code(&self) -> Option<DiagnosticCode> {
+        self.code
+    }
+
+    /// Builder: attach a [`DiagnosticCode`] to this error, replacing any
+    /// previously-set code.
+    pub fn with_code(mut self, code: DiagnosticCode) -> Self {
+        self.code = Some(code);
+        self
     }
 }
 
 impl std::fmt::Display for ErrorRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.error.fmt(f)
     }
 }
 
 impl std::error::Error for ErrorRef {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
+        Some(&self.error)
     }
 }
 
 impl From<EvalError> for ErrorRef {
     fn from(error: EvalError) -> Self {
-        ErrorRef(error)
+        ErrorRef { error, code: None }
     }
 }
 
