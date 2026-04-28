@@ -351,6 +351,47 @@ mod tests {
         );
     }
 
+    // ── step-7: bare Sub inside specialization scope ─────────────────────────
+
+    /// A bare `sub` declaration (body=None) inside a specialization-scope body must
+    /// produce exactly one Error diagnostic with code=SpecializationForbiddenDecl,
+    /// a message containing `'sub'` and the decl name, and a label whose span
+    /// equals the SubDecl's span.
+    ///
+    /// Mirrors PRD acceptance criterion 3: `sub motor : ElectricMotor { sub child : Foo }`.
+    #[test]
+    fn validate_module_emits_forbidden_decl_diagnostic_for_bare_sub_inside_specialization_scope() {
+        let s_span = sub_span();
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_sub_bare("child", s_span)],
+        )]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got: {diagnostics:?}");
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
+        assert!(
+            d.message.contains("'sub'"),
+            "message must contain \"'sub'\", got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'child'"),
+            "message must contain \"'child'\", got: {:?}",
+            d.message
+        );
+        assert!(!d.labels.is_empty());
+        assert_eq!(
+            d.labels[0].span,
+            s_span,
+            "primary label span must equal the SubDecl's span"
+        );
+    }
+
     // ── step-5: Port inside specialization scope ─────────────────────────────
 
     /// A `port` declaration directly inside a specialization-scope body must
