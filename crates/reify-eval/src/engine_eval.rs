@@ -8,8 +8,8 @@ use std::time::Instant;
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, ErrorRef, FIELD_ENTITY_PREFIX,
-    PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
+    Freshness, PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult,
+    Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -2023,6 +2023,86 @@ impl Engine {
             // Snapshot test-instrumentation panic-injection state for this cell
             // so the closure does not need to borrow `self`.
             let force_panic = self.panic_on_eval_cells.contains(cell_id);
+
+            // Arch §7.2 line 748 / §9.2 line 890 — pre-eval Pending gate.
+            //
+            // Before invoking eval_expr, peek at this node's input freshness via
+            // the freshly-built dependency trace.  If any input is Failed (§9.2
+            // carve-out: Failed input → Pending output) or Pending (§7.2 line 748:
+            // Pending forwards the chain), the value computation MUST be quieted
+            // — running eval_expr with a missing/Undef upstream value would
+            // overwrite the cached `last_substantive` with poisoned output and
+            // defeat the "preserve previous best" semantic.
+            //
+            // Implementation:
+            //   1. Peek at the trace for this node (without removing it from
+            //      `let_traces`).
+            //   2. Derive `(Freshness, Option<NodeId>)` via the cause-bearing
+            //      helper: Failed input contributes its own NodeId as cause,
+            //      Pending input forwards the upstream entry's `pending_cause`.
+            //   3. If the derivation is `Pending` AND the cache entry already
+            //      exists (steady-state re-eval), call `mark_pending_with_cause`
+            //      — this preserves the existing `result_hash` as
+            //      `last_substantive` and bumps `pending_transition_count`.
+            //   4. Drain the trace from `let_traces` (keeping the
+            //      sorted_lets ⊆ let_traces.keys() invariant honoured for the
+            //      remainder of the loop) and emit `Completed { Unchanged }`
+            //      so the journal still records the visit.
+            //   5. `continue` — skip the panic-bounded eval and the normal
+            //      record_evaluation_propagating_freshness write.
+            //
+            // Cold-start fallback (entry absent → `mark_pending_with_cause`
+            // returns false): fall through to normal eval.  eval_expr will see
+            // missing reads via the value map and produce `Value::Undef` per
+            // the existing Kleene-undef semantics; the §9.2 derivation in
+            // `record_evaluation_propagating_freshness` still yields
+            // `Pending { last_substantive: ResultRef::none() }` (just without
+            // the chain cause attached, since there is no prior entry to
+            // store it on).  No test currently exercises this corner case.
+            //
+            // The gate intentionally does NOT short-circuit when `force_panic`
+            // is set — letting the gate win over test instrumentation matches
+            // the spec semantics ("Pending naturally quiets the downstream
+            // subtree") and keeps the test-only hook from overriding the
+            // production propagation contract.
+            {
+                let trace_peek = let_traces
+                    .get(&node_id)
+                    .expect("sorted_lets ⊆ let_traces.keys() by detect_let_cycle invariant");
+                let (gate_freshness, gate_cause) = self
+                    .cache
+                    .derive_output_freshness_from_trace_with_cause(
+                        trace_peek,
+                        false,
+                        version_id,
+                    );
+                if matches!(gate_freshness, Freshness::Pending { .. }) {
+                    if let Some(cause) = gate_cause {
+                        if self.cache.mark_pending_with_cause(&node_id, cause) {
+                            // Drain the trace so the rest of the loop body is
+                            // never reached for this iteration; the existing
+                            // entry's `dependency_trace` is preserved (stable
+                            // structure invariant during incremental re-eval).
+                            let _ = take_trace(
+                                &mut let_traces,
+                                &node_id,
+                                "sorted_lets",
+                                "let_traces",
+                            );
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id: node_id.clone(),
+                                kind: EventKind::Completed {
+                                    outcome: EvalOutcome::Unchanged,
+                                },
+                                version: VersionId(version_id),
+                                payload: Some(EventPayload::Duration(start.elapsed())),
+                            });
+                            continue;
+                        }
+                    }
+                }
+            }
 
             // Arch §9.1 panic boundary (lines 868–877): wrap `reify_expr::eval_expr`
             // in `catch_unwind` so a panic inside expression evaluation becomes
