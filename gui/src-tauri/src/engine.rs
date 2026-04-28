@@ -1291,13 +1291,9 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             format!("{}({})", function_name, arg_strs.join(", "))
         }
         CompiledExprKind::Lambda { .. } => "<lambda>".to_string(),
-        CompiledExprKind::ListLiteral(elems) => {
-            let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
-            format!("[{}]", elem_strs.join(", "))
-        }
-        // ReflectiveCellList: same surface formatting as ListLiteral — the
-        // variant marker is internal to the evaluator (task-2458).
-        CompiledExprKind::ReflectiveCellList(elems) => {
+        // ReflectiveCellList shares identical surface formatting with ListLiteral —
+        // the variant distinction is internal to the evaluator (task-2458).
+        CompiledExprKind::ListLiteral(elems) | CompiledExprKind::ReflectiveCellList(elems) => {
             let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
             format!("[{}]", elem_strs.join(", "))
         }
