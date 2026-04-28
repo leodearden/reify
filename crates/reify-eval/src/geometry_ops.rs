@@ -1180,6 +1180,117 @@ pub(crate) fn compile_geometry_op(
     }
 }
 
+// ── Conformance-query dispatch (task 2320) ──────────────────────────────────
+//
+// `try_eval_conformance_query` is the kernel-aware eval-time dispatch for the
+// stdlib helpers `is_watertight`, `is_manifold`, and `is_orientable`.
+//
+// Architecture: the helpers cannot be evaluated by the pure-value
+// `eval_expr` / `eval_builtin` path because (a) `Type::Geometry` has no
+// corresponding `Value` variant, and (b) the kernel — and therefore
+// `GeometryHandleId`s — only exists behind `Engine.geometry_kernel`. The
+// kernel-aware dispatch must live in the build / check pipeline where the
+// engine has both the kernel and the realisation's per-name
+// `GeometryHandleId` map (`named_steps`). This free function is invoked
+// from `engine_build.rs` after `execute_realization_ops` has populated
+// `named_steps` for a template, and patches the resulting `Value::Bool(_)`
+// into the per-cell `ValueMap`.
+//
+// Helper-name → marker-trait pairing for the user-assertion escape hatch:
+//   `is_watertight` ↔ `"Watertight"`
+//   `is_manifold`   ↔ `"Manifold"`
+//   `is_orientable` ↔ `"Orientable"`
+// Note the asymmetry: `is_watertight` short-circuits **only** on
+// `"Watertight"` — declaring `Closed` or `Manifold` (which `Watertight`
+// refines per `geometry_traits.ri`) is not sufficient. Trait-DAG
+// propagation is intentionally not done here; the simple name-equivalence
+// rule mirrors task 2321's per-bound `W_TRAIT_USER_ASSERTED` warning.
+//
+// Returns:
+//   `Some(Value::Bool(_))` when the dispatch produces a definite answer
+//                          (kernel reply OR user-assertion override).
+//   `Some(Value::Undef)`   when the kernel returned a non-`Bool` (defensive
+//                          downgrade with a Warning diagnostic).
+//   `None`                 when the expression is not a recognised
+//                          conformance-query helper, or the arg shape is
+//                          unsupported (literal, non-`ValueRef`,
+//                          unresolvable cell-member name).  Callers fall
+//                          through to the cell's compiled default.
+pub(crate) fn try_eval_conformance_query(
+    expr: &reify_types::CompiledExpr,
+    template_trait_bounds: &[String],
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (i) Must be a FunctionCall — anything else is unsupported.
+    let (function, args) = match &expr.kind {
+        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (ii) Must be one of the three recognised helper names. The pairing
+    // with the matching marker trait is fixed.
+    let marker_trait = match function.name.as_str() {
+        "is_watertight" => "Watertight",
+        "is_manifold" => "Manifold",
+        "is_orientable" => "Orientable",
+        _ => return None,
+    };
+
+    // (iii) Escape hatch: if the enclosing structure declared the matching
+    // marker trait, skip the kernel query entirely and return Bool(true).
+    // This is intentionally checked *before* arg-shape resolution so the
+    // user-assertion semantic holds even when the arg is otherwise
+    // unresolvable.
+    if template_trait_bounds.iter().any(|t| t == marker_trait) {
+        return Some(reify_types::Value::Bool(true));
+    }
+
+    // (iv) Arg shape: we only resolve `is_watertight(<entity>.<member>)`
+    // where `<member>` is a let-bound geometry name in `named_steps`.
+    // Anything else (literals, nested expressions, cross-template idents)
+    // falls through to `None` so the cell stays at its compiled default.
+    if args.len() != 1 {
+        return None;
+    }
+    let cell_id = match &args[0].kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let handle = match named_steps.get(&cell_id.member) {
+        Some(h) => *h,
+        None => return None,
+    };
+
+    // (v) Build the matching kernel query and dispatch.
+    let query = match function.name.as_str() {
+        "is_watertight" => reify_types::GeometryQuery::IsWatertight(handle),
+        "is_manifold" => reify_types::GeometryQuery::IsManifold(handle),
+        "is_orientable" => reify_types::GeometryQuery::IsOrientable(handle),
+        // Unreachable — the earlier match already filtered to these three names.
+        _ => return None,
+    };
+
+    match kernel.query(&query) {
+        Ok(reify_types::Value::Bool(b)) => Some(reify_types::Value::Bool(b)),
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}({}) kernel returned non-Bool value {:?}; treating as undefined",
+                function.name, cell_id.member, other
+            )));
+            Some(reify_types::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}({}) kernel query failed: {}",
+                function.name, cell_id.member, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
