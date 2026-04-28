@@ -2076,31 +2076,30 @@ impl Engine {
                         false,
                         version_id,
                     );
-                if matches!(gate_freshness, Freshness::Pending { .. }) {
-                    if let Some(cause) = gate_cause {
-                        if self.cache.mark_pending_with_cause(&node_id, cause) {
-                            // Drain the trace so the rest of the loop body is
-                            // never reached for this iteration; the existing
-                            // entry's `dependency_trace` is preserved (stable
-                            // structure invariant during incremental re-eval).
-                            let _ = take_trace(
-                                &mut let_traces,
-                                &node_id,
-                                "sorted_lets",
-                                "let_traces",
-                            );
-                            self.journal.record(EvalEvent {
-                                timestamp: Instant::now(),
-                                node_id: node_id.clone(),
-                                kind: EventKind::Completed {
-                                    outcome: EvalOutcome::Unchanged,
-                                },
-                                version: VersionId(version_id),
-                                payload: Some(EventPayload::Duration(start.elapsed())),
-                            });
-                            continue;
-                        }
-                    }
+                if matches!(gate_freshness, Freshness::Pending { .. })
+                    && let Some(cause) = gate_cause
+                    && self.cache.mark_pending_with_cause(&node_id, cause)
+                {
+                    // Drain the trace so the rest of the loop body is
+                    // never reached for this iteration; the existing
+                    // entry's `dependency_trace` is preserved (stable
+                    // structure invariant during incremental re-eval).
+                    let _ = take_trace(
+                        &mut let_traces,
+                        &node_id,
+                        "sorted_lets",
+                        "let_traces",
+                    );
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id: node_id.clone(),
+                        kind: EventKind::Completed {
+                            outcome: EvalOutcome::Unchanged,
+                        },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+                    continue;
                 }
             }
 
