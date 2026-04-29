@@ -145,3 +145,45 @@ structure S {
         }
     }
 }
+
+/// `forall v in []: constraint v > 0` should emit zero CompiledConstraints
+/// and zero errors. Pins PRD criterion 6 (empty collection produces no
+/// decls, no diagnostic). The empty literal is a degenerate but legal
+/// program — the forall statement is vacuously satisfied.
+#[test]
+fn forall_constraint_over_empty_list_literal_emits_no_decls_no_error() {
+    let source = r#"
+structure S {
+    forall v in []: constraint v > 0
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for empty-list forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints from empty-list forall, got {}",
+        forall_constraints_count
+    );
+}
