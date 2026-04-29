@@ -69,12 +69,37 @@ impl<V> ToleranceBucket<V> {
     /// # Panics (debug only)
     ///
     /// Panics in debug builds when `tol` is not finite or is negative.
+    /// Inserts `(tol, val)` into the bucket in sorted-ascending order and returns
+    /// `true`, or returns `false` without modifying the bucket if any existing entry
+    /// already satisfies `tol`.
+    ///
+    /// # "Tighter satisfies looser" rule (PRD: per-purpose-tolerance.md)
+    ///
+    /// An existing entry with `cached_tol <= tol` already satisfies any request at
+    /// tolerance `tol`.  Inserting a new, looser entry would be redundant — any
+    /// downstream consumer that could use the new entry can also use the existing
+    /// tighter one.  This function is therefore *idempotent under partial-order
+    /// satisfaction*: inserting a tolerance that is already dominated by an existing
+    /// entry is a no-op.
+    ///
+    /// After a successful insert the `entries` slice remains sorted ascending by
+    /// `cached_tol`, which is the invariant assumed by [`lookup`](Self::lookup).
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Panics in debug builds when `tol` is not finite or is negative.
     pub fn insert(&mut self, tol: f64, val: V) -> bool {
         // Reject if any existing entry already satisfies this tolerance.
         if self.entries.iter().any(|(cached_tol, _)| *cached_tol <= tol) {
             return false;
         }
-        self.entries.push((tol, val));
+        // Locate the insertion index: count of entries strictly less than `tol`.
+        // `partition_point` returns the index where the predicate transitions from
+        // true to false, which is exactly the number of entries with t < tol.
+        let idx = self
+            .entries
+            .partition_point(|(t, _)| t.partial_cmp(&tol).expect("finite tolerances are total-ordered") == std::cmp::Ordering::Less);
+        self.entries.insert(idx, (tol, val));
         true
     }
 
@@ -86,16 +111,23 @@ impl<V> ToleranceBucket<V> {
     /// `cached_tol` (best-fit / loosest satisfying) is returned; this minimises
     /// downstream consumer cost while keeping each bucket entry actively useful.
     ///
+    /// Because entries are sorted ascending, iterating in reverse (largest first)
+    /// yields the loosest satisfying entry on the first match — O(n) worst-case
+    /// but typically O(1) at n ≤ [`SOFT_CAPACITY`].
+    ///
     /// # Panics (debug only)
     ///
     /// Panics in debug builds when `requested_tol` is not finite or is negative.
     pub fn lookup(&self, requested_tol: f64) -> Option<&V> {
-        for (t, v) in &self.entries {
-            if *t <= requested_tol {
-                return Some(v);
-            }
-        }
-        None
+        debug_assert!(
+            self.entries.windows(2).all(|w| w[0].0 <= w[1].0),
+            "ToleranceBucket: entries must be sorted ascending by tolerance"
+        );
+        // Reverse scan: largest cached_tol first — return the first (loosest) that satisfies.
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|(t, v)| if *t <= requested_tol { Some(v) } else { None })
     }
 }
 
