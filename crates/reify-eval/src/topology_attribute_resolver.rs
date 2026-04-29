@@ -160,7 +160,26 @@ mod tests {
             resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(10)));
         assert!(diagnostics.is_empty(), "no diagnostics expected on a unique user_label match");
-        // Silence dead-code while CapKind is only referenced by later tests.
-        let _ = CapKind::Top;
+    }
+
+    /// step-3 — role+local_index uniquely identifies the sub-shape (no
+    /// user_label set on either candidate); returns Resolved with no
+    /// diagnostics.
+    #[test]
+    fn resolve_unique_by_attribute_role_and_index_match_returns_resolved() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        table.record(h(21), attr(Role::Side, 0, None));
+        let candidates = [h(20), h(21)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Cap(CapKind::Top), 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(result, AttributeResolution::Resolved(h(20)));
+        assert!(diagnostics.is_empty(), "no diagnostics expected on a unique role/idx match");
     }
 }
