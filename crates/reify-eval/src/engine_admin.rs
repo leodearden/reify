@@ -878,4 +878,85 @@ mod tests {
             ),
         }
     }
+
+    /// `Engine::pending_cause` returns the chain-root `NodeId` for a Pending
+    /// node and `None` in all other cases.
+    ///
+    /// (a) Unknown node → `None` (no cache entry, default).
+    /// (b) A Failed root → `None` (Failed nodes are the chain root, not
+    ///     forwarders; per the `CacheStore::pending_cause` contract at
+    ///     cache.rs:597-603).
+    /// (c) A Pending consumer whose upstream Failed → `Some(NodeId::Value(a))`.
+    ///
+    /// Step-1 test: will not compile until `Engine::pending_cause` is
+    /// implemented in step-2 (the method does not yet exist).
+    #[test]
+    fn pending_cause_returns_failed_leaf_for_pending_dependent() {
+        use crate::cache::NodeId;
+        use reify_test_support::builders::{binop, literal, value_ref};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+
+        // Build a 2-cell module: `let a = 1.0` and `let b = a + 1.0`.
+        // b reads a, so when a fails b becomes Pending (arch §9.2).
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .let_binding(
+                        "T",
+                        "a",
+                        Type::Real,
+                        literal(Value::Real(1.0)),
+                    )
+                    .let_binding(
+                        "T",
+                        "b",
+                        Type::Real,
+                        binop(
+                            BinOp::Add,
+                            value_ref("T", "a"),
+                            literal(Value::Real(1.0)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Pass 1: cold eval — initialises cache (all cells → Final).
+        let _ = engine.eval(&module);
+
+        // Pass 2: force `a` to fail; `b` depends on `a` so it becomes Pending.
+        engine.set_panic_on_eval(a_id.clone());
+        let _ = engine.eval(&module);
+
+        // (a) Unknown node → None (no cache entry).
+        let unknown = NodeId::Value(ValueCellId::new("Ghost", "x"));
+        assert!(
+            engine.pending_cause(&unknown).is_none(),
+            "pending_cause of an unknown node must return None"
+        );
+
+        // (b) Failed root → None (Failed nodes are chain roots, not forwarders).
+        let a_node = NodeId::Value(a_id.clone());
+        assert!(
+            engine.pending_cause(&a_node).is_none(),
+            "pending_cause of a Failed root must return None; \
+             Failed nodes are the chain root, not forwarders"
+        );
+
+        // (c) Pending consumer → Some(Failed root).
+        let b_node = NodeId::Value(b_id.clone());
+        let expected_cause = NodeId::Value(a_id.clone());
+        assert_eq!(
+            engine.pending_cause(&b_node),
+            Some(expected_cause),
+            "pending_cause of the Pending consumer must return Some(NodeId::Value(a))"
+        );
+    }
 }
