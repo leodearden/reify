@@ -140,11 +140,25 @@ pub fn resolve_unique_by_attribute(
     // falls through and may be overridden by the role/idx count.
     let mut last_count: Option<usize> = None;
 
+    // `query.feature_id`, when Some, additionally constrains BOTH match
+    // branches: a candidate is considered only if its
+    // `TopologyAttribute::feature_id` equals the query value. The
+    // imported-geometry fallback pre-pass above is intentionally
+    // unaffected — it counts candidates with ANY entry, so a feature_id
+    // filter never spuriously flips a native-geometry resolution attempt
+    // into the FallbackToComputed arm.
+    let feature_id_filter = |attr: &TopologyAttribute| -> bool {
+        match query.feature_id.as_ref() {
+            None => true,
+            Some(fid) => attr.feature_id == *fid,
+        }
+    };
+
     // user_label branch (step-2). Per PRD line 62, this branch fires first
     // when query.user_label is Some.
     if let Some(label) = query.user_label.as_deref() {
         let (found, n) = count_unique_matches(table, candidates, |attr| {
-            attr.user_label.as_deref() == Some(label)
+            attr.user_label.as_deref() == Some(label) && feature_id_filter(attr)
         });
         match n {
             1 => return AttributeResolution::Resolved(found.unwrap()),
@@ -163,7 +177,7 @@ pub fn resolve_unique_by_attribute(
     // role + local_index branch (step-4).
     if let Some((role, idx)) = query.role_and_index {
         let (found, n) = count_unique_matches(table, candidates, |attr| {
-            attr.role == role && attr.local_index == idx
+            attr.role == role && attr.local_index == idx && feature_id_filter(attr)
         });
         if n == 1 {
             return AttributeResolution::Resolved(found.unwrap());
