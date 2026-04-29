@@ -22,6 +22,7 @@ pub mod journal;
 pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
+pub mod tolerance_bucket;
 pub mod topology_attribute_propagation;
 pub mod topology_selectors;
 mod unfold;
