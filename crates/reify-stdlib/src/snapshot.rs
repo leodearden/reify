@@ -201,6 +201,42 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             }
             Value::List(ids)
         }
+        "transform_of" => {
+            // Validation surface (each guard short-circuits to Undef):
+            //   args.len() == 2                       → arity guard
+            //   args[0] is Map with kind="snapshot"   → snapshot guard
+            //   args[1] is Value::Int                 → id-type guard
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let snap_bodies = match snapshot_bodies(&args[0]) {
+                Some(b) => b,
+                None => return Some(Value::Undef),
+            };
+            if !matches!(&args[1], Value::Int(_)) {
+                return Some(Value::Undef);
+            }
+            // Linear scan: first body whose `id` field equals args[1]
+            // by structural Value::Eq wins.  Returns Undef when no
+            // body matches (caller's responsibility to gate on the
+            // bodies() list when an unknown id is a programming
+            // error rather than a queryable miss).
+            for body in snap_bodies {
+                let body_map = match body {
+                    Value::Map(b) => b,
+                    _ => return Some(Value::Undef),
+                };
+                if body_map.get(&Value::String("id".to_string())) == Some(&args[1]) {
+                    return Some(
+                        body_map
+                            .get(&Value::String("world_transform".to_string()))
+                            .cloned()
+                            .unwrap_or(Value::Undef),
+                    );
+                }
+            }
+            Value::Undef
+        }
         _ => return None,
     })
 }
@@ -1058,27 +1094,40 @@ mod tests {
 
     /// `transform_of(s, id)` returns the body's recorded
     /// `world_transform` for each id present in the snapshot's
-    /// bodies list.  Verified against a fresh `transform_at(joint, v)`
-    /// so the accessor is checked against the same FK-walk output.
+    /// bodies list.  Verified by decomposing the result and
+    /// comparing the analytic per-body world translation
+    /// component-wise: byte-equal comparison against a fresh
+    /// `transform_at(joint, v)` is brittle to signed-zero
+    /// normalization in `transform_compose(t_at_world, identity_pose)`
+    /// (`Value::Scalar`'s `PartialEq` uses `to_bits()`, which
+    /// distinguishes +0.0 from -0.0).
     #[test]
     fn transform_of_returns_body_world_transform() {
-        let (s, j_neg, j_pos) = make_two_body_snapshot();
+        let (s, _j_neg, _j_pos) = make_two_body_snapshot();
 
-        // Body 0 (id=0, at j_neg, value=-0.5m, identity pose)
-        let expected_0 = eval_builtin("transform_at", &[j_neg, Value::length(-0.5)]);
+        // Body 0: at j_neg with value=-0.5m, identity pose, parent=world
+        // → world translation (-0.5, 0, 0) and identity rotation.
         let result_0 = eval_builtin("transform_of", &[s.clone(), Value::Int(0)]);
-        assert_eq!(
-            result_0, expected_0,
-            "transform_of(s, 0) should equal transform_at(j_neg, -0.5m)"
-        );
+        let ((rw0, rx0, ry0, rz0), [tx0, ty0, tz0]) = decompose_transform_for_assert(&result_0);
+        assert!((rw0 - 1.0).abs() < 1e-12, "body 0 rotation w should be 1, got {}", rw0);
+        assert!(rx0.abs() < 1e-12, "body 0 rotation x should be 0, got {}", rx0);
+        assert!(ry0.abs() < 1e-12, "body 0 rotation y should be 0, got {}", ry0);
+        assert!(rz0.abs() < 1e-12, "body 0 rotation z should be 0, got {}", rz0);
+        assert!((tx0 - (-0.5)).abs() < 1e-12, "body 0 tx should be -0.5, got {}", tx0);
+        assert!(ty0.abs() < 1e-12, "body 0 ty should be 0, got {}", ty0);
+        assert!(tz0.abs() < 1e-12, "body 0 tz should be 0, got {}", tz0);
 
-        // Body 1 (id=1, at j_pos, value=+0.5m, identity pose)
-        let expected_1 = eval_builtin("transform_at", &[j_pos, Value::length(0.5)]);
+        // Body 1: at j_pos with value=+0.5m, identity pose, parent=world
+        // → world translation (+0.5, 0, 0) and identity rotation.
         let result_1 = eval_builtin("transform_of", &[s, Value::Int(1)]);
-        assert_eq!(
-            result_1, expected_1,
-            "transform_of(s, 1) should equal transform_at(j_pos, +0.5m)"
-        );
+        let ((rw1, rx1, ry1, rz1), [tx1, ty1, tz1]) = decompose_transform_for_assert(&result_1);
+        assert!((rw1 - 1.0).abs() < 1e-12, "body 1 rotation w should be 1, got {}", rw1);
+        assert!(rx1.abs() < 1e-12, "body 1 rotation x should be 0, got {}", rx1);
+        assert!(ry1.abs() < 1e-12, "body 1 rotation y should be 0, got {}", ry1);
+        assert!(rz1.abs() < 1e-12, "body 1 rotation z should be 0, got {}", rz1);
+        assert!((tx1 - 0.5).abs() < 1e-12, "body 1 tx should be 0.5, got {}", tx1);
+        assert!(ty1.abs() < 1e-12, "body 1 ty should be 0, got {}", ty1);
+        assert!(tz1.abs() < 1e-12, "body 1 tz should be 0, got {}", tz1);
     }
 
     /// `transform_of(s, unknown_id)` returns `Value::Undef`.
