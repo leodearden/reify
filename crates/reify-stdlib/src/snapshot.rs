@@ -22,6 +22,7 @@ use reify_types::Value;
 
 use crate::eval_builtin;
 use crate::joints::is_joint_value;
+use crate::loop_closure::joint_range_midpoint;
 use crate::mechanism::is_world;
 
 /// Evaluate a snapshot/FK stdlib function by name.
@@ -250,10 +251,17 @@ fn joint_world_transform(
 /// Look up the motion value for `joint` in a bindings list.
 ///
 /// Linear scan; first match by structural `Value::Eq` on the binding's
-/// `joint` field wins. Returns `None` when no entry matches — the
-/// caller falls back to `loop_closure::joint_range_midpoint` in a
-/// later step (step 12). For now `None` propagates to `Value::Undef`,
-/// which suffices for the step 7/8 single-binding scenario.
+/// `joint` field wins.  When no entry matches, fall back to the
+/// joint's range midpoint via [`joint_range_midpoint`] (per spec
+/// §13.3): the resulting f64 (in SI units — metres for prismatic,
+/// radians for revolute, parent-frame midpoint for coupling) is
+/// wrapped back into a dimensioned `Value::length` / `Value::angle`
+/// via [`wrap_midpoint_for_joint`] so it round-trips through
+/// `transform_at`'s `length_input` / `trig_input` checks.
+///
+/// Returns `None` only when the joint is non-Map, lacks a range, or
+/// has an unbounded range — `joint_range_midpoint` already filters
+/// those.  The FK walk's caller maps `None` to `Value::Undef`.
 ///
 /// Defensive against malformed binding entries (non-Map, missing
 /// `joint`/`value` keys): such entries are skipped, not failed-on.
@@ -269,10 +277,45 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
             }
         }
     }
-    // No binding matched — caller will substitute the joint range
-    // midpoint in step 12. For now, surface `None` so the caller can
-    // map it to `Value::Undef`.
-    None
+    // No binding matched — fall back to the joint's range midpoint
+    // (spec §13.3).  For coupling joints, `joint_range_midpoint`
+    // already recurses to the parent's range; we still wrap with the
+    // parent's dimension here so `transform_at(coupling, v)` receives
+    // a properly-typed value for its `length_input`/`trig_input`.
+    let mid_si = joint_range_midpoint(joint)?;
+    wrap_midpoint_for_joint(joint, mid_si)
+}
+
+/// Wrap a midpoint f64 (in SI units) back into a dimensioned `Value`
+/// based on the joint's underlying kind.
+///
+/// - `prismatic` → `Value::length(mid_si)` (metres)
+/// - `revolute`  → `Value::angle(mid_si)`  (radians)
+/// - `coupling`  → recurse on the coupling's `parent` (the coupling's
+///   own free-variable dimension is the parent's; `transform_at`
+///   applies `ratio`/`offset` downstream).
+///
+/// Returns `None` for non-Map joints, missing `kind`, unknown kinds,
+/// or a coupling whose `parent` field is missing/non-Map — symmetric
+/// with `joint_range_midpoint`'s defensive failure modes.
+fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match kind {
+        "prismatic" => Some(Value::length(mid_si)),
+        "revolute" => Some(Value::angle(mid_si)),
+        "coupling" => {
+            let parent = map.get(&Value::String("parent".to_string()))?;
+            wrap_midpoint_for_joint(parent, mid_si)
+        }
+        _ => None,
+    }
 }
 
 /// Build a binding `Value::Map` with the standard three-key layout:
