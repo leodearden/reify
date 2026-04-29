@@ -41,6 +41,11 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `fixed_joint`    = `fixed()` — 0-DOF group-only joint, Map { kind="fixed" }
 ///   `fixed_xform`    = `transform_at(fixed_joint, 0)` → identity Transform
 ///   `fixed_jac`      = `joint_jacobian(fixed_joint)` → zero-twist Map
+///   `planar_joint`   = `planar(vec3(1,0,0), vec3(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)`
+///                     → Map { kind="planar", axis_x, axis_y, range_x, range_y, range_theta } (6 keys)
+///   `planar_xform`   = `transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])`
+///                     → Transform { translation=[0.5m, 0.3m, 0], rotation=quat(+Z, 0.5rad) }
+///   `planar_jac`     = `joint_jacobian(planar_joint)` → zero-twist Map (FD-fallback placeholder)
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
     let r_id       = orient_identity()
@@ -65,6 +70,10 @@ structure def Kinematic {
     let fixed_joint = fixed()
     let fixed_xform = transform_at(fixed_joint, 0)
     let fixed_jac   = joint_jacobian(fixed_joint)
+
+    let planar_joint = planar(vec3(1, 0, 0), vec3(0, 1, 0), 0mm .. 1m, 0mm .. 1m, 0rad .. 6.283185rad)
+    let planar_xform = transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])
+    let planar_jac   = joint_jacobian(planar_joint)
 }
 "#;
 
@@ -405,5 +414,58 @@ fn kinematic_stdlib_smoke_e2e() {
         [0.0, 0.0, 0.0],
         1e-12,
         "fixed_jac.linear",
+    );
+
+    // ── planar joint (3-DOF: two prismatic + one revolute, all in-plane) ─
+    // planar_joint = planar(vec3(1,0,0), vec3(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)
+    // → Map { kind="planar", axis_x, axis_y, range_x, range_y, range_theta } (6 keys)
+    let planar_joint = get_value(v, "planar_joint");
+    let pj_map = match planar_joint {
+        Value::Map(m) => m,
+        other => panic!("planar_joint: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        pj_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("planar".to_string())),
+        "planar_joint: kind field should be 'planar'"
+    );
+    assert_eq!(
+        pj_map.len(),
+        6,
+        "planar_joint: Map should have exactly 6 keys (kind, axis_x, axis_y, range_x, range_y, range_theta)"
+    );
+
+    // planar_xform = transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])
+    // → Transform { translation=[0.5, 0.3, 0] m, rotation=quat(+Z, 0.5 rad) }
+    // Since axis_x=[1,0,0], axis_y=[0,1,0] → plane normal = +Z.
+    // T_planar = T_x(0.5m along +X) · T_y(0.3m along +Y) · T_theta(0.5 rad about +Z)
+    // Translation: T_x and T_y have identity rotation, so translations add: [0.5, 0.3, 0] m.
+    // Rotation: T_theta contributes quat(+Z, 0.5 rad) = (cos(0.25), 0, 0, sin(0.25)).
+    let planar_xform = get_value(v, "planar_xform");
+    let (px_rot, px_trans) = match planar_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("planar_xform: expected Transform, got {other:?}"),
+    };
+    let cos_half = (0.5_f64 / 2.0).cos();
+    let sin_half = (0.5_f64 / 2.0).sin();
+    assert_orientation_close(px_rot, (cos_half, 0.0, 0.0, sin_half), 1e-12, "planar_xform rotation");
+    assert_vec3_close(px_trans, [0.5, 0.3, 0.0], 1e-12, "planar_xform translation");
+    assert_vec3_dim(px_trans, DimensionVector::LENGTH, "planar_xform translation dim");
+
+    // planar_jac = joint_jacobian(planar_joint) → zero-twist Map (FD-fallback placeholder)
+    // PRD task 2: "finite-difference fallback for spherical, cylindrical, planar until
+    // analytic forms are derived." Zero column preserves uniform { angular, linear } shape.
+    let planar_jac = get_value(v, "planar_jac");
+    assert_vec3_close(
+        map_vec3(planar_jac, "angular", "planar_jac.angular"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "planar_jac.angular",
+    );
+    assert_vec3_close(
+        map_vec3(planar_jac, "linear", "planar_jac.linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "planar_jac.linear",
     );
 }
