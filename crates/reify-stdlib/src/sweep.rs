@@ -243,6 +243,15 @@ fn driving_joint_kind(v: &Value) -> Option<DimensionVector> {
         Some(Value::String(s)) => match s.as_str() {
             "prismatic" => Some(DimensionVector::LENGTH),
             "revolute" => Some(DimensionVector::ANGLE),
+            // 3-DOF planar joint: no single sweep dimension to choose from.
+            // Planar has two prismatic axes plus one revolute about the plane
+            // normal — sweeping it requires either choosing one of its three
+            // internal DOFs (not the v0.1 single-driver sweep API) or
+            // product-iterating over all three (sweep_grid supports this for
+            // multiple dim()s, but each dim() still needs a single-DOF
+            // driver). Defer to PRD v0.2 kinematic task 2 (taskmaster #2670
+            // — "FD fallback for spherical, cylindrical, planar").
+            "planar" => None,
             _ => None,
         },
         _ => None,
