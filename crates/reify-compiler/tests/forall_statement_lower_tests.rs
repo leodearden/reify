@@ -818,3 +818,88 @@ structure def S {
         );
     }
 }
+
+/// `forall v in 42: constraint v > 0` should emit exactly one error
+/// diagnostic whose message contains `cannot iterate over non-collection
+/// type` (matching the expression-form quantifier wording at
+/// `expr.rs:1791-1799` for symmetry) and whose label span is anchored at
+/// the collection sub-expression. No `forall@v[*]` constraints should be
+/// emitted (anti-cascade — we don't elaborate when the collection isn't
+/// iterable). Pins step-20.
+#[test]
+fn forall_over_non_iterable_collection_emits_diagnostic() {
+    let source = r#"
+structure S {
+    forall v in 42: constraint v > 0
+}
+"#;
+    let module = compile_source(source);
+
+    // Filter for the non-iterable error specifically (the compile pipeline
+    // may emit other diagnostics — info or warning — that we don't pin here).
+    let non_iterable_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Error
+                && d.message.contains("cannot iterate over non-collection type")
+        })
+        .collect();
+    assert_eq!(
+        non_iterable_errors.len(),
+        1,
+        "expected exactly 1 non-iterable error, got {}: {:?}",
+        non_iterable_errors.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let err = non_iterable_errors[0];
+    let label = err
+        .labels
+        .first()
+        .expect("non-iterable diagnostic must carry a label");
+    assert!(
+        label.span.start < label.span.end,
+        "label span must be non-empty, got {}..{}",
+        label.span.start,
+        label.span.end
+    );
+
+    // The label's span should sit inside the source forall declaration's
+    // span (the collection sub-expression is part of the forall AST).
+    let forall_span = find_forall_constraint_span(source, "S");
+    assert!(
+        label.span.start >= forall_span.start && label.span.end <= forall_span.end,
+        "non-iterable label span must be inside the forall decl span: \
+         label = {}..{}, forall = {}..{}",
+        label.span.start,
+        label.span.end,
+        forall_span.start,
+        forall_span.end
+    );
+
+    // Anti-cascade: no per-element constraints should be emitted.
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when collection is non-iterable, got {}",
+        forall_constraints_count
+    );
+}
