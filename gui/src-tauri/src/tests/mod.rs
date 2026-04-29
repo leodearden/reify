@@ -6,7 +6,6 @@ mod engine_tests;
 mod lsp_bridge_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
-mod mechanism_descriptors_tests;
 mod types_tests;
 mod watcher_tests;
 

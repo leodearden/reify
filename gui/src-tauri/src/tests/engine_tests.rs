@@ -553,6 +553,172 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
     );
 }
 
+// ---- edge case tests (amendment pass, suggestion 8) -------------------------
+
+/// Source for double-bind test: same joint j bound to two different params in
+/// two separate snapshot() calls.  The first-wins guard ensures only p1 wins.
+const DOUBLE_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    param p1: Length = 100mm
+    param p2: Length = 200mm
+    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j)
+    let snap1 = snapshot(m1, [bind(j, p1)])
+    let snap2 = snapshot(m1, [bind(j, p2)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_double_bind_first_wins() {
+    // Two snapshot() calls bind the same joint j to p1 and p2 respectively.
+    // The `is_none()` guard in `resolve_driving_params_from_ast` ensures that
+    // only the first binding (p1) is recorded; p2 must NOT overwrite it.
+    let mut session = make_session();
+    session
+        .load_from_source(DOUBLE_BIND_SOURCE, "kinematic")
+        .expect("load double-bind source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    assert_eq!(m1_desc.joints.len(), 1, "m1 has one joint");
+    let joint = &m1_desc.joints[0];
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.p1".to_string()),
+        "first bind() wins: expected p1, got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// Source for let-bound test: the value side of bind() is a Let cell (not a Param).
+/// The `is_param` guard must reject it → driving_param_cell_id stays None.
+const LET_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let q  = 100mm
+    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j)
+    let snap = snapshot(m1, [bind(j, q)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_let_bound_yields_no_driving_param() {
+    // bind() where the value side is a Let cell (not a Param) must NOT resolve
+    // to a driving param.  Validates the `is_param` guard in the AST resolver.
+    let mut session = make_session();
+    session
+        .load_from_source(LET_BIND_SOURCE, "kinematic")
+        .expect("load let-bound source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    assert_eq!(m1_desc.joints.len(), 1, "m1 has one joint");
+    let joint = &m1_desc.joints[0];
+    assert!(
+        joint.driving_param_cell_id.is_none(),
+        "Let-bound bind must NOT resolve to a driving param; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// Source for world-only test: mechanism() with no real bodies added.
+/// The descriptor should have joints.len() == 0 (world sentinel filtered).
+const WORLD_ONLY_SOURCE: &str = r#"
+structure Kinematic {
+    let m0 = mechanism()
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_world_only_mechanism_has_no_joints() {
+    // mechanism() creates a mechanism with only the implicit world body.
+    // is_world_sentinel filters the world body's "at" field, so joints.len() == 0
+    // regardless of bodies_count (the world body is still in the bodies list).
+    let mut session = make_session();
+    session
+        .load_from_source(WORLD_ONLY_SOURCE, "kinematic")
+        .expect("load world-only source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m0_desc = descriptors
+        .iter()
+        .find(|d| d.name == "m0")
+        .expect("expected descriptor for m0");
+
+    assert_eq!(
+        m0_desc.joints.len(),
+        0,
+        "world-only mechanism has no scrubbable joints; got {:?}",
+        m0_desc.joints
+    );
+}
+
+/// Source for multi-snapshot test: two separate let cells each hold a snapshot()
+/// call with a distinct bind() pair.  Both bindings must be resolved, exercising
+/// the outer `for member in &structure.members` iteration and verifying that
+/// bind pairs from multiple snapshot lets are all collected.
+const MULTI_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    param p1: Length = 100mm
+    param p2: Length = 200mm
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j2 = prismatic(vec3(0, 1, 0), 0mm .. 600mm)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j1)
+    let m2  = body(m1, "solid_b", j2, j1)
+    let s1  = snapshot(m2, [bind(j1, p1)])
+    let s2  = snapshot(m2, [bind(j2, p2)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
+    // Two separate `let s = snapshot(...)` declarations each contribute one
+    // bind() pair.  Both joints should have their driving_param_cell_id resolved.
+    let mut session = make_session();
+    session
+        .load_from_source(MULTI_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load multi-snapshot source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m2_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 2)
+        .expect("expected descriptor with bodies_count=2 (m2)");
+
+    assert_eq!(m2_desc.joints.len(), 2, "m2 has two distinct joints");
+
+    let j1_desc = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.driving_param_cell_id == Some("Kinematic.p1".to_string()));
+    let j2_desc = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.driving_param_cell_id == Some("Kinematic.p2".to_string()));
+
+    assert!(
+        j1_desc.is_some(),
+        "j1 should be driven by p1; joint descriptors: {:?}",
+        m2_desc.joints
+    );
+    assert!(
+        j2_desc.is_some(),
+        "j2 should be driven by p2; joint descriptors: {:?}",
+        m2_desc.joints
+    );
+}
+
 #[test]
 fn set_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;

@@ -505,7 +505,18 @@ impl EngineSession {
         };
 
         let mut descriptors = Vec::new();
+        // Cache of seen_joints (joint identity sequence) per mechanism cell_id.
+        // Populated alongside the descriptor list and passed to
+        // resolve_driving_params_from_ast, avoiding a redundant O(B) body-walk
+        // inside the AST resolver for every (bind-pair, descriptor) pair.
+        let mut seen_joints_cache: HashMap<String, Vec<Value>> = HashMap::new();
 
+        // NOTE: this loop emits one descriptor per mechanism *cell*, which
+        // includes intermediate builder results (e.g. m0, m1, m2 from a
+        // `body()` chain).  The UI renders all non-errored cells; callers that
+        // want only the "final" mechanism (largest bodies_count) should filter
+        // the returned Vec themselves.  Errored mechanisms (closed-chain etc.)
+        // are suppressed via the `error` key check below.
         for template in &compiled.templates {
             for cell in &template.value_cells {
                 let val = check.values.get_or_undef(&cell.id);
@@ -527,14 +538,18 @@ impl EngineSession {
                 }
 
                 // Extract joints from the bodies list (step-6).
-                let joints = extract_joints_from_mechanism(map);
+                // Also returns the seen_joints sequence for the AST resolver cache.
+                let (joints, seen_joints) = extract_joints_from_mechanism(map);
                 let bodies_count = match map.get(&Value::String("bodies".to_string())) {
                     Some(Value::List(bodies)) => bodies.len(),
                     _ => 0,
                 };
 
+                let cell_id_str = cell.id.to_string();
+                seen_joints_cache.insert(cell_id_str.clone(), seen_joints);
+
                 descriptors.push(MechanismDescriptor {
-                    cell_id: cell.id.to_string(),
+                    cell_id: cell_id_str,
                     entity_path: cell.id.entity.clone(),
                     name: cell.id.member.clone(),
                     bodies_count,
@@ -549,7 +564,13 @@ impl EngineSession {
         // bind() are bare identifiers and the value side is a Param cell — is
         // resolved; all other forms leave driving_param_cell_id = None.
         if let Some(parsed) = self.parsed_cache.as_ref() {
-            resolve_driving_params_from_ast(&mut descriptors, parsed, check, compiled);
+            resolve_driving_params_from_ast(
+                &mut descriptors,
+                &seen_joints_cache,
+                parsed,
+                check,
+                compiled,
+            );
         }
 
         descriptors
@@ -968,20 +989,30 @@ fn build_constraints(
 
 // ---- Mechanism descriptor helpers -------------------------------------------
 
-/// Extract a `Vec<JointDescriptor>` from a valid (non-errored) mechanism Map.
+/// Extract joint descriptors and their identity sequence from a valid (non-errored) mechanism Map.
 ///
-/// Walks the `bodies` list and collects the `"at"` field of each body record
-/// as the joint for that body.  Deduplicates by structural equality (same joint
-/// Map referenced from multiple bodies gets one descriptor).  Assigns
-/// `joint_index` in first-encounter order.
+/// Returns `(joints, seen_joints)` where:
+/// - `joints` is the ordered `Vec<JointDescriptor>` for this mechanism.
+/// - `seen_joints` is the parallel `Vec<Value>` of joint Maps in first-encounter order,
+///   used by `resolve_driving_params_from_ast` to look up joint indices without
+///   re-walking the bodies list.
+///
+/// Walks the `bodies` list and collects the `"at"` field of each body record.
+/// Deduplicates by structural equality (same joint Map referenced from multiple
+/// bodies gets one descriptor).  Assigns `joint_index` in first-encounter order.
+///
+/// Non-Map `"at"` values (malformed source) are silently skipped; no phantom
+/// "unknown" joint row is added.  `seen_joints` and `joints` always have
+/// matching indices so the AST resolver can use `seen_joints[i]` → `joints[i]`.
 ///
 /// `driving_param_cell_id` and `current_value_si` are left `None` here; they
-/// are populated by later steps (AST traversal in step-12, value read in
-/// step-24).
-fn extract_joints_from_mechanism(map: &std::collections::BTreeMap<Value, Value>) -> Vec<JointDescriptor> {
+/// are populated by `resolve_driving_params_from_ast` (step-12 / step-24).
+fn extract_joints_from_mechanism(
+    map: &std::collections::BTreeMap<Value, Value>,
+) -> (Vec<JointDescriptor>, Vec<Value>) {
     let bodies = match map.get(&Value::String("bodies".to_string())) {
         Some(Value::List(b)) => b,
-        _ => return Vec::new(),
+        _ => return (Vec::new(), Vec::new()),
     };
 
     let mut seen_joints: Vec<Value> = Vec::new();
@@ -1008,14 +1039,17 @@ fn extract_joints_from_mechanism(map: &std::collections::BTreeMap<Value, Value>)
             continue;
         }
 
+        // Build the descriptor before committing to seen_joints so that only
+        // valid joint Maps are indexed.  Non-Map "at" values (None path) are
+        // simply skipped; seen_joints and joints stay in sync.
         let joint_index = seen_joints.len();
-        seen_joints.push(joint_val.clone());
-
-        let descriptor = extract_joint_descriptor(joint_val, joint_index);
-        joints.push(descriptor);
+        if let Some(descriptor) = extract_joint_descriptor(joint_val, joint_index) {
+            seen_joints.push(joint_val.clone());
+            joints.push(descriptor);
+        }
     }
 
-    joints
+    (joints, seen_joints)
 }
 
 /// Returns `true` if `val` is the world sentinel Map (`{ "kind": "world" }`).
@@ -1031,25 +1065,19 @@ fn is_world_sentinel(val: &Value) -> bool {
 
 /// Build a `JointDescriptor` from a single joint `Value::Map`.
 ///
+/// Returns `None` if `joint_val` is not a `Value::Map` (e.g. a malformed `"at"`
+/// field), so the caller can skip the slot rather than surfacing a phantom
+/// `kind="unknown"` row in the UI.
+///
 /// Extracts `kind`, `axis`, `range`, and `dimension` from the joint Map.
 /// Coupling and fixed joints have no axis/range; their descriptors carry `None`
 /// for those fields.  `driving_param_cell_id` and `current_value_si` are always
 /// `None` at this point (populated by later steps).
-fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> JointDescriptor {
+fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<JointDescriptor> {
     let joint_map = match joint_val {
         Value::Map(m) => m,
-        _ => {
-            return JointDescriptor {
-                joint_index,
-                kind: "unknown".to_string(),
-                dimension: "dimensionless".to_string(),
-                range_lower_si: None,
-                range_upper_si: None,
-                axis: None,
-                driving_param_cell_id: None,
-                current_value_si: None,
-            };
-        }
+        // Non-Map "at" values (malformed source) are skipped; no phantom row.
+        _ => return None,
     };
 
     let kind = match joint_map.get(&Value::String("kind".to_string())) {
@@ -1072,7 +1100,7 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> JointDescr
         _ => ("dimensionless".to_string(), None, None, None),
     };
 
-    JointDescriptor {
+    Some(JointDescriptor {
         joint_index,
         kind,
         dimension,
@@ -1081,7 +1109,7 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> JointDescr
         axis,
         driving_param_cell_id: None,
         current_value_si: None,
-    }
+    })
 }
 
 /// Extract a 3-component axis from a joint Map's `"axis"` field.
@@ -1146,11 +1174,20 @@ fn scalar_to_f64(val: &Value) -> Option<f64> {
 /// Joints whose binding expression is a literal or a complex sub-expression remain
 /// with `driving_param_cell_id = None` (read-only in the slider panel).
 ///
-/// This is best-effort — it does not trace through renamed aliases or across
-/// structure boundaries.  The `parsed_cache` is the already-parsed AST from
-/// `EngineSession::parsed_cache`, so no additional parse cost is incurred.
+/// This is best-effort and matches by **textual function name** — a user-defined
+/// function named `snapshot` or `bind` in the same module would shadow the stdlib
+/// versions and produce incorrect results.  The resolver does not verify that the
+/// matched names refer to stdlib symbols.  Widening the name check to use the stdlib
+/// registry is left as future work; for v0.1 the canonical usage pattern (stdlib
+/// `snapshot`/`bind` in a structure body) is the only supported case.
+///
+/// `seen_joints_cache` maps each mechanism `cell_id` string to the ordered
+/// `Vec<Value>` produced by `extract_joints_from_mechanism` for that mechanism.
+/// Using the cache avoids the O(B) body re-walk that the earlier implementation
+/// performed for every `(bind-pair, descriptor)` pair.
 fn resolve_driving_params_from_ast(
     descriptors: &mut [MechanismDescriptor],
+    seen_joints_cache: &HashMap<String, Vec<Value>>,
     parsed: &reify_syntax::ParsedModule,
     check: &CheckResult,
     compiled: &CompiledModule,
@@ -1204,44 +1241,12 @@ fn resolve_driving_params_from_ast(
                     continue;
                 }
 
-                // Re-look up the mechanism Map to reconstruct joint ordering.
-                let (mech_entity, mech_member) = {
-                    let mut it = desc.cell_id.splitn(2, '.');
-                    match (it.next(), it.next()) {
-                        (Some(e), Some(m)) => (e.to_string(), m.to_string()),
-                        _ => continue,
-                    }
+                // Use the cached seen_joints for this mechanism instead of
+                // re-walking the bodies list (avoids redundant O(B) work per pair).
+                let seen_joints = match seen_joints_cache.get(&desc.cell_id) {
+                    Some(sj) => sj,
+                    None => continue,
                 };
-                let mech_val = check.values.get_or_undef(
-                    &ValueCellId::new(&mech_entity, &mech_member),
-                );
-                let mech_map = match &mech_val {
-                    Value::Map(m) => m,
-                    _ => continue,
-                };
-                let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
-                    Some(Value::List(b)) => b,
-                    _ => continue,
-                };
-
-                // Rebuild seen_joints in the same order as extract_joints_from_mechanism.
-                let mut seen_joints: Vec<Value> = Vec::new();
-                for body in bodies {
-                    let body_map = match body {
-                        Value::Map(b) => b,
-                        _ => continue,
-                    };
-                    let j = match body_map.get(&Value::String("at".to_string())) {
-                        Some(v) => v.clone(),
-                        None => continue,
-                    };
-                    if is_world_sentinel(&j) {
-                        continue;
-                    }
-                    if !seen_joints.iter().any(|s| s == &j) {
-                        seen_joints.push(j);
-                    }
-                }
 
                 // Find which joint_index this cell's value corresponds to.
                 let joint_index = match seen_joints.iter().position(|j| j == &joint_val) {
@@ -1271,6 +1276,12 @@ fn resolve_driving_params_from_ast(
 ///
 /// Recurses into `FunctionCall`, `BinOp`, `UnOp`, `Conditional`, and
 /// `ListLiteral` sub-expressions.  Other leaf variants have no sub-expressions.
+///
+/// **Name-shadowing caveat:** matching is by textual function name only.  A
+/// user-defined function named `snapshot` or `bind` in the same module would
+/// match this search and produce incorrect (false-positive) bind pairs.  The
+/// caller (`resolve_driving_params_from_ast`) therefore relies on the assumption
+/// that `snapshot`/`bind` are stdlib-only names in well-formed Reify source.
 fn collect_snapshot_bind_pairs(
     expr: &reify_syntax::Expr,
     pairs: &mut Vec<(String, String)>,
