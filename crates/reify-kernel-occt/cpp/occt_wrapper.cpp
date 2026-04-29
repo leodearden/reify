@@ -561,13 +561,38 @@ constexpr double DIR_TOL = 1e-6;
 /// coordinate to the source radial edge's midpoint axial coordinate.
 constexpr double POS_TOL = 1e-6;
 
+/// Project a point onto the rotation axis and return the signed axial
+/// coordinate: `dot(point - axis.Location(), axis.Direction())`.
+///
+/// Used by both the radial-edge midpoint projection and the face-centroid
+/// projection in `synthesize_full_revolution_radial_face_records` so the
+/// matching tolerance (POS_TOL) is applied consistently.
+static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
+    return gp_Vec(axis.Location(), point).Dot(gp_Vec(axis.Direction()));
+}
+
+/// Compute the axial coordinate of a face's centroid along `axis`.
+///
+/// Uses `BRepGProp::SurfaceProperties + GProp_GProps::CentreOfMass` to
+/// locate the centroid, then projects it via `compute_axial_coord`.
+/// Used by `synthesize_full_revolution_radial_face_records` to match
+/// candidate annular-disk faces to the source radial edge by axial position.
+static double compute_face_axial_coord(const TopoDS_Face& face, const gp_Ax1& axis) {
+    GProp_GProps fprops;
+    BRepGProp::SurfaceProperties(face, fprops);
+    return compute_axial_coord(fprops.CentreOfMass(), axis);
+}
+
 /// Synthesize `face_generated` records for purely-radial profile edges
 /// in a full-2π revolution.
 ///
-/// OCCT 7.5.x's `BRepPrimAPI_MakeRevol::Generated()` silently omits records
-/// for edges that are perpendicular to the rotation axis (radial edges) when
-/// angle == 2π — they sweep into annular-disk faces, but OCCT's internal
-/// tracking map does not capture them.  This helper closes that gap by
+/// EMPIRICAL OCCT 7.5.x GAP: `BRepPrimAPI_MakeRevol::Generated()` reliably
+/// omits records for edges that are perpendicular to the rotation axis
+/// (radial edges) when angle == 2π.  These edges sweep into flat annular-disk
+/// lateral faces; OCCT's internal tracking map simply does not capture them
+/// under a full revolution (verified empirically against OCCT 7.5.x bundled
+/// with FreeCAD, confirmed by the `>= 2` vs `>= 4` delta in the existing
+/// rect-profile integration test).  This helper closes that gap by
 /// geometrically matching each unaccounted radial profile edge to its
 /// corresponding annular-disk result face using two invariants:
 ///   1. The face surface normal is (anti-)parallel to the axis direction
@@ -581,10 +606,10 @@ constexpr double POS_TOL = 1e-6;
 /// This preserves the `local_index = parent_subshape_index` invariant that
 /// `populate_revolve_attributes` (crates/reify-eval) relies on.
 ///
-/// Coverage by profile shape:
-///   rect    (2 axial + 2 radial)     → 2 OCCT-reported + 2 synthesized
+/// Coverage by profile shape (empirical, OCCT 7.5.x):
+///   rect (2 axial + 2 radial)        → 2 OCCT-reported + 2 synthesized
 ///   triangle (2 slanted + 1 radial)  → 2 OCCT-reported + 1 synthesized
-///   circle / smooth curves (no radial edges) → no synthesis triggered
+///   circle / smooth curves (0 purely-radial edges) → no synthesis triggered
 static void synthesize_full_revolution_radial_face_records(
     const TopTools_IndexedMapOfShape& profile_edge_map,
     const TopTools_IndexedMapOfShape& result_face_map,
@@ -646,7 +671,7 @@ static void synthesize_full_revolution_radial_face_records(
 
         // Purely radial edge. Compute its midpoint axial coordinate.
         gp_Pnt midpoint = p1.Translated(gp_Vec(p1, p2).Scaled(0.5));
-        double target_axial = gp_Vec(axis.Location(), midpoint).Dot(axis_dir);
+        double target_axial = compute_axial_coord(midpoint, axis);
 
         // Scan result faces for the matching annular-disk face.
         for (Standard_Integer j = 1; j <= n_faces; ++j) {
@@ -662,6 +687,8 @@ static void synthesize_full_revolution_radial_face_records(
             const TopoDS_Face face = TopoDS::Face(fshape);
 
             // Compute face normal at centroid (mirrors query_face_normal).
+            // Centroid is also needed for compute_face_axial_coord, so we
+            // compute it once via BRepGProp::SurfaceProperties.
             GProp_GProps fprops;
             BRepGProp::SurfaceProperties(face, fprops);
             gp_Pnt centroid = fprops.CentreOfMass();
@@ -695,7 +722,7 @@ static void synthesize_full_revolution_radial_face_records(
             }
 
             // Test 2: face centroid axial coordinate must match the edge midpoint.
-            double face_axial = gp_Vec(axis.Location(), centroid).Dot(axis_dir);
+            double face_axial = compute_axial_coord(centroid, axis);
             if (std::abs(face_axial - target_axial) >= POS_TOL) {
                 continue; // Wrong axial position.
             }
