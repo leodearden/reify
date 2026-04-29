@@ -126,18 +126,13 @@ pub fn resolve_unique_by_attribute(
     // NONE of the supplied candidates carry an attribute entry, the result
     // handles came from an op that didn't seed/propagate (the imported-
     // geometry case once import ops exist). Route through computed
-    // selectors. Dedup defensively — a misbehaving extractor that returned
-    // duplicates would otherwise still trigger the fallback correctly, but
-    // a HashSet keeps the contract symmetric with the match counter below.
-    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut any_has_entry = false;
-    for &id in candidates {
-        if seen.insert(id) && table.lookup(id).is_some() {
-            any_has_entry = true;
-            break;
-        }
-    }
-    if !any_has_entry {
+    // selectors. A plain linear scan short-circuits on the first hit;
+    // deduplication is unnecessary here because `table.lookup` is
+    // idempotent — re-querying the table for the same id returns the same
+    // answer, so duplicate candidate ids cannot change the outcome. The
+    // dedup discipline is enforced where it matters, inside
+    // `count_unique_matches` (which counts matches, not just any-match).
+    if !candidates.iter().any(|&id| table.lookup(id).is_some()) {
         return AttributeResolution::FallbackToComputed;
     }
 
