@@ -1031,4 +1031,42 @@ mod tests {
             "chain_jacobian_fd must return None for a chain containing a planar joint"
         );
     }
+
+    /// `chain_transform` returns `None` for a mixed chain where planar is not
+    /// the only element — pins the stronger contract that *any* planar joint in
+    /// the chain short-circuits, regardless of its position or the other kinds
+    /// present.
+    ///
+    /// A [prismatic_x @ 0.5m, planar_xy] chain with two scalar entries must
+    /// still return `None` because `value_for_joint` has no f64-scalar mapping
+    /// for planar regardless of how many valid joints precede it.
+    #[test]
+    fn chain_transform_mixed_prismatic_planar_returns_none() {
+        assert!(
+            super::chain_transform(&[prismatic_x(), planar_xy_joint()], &[0.5, 0.0]).is_none(),
+            "chain_transform must return None when any joint in the chain is planar"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a planar
+    /// joint — the same stronger contract as
+    /// `chain_transform_mixed_prismatic_planar_returns_none`.
+    ///
+    /// Even with two free indices `[0, 1]`, the FD loop calls `chain_transform`
+    /// for the perturbed chains; the first call with a perturbed prismatic value
+    /// will still encounter the planar slot and return `None`, killing the whole
+    /// Jacobian.
+    #[test]
+    fn chain_jacobian_fd_mixed_prismatic_planar_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(
+                &[prismatic_x(), planar_xy_joint()],
+                &[0.5, 0.0],
+                &[0, 1],
+                1e-6,
+            )
+            .is_none(),
+            "chain_jacobian_fd must return None when any joint in the chain is planar"
+        );
+    }
 }
