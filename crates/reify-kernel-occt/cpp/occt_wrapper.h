@@ -239,6 +239,19 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
 /// `LastShape()` reference the same closed surface; both cap lists
 /// remain empty so consumers can encode the no-caps case naturally.
 ///
+/// face_generated under FULL revolution: OCCT 7.5.x's `Generated()` does
+/// not record edges that are perpendicular to the rotation axis (radial
+/// edges) when angle == 2π — they sweep into flat annular-disk faces that
+/// OCCT's tracking map omits.  A C++ post-pass (`synthesize_full_revolution_
+/// radial_face_records`) closes this gap geometrically so that `face_generated`
+/// contains exactly one record per profile edge (matching the invariant for
+/// partial revolutions).  The combined vector is stable-sorted by
+/// `parent_subshape_index` after synthesis so the ordering invariant
+/// `record_position == parent_subshape_index` is preserved for both partial
+/// and full revolutions.  Consumers (e.g., `populate_revolve_attributes` in
+/// crates/reify-eval) may treat all face_generated records uniformly —
+/// synthesized records are byte-identical to OCCT-reported ones.
+///
 /// Honors the same Shell→Solid + `BRepLib::OrientClosedSolid`
 /// post-processing as `make_revolve` (the result shape may be a Solid
 /// constructed from the algorithm's Shell output).
@@ -419,6 +432,16 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
 /// given width (X direction) and height (Y direction) in the XY plane.
 std::unique_ptr<OcctShape> make_rect_face(double width, double height,
     double cx, double cy, double cz);
+
+/// Create a triangular face (planar) in the plane Y=cy with vertices
+/// (x1, cy, z1), (x2, cy, z2), (x3, cy, z3). Used as a test fixture
+/// for revolve history integration tests (task 2636, step-3) that need
+/// a non-rectangular profile in the XZ plane.
+std::unique_ptr<OcctShape> make_triangle_face(
+    double x1, double z1,
+    double x2, double z2,
+    double x3, double z3,
+    double cy);
 
 // --- Wire queries ---
 
