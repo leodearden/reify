@@ -265,7 +265,7 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
 
 #[test]
 fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
-    let session = make_session();
+    let mut session = make_session();
     let descriptors = session.get_mechanism_descriptors();
     assert!(
         descriptors.is_empty(),
