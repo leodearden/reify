@@ -862,8 +862,10 @@ pub enum CapKind {
 /// the split, and `split_index` distinguishes the resulting children
 /// (PRD lines 60, 64).
 ///
-/// Task 1 keeps `mod_history` empty on propagation; task 3 (#2571)
-/// populates this on splits.
+/// Populated by `reify_eval::propagate_attributes_via_brepalgoapi_history`
+/// when a parent topology entity is split into multiple result sub-shapes
+/// (count > 1 across same-kind Modified ∪ Generated). Tasks 5/7/8 add
+/// per-op coverage for sweeps/local-features/booleans.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModEntry {
     pub splitting_feature_id: FeatureId,
@@ -931,6 +933,29 @@ pub struct TopologyAttribute {
     pub local_index: u32,
     pub user_label: Option<String>,
     pub mod_history: Vec<ModEntry>,
+}
+
+impl TopologyAttribute {
+    /// Returns `true` iff the parent-key fields (`feature_id`, `role`,
+    /// `local_index`, `user_label`) match.
+    ///
+    /// The `mod_history` field is intentionally excluded — split children
+    /// of the same parent share the parent-key but differ in `mod_history`;
+    /// this predicate detects that clustering. Used by:
+    ///   - `reify_eval::topology_attribute_resolver` to route multi-match
+    ///     resolutions to `AmbiguousAfterSplit` rather than `Unresolved`
+    ///     when the matched set all shares one parent.
+    ///   - Future task-10 `split_by(...)` selector and task-4 local_index
+    ///     reassignment diagnostic, which will reuse the same predicate.
+    ///
+    /// See PRD docs/prds/v0_2/persistent-naming-v2.md line 64
+    /// (modification-history postfix).
+    pub fn same_parent_as(&self, other: &Self) -> bool {
+        self.feature_id == other.feature_id
+            && self.role == other.role
+            && self.local_index == other.local_index
+            && self.user_label == other.user_label
+    }
 }
 
 /// Runtime table mapping geometry handle ids to `TopologyAttribute`s.
