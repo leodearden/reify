@@ -538,9 +538,9 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
-/// the strings in [`JOINT_KINDS`] (`"prismatic"`, `"revolute"`,
-/// `"coupling"`). Used by `mechanism::body()` for `at`-arg validation
-/// and (combined with the world-sentinel check) for parent-arg validation.
+/// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
+/// `at`-arg validation and (combined with the world-sentinel check) for
+/// parent-arg validation.
 ///
 /// Tied to `JOINT_KINDS` via `contains` so a future kind addition only
 /// needs to be made in the constant — the predicate follows automatically.
