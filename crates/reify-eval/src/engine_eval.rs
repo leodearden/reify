@@ -8,10 +8,10 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_types::{
-    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, ErrorRef, FIELD_ENTITY_PREFIX,
-    Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField,
-    SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Type, Value, ValueCellId,
-    ValueMap, VersionId,
+    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, DiagnosticCode, ErrorRef,
+    FIELD_ENTITY_PREFIX, Freshness, InterpolationKind, PersistentMap, ResolutionProblem,
+    SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Type, Value,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -591,16 +591,23 @@ pub(crate) fn elaborate_field(
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    runtime_sink: Option<&RefCell<Vec<Diagnostic>>>,
 ) -> Value {
     let lambda_value = match &field.source {
         reify_compiler::CompiledFieldSource::Analytical { expr }
         | reify_compiler::CompiledFieldSource::Composed { expr } => {
-            let ctx = eval_ctx_with_meta(values, functions, meta_map);
+            let mut ctx = eval_ctx_with_meta(values, functions, meta_map);
+            if let Some(sink) = runtime_sink {
+                ctx = ctx.with_runtime_diagnostics(sink);
+            }
             let val = reify_expr::eval_expr(expr, &ctx);
             Arc::new(val)
         }
         reify_compiler::CompiledFieldSource::Sampled { config } => {
-            let ctx = eval_ctx_with_meta(values, functions, meta_map);
+            let mut ctx = eval_ctx_with_meta(values, functions, meta_map);
+            if let Some(sink) = runtime_sink {
+                ctx = ctx.with_runtime_diagnostics(sink);
+            }
             match build_sampled_field(&field.name, config, &field.codomain_type, &ctx) {
                 Some(sf) => Arc::new(Value::SampledField(sf)),
                 None => Arc::new(Value::Undef),
@@ -642,10 +649,16 @@ fn lookup_config<'a>(
 }
 
 /// Build a runtime `SampledField` from the five-key compiled config. Returns
-/// `None` if any key is missing or any value fails to parse — caller wraps
-/// `None` as `Arc::new(Value::Undef)` (poisoned no-op).
+/// `None` if any value fails to parse — caller wraps `None` as
+/// `Arc::new(Value::Undef)` (poisoned no-op).
 ///
-/// Parsers (Option B per esc-2341-149):
+/// On every parse failure a `W_FIELD_SAMPLED_INVALID_CONFIG` warning is
+/// pushed via [`push_invalid_config`] into `ctx.diagnostics` before
+/// returning `None` — the user sees a concrete message naming the field,
+/// the offending key, and (where applicable) the allowed-set hint or
+/// the unexpected `Value` shape rendered by [`short_value`]. Parsers
+/// (Option B per esc-2341-149):
+///
 /// * `grid` — `Value::String` matching `"RegularGrid1"|"RegularGrid2"|"RegularGrid3"`
 /// * `bounds` — `Value::BoundingBox` with `Point3` corners; per-axis count is
 ///   `1`/`2`/`3` for `Regular1D`/`2D`/`3D` (the parser projects extra
@@ -657,6 +670,11 @@ fn lookup_config<'a>(
 ///   `"NearestNeighbor"`, `"Cubic"`, `"Rbf"`, `"Kriging"`.
 /// * `data` — `Value::List` whose elements are `Value::Real` or
 ///   `Value::Scalar` (codomain-dimensioned); flattened into row-major SI.
+///
+/// Missing-key short-circuits (`?` on `lookup_config`) remain silent: the
+/// compile-time validator already emits a hard error for any missing
+/// required key, so reaching this branch indicates an upstream bug rather
+/// than a user-visible config error.
 fn build_sampled_field(
     name: &str,
     config: &[(String, reify_types::CompiledExpr)],
@@ -675,13 +693,75 @@ fn build_sampled_field(
     let interp_val = reify_expr::eval_expr(interp_expr, ctx);
     let data_val = reify_expr::eval_expr(data_expr, ctx);
 
-    let kind = parse_grid_kind(&grid_val)?;
-    let (bounds_min, bounds_max) = parse_bounds(&bounds_val, kind)?;
-    let spacing = parse_spacing(&spacing_val, kind)?;
-    let interpolation = parse_interpolation(&interp_val)?;
-    let data = parse_data(&data_val, codomain)?;
+    let kind = match parse_grid_kind(&grid_val) {
+        Some(k) => k,
+        None => {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': invalid grid kind: expected 'RegularGrid1' | 'RegularGrid2' | 'RegularGrid3', got {}",
+                    short_value(&grid_val)
+                ),
+            );
+            return None;
+        }
+    };
+    let (bounds_min, bounds_max) = match parse_bounds(&bounds_val, kind) {
+        Some(b) => b,
+        None => {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': invalid bounds: expected BoundingBox with Point3 corners (min, max) carrying at least {} component(s), got {}",
+                    axis_count_for(kind),
+                    short_value(&bounds_val)
+                ),
+            );
+            return None;
+        }
+    };
+    let spacing = match parse_spacing(&spacing_val, kind) {
+        Some(s) => s,
+        None => {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': invalid spacing: expected {}, got {}",
+                    spacing_hint_for(kind),
+                    short_value(&spacing_val)
+                ),
+            );
+            return None;
+        }
+    };
+    let interpolation = match parse_interpolation(&interp_val) {
+        Some(i) => i,
+        None => {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': invalid interpolation: expected one of 'Linear' | 'NearestNeighbor' | 'Cubic' | 'Rbf' | 'Kriging', got {}",
+                    short_value(&interp_val)
+                ),
+            );
+            return None;
+        }
+    };
+    let data = match parse_data(&data_val, codomain) {
+        Some(d) => d,
+        None => {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': invalid data: expected list of Real / Int / Scalar elements, got {}",
+                    short_value(&data_val)
+                ),
+            );
+            return None;
+        }
+    };
 
-    let axis_grids = (0..bounds_min.len())
+    let axis_grids: Vec<Vec<f64>> = (0..bounds_min.len())
         .map(|i| linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]))
         .collect();
 
@@ -696,6 +776,60 @@ fn build_sampled_field(
         data,
         oob_emitted: std::sync::atomic::AtomicBool::new(false),
     })
+}
+
+/// Push a `W_FIELD_SAMPLED_INVALID_CONFIG` warning into `ctx.diagnostics`.
+/// Silent-drop when the runtime sink is `None` (matching the OOB and
+/// interpolation-deferred warning emission contract).
+fn push_invalid_config(ctx: &reify_expr::EvalContext<'_>, msg: String) {
+    if let Some(sink) = ctx.diagnostics {
+        let diag =
+            Diagnostic::warning(msg).with_code(DiagnosticCode::FieldSampledInvalidConfig);
+        sink.borrow_mut().push(diag);
+    }
+}
+
+/// Concise rendering of a `Value` for `W_FIELD_SAMPLED_INVALID_CONFIG`
+/// diagnostic messages.  Output is bounded (≤80 chars) so a runaway
+/// `List`/`Tensor`/`Map` doesn't flood the diagnostic stream.
+///
+/// Wraps the value's `Debug` rendering (variant + content) and elides the
+/// tail with `…` past the byte budget.  For `Value::String` the rendering
+/// keeps the literal so the user can see the offending tag (e.g.
+/// `String("RegularGrid42")`).
+fn short_value(v: &Value) -> String {
+    const MAX: usize = 80;
+    let raw = format!("{v:?}");
+    if raw.len() <= MAX {
+        raw
+    } else {
+        // UTF-8 safe truncation: walk back to a char boundary.
+        let mut cut = MAX.saturating_sub(1);
+        while cut > 0 && !raw.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &raw[..cut])
+    }
+}
+
+/// Number of axes carried by the given `SampledGridKind` — used to render
+/// "expected at least N component(s)" hints in the bounds parse-failure
+/// diagnostic.
+fn axis_count_for(kind: SampledGridKind) -> usize {
+    match kind {
+        SampledGridKind::Regular1D => 1,
+        SampledGridKind::Regular2D => 2,
+        SampledGridKind::Regular3D => 3,
+    }
+}
+
+/// Allowed-shape hint for the `spacing = …` parse-failure diagnostic.
+fn spacing_hint_for(kind: SampledGridKind) -> &'static str {
+    match kind {
+        SampledGridKind::Regular1D => "Length scalar (e.g. 1.0m)",
+        SampledGridKind::Regular2D => "list of 2 Length scalars (e.g. [1.0m, 1.0m])",
+        SampledGridKind::Regular3D => "list of 3 Length scalars (e.g. [1.0m, 1.0m, 1.0m])",
+    }
 }
 
 /// Map a `grid = …` value to the spatial-grid kind tag.  Accepts
