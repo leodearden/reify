@@ -16,17 +16,50 @@
 //!   - `center_of_mass(s, [densities])` → Point3<Length> | Undef
 //!   - `bounding_box(snapshot)`         → Map { min, max } | Undef
 
+use std::collections::BTreeMap;
+
 use reify_types::Value;
+
+use crate::joints::is_joint_value;
 
 /// Evaluate a snapshot/FK stdlib function by name.
 ///
 /// Returns `Some(Value)` for known function names (including
 /// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
-///
-/// Currently a stub — individual function arms are added in subsequent
-/// TDD steps of task 2535.
-pub(crate) fn eval_snapshot(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "bind" => {
+            // Validation surface (each guard short-circuits to
+            // Value::Undef BEFORE constructing the binding Map):
+            //   args.len() == 2          → arity guard
+            //   is_joint_value(args[0])  → joint-arg guard
+            // The motion value (args[1]) is stored verbatim — downstream
+            // `transform_at` handles dimension-checking when consumed.
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            if !is_joint_value(&args[0]) {
+                return Some(Value::Undef);
+            }
+            make_binding(args[0].clone(), args[1].clone())
+        }
+        _ => return None,
+    })
+}
+
+/// Build a binding `Value::Map` with the standard three-key layout:
+/// `kind`, `joint`, `value` (alphabetical, matching `BTreeMap` iteration).
+/// Mirrors `make_joint`/`make_coupling` in `joints.rs` and the kind-
+/// discriminated Map convention used across the stdlib value types.
+fn make_binding(joint: Value, value: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("binding".to_string()),
+    );
+    m.insert(Value::String("joint".to_string()), joint);
+    m.insert(Value::String("value".to_string()), value);
+    Value::Map(m)
 }
 
 #[cfg(test)]
