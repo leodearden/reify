@@ -10,7 +10,7 @@ use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, DiagnosticCode, ErrorRef,
     FIELD_ENTITY_PREFIX, Freshness, InterpolationKind, PersistentMap, ResolutionProblem,
-    SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Type, Value,
+    SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value,
     ValueCellId, ValueMap, VersionId,
 };
 
@@ -608,7 +608,7 @@ pub(crate) fn elaborate_field(
             if let Some(sink) = runtime_sink {
                 ctx = ctx.with_runtime_diagnostics(sink);
             }
-            match build_sampled_field(&field.name, config, &field.codomain_type, &ctx) {
+            match build_sampled_field(&field.name, config, &ctx) {
                 Some(sf) => Arc::new(Value::SampledField(sf)),
                 None => Arc::new(Value::Undef),
             }
@@ -668,8 +668,10 @@ fn lookup_config<'a>(
 ///   `N` Length scalars for higher dimensions.
 /// * `interpolation` — `Value::String` matching one of `"Linear"`,
 ///   `"NearestNeighbor"`, `"Cubic"`, `"Rbf"`, `"Kriging"`.
-/// * `data` — `Value::List` whose elements are `Value::Real` or
-///   `Value::Scalar` (codomain-dimensioned); flattened into row-major SI.
+/// * `data` — `Value::List` whose elements are `Value::Real`, `Value::Int`,
+///   or any `Value::Scalar` (its `si_value` is taken as-is and reinterpreted
+///   as the field's codomain at sample time — no per-element dimension
+///   check is performed here); flattened into row-major SI.
 ///
 /// Missing-key short-circuits (`?` on `lookup_config`) remain silent: the
 /// compile-time validator already emits a hard error for any missing
@@ -694,7 +696,6 @@ fn lookup_config<'a>(
 fn build_sampled_field(
     name: &str,
     config: &[(String, reify_types::CompiledExpr)],
-    codomain: &Type,
     ctx: &reify_expr::EvalContext<'_>,
 ) -> Option<SampledField> {
     let grid_expr = lookup_config(config, "grid")?;
@@ -763,7 +764,7 @@ fn build_sampled_field(
             return None;
         }
     };
-    let data = match parse_data(&data_val, codomain) {
+    let data = match parse_data(&data_val) {
         Some(d) => d,
         None => {
             push_invalid_config(
@@ -1036,8 +1037,11 @@ fn parse_interpolation(interp_val: &Value) -> Option<InterpolationKind> {
 /// Map a `data = …` value to a flat row-major `Vec<f64>` in SI units.
 /// Accepts a `Value::List` whose elements are `Value::Real`, `Value::Int`
 /// (whole-number literals like `0.0` may collapse to `Int` per
-/// `expr.rs:257-258`), or codomain-dimensioned `Value::Scalar`.
-fn parse_data(data_val: &Value, _codomain: &Type) -> Option<Vec<f64>> {
+/// `expr.rs:257-258`), or any `Value::Scalar` (its `si_value` is taken
+/// as-is and reinterpreted as the field's codomain at sample time —
+/// no per-element dimension check against the field's codomain is
+/// performed here).
+fn parse_data(data_val: &Value) -> Option<Vec<f64>> {
     let items = match data_val {
         Value::List(items) => items,
         _ => return None,
@@ -1057,6 +1061,13 @@ fn parse_data(data_val: &Value, _codomain: &Type) -> Option<Vec<f64>> {
 /// Inclusive linspace from `start` to `stop` with step `spacing`.  Produces
 /// `[start, start+spacing, …, stop]` (or as close as `floor((stop-start)/spacing)`
 /// admits).  Returns `[start]` for non-positive spans (degenerate-but-valid).
+///
+/// The `spacing <= 0.0 || !is_finite()` and `span < 0.0` fallback arms are
+/// defense-in-depth: `build_sampled_field`'s step-24 pre-flight invariants
+/// (positive-and-finite spacing per axis; ≥ 2 nodes per axis grid) reject
+/// every input that would reach those arms before this helper is called.
+/// They remain as primitive-level guards so this function stays safe to
+/// call from any future site that might not run the pre-flight checks.
 fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
     if spacing <= 0.0 || !spacing.is_finite() || !start.is_finite() || !stop.is_finite() {
         return vec![start];

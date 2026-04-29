@@ -146,6 +146,15 @@ fn compile_field_sampled_rejects_missing_data_key() {
         "expected the error message to indicate `data` is missing/required, got: {}",
         data_errs[0].message
     );
+    // No cascade: the missing-key error is the only error emitted (pins that
+    // a future regression introducing an unrelated diagnostic would not slip
+    // past the substring-filter above).
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -173,6 +182,12 @@ fn compile_field_sampled_rejects_missing_bounds_key() {
             || bounds_errs[0].message.contains("required"),
         "expected the error message to indicate `bounds` is missing/required, got: {}",
         bounds_errs[0].message
+    );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -202,6 +217,12 @@ fn compile_field_sampled_rejects_missing_spacing_key() {
         "expected the error message to indicate `spacing` is missing/required, got: {}",
         spacing_errs[0].message
     );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -229,6 +250,61 @@ fn compile_field_sampled_rejects_unknown_key() {
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_sampled_unknown_key_with_broken_value_does_not_cascade() {
+    // Pins the no-cascade design (functions.rs:327-330): when an unknown
+    // sampled-config key is encountered the entry is dropped WITHOUT calling
+    // `compile_expr` on its value.  A future refactor that accidentally
+    // compiles the dropped value would surface an extra "unresolved name"
+    // error from `nonexistent_func()`, breaking this test.  The five
+    // required keys are present so missing-key errors do not fire.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] bogus_key = nonexistent_func() } }"#,
+    );
+
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected only the unknown-key error (no cascade from compiling the dropped value), got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors_only(&module)[0].message.contains("unknown")
+            && errors_only(&module)[0].message.contains("bogus_key"),
+        "expected the single error to be the unknown-key diagnostic for `bogus_key`, got: {}",
+        errors_only(&module)[0].message
+    );
+}
+
+#[test]
+fn compile_field_sampled_duplicate_key_with_broken_value_does_not_cascade() {
+    // Sister test to the unknown-key no-cascade pin: a duplicate key whose
+    // value is a deliberately broken expression should not surface the
+    // unresolved-name error (functions.rs:343-344 drops without compiling).
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" grid = nonexistent_func() bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected only the duplicate-key error (no cascade from compiling the dropped value), got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors_only(&module)[0].message.contains("duplicate")
+            && errors_only(&module)[0].message.contains("grid"),
+        "expected the single error to be the duplicate-key diagnostic for `grid`, got: {}",
+        errors_only(&module)[0].message
+    );
 }
 
 #[test]
@@ -253,6 +329,12 @@ fn compile_field_sampled_rejects_duplicate_grid_key() {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
