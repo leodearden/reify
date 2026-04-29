@@ -114,6 +114,14 @@ pub fn resolve_unique_by_attribute(
     selector_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
+    // (step-16a) Empty candidate slice: nothing to look up — by definition
+    // no candidate carries an entry, so route through computed selectors.
+    // This is the same outcome as the fallback pre-pass below, but the
+    // explicit early-return skips the lookup loop entirely.
+    if candidates.is_empty() {
+        return AttributeResolution::FallbackToComputed;
+    }
+
     // Imported-geometry fallback pre-pass (step-8). Per PRD line 68: if
     // NONE of the supplied candidates carry an attribute entry, the result
     // handles came from an op that didn't seed/propagate (the imported-
@@ -131,6 +139,20 @@ pub fn resolve_unique_by_attribute(
     }
     if !any_has_entry {
         return AttributeResolution::FallbackToComputed;
+    }
+
+    // (step-16b) All-None query: the resolver has nothing to match against.
+    // Treat this as a zero-match query so the caller surfaces the same
+    // diagnostic shape as a stale-attribute miss. Defends against
+    // accidental "match-everything" semantics that would otherwise arise
+    // if a future caller construction-defaulted all three fields to None.
+    // Placed AFTER the fallback pre-pass so imported-geometry routing
+    // still wins on import-style candidate sets (consistent with the
+    // FallbackToComputed-takes-priority decision in the resolver
+    // contract).
+    if query.user_label.is_none() && query.role_and_index.is_none() {
+        emit_attribute_stale_diagnostic(selector_span, 0, diagnostics);
+        return AttributeResolution::Unresolved;
     }
 
     // Track the count from the last branch consulted so the final
@@ -235,9 +257,18 @@ fn count_unique_matches<F>(
 where
     F: Fn(&TopologyAttribute) -> bool,
 {
+    // (step-16c) Deduplicate candidate ids before counting. Mirrors
+    // `resolve_unique_by_tag` at topology_selectors.rs:703 so a
+    // misbehaving extractor that returned the same handle multiple times
+    // does not inflate the match count and spuriously trigger an
+    // ambiguity diagnostic.
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut found: Option<GeometryHandleId> = None;
     let mut n: usize = 0;
     for &id in candidates {
+        if !seen.insert(id) {
+            continue;
+        }
         if let Some(attr) = table.lookup(id) {
             if predicate(attr) {
                 n += 1;
