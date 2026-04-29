@@ -1349,7 +1349,7 @@ purpose mfg(subject : Structure) {
     let unsupported_errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::PurposeLetUnsupported))
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::PurposeLetUnsupported))
         .collect();
     assert!(
         !unsupported_errors.is_empty(),
