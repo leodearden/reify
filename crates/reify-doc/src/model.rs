@@ -165,7 +165,7 @@ pub struct ModuleCrossRefs {
 /// itself has no meaningful default (no obvious `ItemKind`), so neither does
 /// its header.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// use reify_doc::model::ItemHeader;
 /// let _ = ItemHeader::default();
 /// ```
