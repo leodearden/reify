@@ -36,11 +36,12 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             make_world_sentinel()
         }
         "body" => {
-            // Dispatch on arity. Later steps extend with the 5-arg
-            // (explicit pose) form. The 3-arg (default parent = world)
-            // and 4-arg (explicit parent) forms both delegate to the
-            // 5-arg core (`append_body`) after substituting defaults.
-            if !matches!(args.len(), 3 | 4) {
+            // Dispatch on arity. The 3-arg (default parent = world,
+            // identity pose), 4-arg (explicit parent, identity pose),
+            // and 5-arg (explicit parent + pose) forms all delegate to
+            // the same `append_body` core after substituting defaults
+            // for any omitted argument.
+            if !matches!(args.len(), 3 | 4 | 5) {
                 return Some(Value::Undef);
             }
 
@@ -61,9 +62,9 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             }
 
             // Resolve the parent argument: 3-arg form defaults to the
-            // world sentinel; 4-arg form takes args[3] which must be a
-            // joint value or the world sentinel.
-            let parent = if args.len() == 4 {
+            // world sentinel; 4- and 5-arg forms take args[3] which
+            // must be a joint value or the world sentinel.
+            let parent = if args.len() >= 4 {
                 if !is_joint_value(&args[3]) && !is_world(&args[3]) {
                     return Some(Value::Undef);
                 }
@@ -72,15 +73,19 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
                 make_world_sentinel()
             };
 
-            // Delegate to the 5-arg core with the resolved parent and
-            // identity pose (5-arg form lands later).
-            append_body(
-                mech_map,
-                args[1].clone(),
-                args[2].clone(),
-                parent,
-                identity_transform(),
-            )
+            // Resolve the pose argument: 3- and 4-arg forms default to
+            // the identity transform; the 5-arg form takes args[4]
+            // which must be a Value::Transform.
+            let pose = if args.len() == 5 {
+                if !matches!(&args[4], Value::Transform { .. }) {
+                    return Some(Value::Undef);
+                }
+                args[4].clone()
+            } else {
+                identity_transform()
+            };
+
+            append_body(mech_map, args[1].clone(), args[2].clone(), parent, pose)
         }
         _ => return None,
     })
