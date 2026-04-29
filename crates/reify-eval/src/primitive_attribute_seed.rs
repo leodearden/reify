@@ -274,3 +274,165 @@ fn parse_normal_z(value: &Value) -> Result<f64, QueryError> {
         "FaceNormal payload missing z-component: {s:?}"
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Pure no-OCCT unit tests for the seeder dispatch.
+    //!
+    //! These tests pin the closed-extension contract: every non-seedable
+    //! `GeometryOp` variant must return `Ok(())` without ever calling into
+    //! the kernel. They use a `MockKernel` that returns
+    //! `Err(QueryError::QueryFailed("..."))` from every method — if the
+    //! seeder's dispatch ever falls through into the kernel for one of
+    //! these variants, the test fails on the kernel-call error rather
+    //! than silently passing. The OCCT-gated integration tests in
+    //! `tests/topology_attribute_primitives_direct.rs` cover the
+    //! seedable branches; this module is the unit-level safety net for
+    //! the no-op fall-through arm.
+    //!
+    //! Why each variant in step-9/10 (and not just one): the dispatch is
+    //! a `match` with explicit arms for `Box`/`Sphere`/`Cylinder` and a
+    //! single `_ => Ok(())` catch-all. A pin per variant kind protects
+    //! against a future refactor that introduces an unintended catch-all
+    //! that branches based on op shape (e.g. accidentally treating
+    //! `Tube` as a primitive because it has a `radius` field).
+    use super::*;
+    use reify_types::{
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryQuery,
+        Mesh, ReprKind, TessError,
+    };
+
+    /// In-test `GeometryKernel` that errors from every method. Used to
+    /// prove that `seed_primitive_attributes` does not call into the
+    /// kernel for non-primitive variants — every test in this module
+    /// passes the same `MockKernel` and asserts the seeder returns
+    /// `Ok(())`. If the seeder reached the kernel, the wrapping `expect`
+    /// would surface the synthetic error message.
+    struct MockKernel;
+
+    impl GeometryKernel for MockKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            unreachable!("seed_primitive_attributes must not call kernel.execute")
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed(
+                "MockKernel::query should not be called for non-primitive ops".into(),
+            ))
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            unreachable!("seed_primitive_attributes must not call kernel.export")
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            unreachable!("seed_primitive_attributes must not call kernel.tessellate")
+        }
+
+        fn extract_edges(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Err(QueryError::QueryFailed(
+                "MockKernel::extract_edges should not be called for non-primitive ops".into(),
+            ))
+        }
+
+        fn extract_faces(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Err(QueryError::QueryFailed(
+                "MockKernel::extract_faces should not be called for non-primitive ops".into(),
+            ))
+        }
+    }
+
+    fn feature_id() -> FeatureId {
+        FeatureId::new("Body#realization[0]")
+    }
+
+    /// Helper: invoke the seeder with a `MockKernel`, assert it returns
+    /// `Ok(())`, and assert the table is unchanged. Panics on seeder
+    /// error so each per-variant call site stays compact.
+    #[track_caller]
+    fn assert_seeds_nothing(op: &GeometryOp) {
+        let mut kernel = MockKernel;
+        let mut table = TopologyAttributeTable::default();
+        // The face/edge slices must be empty — the dispatch is supposed
+        // to never read them for non-seedable variants. Passing empty
+        // slices means an accidental read would still not produce any
+        // entries (rather than seeding garbage), but a fall-through into
+        // the kernel for a Cylinder-shaped variant would still surface
+        // via the kernel's `MockKernel::query` error.
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &[],
+            &[],
+            &feature_id(),
+            op,
+        )
+        .expect("seed_primitive_attributes must return Ok(()) for non-seedable variants");
+        assert!(
+            table.is_empty(),
+            "seed_primitive_attributes must not write any entries for non-seedable variants; \
+             table contains {} entries",
+            table.len()
+        );
+    }
+
+    /// Stand-in `GeometryHandleId` for op variants that need a target id.
+    /// Picked deterministically so the test reports the same id across runs;
+    /// the value is never resolved by the mock kernel.
+    fn fake_target() -> GeometryHandleId {
+        GeometryHandleId(7)
+    }
+
+    // ─── step-9 — explicit Translate + Union sanity checks ───────────────────
+    //
+    // The plan calls these out by name as the contract pins
+    // `Engine::execute_realization_ops` will rely on (mixed primitive +
+    // non-primitive op streams must produce no spurious entries for the
+    // non-primitive ops). They live here separately from the
+    // closed-extension matrix below so a regression on either cites the
+    // step-9 test name in the failure output.
+
+    #[test]
+    fn seed_returns_ok_and_writes_no_entries_for_non_primitive_op() {
+        // Translate is the canonical "auxiliary op the engine threads
+        // through the same loop as a primitive constructor" — its
+        // attribute attachment is the propagation phase (task 7), not
+        // the seeding phase (this task). The dispatch must see Translate,
+        // fall through, and leave the table untouched.
+        let _: ReprKind = ReprKind::Solid; // touch the import for symmetry
+        assert_seeds_nothing(&GeometryOp::Translate {
+            target: fake_target(),
+            dx: 1.0,
+            dy: 0.0,
+            dz: 0.0,
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_and_writes_no_entries_for_boolean_op() {
+        // Boolean ops are task 8's scope. The seeder must be a no-op for
+        // them — the engine relies on this so it can call the seeder
+        // unconditionally on every kernel-success path without per-op
+        // gating. (Task 8 will add the boolean-op propagation hook in a
+        // separate code path that runs alongside this seeder.)
+        assert_seeds_nothing(&GeometryOp::Union {
+            left: fake_target(),
+            right: GeometryHandleId(8),
+        });
+    }
+}
