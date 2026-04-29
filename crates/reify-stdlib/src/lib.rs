@@ -16,6 +16,9 @@ pub use helpers::complex_phase;
 #[macro_use]
 mod test_macros;
 
+#[cfg(test)]
+mod test_fixtures;
+
 mod analysis;
 mod complex;
 mod geometry;
