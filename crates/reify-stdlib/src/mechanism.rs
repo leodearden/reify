@@ -177,6 +177,8 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
 /// - `bodies` → `Value::List(vec![])`
 /// - `joint_parents` → `Value::Map(BTreeMap::new())`
 /// - `kind` → `Value::String("mechanism")`
+/// - `loop_closures` → `Value::List(vec![])` — records loop-closure
+///   constraints (one entry per closing body() call; see v0.2 migration).
 /// - `next_id` → `Value::Int(0)`
 ///
 /// Parallel to `make_joint`/`make_coupling` in `joints.rs`.
@@ -190,6 +192,10 @@ fn make_empty_mechanism() -> Value {
     m.insert(
         Value::String("kind".to_string()),
         Value::String("mechanism".to_string()),
+    );
+    m.insert(
+        Value::String("loop_closures".to_string()),
+        Value::List(vec![]),
     );
     m.insert(Value::String("next_id".to_string()), Value::Int(0));
     Value::Map(m)
@@ -543,6 +549,11 @@ mod tests {
             map.get(&Value::String("next_id".to_string())),
             Some(&Value::Int(0)),
             "next_id field should be Int(0)"
+        );
+        assert_eq!(
+            map.get(&Value::String("loop_closures".to_string())),
+            Some(&Value::List(vec![])),
+            "loop_closures field should be an empty List"
         );
     }
 
