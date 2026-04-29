@@ -101,6 +101,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_idempotent_when_existing_entry_satisfies() {
+        let mut bucket = ToleranceBucket::<&str>::new();
+        // First insert: no existing entry satisfies 0.001, so it succeeds.
+        assert!(bucket.insert(0.001, "tight"));
+        assert_eq!(bucket.len(), 1);
+        // Second insert: the existing 0.001 entry satisfies 0.01 (0.001 <= 0.01),
+        // so the insert must be rejected (per PRD "Insert when no entry satisfies").
+        assert!(!bucket.insert(0.01, "loose"));
+        assert_eq!(bucket.len(), 1, "bucket must be unchanged after rejected insert");
+        assert_eq!(bucket.lookup(0.01), Some(&"tight"));
+        assert_eq!(bucket.lookup(0.001), Some(&"tight"));
+    }
+
+    #[test]
     fn single_insert_partial_order_satisfies_at_or_above_cached_tol() {
         let mut bucket = ToleranceBucket::<&str>::new();
         bucket.insert(0.01, "A");
