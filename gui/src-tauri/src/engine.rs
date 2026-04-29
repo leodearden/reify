@@ -1283,6 +1283,17 @@ fn resolve_driving_params_from_ast(
                 if let Some(jd) = desc.joints.get_mut(joint_index)
                     && jd.driving_param_cell_id.is_none() {
                         jd.driving_param_cell_id = Some(param_cell_id_str.clone());
+                        // Telemetry: confirm which (structure, joint, param) triple
+                        // was resolved so operators can verify AST-based matching.
+                        // Fires AFTER the Param check has passed and
+                        // driving_param_cell_id has been populated.
+                        tracing::debug!(
+                            target: "reify_gui::engine",
+                            structure = %structure_name,
+                            joint = %joint_cell_name,
+                            param_cell = %param_cell_id_str,
+                            "resolved driving param via snapshot+bind AST match"
+                        );
                         // Step-24: populate current_value_si from the param cell's
                         // post-eval value so the slider's initial position reflects
                         // the actual evaluated parameter value (not just the source
