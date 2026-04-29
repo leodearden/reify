@@ -53,10 +53,6 @@ fn ten_mm_box_op() -> GeometryOp {
 /// Seed `table` with one `TopologyAttribute` per provided parent face
 /// handle, rooted at `feature_id`. Each face gets `Role::Side` and a
 /// `local_index` matching its position in the input slice.
-///
-/// Mirrors the seeding helper in the unit test in
-/// `topology_attribute_propagation.rs::tests`, but is duplicated here
-/// because integration tests cannot reach into private cfg(test) modules.
 fn seed_face_attributes(
     table: &mut TopologyAttributeTable,
     face_handles: &[GeometryHandleId],
@@ -260,8 +256,13 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     );
 
     // ─── (5) Run propagation ─────────────────────────────────────────
-    let parent_face_handles = [left_face_handles.clone(), right_face_handles.clone()];
-    let parent_edge_handles = [left_edge_handles.clone(), right_edge_handles.clone()];
+    // Use slice-of-slices so we can borrow the parent vectors without
+    // cloning. The helper accepts N parents; we pass exactly two for a
+    // binary fuse (`parent_index` 0 == left, 1 == right).
+    let parent_face_handles: [&[GeometryHandleId]; 2] =
+        [&left_face_handles, &right_face_handles];
+    let parent_edge_handles: [&[GeometryHandleId]; 2] =
+        [&left_edge_handles, &right_edge_handles];
 
     propagate_attributes_via_brepalgoapi_history(
         &mut table,

@@ -37,10 +37,11 @@ use reify_types::{
 /// - `table`: the `TopologyAttributeTable` to update in place. Parent
 ///   entries are read; new entries are written for each Modified/Generated
 ///   result sub-shape whose corresponding parent had an attribute.
-/// - `parent_face_handles`: per-parent face-handle vectors (i.e.
-///   `[left_faces, right_faces]`) in canonical TopExp order. Caller
-///   extracts these via `kernel.extract_faces(parent)` once and reuses
-///   the same vectors as the table-seeding keys.
+/// - `parent_face_handles`: per-parent face-handle slices in canonical
+///   TopExp order. Conventionally `&[&left_faces, &right_faces]` for
+///   binary booleans, but the slice-of-slices shape lets callers extend
+///   to N-ary algorithms (e.g. multi-input fuses) without changing the
+///   signature.
 /// - `parent_edge_handles`: as above, but for edges.
 /// - `result_face_handles`: the result shape's faces in canonical
 ///   TopExp order. Indexed by `record.result_subshape_index`. The
@@ -74,14 +75,15 @@ use reify_types::{
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any record references an
 /// out-of-bounds parent or result sub-shape index — the FFI primitive
-/// guarantees in-range indices, so this is a defense-in-depth path.
+/// guarantees in-range indices, so this is a defense-in-depth path
+/// pinned by the unit tests below.
 ///
 /// Cross-references PRD docs/prds/v0_2/persistent-naming-v2.md (a)+(c)+(d)
 /// of decomposition-plan task 1 (lines 89-103).
 pub fn propagate_attributes_via_brepalgoapi_history(
     table: &mut TopologyAttributeTable,
-    parent_face_handles: &[Vec<GeometryHandleId>; 2],
-    parent_edge_handles: &[Vec<GeometryHandleId>; 2],
+    parent_face_handles: &[&[GeometryHandleId]],
+    parent_edge_handles: &[&[GeometryHandleId]],
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &BooleanOpHistoryRecords,
@@ -129,7 +131,7 @@ pub fn propagate_attributes_via_brepalgoapi_history(
 /// Returns `Err(QueryError::QueryFailed)` if any index is out of range.
 fn propagate_one(
     table: &mut TopologyAttributeTable,
-    parent_handles: &[Vec<GeometryHandleId>; 2],
+    parent_handles: &[&[GeometryHandleId]],
     result_handles: &[GeometryHandleId],
     record: &HistoryRecord,
     kind: &str,
@@ -138,10 +140,11 @@ fn propagate_one(
     if parent_idx >= parent_handles.len() {
         return Err(QueryError::QueryFailed(format!(
             "BRepAlgoAPI history {kind} record has parent_index {parent_idx} \
-             but only 2 parents are tracked",
+             but only {} parents are tracked",
+            parent_handles.len()
         )));
     }
-    let parent_vec = &parent_handles[parent_idx];
+    let parent_vec = parent_handles[parent_idx];
     let parent_subshape_idx = record.parent_subshape_index as usize;
     if parent_subshape_idx >= parent_vec.len() {
         return Err(QueryError::QueryFailed(format!(
@@ -178,223 +181,220 @@ fn propagate_one(
 
 #[cfg(test)]
 mod tests {
-    use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
+    //! Unit tests focused on the `Err(QueryError::QueryFailed(...))`
+    //! defense-in-depth branches of [`propagate_one`]. The happy-path
+    //! (parent → result attribute clone via Modified/Generated records)
+    //! is fully covered by the PRD-line-93 single integration test in
+    //! `tests/topology_attribute_e2e.rs`; duplicating it here would just
+    //! double the maintenance surface as the propagation contract evolves.
+    //!
+    //! These error branches are pure given inputs, so they need no OCCT
+    //! kernel — we hand-build a malformed `BooleanOpHistoryRecords` and
+    //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
-        FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, RealizationNodeId, Role,
-        TopologyAttribute, TopologyAttributeTable, Value,
+        BooleanOpHistoryRecords, GeometryHandleId, HistoryRecord, QueryError,
+        TopologyAttributeTable,
     };
 
     use super::propagate_attributes_via_brepalgoapi_history;
 
-    /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
-    const BOX_SIDE_M: f64 = 10.0e-3;
-
-    fn ten_mm_box_op() -> GeometryOp {
-        GeometryOp::Box {
-            width: Value::Real(BOX_SIDE_M),
-            height: Value::Real(BOX_SIDE_M),
-            depth: Value::Real(BOX_SIDE_M),
+    /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
+    /// `face_modified` entry and every other vector empty.
+    fn history_with_single_face_modified(rec: HistoryRecord) -> BooleanOpHistoryRecords {
+        BooleanOpHistoryRecords {
+            face_modified: vec![rec],
+            ..Default::default()
         }
     }
 
-    /// Seed `table` with one `TopologyAttribute` per provided parent face
-    /// handle, rooted at `feature_id`. Each face gets `Role::Side` and a
-    /// `local_index` matching its position in the input slice.
-    fn seed_face_attributes(
-        table: &mut TopologyAttributeTable,
-        face_handles: &[GeometryHandleId],
-        feature_id: &FeatureId,
+    /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
+    /// `edge_modified` entry and every other vector empty.
+    fn history_with_single_edge_modified(rec: HistoryRecord) -> BooleanOpHistoryRecords {
+        BooleanOpHistoryRecords {
+            edge_modified: vec![rec],
+            ..Default::default()
+        }
+    }
+
+    /// One face per parent + one result face — the minimum shape needed
+    /// to exercise out-of-range index error paths without tripping
+    /// earlier guards.
+    fn minimal_parent_result_layout() -> (
+        [Vec<GeometryHandleId>; 2],
+        [Vec<GeometryHandleId>; 2],
+        Vec<GeometryHandleId>,
+        Vec<GeometryHandleId>,
     ) {
-        for (idx, &face_id) in face_handles.iter().enumerate() {
-            let attr = TopologyAttribute {
-                feature_id: feature_id.clone(),
-                role: Role::Side,
-                local_index: idx as u32,
-                user_label: None,
-                mod_history: Vec::new(),
-            };
-            table.record(face_id, attr);
-        }
+        let parent_faces = [vec![GeometryHandleId(1)], vec![GeometryHandleId(2)]];
+        let parent_edges = [vec![GeometryHandleId(3)], vec![GeometryHandleId(4)]];
+        let result_faces = vec![GeometryHandleId(11)];
+        let result_edges = vec![GeometryHandleId(12)];
+        (parent_faces, parent_edges, result_faces, result_edges)
     }
 
-    /// Core post-condition test for the propagation helper.
-    ///
-    /// Steps:
-    /// 1. Build two overlapping 10mm boxes via `OcctKernelHandle`.
-    /// 2. Extract each parent's face/edge handles ONCE and seed the
-    ///    `TopologyAttributeTable` with one entry per face: left's get
-    ///    `FeatureId::from(&RealizationNodeId::new("L", 0))`, right's get
-    ///    `FeatureId::from(&RealizationNodeId::new("R", 0))`.
-    /// 3. Call `boolean_fuse_with_history(left, right)`.
-    /// 4. Extract result face/edge handles ONCE and pass them, along
-    ///    with the parent vectors, to
-    ///    `propagate_attributes_via_brepalgoapi_history(...)`.
-    /// 5. Assert: every result-face referenced in `face_modified` or
-    ///    `face_generated` has a `lookup`-able entry whose `feature_id`
-    ///    matches the originating parent (via the record's `parent_index`).
-    /// 6. Assert: each propagated entry's `mod_history` is empty and
-    ///    `user_label` is None — task 1 keeps clones unchanged.
     #[test]
-    fn propagation_clones_parent_attribute_onto_modified_and_generated_result_faces() {
-        if !OCCT_AVAILABLE {
-            return;
-        }
-
-        let mut kernel = OcctKernelHandle::spawn();
-
-        // Two overlapping cubes (right offset by +5mm in X).
-        let left = kernel
-            .execute(&ten_mm_box_op())
-            .expect("left box should build")
-            .id;
-        let right_origin = kernel
-            .execute(&ten_mm_box_op())
-            .expect("right box should build")
-            .id;
-        let right = kernel
-            .execute(&GeometryOp::Translate {
-                target: right_origin,
-                dx: 5.0e-3,
-                dy: 0.0,
-                dz: 0.0,
-            })
-            .expect("right translate should build")
-            .id;
-
-        // Extract each parent's face/edge handles ONCE and reuse the
-        // same vectors as both seeding keys and propagation inputs.
-        let left_face_handles = kernel
-            .extract_faces(left)
-            .expect("extract_faces(left) should succeed");
-        let right_face_handles = kernel
-            .extract_faces(right)
-            .expect("extract_faces(right) should succeed");
-        let left_edge_handles = kernel
-            .extract_edges(left)
-            .expect("extract_edges(left) should succeed");
-        let right_edge_handles = kernel
-            .extract_edges(right)
-            .expect("extract_edges(right) should succeed");
-
-        let left_feature_id = FeatureId::from(&RealizationNodeId::new("L", 0));
-        let right_feature_id = FeatureId::from(&RealizationNodeId::new("R", 0));
-
+    fn propagate_returns_query_failed_when_face_record_has_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
-        seed_face_attributes(&mut table, &left_face_handles, &left_feature_id);
-        seed_face_attributes(&mut table, &right_face_handles, &right_feature_id);
+        let (pf, pe, rf, re) = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
 
-        let seeded_count = table.len();
-        assert_eq!(
-            seeded_count,
-            left_face_handles.len() + right_face_handles.len(),
-            "seeding should add one entry per parent face"
-        );
+        // 5 >= 2 parents tracked.
+        let history = history_with_single_face_modified(HistoryRecord {
+            parent_index: 5,
+            parent_subshape_index: 0,
+            result_subshape_index: 0,
+        });
 
-        let (result_handle, history) = kernel
-            .boolean_fuse_with_history(left, right)
-            .expect("boolean_fuse_with_history should succeed for overlapping boxes");
-
-        // Extract result face/edge handles ONCE, then pass them to
-        // propagation. Subsequent extract_* calls would allocate fresh
-        // ids (kernel does not dedupe), so we capture once and reuse.
-        let result_face_handles = kernel
-            .extract_faces(result_handle)
-            .expect("extract_faces(result) should succeed");
-        let result_edge_handles = kernel
-            .extract_edges(result_handle)
-            .expect("extract_edges(result) should succeed");
-
-        let parent_face_handles = [left_face_handles.clone(), right_face_handles.clone()];
-        let parent_edge_handles = [left_edge_handles.clone(), right_edge_handles.clone()];
-
-        propagate_attributes_via_brepalgoapi_history(
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             &parent_face_handles,
             &parent_edge_handles,
-            &result_face_handles,
-            &result_edge_handles,
+            &rf,
+            &re,
             &history,
         )
-        .expect("propagation should succeed for a well-formed history");
-
-        // (d) Table now contains entries for at least some result-face
-        //     handles (those touched by Modified/Generated records).
-        assert!(
-            table.len() > seeded_count,
-            "propagation should record additional entries for result faces \
-             (had {seeded_count} seeded, table now has {})",
-            table.len()
-        );
-
-        // (e) Walk the history in iteration order and remember the
-        //     LAST record that mentioned each result face. The
-        //     propagated entry's `feature_id` must match the parent of
-        //     that last record (last-write-wins per
-        //     `TopologyAttributeTable::record`'s overwrite semantics —
-        //     a result face shared between left and right gets the
-        //     parent that was written last).
-        use std::collections::HashMap;
-        let mut last_face_record: HashMap<u32, u8> = HashMap::new();
-        for record in history
-            .face_modified
-            .iter()
-            .chain(history.face_generated.iter())
-        {
-            last_face_record.insert(record.result_subshape_index, record.parent_index);
+        .expect_err("expected QueryFailed for parent_index out of range");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("parent_index 5"),
+                    "error message should mention the offending parent_index, got {msg:?}",
+                );
+                assert!(
+                    msg.contains("face"),
+                    "error message should identify face record, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
         }
+    }
 
-        for (&result_subshape_index, &expected_parent_index) in last_face_record.iter() {
-            let result_face_id = result_face_handles[result_subshape_index as usize];
-            let propagated = table.lookup(result_face_id).unwrap_or_else(|| {
-                panic!(
-                    "result face {:?} (subshape index {}) should have a propagated attribute",
-                    result_face_id, result_subshape_index
-                )
-            });
-            let expected_feature_id = match expected_parent_index {
-                0 => &left_feature_id,
-                1 => &right_feature_id,
-                other => panic!("unexpected parent_index {other} in face history record"),
-            };
-            assert_eq!(
-                &propagated.feature_id, expected_feature_id,
-                "result face index {} should carry feature_id {} (last-write-wins from parent {})",
-                result_subshape_index, expected_feature_id, expected_parent_index,
-            );
-            // (f) mod_history empty, user_label None — task-1 invariant.
-            assert!(
-                propagated.mod_history.is_empty(),
-                "task-1 propagation leaves mod_history empty (got {:?})",
-                propagated.mod_history
-            );
-            assert_eq!(
-                propagated.user_label, None,
-                "task-1 propagation leaves user_label as None"
-            );
+    #[test]
+    fn propagate_returns_query_failed_when_face_record_has_parent_subshape_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let (pf, pe, rf, re) = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
+
+        // Parent 0 has only 1 face, so subshape 99 is out of range.
+        let history = history_with_single_face_modified(HistoryRecord {
+            parent_index: 0,
+            parent_subshape_index: 99,
+            result_subshape_index: 0,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parent_face_handles,
+            &parent_edge_handles,
+            &rf,
+            &re,
+            &history,
+        )
+        .expect_err("expected QueryFailed for parent_subshape_index out of range");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("parent_subshape_index 99"),
+                    "error message should mention the offending parent_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
         }
+    }
 
-        // Sanity-check the iteration covered something.
-        assert!(
-            !last_face_record.is_empty(),
-            "history should contain at least one face Modified/Generated record"
-        );
+    #[test]
+    fn propagate_returns_query_failed_when_face_record_has_result_subshape_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let (pf, pe, rf, re) = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
 
-        // Repeat the per-record assertion for edges.
-        for record in history
-            .edge_modified
-            .iter()
-            .chain(history.edge_generated.iter())
-        {
-            let result_edge_id =
-                result_edge_handles[record.result_subshape_index as usize];
-            // Edges weren't seeded in this test, so propagation should
-            // be a no-op for them (parent edge has no entry to clone).
-            assert!(
-                table.lookup(result_edge_id).is_none(),
-                "edges weren't seeded → propagation should not write entries \
-                 for result edges (got {:?})",
-                table.lookup(result_edge_id),
-            );
+        // Result has only 1 face, so subshape 7 is out of range.
+        let history = history_with_single_face_modified(HistoryRecord {
+            parent_index: 0,
+            parent_subshape_index: 0,
+            result_subshape_index: 7,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parent_face_handles,
+            &parent_edge_handles,
+            &rf,
+            &re,
+            &history,
+        )
+        .expect_err("expected QueryFailed for result_subshape_index out of range");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("result_subshape_index 7"),
+                    "error message should mention the offending result_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn propagate_returns_query_failed_when_edge_record_has_parent_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let (pf, pe, rf, re) = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
+
+        // Edge equivalent of the parent_index check — confirms the kind
+        // arg is threaded into the error message.
+        let history = history_with_single_edge_modified(HistoryRecord {
+            parent_index: 4,
+            parent_subshape_index: 0,
+            result_subshape_index: 0,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parent_face_handles,
+            &parent_edge_handles,
+            &rf,
+            &re,
+            &history,
+        )
+        .expect_err("expected QueryFailed for edge parent_index out of range");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("edge"),
+                    "edge-record error message should identify edge kind, got {msg:?}",
+                );
+                assert!(
+                    msg.contains("parent_index 4"),
+                    "error message should mention the offending parent_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn propagate_succeeds_silently_on_empty_history() {
+        // No records — propagation is a no-op and must not error even
+        // when parent/result handle slices are empty.
+        let mut table = TopologyAttributeTable::default();
+        let no_handles: [&[GeometryHandleId]; 0] = [];
+        let result_handles: Vec<GeometryHandleId> = Vec::new();
+        let history = BooleanOpHistoryRecords::default();
+
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &no_handles,
+            &no_handles,
+            &result_handles,
+            &result_handles,
+            &history,
+        )
+        .expect("empty history should propagate without error");
+        assert!(table.is_empty(), "no-op propagation must not write entries");
     }
 }
