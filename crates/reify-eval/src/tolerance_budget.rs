@@ -61,14 +61,13 @@ mod tests {
 
     #[test]
     fn single_stage_applies_safety_factor() {
-        // N=1: per_stage = tol^(1/1) * 0.8 = tol * 0.8.
-        // Use an epsilon comparison — powf(1.0) is not guaranteed bit-exact by
-        // all libm implementations, so assert_eq! could regress on musl or
-        // alternate platforms even though the result is cosmetically equal.
+        // N=1: per_stage = tol * SAFETY_FACTOR exactly.
+        // The n_stages==1 path is short-circuited (no powf call), so the result
+        // is bit-exact `requested_tol * SAFETY_FACTOR` on all libm implementations.
         let observed = per_stage_tolerance(0.001, 1);
         let expected = 0.001 * SAFETY_FACTOR;
-        assert!(
-            (observed - expected).abs() < 1e-15,
+        assert_eq!(
+            observed, expected,
             "per_stage_tolerance(0.001, 1): expected {expected}, got {observed}"
         );
     }
