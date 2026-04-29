@@ -905,6 +905,87 @@ mod tests {
         );
     }
 
+    // ── closed-chain detection: joint-graph cycle ────────────────────────
+
+    /// `body()` calls whose recorded `(at → parent)` edges introduce a
+    /// cycle that doesn't conflict on a single joint's parent still
+    /// produce a `closed_chain` error.
+    ///
+    /// Scenario: `body(m, solid_a, j_a, j_b)` then
+    /// `body(m', solid_b, j_b, j_a)`. After call 1, `joint_parents`
+    /// records `j_a → j_b`. After call 2 *would* record `j_b → j_a`,
+    /// producing the cycle `j_a → j_b → j_a`. The conflict-on-single-
+    /// joint guard (step-16) does NOT fire here because `j_b` has no
+    /// existing parent recorded — the cycle is detected by the DFS
+    /// from `at` through `joint_parents` (step-18).
+    ///
+    /// The test only pins the error-kind and that at least one path
+    /// contains the cyclic sequence terminating at the conflict point;
+    /// it does not pin the exact ordering of paths since either path
+    /// is a valid characterization of the cycle.
+    #[test]
+    fn closed_chain_via_joint_graph_cycle_emits_error_with_cycle_path() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        // Call 1: body(m0, solid_a, j_a, j_b) records j_a → j_b.
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_a.clone(), j_b.clone()]);
+        // Sanity-check: call 1 succeeds (no error key).
+        match &m1 {
+            Value::Map(m) => assert!(
+                !m.contains_key(&Value::String("error".to_string())),
+                "first body() call should succeed; got error: {:?}",
+                m.get(&Value::String("error".to_string()))
+            ),
+            other => panic!("expected Mechanism Map after call 1, got {:?}", other),
+        }
+        // Call 2: body(m1, solid_b, j_b, j_a) records j_b → j_a, producing
+        // the cycle j_a → j_b → j_a.
+        let m2 = eval_builtin("body", &[m1, solid_b, j_b.clone(), j_a.clone()]);
+
+        let map = match m2 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map after call 2, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("closed_chain".to_string())),
+            "cycle should be reported as closed_chain"
+        );
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(s)) => {
+                assert!(!s.is_empty(), "error_message should be non-empty");
+            }
+            other => panic!("expected error_message String, got {:?}", other),
+        }
+
+        // At least one of the paths must contain the cyclic joint
+        // sequence (j_a and j_b both appear in the cycle). The exact
+        // order/length is not pinned — the contract is "the mechanism
+        // is errored and the paths reflect the cycle".
+        let path1 = match map.get(&Value::String("error_path1".to_string())) {
+            Some(Value::List(p)) => p.clone(),
+            other => panic!("expected error_path1 List, got {:?}", other),
+        };
+        let path2 = match map.get(&Value::String("error_path2".to_string())) {
+            Some(Value::List(p)) => p.clone(),
+            other => panic!("expected error_path2 List, got {:?}", other),
+        };
+        let path1_has_cycle = path1.contains(&j_a) && path1.contains(&j_b);
+        let path2_has_cycle = path2.contains(&j_a) && path2.contains(&j_b);
+        assert!(
+            path1_has_cycle || path2_has_cycle,
+            "at least one error_path should contain both cycle joints (j_a, j_b); \
+             got path1={:?} path2={:?}",
+            path1,
+            path2
+        );
+    }
+
     // ── body_id_of() lookup ──────────────────────────────────────────────
 
     /// `body_id_of(m, solid)` returns `Int(body.id)` for the first body
