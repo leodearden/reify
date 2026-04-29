@@ -1059,4 +1059,74 @@ mod tests {
             "joint_range_midpoint must return None for a spherical joint"
         );
     }
+
+    /// `chain_transform` returns `None` when the chain contains a spherical joint.
+    ///
+    /// Pins the contract that the f64-per-joint chain machinery short-circuits
+    /// gracefully on spherical (no panic, deterministic None). `value_for_joint`
+    /// cannot map a scalar f64 to spherical's `Value::Orientation` motion
+    /// variable, so the chain aborts. Multi-DOF chain support is deferred
+    /// to PRD v0.2 kinematic task 2 (taskmaster #2670). The catch-all
+    /// `_ => None` arm in `value_for_joint` makes this test pass already;
+    /// step-18 adds an explicit `"spherical" => None` arm so the contract
+    /// becomes source-visible.
+    #[test]
+    fn chain_transform_with_spherical_returns_none() {
+        assert!(
+            super::chain_transform(&[spherical_joint()], &[0.0]).is_none(),
+            "chain_transform must return None for a chain containing a spherical joint"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` when the chain contains a spherical joint.
+    ///
+    /// Pins the contract that the FD Jacobian assembler short-circuits gracefully
+    /// on spherical (no panic, deterministic None). The FD perturbation relies on
+    /// `chain_transform` which itself short-circuits for spherical, so the whole
+    /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
+    #[test]
+    fn chain_jacobian_fd_with_spherical_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(&[spherical_joint()], &[0.0], &[0], 1e-6).is_none(),
+            "chain_jacobian_fd must return None for a chain containing a spherical joint"
+        );
+    }
+
+    /// `chain_transform` returns `None` for a mixed chain where spherical is not
+    /// the only element — pins the stronger contract that *any* spherical joint
+    /// in the chain short-circuits, regardless of its position or the other
+    /// kinds present.
+    ///
+    /// A `[prismatic_x @ 0.5m, spherical]` chain with two scalar entries must
+    /// still return `None` because `value_for_joint` has no f64-scalar mapping
+    /// for spherical regardless of how many valid joints precede it.
+    #[test]
+    fn chain_transform_mixed_prismatic_spherical_returns_none() {
+        assert!(
+            super::chain_transform(&[prismatic_x(), spherical_joint()], &[0.5, 0.0]).is_none(),
+            "chain_transform must return None when any joint in the chain is spherical"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a
+    /// spherical joint — the same stronger contract as
+    /// `chain_transform_mixed_prismatic_spherical_returns_none`.
+    ///
+    /// Even with two free indices `[0, 1]`, the FD loop calls `chain_transform`
+    /// for the perturbed chains; the first call with a perturbed prismatic value
+    /// will still encounter the spherical slot and return `None`, killing the
+    /// whole Jacobian.
+    #[test]
+    fn chain_jacobian_fd_mixed_prismatic_spherical_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(
+                &[prismatic_x(), spherical_joint()],
+                &[0.5, 0.0],
+                &[0, 1],
+                1e-6,
+            )
+            .is_none(),
+            "chain_jacobian_fd must return None when any joint in the chain is spherical"
+        );
+    }
 }
