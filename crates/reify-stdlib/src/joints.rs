@@ -3474,6 +3474,47 @@ mod tests {
         }
     }
 
+    // ── spherical constructor: validation surface (step-3) ───────────────────
+
+    #[test]
+    fn spherical_invalid_args_returns_undef() {
+        let unbounded_upper = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        let unbounded_lower = Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        };
+
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            // (a) wrong arg counts
+            ("0 args",  vec![]),
+            ("2 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            ("3 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            // (b) range_angle wrong dimension (LENGTH-typed range)
+            ("LENGTH-typed range", vec![length_range_0_to_1m()]),
+            // (c) range_angle unbounded
+            ("unbounded upper", vec![unbounded_upper]),
+            ("unbounded lower", vec![unbounded_lower]),
+            // (d) range_angle non-Range types
+            ("bare Real",   vec![Value::Real(0.0)]),
+            ("bare Vector", vec![Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])]),
+            ("bare Map",    vec![Value::Map(Default::default())]),
+        ];
+
+        for (label, args) in &cases {
+            assert!(
+                eval_builtin("spherical", args).is_undef(),
+                "spherical({label}) should return Undef but didn't"
+            );
+        }
+    }
+
     // ── spherical constructor: happy path (step-1) ────────────────────────────
 
     #[test]
