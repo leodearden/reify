@@ -18,6 +18,7 @@
 //! drives the runtime emission.
 
 use reify_compiler::CompiledModule;
+use reify_eval::snapshot::Snapshot;
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
@@ -156,4 +157,116 @@ fn edit_param_count_undef_to_known_emits_per_element_forall_constraints() {
             i, id.member
         );
     }
+}
+
+/// Helper: collect sorted `forall@*` labels from a snapshot's graph.
+fn collect_forall_labels(snap: &Snapshot) -> Vec<String> {
+    let mut labels: Vec<String> = snap
+        .graph
+        .constraints
+        .iter()
+        .filter_map(|(_, n)| n.label.clone())
+        .filter(|s| s.starts_with("forall@"))
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// task-2629 step-10: pins that count-decrease removes stale per-element
+/// constraints (not just overwrites them) and that `topology_fingerprint`
+/// changes across each count transition.
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` (count=Undef ⇒ zero `forall@*` constraints).
+/// 2. `edit_param(S.n, Int(3))` — capture `fingerprint_3`, assert exactly 3
+///    `forall@v[0..2]` labels.
+/// 3. `edit_param(S.n, Int(1))` — assert exactly `forall@v[0]` remains
+///    (verify `forall@v[1]` and `forall@v[2]` are absent from the
+///    `constraints` PersistentMap). Capture `fingerprint_1`; assert
+///    `fingerprint_3 != fingerprint_1`.
+/// 4. `edit_param(S.n, Int(0))` — assert zero `forall@*` labels remain;
+///    capture `fingerprint_0`; assert `fingerprint_0 != fingerprint_1`.
+#[test]
+fn edit_param_count_decrease_removes_stale_forall_constraints_and_changes_fingerprint() {
+    let module = compile_source(FORALL_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval — count Undef ⇒ zero forall@* constraints.
+    let _ = engine.eval(&module);
+    let initial_snap = engine.snapshot().expect("snapshot after initial eval");
+    assert!(
+        collect_forall_labels(&initial_snap).is_empty(),
+        "expected zero forall@* constraints when count is Undef"
+    );
+
+    // (2) edit_param(n, 3) ⇒ 3 per-element constraints.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param to 3 should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    let fingerprint_3 = snap_3.topology_fingerprint;
+    assert_eq!(
+        collect_forall_labels(&snap_3),
+        vec![
+            "forall@v[0]".to_string(),
+            "forall@v[1]".to_string(),
+            "forall@v[2]".to_string(),
+        ],
+        "expected forall@v[0..2] after edit_param to Int(3)"
+    );
+
+    // (3) edit_param(n, 1) ⇒ only forall@v[0] remains.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(1))
+        .expect("edit_param to 1 should succeed");
+    let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
+    let labels_1 = collect_forall_labels(&snap_1);
+    assert_eq!(
+        labels_1,
+        vec!["forall@v[0]".to_string()],
+        "expected exactly forall@v[0] after count decrease to Int(1) (got {:?})",
+        labels_1
+    );
+    // Verify forall@v[1] and forall@v[2] are *gone*, not just overwritten —
+    // their absence in the `forall_labels` Vec already implies removal,
+    // since each forall constraint is keyed by a unique ConstraintNodeId.
+    let absent: Vec<&'static str> = ["forall@v[1]", "forall@v[2]"]
+        .iter()
+        .filter(|missing| {
+            snap_1
+                .graph
+                .constraints
+                .iter()
+                .any(|(_, n)| n.label.as_deref() == Some(**missing))
+        })
+        .copied()
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "stale forall labels should be removed but found {:?}",
+        absent
+    );
+    let fingerprint_1 = snap_1.topology_fingerprint;
+    assert_ne!(
+        fingerprint_3, fingerprint_1,
+        "topology_fingerprint must change across count transition 3 -> 1"
+    );
+
+    // (4) edit_param(n, 0) ⇒ zero forall@* constraints.
+    let _ = engine
+        .edit_param(n_id, Value::Int(0))
+        .expect("edit_param to 0 should succeed");
+    let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
+    let labels_0 = collect_forall_labels(&snap_0);
+    assert!(
+        labels_0.is_empty(),
+        "expected zero forall@* constraints after edit_param to Int(0) (got {:?})",
+        labels_0
+    );
+    let fingerprint_0 = snap_0.topology_fingerprint;
+    assert_ne!(
+        fingerprint_1, fingerprint_0,
+        "topology_fingerprint must change across count transition 1 -> 0"
+    );
 }
