@@ -473,4 +473,60 @@ mod tests {
             other => panic!("expected NotConverged, got {other:?}"),
         }
     }
+
+    // ── solve_loop_closure tests (step-15, step-17, step-19) ────────────
+
+    use reify_stdlib::eval_builtin;
+    use reify_types::Value;
+
+    fn axis_x() -> Value {
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    }
+
+    fn length_range(lo: f64, up: f64) -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::length(lo))),
+            upper: Some(Box::new(Value::length(up))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
+    fn prismatic_x_0_to_1() -> Value {
+        eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)])
+    }
+
+    #[test]
+    fn solve_loop_closure_warm_start_converges_single_prismatic() {
+        // chain_a fixed at 0.5m; chain_b's free var should converge there.
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0]; // FREE var
+        let free_b = vec![0];
+        let strategy = StartStrategy::WarmStart(vec![0.0]);
+        let cfg = NewtonConfig::default();
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        match outcome {
+            NewtonOutcome::Converged { x, .. } => {
+                assert_eq!(x.len(), 1);
+                assert!(
+                    (x[0] - 0.5).abs() < 1e-6,
+                    "expected x[0] ≈ 0.5, got {}",
+                    x[0]
+                );
+            }
+            other => panic!("expected Converged, got {other:?}"),
+        }
+    }
 }
