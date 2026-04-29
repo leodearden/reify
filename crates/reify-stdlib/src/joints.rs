@@ -2727,4 +2727,58 @@ mod tests {
         );
     }
 
+    // ── transform_at for fixed ───────────────────────────────────────────────
+
+    /// `transform_at(fixed_joint, any_value)` returns the identity Transform.
+    ///
+    /// Design decision: the second argument is accepted but ignored — a 0-DOF
+    /// joint has no motion variable to validate against a dimension or shape.
+    /// The two-argument call shape is preserved so existing dispatch tables and
+    /// the parse/compile pipeline are unaffected.
+    #[test]
+    fn transform_at_fixed_returns_identity_transform() {
+        let fj = eval_builtin("fixed", &[]);
+
+        // Primary case: second arg is a bare Real.
+        let result = eval_builtin("transform_at", &[fj.clone(), Value::Real(0.0)]);
+        let (rot, trans) = match &result {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("transform_at(fixed, 0.0): expected Transform, got {:?}", other),
+        };
+        assert_eq!(
+            rot,
+            &Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            "identity rotation"
+        );
+        assert_eq!(
+            trans,
+            &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
+            "zero translation"
+        );
+
+        // Additional args — all should yield the same identity (arg is ignored).
+        for (label, second_arg) in [
+            ("length(2.5)", Value::length(2.5)),
+            ("angle(1.0)",  Value::angle(1.0)),
+            ("Int(5)",      Value::Int(5)),
+        ] {
+            let r2 = eval_builtin("transform_at", &[fj.clone(), second_arg]);
+            assert!(
+                matches!(&r2, Value::Transform { .. }),
+                "transform_at(fixed, {label}): expected Transform, got {:?}", r2
+            );
+            let (r, t) = match &r2 {
+                Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+                _ => unreachable!(),
+            };
+            assert_eq!(r, &Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                "identity rotation for {label}");
+            assert_eq!(
+                t,
+                &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
+                "zero translation for {label}"
+            );
+        }
+    }
+
 }
