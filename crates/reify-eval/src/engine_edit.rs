@@ -672,7 +672,8 @@ impl Drop for PendingWarmSeedsGuard<'_> {
             target: "reify_eval::engine_edit",
             count = len,
             "PendingWarmSeedsGuard safety-net fired: re-donating staged \
-             warm-pool entries from Drop"
+             warm-pool entries from Drop (panic between edit_source steps 4c–14b \
+             in production; benign in unit tests)"
         );
         for (nid, (state, stamp)) in self.map.drain() {
             self.pool.donate_preserving_lru(nid, state, stamp);
