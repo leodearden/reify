@@ -1544,6 +1544,11 @@ impl Engine {
                         // Mirrors task 2184's per-instance cache invalidation
                         // (line 1449 above): a subsequent re-emission must
                         // evaluate freshly rather than return a stale entry.
+                        // Pinned by `forall_runtime_re_elaboration::
+                        // edit_param_count_change_invalidates_prior_forall_constraint_cache`
+                        // (task 2629 step-14): a synthetic NodeCache entry
+                        // injected for a soon-to-be-removed forall constraint
+                        // id is observed cleared after the count decrease.
                         self.cache.invalidate(&NodeId::Constraint(old_id.clone()));
                     }
 
