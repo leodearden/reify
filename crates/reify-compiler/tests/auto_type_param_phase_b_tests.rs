@@ -180,3 +180,41 @@ fn filter_rejects_candidate_when_any_constraint_violated() {
         "Violated constraint → candidate rejected with the violated constraint id recorded"
     );
 }
+
+// ─── step-9: Indeterminate is feasible (architecture §2.5) ────────────────
+
+/// Architecture §2.5 monotonic-feasible: "treat undef constraints as
+/// feasible" — `Indeterminate` must NOT trigger rejection.
+///
+/// This test pins the `!= Violated` predicate specifically: a regression
+/// that flipped the predicate to `== Satisfied` (excluding `Indeterminate`)
+/// would cause this test to reject the candidate, failing loudly.
+///
+/// PRD §"Phase B": "If `Satisfaction::Indeterminate`, the candidate is
+/// considered feasible (undef does not falsify)."
+#[test]
+fn filter_treats_indeterminate_as_feasible_per_arch_2_5() {
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("Bearing")
+        .constraint("Bearing", 0, None, expr)
+        .build();
+    // Default Indeterminate: every constraint result is Indeterminate.
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Indeterminate);
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(
+        &["ORingSeal".to_string()],
+        &template,
+        &checker,
+        functions,
+    );
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Feasible {
+            accepted: vec!["ORingSeal".to_string()],
+            rejected: vec![],
+        },
+        "Indeterminate result must be treated as feasible (arch §2.5); candidate must be accepted"
+    );
+}
