@@ -194,7 +194,13 @@ fn count_children_per_parent(
     records_modified: &[HistoryRecord],
     records_generated: &[HistoryRecord],
 ) -> HashMap<(u8, u32), usize> {
-    let mut counts: HashMap<(u8, u32), usize> = HashMap::new();
+    // Upper-bound capacity: at most one entry per record across the
+    // chained iteration (an empty pair of slices reserves zero, matching
+    // the pre-amendment behaviour for the default-history fast path).
+    // Skips the inner reallocs that the previous `HashMap::new()` would
+    // hit as the map grew through its default load-factor thresholds.
+    let mut counts: HashMap<(u8, u32), usize> =
+        HashMap::with_capacity(records_modified.len() + records_generated.len());
     for rec in records_modified.iter().chain(records_generated.iter()) {
         let key = (rec.parent_index, rec.parent_subshape_index);
         *counts.entry(key).or_insert(0) += 1;
