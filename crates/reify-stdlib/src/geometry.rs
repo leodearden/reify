@@ -565,6 +565,16 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // finiteness. decompose_transform has already verified all components
             // are finite, so no re-check is needed.
             let composed_r = quat_mul(r1_n, r2_n);
+            debug_assert!(
+                (composed_r.0 * composed_r.0
+                    + composed_r.1 * composed_r.1
+                    + composed_r.2 * composed_r.2
+                    + composed_r.3 * composed_r.3
+                    - 1.0)
+                    .abs()
+                    < 1e-10,
+                "composed_r should be ~unit-norm after quat_mul of two unit quaternions"
+            );
             let r_val = Value::Orientation {
                 w: composed_r.0,
                 x: composed_r.1,
@@ -3157,6 +3167,43 @@ mod tests {
         );
     }
 
+    /// Helper: build a w-only Transform with the given r_norm_sq and assert
+    /// that all three gated builtins (transform_log, transform_inverse,
+    /// transform_compose) produce Undef iff `expect_undef` is true.
+    ///
+    /// Using a w-only quaternion makes r_norm_sq = w² trivially predictable,
+    /// avoiding multi-component cancellation that could perturb the actual
+    /// norm computed by the implementation.
+    #[cfg(test)]
+    fn assert_quat_norm_sq_outcome(r_norm_sq: f64, expect_undef: bool) {
+        let w = r_norm_sq.sqrt();
+        let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
+        let t = Value::Transform {
+            rotation: Box::new(small_quat),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        let label = if expect_undef { "reject" } else { "accept" };
+        assert_eq!(
+            eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            expect_undef,
+            "transform_log must {label} r_norm_sq={r_norm_sq:e}"
+        );
+        assert_eq!(
+            eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
+            expect_undef,
+            "transform_inverse must {label} r_norm_sq={r_norm_sq:e}"
+        );
+        assert_eq!(
+            eval_builtin("transform_compose", &[t.clone(), t]).is_undef(),
+            expect_undef,
+            "transform_compose must {label} r_norm_sq={r_norm_sq:e} on both operands"
+        );
+    }
+
     /// 1e-24 gate boundary (just above): r_norm_sq ≈ 1.001e-24 must be accepted.
     ///
     /// Pins the tight upper side of the 1e-24 gate. A quaternion with
@@ -3167,29 +3214,7 @@ mod tests {
     /// one of these two tests (the 1e-20 test above would not catch that).
     #[test]
     fn degenerate_quat_norm_just_above_1e24_gate_accepted() {
-        // w = sqrt(1.001e-24) ⟹ r_norm_sq = w² ≈ 1.001e-24 (just above gate).
-        let w = (1.001e-24_f64).sqrt();
-        let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
-        let t = Value::Transform {
-            rotation: Box::new(small_quat),
-            translation: Box::new(Value::Vector(vec![
-                Value::length(0.0),
-                Value::length(0.0),
-                Value::length(0.0),
-            ])),
-        };
-        assert!(
-            !eval_builtin("transform_log", &[t.clone()]).is_undef(),
-            "transform_log must accept r_norm_sq≈1.001e-24 (just above 1e-24 gate)"
-        );
-        assert!(
-            !eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
-            "transform_inverse must accept r_norm_sq≈1.001e-24 (just above 1e-24 gate)"
-        );
-        assert!(
-            !eval_builtin("transform_compose", &[t.clone(), t]).is_undef(),
-            "transform_compose must accept r_norm_sq≈1.001e-24 (just above 1e-24 gate) on both operands"
-        );
+        assert_quat_norm_sq_outcome(1.001e-24, false);
     }
 
     /// 1e-24 gate boundary (just below): r_norm_sq ≈ 0.999e-24 must return Undef.
@@ -3202,29 +3227,7 @@ mod tests {
     /// the gate that the 1e-20 / zero tests above would miss.
     #[test]
     fn degenerate_quat_norm_just_below_1e24_gate_returns_undef() {
-        // w = sqrt(0.999e-24) ⟹ r_norm_sq = w² ≈ 0.999e-24 (just below gate).
-        let w = (0.999e-24_f64).sqrt();
-        let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
-        let t = Value::Transform {
-            rotation: Box::new(small_quat),
-            translation: Box::new(Value::Vector(vec![
-                Value::length(0.0),
-                Value::length(0.0),
-                Value::length(0.0),
-            ])),
-        };
-        assert!(
-            eval_builtin("transform_log", &[t.clone()]).is_undef(),
-            "transform_log must reject r_norm_sq≈0.999e-24 (just below 1e-24 gate)"
-        );
-        assert!(
-            eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
-            "transform_inverse must reject r_norm_sq≈0.999e-24 (just below 1e-24 gate)"
-        );
-        assert!(
-            eval_builtin("transform_compose", &[t.clone(), t]).is_undef(),
-            "transform_compose must reject r_norm_sq≈0.999e-24 (just below 1e-24 gate) on both operands"
-        );
+        assert_quat_norm_sq_outcome(0.999e-24, true);
     }
 
     /// transform_log with ANGLE-dimension translation → Undef (matches transform_exp gate).
