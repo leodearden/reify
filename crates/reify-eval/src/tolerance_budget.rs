@@ -52,6 +52,9 @@ pub fn per_stage_tolerance(requested_tol: f64, n_stages: usize) -> f64 {
         requested_tol.is_finite() && requested_tol >= 0.0,
         "tolerance_budget: requested_tol must be finite and non-negative, got {requested_tol}"
     );
+    if n_stages == 1 {
+        return requested_tol * SAFETY_FACTOR;
+    }
     requested_tol.powf(1.0 / n_stages as f64) * SAFETY_FACTOR
 }
 
