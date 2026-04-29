@@ -11,7 +11,7 @@
 //!   (a) tagged variant's filtered output equals the baseline's filtered output;
 //!   (b) every extracted sub-shape (pre-filter) has a recorded FeatureTag;
 //!   (c) recorded tag.step_kind and tag.source_span match the parent_tag;
-//!   (d) recorded sub_index values are unique across all extracted sub-shapes.
+//!   (d) recorded sub_index values are {0,1,2} (canonical enumerate order, one per extracted sub-shape).
 //!
 //! Handle id convention: id=1 is the parent solid, id=2..N are sub-shape handles
 //! returned by extraction.
@@ -26,7 +26,7 @@ use reify_types::{FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, Sou
 /// (a) return vec![GeometryHandleId(3)] — the same filtered output as the baseline;
 /// (b) table.len() == 3 (every extracted edge tagged, pre-filter);
 /// (c) each recorded tag carries step_kind == Primitive AND source_span from parent_tag;
-/// (d) the three recorded sub_index values are unique (sorted-deduped len == 3).
+/// (d) recorded sub_index values are {0,1,2} (one per extracted edge, canonical enumerate order).
 #[test]
 fn edges_by_length_with_tags_matches_baseline_and_records_per_edge_tags() {
     let parent = GeometryHandleId(1);
@@ -85,18 +85,16 @@ fn edges_by_length_with_tags_matches_baseline_and_records_per_edge_tags() {
         );
     }
 
-    // (d) sub_index values are unique across all extracted edges.
+    // (d) sub_index values are {0,1,2} (canonical enumerate order, one per extracted edge).
     let mut sub_indices: Vec<u32> = [e2, e3, e4]
         .iter()
         .map(|&id| table.lookup(id).unwrap().sub_index)
         .collect();
-    let original_len = sub_indices.len();
     sub_indices.sort_unstable();
-    sub_indices.dedup();
     assert_eq!(
-        sub_indices.len(),
-        original_len,
-        "sub_index values must be unique across all extracted edges"
+        sub_indices,
+        vec![0u32, 1, 2],
+        "sub_index values must be the enumerate positions {{0,1,2}}"
     );
 }
 
@@ -177,15 +175,7 @@ fn faces_by_area_with_tags_matches_baseline_and_records_per_face_tags() {
         .iter()
         .map(|&id| table.lookup(id).unwrap().sub_index)
         .collect();
-    let original_len = sub_indices.len();
     sub_indices.sort_unstable();
-    sub_indices.dedup();
-    assert_eq!(
-        sub_indices.len(),
-        original_len,
-        "sub_index values must be unique across all extracted faces"
-    );
-    // Also verify the actual values are {0,1,2}.
     assert_eq!(
         sub_indices,
         vec![0u32, 1, 2],
@@ -275,14 +265,7 @@ fn edges_parallel_to_with_tags_matches_baseline_and_records_per_edge_tags() {
         .iter()
         .map(|&id| table.lookup(id).unwrap().sub_index)
         .collect();
-    let original_len = sub_indices.len();
     sub_indices.sort_unstable();
-    sub_indices.dedup();
-    assert_eq!(
-        sub_indices.len(),
-        original_len,
-        "sub_index values must be unique across all extracted edges"
-    );
     assert_eq!(
         sub_indices,
         vec![0u32, 1, 2],
