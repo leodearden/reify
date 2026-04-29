@@ -38,8 +38,19 @@ pub use ffi::ffi::RevolveSynthesisPostSortResult;
 /// the stable sort), and returns the compacted buffer plus the count of
 /// dropped duplicates.
 ///
-/// Gated behind the `test-fixtures` feature so the internal cxx-bridge symbol
-/// is not exposed on the crate's public surface in production builds.
+/// Gated behind the `test-fixtures` feature so this Rust wrapper is not
+/// exposed on the crate's public surface in production builds.
+///
+/// Note: the gate is **Rust-side reachability only**. The underlying
+/// cxx-bridge declaration (`crate::ffi::ffi::revolve_synthesis_post_sort_for_test`)
+/// and its C++ implementation in `cpp/occt_wrapper.cpp` are compiled into
+/// every build of this crate — `cxx::bridge` does not currently support
+/// `cfg`-gating individual `extern "C++"` items without restructuring the
+/// whole bridge module. Removing the symbol from production binaries would
+/// require splitting the bridge into feature-gated sub-modules; the helper
+/// is small (~10 LOC, one std::vector copy) and we have intentionally
+/// accepted the binary cost in exchange for keeping the bridge layout flat.
+///
 /// Integration tests reach this function via the self-dev-dep entry in
 /// `Cargo.toml` (`features = ["test-fixtures"]`).
 #[cfg(all(has_occt, feature = "test-fixtures"))]

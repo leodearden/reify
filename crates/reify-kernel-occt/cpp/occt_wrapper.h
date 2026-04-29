@@ -284,8 +284,9 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
 /// synthesized records are byte-identical to OCCT-reported ones.
 ///
 /// Synthesis diagnostics: when any non-degenerate, untracked profile edge
-/// fails to produce a `face_generated` record, `SweepOpHistory::unmatched_
-/// radial_edge_count` is incremented and one `Message_Warning` is emitted via
+/// fails to produce a `face_generated` record,
+/// `SweepOpHistory::unsynthesized_profile_edge_count` is incremented and one
+/// `Message_Warning` is emitted via
 /// `Message::DefaultMessenger()` summarizing the count. After synthesis, if any
 /// records have a duplicate `parent_subshape_index` after stable-sort, the
 /// duplicate is dropped (first occurrence under stable order wins) and

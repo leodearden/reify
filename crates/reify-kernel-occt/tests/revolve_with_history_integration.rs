@@ -785,6 +785,18 @@ fn full_revolve_misclassified_radial_edge_counter_best_effort() {
     // eprintln! above will show counter=0 in CI output, signalling that the
     // increment path is no longer exercised here.  A dedicated synthesis-loop
     // fixture (not yet implemented) would provide a fully deterministic path.
+    // Pin the formula's precondition: `3 - face_generated.len()` only equals
+    // the unsynthesized count when no records were dropped by the post-sort
+    // dedup pass. Any non-zero duplicate count would silently drag
+    // `face_generated.len()` below the OCCT-reported edge total and make the
+    // self-consistency assertion drift.
+    assert_eq!(
+        history.duplicate_parent_subshape_index_count, 0,
+        "duplicate_parent_subshape_index_count must be 0 for this fixture so \
+         the (3 - face_generated.len()) self-consistency formula below holds; \
+         got {}",
+        history.duplicate_parent_subshape_index_count
+    );
     assert_eq!(
         history.unsynthesized_profile_edge_count as usize,
         3 - history.face_generated.len(),
