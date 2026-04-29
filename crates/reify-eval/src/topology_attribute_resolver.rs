@@ -1268,7 +1268,7 @@ mod tests {
 
     /// Pins the `windows(2).all(distinct)` predicate in `try_cluster_after_split`
     /// for the **partially-duplicate** `[A, A, B]` mod_history cluster explicitly
-    /// called out in the function docstring (lines 378-386).
+    /// called out in the function docstring.
     ///
     /// `windows(2)` yields pairs `(A, A)` and `(A, B)`. The first pair has
     /// equal `mod_history` → `all(distinct)` returns `false` → the cluster is
@@ -1303,7 +1303,7 @@ mod tests {
         let mut h60 = attr(Role::Side, 0, None);
         h60.mod_history = mod_entry_a.clone(); // A
         let mut h61 = attr(Role::Side, 0, None);
-        h61.mod_history = mod_entry_a.clone(); // A (duplicate)
+        h61.mod_history = mod_entry_a; // A (duplicate)
         let mut h62 = attr(Role::Side, 0, None);
         h62.mod_history = mod_entry_b; // B
         table.record(h(60), h60);
