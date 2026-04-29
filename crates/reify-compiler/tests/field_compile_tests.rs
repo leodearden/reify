@@ -2,7 +2,7 @@
 //!
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
 
 // ── Step 13: compile analytical field ──────────────────────────────────
@@ -43,23 +43,24 @@ fn compile_field_analytical() {
     }
 }
 
-// ── Task 2341 step-5: well-formed sampled field config compiles clean ───────
+// ── Task 2341 step-5/8b: well-formed sampled field config compiles clean ────
 
 #[test]
 fn compile_field_sampled_with_well_formed_config_compiles_clean() {
-    // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when all three
-    // required keys (`grid`, `interpolation`, `data`) are present and each
-    // value is a clean-compiling expression, no `FieldSampledV02` deferral
-    // diagnostic is emitted and the compiled config Vec carries one
-    // `(String, CompiledExpr)` entry per key.
+    // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when all five
+    // required keys (`grid`, `bounds`, `spacing`, `interpolation`, `data`)
+    // are present and each value is a clean-compiling expression, no
+    // `FieldSampledV02` deferral diagnostic is emitted and the compiled
+    // config Vec carries one `(String, CompiledExpr)` entry per key.
     //
-    // The values here are deliberately simple literal expressions
-    // (string/list-of-Real) that `compile_expr` handles without emitting
-    // any unresolved-name diagnostics. Eval-time parsing of the values into
-    // a runtime `SampledField` is pinned by separate tests in
-    // `crates/reify-eval/tests/field_eval_tests.rs`.
-    let module = compile_source(
-        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    // Eval-time parsing of the values into a runtime `SampledField` is
+    // pinned by separate tests in `crates/reify-eval/tests/field_eval_tests.rs`.
+    //
+    // `bbox`/`point3` are stdlib builtins, so this test uses
+    // `compile_source_with_stdlib` to make those names resolve. (Steps 9/10
+    // wire the eval-time parsing that consumes the BoundingBox/Point shapes.)
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
     );
 
     // Zero `FieldSampledV02` errors — the v0.1 deferral has been replaced.
@@ -86,49 +87,41 @@ fn compile_field_sampled_with_well_formed_config_compiles_clean() {
     let field = &module.fields[0];
     assert_eq!(field.name, "f");
 
-    // Source should be Sampled with the three config entries — each compiled to a
-    // CompiledExpr — so engine_eval can later evaluate them and parse the results
-    // into a runtime `SampledField`.
+    // Source should be Sampled with five config entries — each compiled to a
+    // CompiledExpr — so engine_eval can later evaluate them and parse the
+    // results into a runtime `SampledField`.
     match &field.source {
         reify_compiler::CompiledFieldSource::Sampled { config } => {
             assert_eq!(
                 config.len(),
-                3,
-                "expected 3 compiled config entries (grid, interpolation, data), got: {:?}",
+                5,
+                "expected 5 compiled config entries (grid, bounds, spacing, interpolation, data), got: {:?}",
                 config.iter().map(|(k, _)| k).collect::<Vec<_>>()
             );
             let keys: Vec<&str> = config.iter().map(|(k, _)| k.as_str()).collect();
-            assert!(
-                keys.contains(&"grid"),
-                "expected `grid` key in compiled config, got: {:?}",
-                keys
-            );
-            assert!(
-                keys.contains(&"interpolation"),
-                "expected `interpolation` key in compiled config, got: {:?}",
-                keys
-            );
-            assert!(
-                keys.contains(&"data"),
-                "expected `data` key in compiled config, got: {:?}",
-                keys
-            );
+            for required in ["grid", "bounds", "spacing", "interpolation", "data"] {
+                assert!(
+                    keys.contains(&required),
+                    "expected `{}` key in compiled config, got: {:?}",
+                    required,
+                    keys
+                );
+            }
         }
         other => panic!("expected Sampled source, got: {:?}", other),
     }
 }
 
-// ── Task 2341 step-7: sampled field config validation negative paths ─────────
+// ── Task 2341 step-7/8b: sampled field config validation negative paths ─────
 
 #[test]
 fn compile_field_sampled_rejects_missing_data_key() {
     // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when one of the
-    // three required keys is absent, exactly one error per missing key is
-    // emitted. This source provides `grid` and `interpolation` but omits the
-    // required `data` key — so we expect exactly one error whose message
-    // mentions `data`.
-    let module = compile_source(
-        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" interpolation = "Linear" } }"#,
+    // five required keys is absent, exactly one error per missing key is
+    // emitted. This source provides every required key except `data`, so we
+    // expect exactly one error whose message mentions `data`.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" } }"#,
     );
 
     // Only count errors that reference the missing `data` key — there should
@@ -156,14 +149,70 @@ fn compile_field_sampled_rejects_missing_data_key() {
 }
 
 #[test]
+fn compile_field_sampled_rejects_missing_bounds_key() {
+    // Pins step-8b's expansion of REQUIRED_KEYS to include `bounds`. Source
+    // omits `bounds` but provides every other required key, so we expect
+    // exactly one error whose message mentions `bounds`.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    let bounds_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("'bounds'") || d.message.contains("`bounds`"))
+        .collect();
+    assert_eq!(
+        bounds_errs.len(),
+        1,
+        "expected exactly one error mentioning the missing `bounds` key, got {}: {:?}",
+        bounds_errs.len(),
+        bounds_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        bounds_errs[0].message.contains("missing")
+            || bounds_errs[0].message.contains("required"),
+        "expected the error message to indicate `bounds` is missing/required, got: {}",
+        bounds_errs[0].message
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_missing_spacing_key() {
+    // Pins step-8b's expansion of REQUIRED_KEYS to include `spacing`. Source
+    // omits `spacing` but provides every other required key, so we expect
+    // exactly one error whose message mentions `spacing`.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    let spacing_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("'spacing'") || d.message.contains("`spacing`"))
+        .collect();
+    assert_eq!(
+        spacing_errs.len(),
+        1,
+        "expected exactly one error mentioning the missing `spacing` key, got {}: {:?}",
+        spacing_errs.len(),
+        spacing_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        spacing_errs[0].message.contains("missing")
+            || spacing_errs[0].message.contains("required"),
+        "expected the error message to indicate `spacing` is missing/required, got: {}",
+        spacing_errs[0].message
+    );
+}
+
+#[test]
 fn compile_field_sampled_rejects_unknown_key() {
     // Pins the v0.2 behavior: keys outside the closed set
-    // {grid, interpolation, data} produce an error mentioning both `unknown`
-    // and the offending key name. The other three required keys are still
-    // present in the source so the missing-key check from step-8 doesn't fire
-    // and confuse the diagnostic count.
-    let module = compile_source(
-        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" interpolation = "Linear" data = [0.0, 1.0, 2.0] resolution = 100 } }"#,
+    // {grid, bounds, spacing, interpolation, data} produce an error
+    // mentioning both `unknown` and the offending key name. The five required
+    // keys are still present in the source so the missing-key check doesn't
+    // fire and confuse the diagnostic count.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] resolution = 100 } }"#,
     );
 
     let unknown_errs: Vec<_> = errors_only(&module)
@@ -185,10 +234,10 @@ fn compile_field_sampled_rejects_unknown_key() {
 #[test]
 fn compile_field_sampled_rejects_duplicate_grid_key() {
     // Pins the v0.2 behavior: duplicate keys (e.g. two `grid = ...` lines)
-    // produce a duplicate-key error referencing the offending key. The other
-    // two required keys are present so missing-key errors do not fire.
-    let module = compile_source(
-        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" grid = "RegularGrid1" interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    // produce a duplicate-key error referencing the offending key. The four
+    // other required keys are present so missing-key errors do not fire.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
     );
 
     let dup_errs: Vec<_> = errors_only(&module)

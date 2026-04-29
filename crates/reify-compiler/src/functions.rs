@@ -280,21 +280,34 @@ pub(crate) fn compile_field(
             // duplicates) and forwards the compiled expressions.
             //
             // Validation rules:
-            //   - Accepted keys: `grid`, `interpolation`, `data`. All three are
-            //     required — a missing required key produces one error per
-            //     missing key, attached to the field declaration's span.
+            //   - Accepted keys: `grid`, `bounds`, `spacing`, `interpolation`,
+            //     `data`. All five are required — a missing required key
+            //     produces one error per missing key, attached to the field
+            //     declaration's span.
             //   - Unknown keys produce a hard error; the entry is dropped.
             //   - Duplicate keys (e.g. two `grid = ...` entries) produce a hard
             //     error; only the first occurrence is kept in the compiled
             //     config so engine_eval sees a deterministic shape.
             //
+            // Design rationale (esc-2341-149, 2026-04-29 steward): the
+            // originally-locked plan assumed users could write
+            // `grid = RegularGrid1 { spacing = …, bounds = … }` struct-literal
+            // syntax to bundle the kind tag with bounds/spacing, but Reify has
+            // no anonymous struct-literal expression form and no
+            // `RegularGrid*` constructor in stdlib. Resolution: surface
+            // `grid`/`bounds`/`spacing` as separate top-level keys. This
+            // mirrors the imported-field key=value walker pattern landed
+            // earlier today (commit 06a537e36c), and keeps `grid` as an
+            // explicit kind tag for diagnostic clarity.
+            //
             // Error ordering matches the typical compile-time-error pattern in
             // this module: per-entry errors (unknown / duplicate) are emitted
             // as the entries are walked, and then missing-key errors are
-            // emitted in a fixed order (grid, interpolation, data) after the
-            // walk so that diagnostics referencing the same source span are
-            // grouped together.
-            const REQUIRED_KEYS: [&str; 3] = ["grid", "interpolation", "data"];
+            // emitted in a fixed order (grid, bounds, spacing, interpolation,
+            // data) after the walk so that diagnostics referencing the same
+            // source span are grouped together.
+            const REQUIRED_KEYS: [&str; 5] =
+                ["grid", "bounds", "spacing", "interpolation", "data"];
             let mut compiled_config: Vec<(String, reify_types::CompiledExpr)> = Vec::new();
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for (key, expr) in config {
@@ -303,7 +316,7 @@ pub(crate) fn compile_field(
                 if !is_known {
                     diagnostics.push(
                         Diagnostic::error(format!(
-                            "unknown sampled-field config key: '{}'; expected grid, interpolation, or data",
+                            "unknown sampled-field config key: '{}'; expected grid, bounds, spacing, interpolation, or data",
                             key
                         ))
                         .with_label(DiagnosticLabel::new(
@@ -335,8 +348,9 @@ pub(crate) fn compile_field(
                 compiled_config.push((key.clone(), compiled_expr));
             }
             // Emit one error per missing required key, in declaration order
-            // (grid, interpolation, data). The label points at the field def
-            // span since there is no per-entry span for a missing entry.
+            // (grid, bounds, spacing, interpolation, data). The label points
+            // at the field def span since there is no per-entry span for a
+            // missing entry.
             for required in REQUIRED_KEYS {
                 if !seen.contains(required) {
                     diagnostics.push(
