@@ -250,20 +250,84 @@ fn make_body_record(id: i64, solid: Value, at: Value, parent: Value, pose: Value
     Value::Map(b)
 }
 
+/// Walk the `joint_parents` map ancestor-ward starting from `start`,
+/// returning the chain of joints in **top-down** order:
+/// `[oldest_recorded_ancestor, ..., parent_of_start, start]`. The world
+/// sentinel is NOT included in the returned vector — callers prepend it
+/// to form the canonical `[world, ..., at]` error path.
+///
+/// Cycle-safe: the walk is capped at `joint_parents.len() + 1` so cyclic
+/// edges produced before the cycle-detection pass cannot loop here.
+fn walk_to_world(joint_parents: &BTreeMap<Value, Value>, start: &Value) -> Vec<Value> {
+    let mut walk = Vec::new();
+    let mut current = start.clone();
+    let cap = joint_parents.len() + 1;
+    while walk.len() < cap {
+        if is_world(&current) {
+            // The world sentinel is prepended by the caller, not stored
+            // mid-walk; stop here.
+            break;
+        }
+        walk.push(current.clone());
+        match joint_parents.get(&current) {
+            Some(parent) => current = parent.clone(),
+            None => break, // No further recorded ancestor; implicit world.
+        }
+    }
+    // Walk accumulated child→parent (bottom-up). Reverse for top-down.
+    walk.reverse();
+    walk
+}
+
+/// Decorate an existing Mechanism Map with closed-chain or duplicate-solid
+/// error fields. Preserves the input's `bodies`, `joint_parents`,
+/// `next_id`, and `kind` fields verbatim and appends `error`,
+/// `error_path1`, `error_path2`, `error_message`. Used by both the
+/// closed-chain conflict path and (in a later step) the duplicate-solid
+/// path so the error-Map shape stays uniform.
+fn make_error_mechanism(
+    mech_map: &BTreeMap<Value, Value>,
+    error_kind: &str,
+    path1: Vec<Value>,
+    path2: Vec<Value>,
+    message: String,
+) -> Value {
+    let mut new_map = mech_map.clone();
+    new_map.insert(
+        Value::String("error".to_string()),
+        Value::String(error_kind.to_string()),
+    );
+    new_map.insert(
+        Value::String("error_message".to_string()),
+        Value::String(message),
+    );
+    new_map.insert(
+        Value::String("error_path1".to_string()),
+        Value::List(path1),
+    );
+    new_map.insert(
+        Value::String("error_path2".to_string()),
+        Value::List(path2),
+    );
+    Value::Map(new_map)
+}
+
 /// Append a body record to a Mechanism `Value::Map`, returning the new
 /// (immutable) Mechanism Map. The 3-/4-/5-arg `body()` paths all
 /// delegate here after substituting defaults for omitted arguments.
 ///
 /// Side effects on the returned Map (vs. the input):
 /// - `bodies` list grows by one record (with `id = m.next_id`).
-/// - `joint_parents` records `at → parent` (existing entries are kept;
-///   conflict detection lands in a later step).
+/// - `joint_parents` records `at → parent` (existing entries with the
+///   same parent are no-ops; entries with a *different* parent surface
+///   a `closed_chain` error).
 /// - `next_id` increments by one.
 ///
-/// Closed-chain conflict detection, cycle detection, duplicate-solid
-/// detection, and errored-mechanism short-circuit are all layered on
-/// in subsequent steps. This step is the unconditional happy-path
-/// implementation.
+/// Closed-chain conflict detection runs BEFORE any state mutation. On
+/// conflict, the input mechanism's `bodies`/`joint_parents`/`next_id`
+/// are preserved verbatim and the returned Map carries the `error*`
+/// fields. Cycle detection, duplicate-solid detection, and errored-
+/// mechanism short-circuit are layered on in subsequent steps.
 fn append_body(
     mech_map: &BTreeMap<Value, Value>,
     solid: Value,
@@ -286,6 +350,29 @@ fn append_body(
         _ => return Value::Undef,
     };
 
+    // Closed-chain conflict detection: if `at` is already mapped to a
+    // *different* parent, surface a `closed_chain` error before any
+    // mutation. (Same-parent re-registration is a no-op overwrite.)
+    if let Some(existing_parent) = joint_parents.get(&at) {
+        if existing_parent != &parent {
+            let world = make_world_sentinel();
+            let mut path1 = vec![world.clone()];
+            path1.extend(walk_to_world(&joint_parents, existing_parent));
+            path1.push(at.clone());
+            let mut path2 = vec![world];
+            path2.extend(walk_to_world(&joint_parents, &parent));
+            path2.push(at);
+            return make_error_mechanism(
+                mech_map,
+                "closed_chain",
+                path1,
+                path2,
+                "closed chain detected: joint already has a different parent recorded"
+                    .to_string(),
+            );
+        }
+    }
+
     // Build and append the new body record.
     bodies.push(make_body_record(
         next_id,
@@ -295,9 +382,9 @@ fn append_body(
         pose,
     ));
 
-    // Record (at → parent) in joint_parents. If the entry already
-    // exists with the same parent, this is a no-op overwrite. Conflict
-    // detection (different parent) is added in a later step.
+    // Record (at → parent) in joint_parents. Same-parent re-registration
+    // is a no-op overwrite (the conflict guard above already returned
+    // early on a different-parent attempt).
     joint_parents.insert(at, parent);
 
     // Build the new Mechanism Map. Preserve the input map's other
