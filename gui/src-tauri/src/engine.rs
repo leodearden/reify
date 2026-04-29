@@ -1,6 +1,6 @@
 // EngineSession — wraps Engine + CompiledModule + source text
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
@@ -511,13 +511,33 @@ impl EngineSession {
         // inside the AST resolver for every (bind-pair, descriptor) pair.
         let mut seen_joints_cache: HashMap<String, Vec<Value>> = HashMap::new();
 
-        // NOTE: this loop emits one descriptor per mechanism *cell*, which
-        // includes intermediate builder results (e.g. m0, m1, m2 from a
-        // `body()` chain).  The UI renders all non-errored cells; callers that
-        // want only the "final" mechanism (largest bodies_count) should filter
-        // the returned Vec themselves.  Errored mechanisms (closed-chain etc.)
-        // are suppressed via the `error` key check below.
+        // This loop emits one descriptor per **terminal** mechanism cell.
+        // A mechanism cell is considered intermediate (and dropped) when its
+        // member name appears as the first argument (mech_in) of a `body()` call
+        // within the same structure — i.e. it is consumed to build a larger
+        // mechanism.  Only `body()` consumption is filtered; `snapshot()`
+        // consumption is intentionally excluded (snapshot is a viewer, not a
+        // builder, and the snapshotted mechanism is the user-facing logical entity).
+        //
+        // See design decision: "Terminal-mechanism filter narrows the suggestion
+        // text to body() consumption only."
+        //
+        // When `parsed_cache` is `None` (test-injection without a full parse/compile
+        // cycle), the consumed-idents set is empty and every mechanism cell passes —
+        // preserving the pre-filter behaviour for legacy test helpers.
+        //
+        // Errored mechanisms (closed-chain etc.) are suppressed via the `error` key
+        // check below.
         for template in &compiled.templates {
+            // Collect the set of mechanism member names consumed as mech_in by
+            // body() in this template.  Built once per template, not per cell.
+            let consumed_idents: HashSet<String> =
+                if let Some(parsed) = self.parsed_cache.as_ref() {
+                    collect_consumed_mechanism_idents(parsed, &template.name)
+                } else {
+                    HashSet::new()
+                };
+
             for cell in &template.value_cells {
                 let val = check.values.get_or_undef(&cell.id);
 
@@ -534,6 +554,12 @@ impl EngineSession {
 
                 // Filter out errored mechanisms (closed-chain etc.).
                 if map.contains_key(&Value::String("error".to_string())) {
+                    continue;
+                }
+
+                // Terminal-mechanism filter: skip intermediate cells consumed as
+                // mech_in by a body() call within the same structure.
+                if consumed_idents.contains(&cell.id.member) {
                     continue;
                 }
 
@@ -1336,6 +1362,96 @@ fn collect_snapshot_bind_pairs(
         ExprKind::ListLiteral(elems) => {
             for elem in elems {
                 collect_snapshot_bind_pairs(elem, pairs);
+            }
+        }
+        // Leaf nodes (Ident, literals, etc.) have no sub-expressions to recurse.
+        _ => {}
+    }
+}
+
+// ---- terminal-mechanism filter helpers ----------------------------------------
+
+/// Return the set of mechanism member names consumed as `mech_in` (first
+/// argument) by any `body()` call within the named structure.
+///
+/// Walks every `MemberDecl::Let` expression in the first structure whose name
+/// matches `structure_name`, then delegates to `collect_body_first_args` for
+/// the recursive AST search.
+///
+/// The returned set is used by `get_mechanism_descriptors` to skip intermediate
+/// mechanism cells — only the terminal cell (not consumed by any `body()` call)
+/// survives into the returned `Vec<MechanismDescriptor>`.
+///
+/// **Design narrowing:** only `body()` consumption is collected; `snapshot()`
+/// consumption is intentionally excluded.  See design decision:
+/// "Terminal-mechanism filter narrows the suggestion text to body() consumption
+/// only."
+fn collect_consumed_mechanism_idents(
+    parsed: &reify_syntax::ParsedModule,
+    structure_name: &str,
+) -> HashSet<String> {
+    let mut consumed = HashSet::new();
+
+    for decl in &parsed.declarations {
+        let structure = match decl {
+            reify_syntax::Declaration::Structure(s) if s.name == structure_name => s,
+            _ => continue,
+        };
+
+        for member in &structure.members {
+            let expr = match member {
+                reify_syntax::MemberDecl::Let(l) => &l.value,
+                _ => continue,
+            };
+            collect_body_first_args(expr, &mut consumed);
+        }
+        // Stop at the first matching structure; names are unique within a module.
+        break;
+    }
+
+    consumed
+}
+
+/// Recursively search `expr` for `body(mech_in, …)` calls and record the
+/// first argument when it is a bare `Ident`.
+///
+/// Mirrors the recursion shape of `collect_snapshot_bind_pairs`.
+fn collect_body_first_args(
+    expr: &reify_syntax::Expr,
+    consumed: &mut HashSet<String>,
+) {
+    use reify_syntax::ExprKind;
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args } => {
+            if name == "body" && !args.is_empty() {
+                if let ExprKind::Ident(s) = &args[0].kind {
+                    consumed.insert(s.clone());
+                }
+            }
+            // Recurse into all args regardless (body may be nested).
+            for arg in args {
+                collect_body_first_args(arg, consumed);
+            }
+        }
+        ExprKind::BinOp { left, right, .. } => {
+            collect_body_first_args(left, consumed);
+            collect_body_first_args(right, consumed);
+        }
+        ExprKind::UnOp { operand, .. } => {
+            collect_body_first_args(operand, consumed);
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_body_first_args(condition, consumed);
+            collect_body_first_args(then_branch, consumed);
+            collect_body_first_args(else_branch, consumed);
+        }
+        ExprKind::ListLiteral(elems) => {
+            for elem in elems {
+                collect_body_first_args(elem, consumed);
             }
         }
         // Leaf nodes (Ident, literals, etc.) have no sub-expressions to recurse.
