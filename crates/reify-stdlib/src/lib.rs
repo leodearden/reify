@@ -15,6 +15,7 @@ mod complex;
 mod geometry;
 mod joints;
 mod linalg;
+pub mod loop_closure;
 mod matrix;
 mod numeric;
 mod orientation;
