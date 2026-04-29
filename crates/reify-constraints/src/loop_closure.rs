@@ -672,7 +672,9 @@ mod tests {
         //   c1 = [..., 1, ..., 3, ...]  (dr/dx1)
         //
         // JᵀJ = [[c0·c0, c0·c1], [c1·c0, c1·c1]] = [[5, 5], [5, 10]]
-        //   → off-diagonal entry of 5, so mirroring in step-4 is exercised.
+        //   → off-diagonal entry of 5, so LDLᵀ correctness is exercised on a
+        //     JᵀJ whose lower-triangle-only storage carries a real off-diagonal
+        //     entry (rather than the trivial diagonal case).
         //
         // Closed-form root: 2x+y=4, x+3y=5 ⟹ x=1.4, y=1.2.
         let cfg = NewtonConfig::default();
