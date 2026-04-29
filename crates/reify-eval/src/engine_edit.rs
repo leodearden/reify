@@ -23,6 +23,7 @@
 //! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
 //! configuration.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
@@ -933,6 +934,17 @@ impl Engine {
         // Overwrite with the new param value
         values.insert(cell.clone(), new_value);
 
+        // Runtime diagnostics sink (task 2341 step-16): collects warnings
+        // emitted by `reify_expr::eval_expr` during incremental
+        // re-evaluation — primarily `W_FIELD_OUT_OF_BOUNDS` from
+        // sampled-field OOB queries (after a param edit moves a sample
+        // call's argument out of bounds) and `W_INTERPOLATION_DEFERRED`
+        // from RBF/Kriging fallback. Wired into every `EvalContext`
+        // constructed inside this function via
+        // `.with_runtime_diagnostics(&runtime_sink)`. Drained into
+        // the local `diagnostics` vec immediately before the return.
+        let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+
         // Mark all nodes in the eval set as Pending before re-evaluation.
         // This transitions Final → Pending{last_substantive: hash}.
         self.cache.reset_pending_transition_count();
@@ -966,7 +978,8 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_runtime_diagnostics(&runtime_sink),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -1123,7 +1136,8 @@ impl Engine {
                             reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&new_snapshot.values),
+                                    .with_determinacy(&new_snapshot.values)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -1342,7 +1356,8 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                .with_runtime_diagnostics(&runtime_sink),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -1565,7 +1580,8 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -1863,6 +1879,12 @@ impl Engine {
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
         self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+
+        // Drain runtime diagnostics (task 2341 step-16) into the result
+        // diagnostics vec. The sink was populated by `eval_expr` calls
+        // above whenever sampled-field OOB queries or RBF/Kriging
+        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        diagnostics.append(&mut runtime_sink.borrow_mut());
 
         Ok(EvalResult {
             values,
@@ -2254,6 +2276,16 @@ impl Engine {
         // checker the same way as edit_param() above.
         let functions = Arc::clone(&self.functions);
 
+        // Runtime diagnostics sink (task 2341 step-16): collects warnings
+        // emitted by `reify_expr::eval_expr` during incremental
+        // re-evaluation in this edit_source pass — primarily
+        // `W_FIELD_OUT_OF_BOUNDS` from sampled-field OOB queries and
+        // `W_INTERPOLATION_DEFERRED` from RBF/Kriging fallback. Wired
+        // into every `EvalContext` constructed below via
+        // `.with_runtime_diagnostics(&runtime_sink)`. Drained into
+        // the local `diagnostics` vec immediately before the return.
+        let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+
         // (12) Per-cell eval loop (shape mirrors edit_param's). Transitions
         //      cache entries in the eval set through Pending, iterates in
         //      topological order, evaluates each Value node's default_expr,
@@ -2298,7 +2330,8 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_runtime_diagnostics(&runtime_sink),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -2483,7 +2516,8 @@ impl Engine {
                             reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&new_snapshot.values),
+                                    .with_determinacy(&new_snapshot.values)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -2564,7 +2598,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -2588,7 +2623,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -2766,7 +2802,8 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                .with_runtime_diagnostics(&runtime_sink),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -2853,7 +2890,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2877,7 +2915,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -3012,7 +3051,8 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -3113,6 +3153,12 @@ impl Engine {
         });
         self.demand = new_demand;
         self.last_eval_set = actual_eval_set;
+
+        // Drain runtime diagnostics (task 2341 step-16) into the result
+        // diagnostics vec. The sink was populated by `eval_expr` calls
+        // above whenever sampled-field OOB queries or RBF/Kriging
+        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        diagnostics.append(&mut runtime_sink.borrow_mut());
 
         Ok(EvalResult {
             values,
