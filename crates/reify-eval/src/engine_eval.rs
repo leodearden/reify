@@ -351,7 +351,7 @@ fn detect_let_cycle<'a>(
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     values: &ValueMap,
-    functions: Arc<Vec<CompiledFunction>>,
+    functions: Arc<[CompiledFunction]>,
 ) -> Option<ResolutionProblem> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -578,7 +578,7 @@ fn eval_guarded_group_param_cell(
 pub(crate) fn elaborate_field(
     field: &reify_compiler::CompiledField,
     values: &ValueMap,
-    functions: &Arc<Vec<CompiledFunction>>,
+    functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> Value {
     let lambda_value = match &field.source {

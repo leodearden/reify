@@ -330,7 +330,7 @@ pub struct Engine {
     /// Wrapped in Arc so per-call clones in eval(), edit_param(), and
     /// prepare_concurrent_edit() become O(1) refcount bumps rather than deep
     /// copies of the entire compiled function tree (task #1997).
-    functions: Arc<Vec<CompiledFunction>>,
+    functions: Arc<[CompiledFunction]>,
     /// Compiled purpose declarations from the last eval() call.
     /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
     compiled_purposes: Vec<CompiledPurpose>,
@@ -622,7 +622,7 @@ pub(crate) fn build_meta_map(
 }
 
 /// Merge a module's user functions with the prelude function table into a new
-/// `Arc<Vec<CompiledFunction>>`.
+/// `Arc<[CompiledFunction]>`.
 ///
 /// # SHADOWING INVARIANT
 /// Module (user) functions are stored **first**, then prelude functions are
@@ -649,17 +649,15 @@ pub(crate) fn build_meta_map(
 ///
 /// # Performance
 /// The merged table is built once per `eval()`/`edit_source()` call into a
-/// local `Vec`, then sealed by `Arc::new`. Subsequent clones (e.g. in
+/// local `Vec`, then sealed by `.into()`. Subsequent clones (e.g. in
 /// `prepare_concurrent_edit`, `edit_param`) are O(1) refcount bumps.
 pub(crate) fn merge_functions(
     module: &CompiledModule,
     prelude: &[CompiledFunction],
-) -> Arc<Vec<CompiledFunction>> {
-    Arc::new({
-        let mut v = module.functions.clone();
-        v.extend(prelude.iter().cloned());
-        v
-    })
+) -> Arc<[CompiledFunction]> {
+    let mut v = module.functions.clone();
+    v.extend(prelude.iter().cloned());
+    v.into()
 }
 
 #[cfg(test)]
@@ -1172,9 +1170,9 @@ structure S {
     /// `Arc::strong_count >= 2`). This proves the per-call clone is O(1)
     /// (a refcount bump), not an O(N) deep clone of the entire function table.
     ///
-    /// Expected compile-failure before impl-1: `Engine.functions` is
-    /// `Vec<CompiledFunction>`, not `Arc<Vec<CompiledFunction>>`, so
-    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` is a type error
+    /// Expected compile-failure before impl-1: `Engine.functions` was
+    /// `Vec<CompiledFunction>`, not `Arc<[CompiledFunction]>`, so
+    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` was a type error
     /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before
     /// this test can compile (task #1997).
     #[test]

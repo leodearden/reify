@@ -34,7 +34,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     // Both should produce Solved
@@ -88,7 +88,7 @@ fn registry_solves_independent_subproblems() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -128,7 +128,7 @@ fn registry_uses_fallback_for_all_domains() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -178,7 +178,7 @@ fn cross_domain_shared_param_solved_via_fallback() {
         ],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -219,7 +219,7 @@ fn registry_backward_compat_compound_constraint() {
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -265,7 +265,7 @@ fn registry_compat_infeasible_bounds() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -311,7 +311,7 @@ fn registry_compat_false_negative_small_violation() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -343,7 +343,7 @@ fn registry_compat_maximize_objective() {
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -375,7 +375,7 @@ fn registry_compat_empty_problem() {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -449,7 +449,7 @@ fn objective_spanning_independent_components_merges_them() {
         ],
         current_values: ValueMap::new(),
         objective: Some(objective),
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -558,7 +558,7 @@ fn registry_dispatches_geometric_to_solvespace() {
         constraints: vec![(cnid("Point", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -658,7 +658,7 @@ fn registry_mixed_dimensional_and_geometric() {
         ],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);
@@ -722,7 +722,7 @@ fn registry_merges_unique_flag() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     // Case 1: first sub-problem unique, second NOT unique → merged = NOT unique

@@ -776,7 +776,7 @@ impl Engine {
         new_value: reify_types::Value,
     ) -> Result<EvalResult, EngineError> {
         // Arc::clone is O(1) — a refcount bump. The merged table (user functions +
-        // prelude) was sealed into Arc<Vec<CompiledFunction>> by eval() or edit_source().
+        // prelude) was sealed into Arc<[CompiledFunction]> by eval() or edit_source().
         // The local binding satisfies the borrow checker: evaluate_let_bindings and
         // other callers take &mut self, which would conflict with an immutable borrow
         // of self.functions. The Arc keeps the table alive for the binding's scope.

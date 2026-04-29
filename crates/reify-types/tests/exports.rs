@@ -33,7 +33,7 @@ fn all_resolution_types_exported() {
         constraints: vec![],
         current_values: reify_types::ValueMap::new(),
         objective: None,
-        functions: std::sync::Arc::new(vec![]),
+        functions: std::sync::Arc::from(Vec::<reify_types::CompiledFunction>::new()),
     };
 
     // SolveResult

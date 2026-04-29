@@ -106,7 +106,7 @@ fn consolidated_debug_event_on_max_iters_reached() {
         constraints,
         current_values: current,
         objective: Some(objective),
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let _result = tracing::subscriber::with_default(subscriber, || solver.solve(&problem));
@@ -148,7 +148,7 @@ fn normal_solve_emits_zero_warns() {
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = tracing::subscriber::with_default(subscriber, || solver.solve(&problem));
@@ -201,7 +201,7 @@ fn no_best_param_returns_no_progress_with_reason() {
         constraints: vec![(cnid("Plate", 0), gt_expr)],
         current_values: current,
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = tracing::subscriber::with_default(subscriber, || solver.solve(&problem));
@@ -285,7 +285,7 @@ fn executor_error_returns_no_progress_with_reason() {
         constraints: vec![(cnid("Part", 0), gt_expr)],
         current_values: current,
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);

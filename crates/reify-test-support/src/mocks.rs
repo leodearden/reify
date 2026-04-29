@@ -18,7 +18,7 @@ pub fn empty_problem() -> ResolutionProblem {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     }
 }
 
@@ -2894,7 +2894,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         let result1 = spy.solve(&problem1);
         assert!(
@@ -2908,7 +2908,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         let result2 = spy.solve(&problem2);
         assert!(

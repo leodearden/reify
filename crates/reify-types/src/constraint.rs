@@ -123,7 +123,7 @@ pub struct ResolutionProblem {
     /// User-defined functions available for evaluating expressions.
     /// Shares the same Arc allocation as `Engine.functions` — assigned via
     /// `Arc::clone` at the solver boundary so construction is O(1) (task #2286).
-    pub functions: Arc<Vec<CompiledFunction>>,
+    pub functions: Arc<[CompiledFunction]>,
 }
 
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
@@ -350,7 +350,7 @@ mod tests {
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         assert!(problem.auto_params.is_empty());
         assert!(problem.constraints.is_empty());
@@ -377,7 +377,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,
             objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         assert_eq!(problem.auto_params.len(), 1);
         assert_eq!(problem.constraints.len(), 1);
@@ -514,7 +514,7 @@ mod tests {
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         let result = solver.solve(&problem);
         match result {
