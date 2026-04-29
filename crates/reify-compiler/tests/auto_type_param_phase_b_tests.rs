@@ -39,3 +39,29 @@ use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
 use reify_types::{
     CompiledExpr, CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value,
 };
+
+// ─── step-1: empty input returns FeasibilityResult::Empty ─────────────────
+
+/// When `candidates` is empty, `filter_feasible_candidates` must return
+/// `FeasibilityResult::Empty { rejected: vec![] }` without invoking the
+/// constraint checker at all.
+///
+/// The `MockConstraintChecker` is configured with `Satisfaction::Violated` as
+/// default — if the loop body were accidentally called for zero iterations,
+/// any real invocation would surface via the checker's per-id routing and
+/// would produce a non-empty rejected list. Using the Violated default makes
+/// accidental invocations observable even without explicit call-count tracking.
+#[test]
+fn filter_returns_empty_for_empty_candidates_input() {
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(&[], &template, &checker, functions);
+
+    assert!(
+        matches!(result, FeasibilityResult::Empty { rejected } if rejected.is_empty()),
+        "expected FeasibilityResult::Empty {{ rejected: [] }} for empty candidates input, got: {:?}",
+        result
+    );
+}
