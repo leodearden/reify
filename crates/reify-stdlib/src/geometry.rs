@@ -2993,9 +2993,11 @@ mod tests {
     }
 
     /// Slightly-perturbed q with w near −1 (near-identity in the negative
-    /// hemisphere) must produce ω ≈ +2*(nx,ny,nz), not −2*(nx,ny,nz).
+    /// hemisphere): after canonicalization (flip all components so nw > 0),
+    /// nx becomes −small, so ω = (2·nx, 0, 0) ≈ (−2·small, 0, 0). ang[0]
+    /// is *negative*, not positive.
     #[test]
-    fn transform_log_near_negative_identity_emits_positive_axis() {
+    fn transform_log_near_negative_identity_canonicalizes_axis_sign() {
         // Construct q such that nw ≈ −1 + tiny, with small (x,y,z) of definite sign.
         let small = 1e-10_f64;
         let w0 = -(1.0 - small * small / 2.0); // ≈ -1 + tiny
@@ -3008,9 +3010,20 @@ mod tests {
         let t = make_transform(q, 0.0, 0.0, 0.0);
         let result = eval_builtin("transform_log", &[t]);
         let ang = map_vec3_components(&result, "angular");
-        // After canonicalization (flip sign so nw>0), nx becomes -small, but
-        // ω = 2*nx = -2*small (with magnitude 2*small ≈ 2e-10). The key check
-        // is that the magnitude is ~2*small and y/z components are ~0.
+        // After canonicalization (flip sign so nw > 0), nx becomes −small, so
+        // ω = (2·nx, 0, 0) = (−2·small, 0, 0). Verify the sign (ang[0] < 0)
+        // and the magnitude (|ang[0]| ≈ 2·small ≈ 2e-10).
+        // Note: small = 1e-10 > EPS = 1e-12, so this test deliberately stays
+        // in the atan2 branch of transform_log — the Taylor branch (v_norm < EPS)
+        // is exercised by the negated-identity test above where v_norm = 0.
+        // ω ≈ 2·nx is the leading-order result of the atan2 formula
+        // (angle = 2·atan2(v_norm, nw); scale = angle/v_norm → 2 as nw → 1),
+        // not the Taylor approximation.
+        assert!(
+            ang[0] < 0.0,
+            "angular[0] = {}, expected negative after canonicalization-driven sign flip",
+            ang[0]
+        );
         assert!(
             (ang[0].abs() - 2.0 * small).abs() < 1e-15,
             "|angular[0]| = {}, expected ≈ {}",

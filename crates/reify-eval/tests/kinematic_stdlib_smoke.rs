@@ -201,8 +201,8 @@ fn kinematic_stdlib_smoke_e2e() {
 
     // t_composed = compose(t_unit_x, t_unit_x) → translation [2mm, 0, 0]
     let t_co = get_value(v, "t_composed");
-    let t_co_trans = match t_co {
-        Value::Transform { translation, .. } => translation.as_ref(),
+    let (t_co_rot, t_co_trans) = match t_co {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("t_composed: expected Transform, got {other:?}"),
     };
     assert_vec3_close(t_co_trans, [2e-3, 0.0, 0.0], 1e-15, "t_composed translation");
@@ -216,16 +216,49 @@ fn kinematic_stdlib_smoke_e2e() {
         "t_composed translation dim",
     );
 
-    // t_composed_op = t_unit_x * t_unit_x must be Value-equal to
+    // t_composed_op = t_unit_x * t_unit_x must agree with
     // transform_compose(t_unit_x, t_unit_x). This is the regression test
     // that the named-function path and the operator path stay in sync —
     // it lives at the eval-pipeline level because reify-expr's eval_mul
     // is private to that crate and not callable from reify-stdlib unit
-    // tests.
+    // tests. For the current source (identity rotation, [1mm,0,0]
+    // translation), both code paths produce bit-identical f64s, so the
+    // 1e-15 tolerance is effectively as tight as bit-exact while keeping
+    // the component-wise style consistent with the rest of this test.
+    // Tighten further or revert to assert_eq! if either path begins
+    // producing non-identical results for these specific inputs.
     let t_co_op = get_value(v, "t_composed_op");
-    assert_eq!(
-        t_co_op, t_co,
-        "t_unit_x * t_unit_x must equal transform_compose(t_unit_x, t_unit_x); got {t_co_op:?} vs {t_co:?}"
+    let (t_co_op_rot, t_co_op_trans) = match t_co_op {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("t_composed_op: expected Transform, got {other:?}"),
+    };
+    // Extract expected rotation/translation from the already-verified t_co values.
+    let exp_rot = match t_co_rot {
+        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+        other => panic!("t_composed rotation: expected Orientation, got {other:?}"),
+    };
+    let exp_trans = {
+        let items = match t_co_trans {
+            Value::Vector(v) if v.len() == 3 => v,
+            other => panic!("t_composed translation: expected Vector3, got {other:?}"),
+        };
+        [
+            items[0].as_f64().expect("t_composed trans[0]"),
+            items[1].as_f64().expect("t_composed trans[1]"),
+            items[2].as_f64().expect("t_composed trans[2]"),
+        ]
+    };
+    assert_orientation_close(
+        t_co_op_rot,
+        exp_rot,
+        1e-15,
+        "t_composed_op rotation matches t_composed",
+    );
+    assert_vec3_close(
+        t_co_op_trans,
+        exp_trans,
+        1e-15,
+        "t_composed_op translation matches t_composed",
     );
 
     // t_inv = inverse(t_unit_x) → translation [-1mm, 0, 0]
