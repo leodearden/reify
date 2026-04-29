@@ -884,7 +884,7 @@ mod tests {
 
         // 0 / 1 / 2 args
         assert!(eval_builtin("body", &[]).is_undef());
-        assert!(eval_builtin("body", &[m0.clone()]).is_undef());
+        assert!(eval_builtin("body", std::slice::from_ref(&m0)).is_undef());
         assert!(eval_builtin("body", &[m0.clone(), solid.clone()]).is_undef());
 
         // 6 args
@@ -1243,7 +1243,7 @@ mod tests {
 
         // Wrong arity → Undef.
         assert!(eval_builtin("body_id_of", &[]).is_undef());
-        assert!(eval_builtin("body_id_of", &[m2.clone()]).is_undef());
+        assert!(eval_builtin("body_id_of", std::slice::from_ref(&m2)).is_undef());
         assert!(eval_builtin(
             "body_id_of",
             &[m2, Value::String("a".to_string()), Value::Int(1)]
