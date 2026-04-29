@@ -146,6 +146,106 @@ structure S {
     }
 }
 
+/// `forall v in vents: constraint v.mass < 50kg` over a 3-element collection
+/// sub should emit exactly 3 CompiledConstraints, each whose body resolves
+/// to a `BinOp::Lt` whose left is a `ValueRef` into the scoped sub-component
+/// instance for the matching index (`S.vents[0].mass`, `S.vents[1].mass`,
+/// `S.vents[2].mass`). Pins PRD criterion 5: forall over a collection sub
+/// with a known count emits one decl per element, with the bound var
+/// substituted by an indexed access.
+#[test]
+fn forall_constraint_over_collection_sub_with_known_count_emits_per_element_constraints() {
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for collection-sub forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    let forall_constraints: Vec<_> = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@v["))
+        })
+        .collect();
+
+    assert_eq!(
+        forall_constraints.len(),
+        3,
+        "expected exactly 3 forall@v[*] constraints, got {}: labels = {:?}",
+        forall_constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+
+    // Each emitted constraint is `vents[i].mass < 50kg` — a BinOp::Lt whose
+    // left walks down to a ValueRef with entity == "S.vents[<i>]" and member
+    // == "mass". (The index lookup goes through compile_expr's existing
+    // collection-member-access lowering — see compile_indexed_collection_member_access
+    // in collection_sub_tests.rs.)
+    for (i, c) in forall_constraints.iter().enumerate() {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, .. } => {
+                assert_eq!(
+                    *op,
+                    BinOp::Lt,
+                    "expected BinOp::Lt in element {} body, got {:?}",
+                    i,
+                    op
+                );
+                match &left.kind {
+                    CompiledExprKind::ValueRef(id) => {
+                        assert_eq!(
+                            id.entity,
+                            format!("S.vents[{}]", i),
+                            "expected scoped entity S.vents[{}] for element {}, got {}",
+                            i,
+                            i,
+                            id.entity
+                        );
+                        assert_eq!(
+                            id.member, "mass",
+                            "expected member 'mass' for element {}, got {}",
+                            i, id.member
+                        );
+                    }
+                    other => panic!(
+                        "expected ValueRef(S.vents[{}].mass) on left of element {}, got {:?}",
+                        i, i, other
+                    ),
+                }
+            }
+            other => panic!(
+                "expected BinOp(Lt) for element {}, got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
 /// `forall v in []: constraint v > 0` should emit zero CompiledConstraints
 /// and zero errors. Pins PRD criterion 6 (empty collection produces no
 /// decls, no diagnostic). The empty literal is a degenerate but legal
