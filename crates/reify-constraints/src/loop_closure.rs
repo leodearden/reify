@@ -2,26 +2,46 @@
 //!
 //! Generic Gauss-Newton solver and configuration for closing kinematic
 //! loops: callers supply a residual+jacobian closure, the solver returns a
-//! `NewtonOutcome` describing convergence, divergence, or a singular Jacobian.
+//! [`NewtonOutcome`] describing convergence, divergence, or a singular Jacobian.
 //!
-//! Public API surface (filled in by the TDD steps that follow):
-//!   * `NewtonConfig { tol_pos_m, tol_rot_rad, max_iters }` — defaults 1µm / 1µrad / 50.
-//!   * `StartStrategy::{WarmStart(Vec<f64>), Midpoint}`
-//!   * `NewtonOutcome::{Converged, NotConverged, Singular}`
-//!   * `newton_solve<F>(x0, residual_jac, &config) -> NewtonOutcome`
+//! Public API surface:
+//!   * [`NewtonConfig`] `{ tol_pos_m, tol_rot_rad, max_iters }` — defaults
+//!     1 µm position / 1 µrad rotation / 50 iters per the PRD.
+//!   * [`StartStrategy`]`::{WarmStart(Vec<f64>), Midpoint}` — initial guess
+//!     for the free-variable vector.  Warm-start re-uses a prior snapshot's
+//!     converged values; midpoint queries each free joint's
+//!     `joint_range_midpoint` from `reify_stdlib::loop_closure`.
+//!   * [`NewtonOutcome`]`::{Converged, NotConverged, Singular}`.
+//!   * [`newton_solve`]`<F>(x0, residual_jac, &config) -> NewtonOutcome`
 //!     where `F: FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)>` returns
-//!     `(residual, jacobian_columns)`.
-//!   * `solve_loop_closure(chain_a, vals_a, chain_b, vals_b_initial, free_b,
-//!                        strategy, config) -> NewtonOutcome` — convenience
+//!     `(residual, jacobian_columns)`.  Generic over loop topology.
+//!   * [`solve_loop_closure`]`(chain_a, vals_a, chain_b, vals_b_initial,
+//!     free_b, strategy, config) -> NewtonOutcome` — single-loop convenience
 //!     wrapper that builds the residual+jacobian closure from stdlib helpers.
 //!
-//! Convention: a Newton iteration is "converged" iff the per-iteration residual's
-//! linear sub-norm is below `config.tol_pos_m` AND its angular sub-norm is below
-//! `config.tol_rot_rad`.  The two tolerances are honoured independently, matching
-//! the PRD's `1µm position / 1µrad rotation` defaults.
+//! Twist convention: `[ω_x, ω_y, ω_z, v_x, v_y, v_z]` per loop residual /
+//! per Jacobian column (angular first, linear last) — single canonical
+//! ordering across this module and `reify_stdlib::loop_closure`.
+//!
+//! Convergence rule: a Newton iteration is "converged" iff the per-iteration
+//! residual's **linear sub-norm** is below `config.tol_pos_m` AND its
+//! **angular sub-norm** is below `config.tol_rot_rad`.  The two tolerances are
+//! honoured independently, matching the PRD's `1 µm position / 1 µrad rotation`
+//! defaults; users may tighten one without affecting the other.  Stacked
+//! multi-loop residuals aggregate sub-norms via L2 across loops.
+//!
+//! Jacobian strategy: chain Jacobians come from
+//! `reify_stdlib::loop_closure::chain_jacobian_fd` (central difference,
+//! correct for all joint kinds).  Per-joint analytic columns from
+//! `per_joint_jacobian_local` are wired but not yet composed into chain
+//! Jacobians via SE(3) adjoint transport — that optimisation is a v0.2
+//! follow-up.  Singularity detection: Gauss-Newton normal-equations matrix
+//! is factorised inline with LDLᵀ; min-pivot below 1e-12 dispatches to
+//! [`NewtonOutcome::Singular`] (the signal task 9 will translate into the
+//! PRD's `W_KINEMATIC_SINGULARITY` warning).
 //!
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
-//! design rationale.
+//! full design rationale.
 
 /// Convergence and iteration knobs for [`newton_solve`] / [`solve_loop_closure`].
 ///

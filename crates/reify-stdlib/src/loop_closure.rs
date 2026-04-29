@@ -5,19 +5,37 @@
 //! `reify_constraints::loop_closure` use to drive closed-chain mechanisms to
 //! consistency.  It is the value-side companion to `reify-constraints::loop_closure`.
 //!
-//! Public API surface (filled in by the TDD steps that follow):
-//!   * `chain_transform(chain, values) -> Option<Value>`
-//!   * `loop_residual_twist(chain_a, vals_a, chain_b, vals_b) -> Option<[f64; 6]>`
-//!   * `joint_range_midpoint(joint) -> Option<f64>`
-//!   * `per_joint_jacobian_local(joint) -> Option<[f64; 6]>`
-//!   * `chain_jacobian_fd(chain, values, free_indices, eps) -> Option<Vec<[f64; 6]>>`
+//! Public API surface:
+//!   * [`chain_transform`] — left-fold a sequence of joint Maps + motion
+//!     variables into a single composed `Value::Transform`.
+//!   * [`loop_residual_twist`] — log of `inv(T_a) · T_b`, returned as a
+//!     6-vector twist suitable for stacking into a Newton residual.
+//!   * [`joint_range_midpoint`] — joint-range midpoint for fresh-snapshot
+//!     start strategy; recurses through `coupling` joints to the parent.
+//!   * [`per_joint_jacobian_local`] — wraps the existing `joint_jacobian`
+//!     builtin to return an analytic per-joint twist column as `[f64; 6]`.
+//!     Returns `None` for joint kinds that lack an analytic form (used as
+//!     the FD-fallback signal once task 4–7's spherical/cylindrical/planar
+//!     joints land).
+//!   * [`chain_jacobian_fd`] — central-difference chain Jacobian, one
+//!     `[f64; 6]` column per free joint index.
 //!
 //! Twist convention: `[ω_x, ω_y, ω_z, v_x, v_y, v_z]` (angular first, linear last)
 //! mirroring the `Map { angular, linear }` shape emitted by `transform_log` and
-//! `joint_jacobian`.
+//! `joint_jacobian`.  All `[f64; 6]` returns and arguments in this module follow
+//! this single canonical ordering.
+//!
+//! Jacobian strategy (v0.2 task 2 MVP): chain Jacobians use central-difference
+//! finite difference ([`chain_jacobian_fd`]).  This is correct for ALL joint
+//! kinds — including future spherical/cylindrical/planar — and immediately
+//! satisfies the PRD's "FD fallback" requirement.  The analytic per-joint
+//! twist column is exposed via [`per_joint_jacobian_local`] for future
+//! adjoint-transport composition; that optimisation is out of scope for this
+//! task and tracked as a follow-up design note.
 //!
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
-//! design rationale and convergence-tolerance defaults.
+//! design rationale and convergence-tolerance defaults (1 µm position, 1 µrad
+//! rotation — surfaced as `NewtonConfig` knobs in `reify_constraints::loop_closure`).
 
 use reify_types::Value;
 
