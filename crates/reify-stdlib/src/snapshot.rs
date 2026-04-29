@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use reify_types::Value;
 
+use crate::eval_builtin;
 use crate::joints::is_joint_value;
 
 /// Evaluate a snapshot/FK stdlib function by name.
@@ -78,8 +79,67 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             if bodies.is_empty() {
                 return Some(make_empty_snapshot());
             }
-            // Non-empty FK walk lands in subsequent steps.
-            make_empty_snapshot()
+
+            // FK walk: for each body record, compute the world transform
+            // by composing the joint's `transform_at(value_for(at))` (the
+            // parent-chain walk lands in a later step) with the body's
+            // own `pose`. The `joint_parents` map is read from the
+            // mechanism for future use by the parent-chain walk.
+            let bindings_list = match &args[1] {
+                Value::List(b) => b.as_slice(),
+                _ => return Some(Value::Undef), // unreachable: validated above.
+            };
+
+            let mut snapshot_bodies = Vec::with_capacity(bodies.len());
+            for body_value in bodies {
+                let body_map = match body_value {
+                    Value::Map(b) => b,
+                    _ => return Some(Value::Undef),
+                };
+                let id = match body_map.get(&Value::String("id".to_string())) {
+                    Some(v) => v.clone(),
+                    None => return Some(Value::Undef),
+                };
+                let solid = match body_map.get(&Value::String("solid".to_string())) {
+                    Some(v) => v.clone(),
+                    None => return Some(Value::Undef),
+                };
+                let at = match body_map.get(&Value::String("at".to_string())) {
+                    Some(v) => v.clone(),
+                    None => return Some(Value::Undef),
+                };
+                let pose = match body_map.get(&Value::String("pose".to_string())) {
+                    Some(v) => v.clone(),
+                    None => return Some(Value::Undef),
+                };
+
+                // Resolve the motion value for the body's `at` joint:
+                // first match in the bindings list wins (parent-chain
+                // walking lands in the multi-level step).
+                let motion_value = match value_for(&at, bindings_list) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+
+                // T_at_world = transform_at(at, motion_value).
+                // Parent = world ⇒ this is also the body's joint frame
+                // expressed in world coordinates. The multi-level
+                // parent-chain walk lands in a later step.
+                let t_at_world = eval_builtin("transform_at", &[at, motion_value]);
+                if t_at_world.is_undef() {
+                    return Some(Value::Undef);
+                }
+
+                // body's world_transform = T_at_world ∘ pose.
+                let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
+                if world_transform.is_undef() {
+                    return Some(Value::Undef);
+                }
+
+                snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
+            }
+
+            make_snapshot(snapshot_bodies)
         }
         _ => return None,
     })
@@ -91,13 +151,64 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 /// - `bodies` → `Value::List(vec![])`
 /// - `kind` → `Value::String("snapshot")`
 fn make_empty_snapshot() -> Value {
+    make_snapshot(Vec::new())
+}
+
+/// Build a Snapshot `Value::Map` carrying the supplied list of
+/// per-body world-transform records.
+fn make_snapshot(bodies: Vec<Value>) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("bodies".to_string()), Value::List(vec![]));
+    m.insert(Value::String("bodies".to_string()), Value::List(bodies));
     m.insert(
         Value::String("kind".to_string()),
         Value::String("snapshot".to_string()),
     );
     Value::Map(m)
+}
+
+/// Build a snapshot body record `Value::Map` with the four-key layout
+/// `id`, `pose`, `solid`, `world_transform` (alphabetical, matching
+/// `BTreeMap` iteration). Mirrors `make_body_record` in mechanism.rs
+/// but adds the FK-derived `world_transform` and drops `at`/`parent`
+/// (those belong to the source mechanism, not the snapshot).
+fn make_snapshot_body_record(id: Value, solid: Value, pose: Value, world_transform: Value) -> Value {
+    let mut b = BTreeMap::new();
+    b.insert(Value::String("id".to_string()), id);
+    b.insert(Value::String("pose".to_string()), pose);
+    b.insert(Value::String("solid".to_string()), solid);
+    b.insert(
+        Value::String("world_transform".to_string()),
+        world_transform,
+    );
+    Value::Map(b)
+}
+
+/// Look up the motion value for `joint` in a bindings list.
+///
+/// Linear scan; first match by structural `Value::Eq` on the binding's
+/// `joint` field wins. Returns `None` when no entry matches — the
+/// caller falls back to `loop_closure::joint_range_midpoint` in a
+/// later step (step 12). For now `None` propagates to `Value::Undef`,
+/// which suffices for the step 7/8 single-binding scenario.
+///
+/// Defensive against malformed binding entries (non-Map, missing
+/// `joint`/`value` keys): such entries are skipped, not failed-on.
+fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
+    for entry in bindings {
+        let map = match entry {
+            Value::Map(m) => m,
+            _ => continue,
+        };
+        if map.get(&Value::String("joint".to_string())) == Some(joint) {
+            if let Some(v) = map.get(&Value::String("value".to_string())) {
+                return Some(v.clone());
+            }
+        }
+    }
+    // No binding matched — caller will substitute the joint range
+    // midpoint in step 12. For now, surface `None` so the caller can
+    // map it to `Value::Undef`.
+    None
 }
 
 /// Build a binding `Value::Map` with the standard three-key layout:
