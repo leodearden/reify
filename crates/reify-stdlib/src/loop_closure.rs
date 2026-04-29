@@ -296,6 +296,11 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
                 _ => None,
             }
         }
+        // 0-DOF joint: no free variable; transform_at("fixed", _) ignores the
+        // second argument (any non-Undef Value → identity). Real(0.0) is the
+        // conventional sentinel, mirroring `transform_at(fixed_joint, 0)` in
+        // the kinematic_stdlib_smoke test.
+        "fixed" => Some(Value::Real(0.0)),
         _ => None,
     }
 }
