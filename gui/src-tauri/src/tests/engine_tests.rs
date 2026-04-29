@@ -4686,3 +4686,96 @@ structure Parent {
         );
     }
 }
+
+// ---- malformed mechanism Map shape contract tests ----------------------------
+
+#[test]
+fn extract_joints_from_mechanism_skips_non_map_at_value() {
+    // Step 8 RED: hand-construct a mechanism Map whose single body has a
+    // non-Map "at" value (Value::String("not-a-map")).  extract_joints_from_mechanism
+    // must return empty (joints, seen_joints) — no phantom row, no panic.
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+    use crate::engine::extract_joints_from_mechanism;
+
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(
+        Value::String("at".to_string()),
+        Value::String("not-a-map".to_string()),
+    );
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+
+    let (joints, seen_joints) = extract_joints_from_mechanism(&mech_map);
+
+    assert!(
+        joints.is_empty(),
+        "non-Map 'at' value must produce no joint descriptors; got {:?}",
+        joints
+    );
+    assert!(
+        seen_joints.is_empty(),
+        "non-Map 'at' value must produce no seen_joints entries; got {:?}",
+        seen_joints
+    );
+}
+
+#[test]
+fn extract_joints_from_mechanism_handles_malformed_axis_length() {
+    // Step 8 RED: hand-construct a mechanism with a prismatic joint whose
+    // "axis" Vector has length 2 (malformed — extract_axis requires length 3).
+    // The descriptor must still be produced (kind=="prismatic", dimension=="length")
+    // but axis must be None.
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+    use crate::engine::extract_joints_from_mechanism;
+
+    // Build the joint map with a 2-element axis vector.
+    let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+    joint_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("prismatic".to_string()),
+    );
+    joint_map.insert(
+        Value::String("axis".to_string()),
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]), // length 2 — malformed
+    );
+
+    // Build the body map referencing the joint.
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(
+        Value::String("at".to_string()),
+        Value::Map(joint_map),
+    );
+
+    // Build the mechanism map.
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+
+    let (joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor; got {:?}", joints);
+    let jd = &joints[0];
+    assert_eq!(jd.kind, "prismatic", "kind should be prismatic; got {}", jd.kind);
+    assert_eq!(jd.dimension, "length", "dimension should be length; got {}", jd.dimension);
+    assert!(
+        jd.axis.is_none(),
+        "malformed axis (length!=3) must produce axis==None; got {:?}",
+        jd.axis
+    );
+}
