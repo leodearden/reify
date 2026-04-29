@@ -1045,6 +1045,73 @@ structure def S {
     let _forall_span = find_forall_connect_span(source, "S");
 }
 
+/// `forall v in vents: constraint v.mass < 50kg` over a collection sub whose
+/// count constraint is explicitly `vents.count == 0` should emit zero
+/// CompiledConstraints with forall@v[*] labels and zero errors. Pins PRD
+/// criterion 6 for the count-cell-as-zero path: the `(0..0).map(...).collect()`
+/// in `resolve_forall_elements` produces an empty Vec, which the caller iterates
+/// zero times — identical to the `ListLiteral([])` path but exercised via the
+/// count-cell code path instead. Distinct from
+/// `forall_constraint_over_empty_list_literal_emits_no_decls_no_error`.
+#[test]
+fn forall_constraint_over_zero_count_collection_sub_emits_no_decls_no_error() {
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    constraint vents.count == 0
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for zero-count collection sub forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // No forall-emitted constraints.
+    let forall_constraint_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@v["))
+        })
+        .count();
+    assert_eq!(
+        forall_constraint_count, 0,
+        "expected zero forall@v[*] constraints for zero-count sub, got {}",
+        forall_constraint_count
+    );
+
+    // All remaining constraints are non-forall (the vents.count == 0
+    // constraint itself, possibly others). None should carry a forall@* label.
+    let any_forall_label = template
+        .constraints
+        .iter()
+        .any(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")));
+    assert!(
+        !any_forall_label,
+        "expected no forall@* labels at all for zero-count sub, got: {:?}",
+        template
+            .constraints
+            .iter()
+            .filter_map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// `forall v in vents: connect v.inlet -> air_channel` over a collection sub
 /// *without* a count constraint should emit zero CompiledConnections and zero
 /// errors. Pins PRD criterion 7's "no decls when count is undef" half for the
