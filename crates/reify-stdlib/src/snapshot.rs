@@ -599,10 +599,10 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
             Value::Map(m) => m,
             _ => continue,
         };
-        if map.get(&Value::String("joint".to_string())) == Some(joint) {
-            if let Some(v) = map.get(&Value::String("value".to_string())) {
-                return Some(v.clone());
-            }
+        if map.get(&Value::String("joint".to_string())) == Some(joint)
+            && let Some(v) = map.get(&Value::String("value".to_string()))
+        {
+            return Some(v.clone());
         }
     }
     // 2. Coupling-tracks-parent: when this joint is a coupling and
@@ -615,14 +615,12 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
     //    recursion bottoms out at depth 1 in a prismatic/revolute
     //    parent, where direct-binding lookup or midpoint fallback
     //    settles the value.
-    if let Value::Map(map) = joint {
-        if map.get(&Value::String("kind".to_string()))
+    if let Value::Map(map) = joint
+        && map.get(&Value::String("kind".to_string()))
             == Some(&Value::String("coupling".to_string()))
-        {
-            if let Some(parent) = map.get(&Value::String("parent".to_string())) {
-                return value_for(parent, bindings);
-            }
-        }
+        && let Some(parent) = map.get(&Value::String("parent".to_string()))
+    {
+        return value_for(parent, bindings);
     }
     // 3. Range-midpoint fallback (spec §13.3).
     let mid_si = joint_range_midpoint(joint)?;
