@@ -54,6 +54,17 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
 
+            // Errored-mechanism short-circuit: if args[0] is a Map with
+            // an "error" key, return it verbatim. This locks in
+            // idempotent error propagation so callers can chain
+            // `.body(...)` calls without each link re-validating in a
+            // way that could mask the original error (test step-21).
+            if let Value::Map(m) = &args[0] {
+                if m.contains_key(&Value::String("error".to_string())) {
+                    return Some(args[0].clone());
+                }
+            }
+
             // Validate args[0] is a Mechanism Map.
             let mech_map = match &args[0] {
                 Value::Map(m) => m,
