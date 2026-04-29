@@ -1540,4 +1540,65 @@ mod tests {
             "Missing cell should return false"
         );
     }
+
+    /// task-2629 step-6: `EvaluationGraph::from_templates` carries
+    /// `TopologyTemplate.forall_templates` through to the graph for the
+    /// runtime `engine_edit` collection-count phase to consume. Adding a
+    /// `CompiledForallTemplate` to a template with no instantiated
+    /// constraints does NOT change `topology_fingerprint` — the templates
+    /// are runtime-only metadata; per-element constraints get hashed once
+    /// they are emitted into `graph.constraints`.
+    ///
+    /// RED before step-7 (the `forall_templates` field on
+    /// `EvaluationGraph` does not yet exist).
+    #[test]
+    fn evaluation_graph_carries_forall_templates() {
+        use reify_compiler::{CompiledForallBody, CompiledForallTemplate};
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::SourceSpan;
+
+        let body_expr = CompiledExpr::value_ref(
+            ValueCellId::new("S.vents[0]", "mass"),
+            Type::dimensionless_scalar(),
+        );
+        let ft = CompiledForallTemplate {
+            variable: "v".to_string(),
+            parent_entity: "S".to_string(),
+            collection_sub_name: "vents".to_string(),
+            count_cell: ValueCellId::new("S", "__count_vents"),
+            span: SourceSpan::empty(0),
+            body: CompiledForallBody::Constraint {
+                body_expr: body_expr.clone(),
+                where_expr: None,
+            },
+        };
+
+        let template = TopologyTemplateBuilder::new("S")
+            .forall_template(ft.clone())
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        // (a) The forall_templates field carries through.
+        assert_eq!(
+            graph.forall_templates.len(),
+            1,
+            "expected 1 forall template carried into graph",
+        );
+        let carried = &graph.forall_templates[0];
+        assert_eq!(carried.variable, ft.variable);
+        assert_eq!(carried.parent_entity, ft.parent_entity);
+        assert_eq!(carried.collection_sub_name, ft.collection_sub_name);
+        assert_eq!(carried.count_cell, ft.count_cell);
+
+        // (b) topology_fingerprint is unchanged when only forall_templates
+        // differs (the templates alone don't affect the constraint set;
+        // per-element constraints become visible only at runtime emission).
+        let template_no_ft = TopologyTemplateBuilder::new("S").build();
+        let graph_no_ft = EvaluationGraph::from_templates(&[template_no_ft]);
+        assert_eq!(
+            graph.topology_fingerprint(),
+            graph_no_ft.topology_fingerprint(),
+            "topology_fingerprint should not change when only forall_templates differs (no instantiated constraints)",
+        );
+    }
 }
