@@ -766,6 +766,36 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::SpecializationForbiddenDecl).unwrap();
         assert_eq!(s, "\"SpecializationForbiddenDecl\"");
     }
+
+    // --- PurposeLetUnsupported tests (task 2537 — E_PURPOSE_LET_UNSUPPORTED) ---
+    // Pairs with the unsupported-feature error in
+    // `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::PurposeLetUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::PurposeLetUnsupported)`.
+    /// Shape mirrors `diagnostic_code_specialization_forbidden_decl_with_code_round_trips`;
+    /// a future enum reorganisation that drops `PurposeLetUnsupported` is caught here.
+    /// (The `Debug` rendering assertion is omitted — it would only pin the identifier
+    /// spelling, which any rename touches on both sides simultaneously. The serde
+    /// wire-format test below provides the real external-contract pin.)
+    #[test]
+    fn diagnostic_code_purpose_let_unsupported_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::PurposeLetUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::PurposeLetUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::PurposeLetUnsupported` serializes as
+    /// `"PurposeLetUnsupported"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_purpose_let_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::PurposeLetUnsupported).unwrap();
+        assert_eq!(s, "\"PurposeLetUnsupported\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
