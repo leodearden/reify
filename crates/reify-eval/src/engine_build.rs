@@ -5,9 +5,10 @@ use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat, FeatureId, FeatureTag,
-    FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel, Mesh, RealizationNodeId,
-    SourceSpan, TopologyAttributeTable, ValueMap, VersionId,
+    AttributeHistory, CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat,
+    FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel,
+    GeometryOp, Mesh, RealizationNodeId, SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable,
+    ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -15,7 +16,119 @@ use crate::deps::DependencyTrace;
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
+use crate::topology_attribute_propagation::{
+    populate_extrude_attributes, populate_revolve_attributes,
+};
 use crate::{BuildResult, Engine, TessellateResult};
+
+/// Dispatch on `attribute_history` to populate `topology_attribute_table`
+/// for sweep-style ops (extrude / revolve, currently). Called by
+/// `Engine::execute_realization_ops` immediately after the existing
+/// primitive-attribute seeding step.
+///
+/// For `AttributeHistory::None` this is a zero-cost no-op (no kernel
+/// `extract_*` calls), so non-overriding kernels and non-attributable ops
+/// pay nothing. For `Extrude(history)` / `Revolve(history)` it extracts
+/// the profile and result face/edge handles in canonical TopExp order
+/// and forwards to the appropriate per-op helper.
+///
+/// Failures (kernel `extract_*` errors, helper out-of-range index errors)
+/// are returned to the caller, which surfaces them as `Diagnostic::warning`
+/// and continues. Per task-2574 design, attribute population is auxiliary
+/// metadata — a failure here must NOT regress the realization to Failed.
+fn populate_attribute_history(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    geom_op: &GeometryOp,
+    result_handle: GeometryHandleId,
+    attribute_history: &AttributeHistory,
+) -> Result<(), reify_types::QueryError> {
+    match attribute_history {
+        AttributeHistory::None => Ok(()),
+        AttributeHistory::Extrude(history) => {
+            let profile_handle = match geom_op {
+                GeometryOp::Extrude { profile, .. } => *profile,
+                _ => {
+                    return Err(reify_types::QueryError::QueryFailed(format!(
+                        "AttributeHistory::Extrude returned for non-Extrude GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_sweep_op(
+                table,
+                kernel,
+                feature_id,
+                profile_handle,
+                result_handle,
+                history,
+                /*is_revolve=*/ false,
+            )
+        }
+        AttributeHistory::Revolve(history) => {
+            let profile_handle = match geom_op {
+                GeometryOp::Revolve { profile, .. } => *profile,
+                _ => {
+                    return Err(reify_types::QueryError::QueryFailed(format!(
+                        "AttributeHistory::Revolve returned for non-Revolve GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_sweep_op(
+                table,
+                kernel,
+                feature_id,
+                profile_handle,
+                result_handle,
+                history,
+                /*is_revolve=*/ true,
+            )
+        }
+    }
+}
+
+/// Shared helper: extract the profile and result face/edge slices from
+/// `kernel`, then dispatch to either `populate_extrude_attributes` or
+/// `populate_revolve_attributes` per `is_revolve`. Centralised so the
+/// extract sequence + error-propagation shape stays uniform across both
+/// sweep variants (and any future variants added in task 5b).
+fn populate_sweep_op(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    profile_handle: GeometryHandleId,
+    result_handle: GeometryHandleId,
+    history: &SweepOpHistoryRecords,
+    is_revolve: bool,
+) -> Result<(), reify_types::QueryError> {
+    let profile_faces = kernel.extract_faces(profile_handle)?;
+    let profile_edges = kernel.extract_edges(profile_handle)?;
+    let result_faces = kernel.extract_faces(result_handle)?;
+    let result_edges = kernel.extract_edges(result_handle)?;
+    if is_revolve {
+        populate_revolve_attributes(
+            table,
+            feature_id,
+            &profile_faces,
+            &profile_edges,
+            &result_faces,
+            &result_edges,
+            history,
+        )
+    } else {
+        populate_extrude_attributes(
+            table,
+            feature_id,
+            &profile_faces,
+            &profile_edges,
+            &result_faces,
+            &result_edges,
+            history,
+        )
+    }
+}
 
 impl Engine {
     /// Build geometry from the current snapshot values, without re-calling eval().
@@ -480,8 +593,8 @@ impl Engine {
                 diagnostics,
             );
             match geom_op {
-                Ok(geom_op) => match kernel.execute(&geom_op) {
-                    Ok(handle) => {
+                Ok(geom_op) => match kernel.execute_with_history(&geom_op) {
+                    Ok((handle, attribute_history)) => {
                         // Record the parallel-array feature tag for this handle.
                         if let Some(&tag) = feature_tags.get(op_idx) {
                             feature_tag_table.record(handle.id, tag);
@@ -509,6 +622,26 @@ impl Engine {
                         ) {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute seeding failed for {realization_id} op {op_idx}: {e}"
+                            )));
+                        }
+                        // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
+                        // attribute population for sweep ops (extrude / revolve).
+                        // Mirrors the seeding warning idiom above — a failure
+                        // here is auxiliary-metadata-only and must not regress
+                        // the realization to Failed. Non-attributable ops
+                        // return `AttributeHistory::None` from the default
+                        // `GeometryKernel::execute_with_history` impl, so this
+                        // match is a no-op for them.
+                        if let Err(e) = populate_attribute_history(
+                            topology_attribute_table,
+                            kernel,
+                            &feature_id,
+                            &geom_op,
+                            handle.id,
+                            &attribute_history,
+                        ) {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                         }
                         step_handles.push(handle.id);
