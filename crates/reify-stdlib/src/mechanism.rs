@@ -96,6 +96,46 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
 
             append_body(mech_map, args[1].clone(), args[2].clone(), parent, pose)
         }
+        "body_id_of" => {
+            // 2 args: (mechanism, solid).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Validate args[0] is a Mechanism Map.
+            let mech_map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            if mech_map.get(&Value::String("kind".to_string()))
+                != Some(&Value::String("mechanism".to_string()))
+            {
+                return Some(Value::Undef);
+            }
+            // Iterate `bodies` and return the id of the first record
+            // whose `solid` field equals args[1] by structural Value
+            // equality. The PRD calls for "referential identity" but
+            // the v0.1 Value model only exposes structural equality —
+            // see the design-decision note in plan.json.
+            let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+                Some(Value::List(b)) => b,
+                _ => return Some(Value::Undef),
+            };
+            for body in bodies {
+                let body_map = match body {
+                    Value::Map(b) => b,
+                    _ => continue,
+                };
+                if body_map.get(&Value::String("solid".to_string())) == Some(&args[1]) {
+                    return Some(
+                        body_map
+                            .get(&Value::String("id".to_string()))
+                            .cloned()
+                            .unwrap_or(Value::Undef),
+                    );
+                }
+            }
+            Value::Undef
+        }
         _ => return None,
     })
 }
