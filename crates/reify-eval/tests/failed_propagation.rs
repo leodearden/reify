@@ -118,6 +118,76 @@ fn forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event() {
     );
 }
 
+/// Pin the recovery path for the test-instrumentation panic hook.
+///
+/// After `set_panic_on_eval(b)` drives `b` to `Freshness::Failed`,
+/// calling `remove_panic_on_eval(&b)` withdraws the injection and
+/// a subsequent `eval` must restore `b` to a non-Failed freshness state.
+///
+/// This covers the recovery branch (`remove_panic_on_eval` → re-eval)
+/// that `forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`
+/// leaves unpinned; together the two tests form the complete
+/// set → eval → Failed → remove → re-eval → recovered contract.
+///
+/// See arch §9.1 and plan #2555 for the cfg-gating rationale; this test
+/// pins the public-API contract that the refactor must preserve.
+///
+/// Assertions:
+///   (a) After `set_panic_on_eval(b)` and the first `eval`, freshness(b)
+///       is `Freshness::Failed { .. }` (mirrors the existing test).
+///   (b) `remove_panic_on_eval(&b)` returns `true` (cell was registered).
+///   (c) After a second `eval`, freshness(b) is NOT `Failed` — the
+///       recovery branch re-evaluates the cell cleanly.
+///   (d) A second call to `remove_panic_on_eval(&b)` returns `false`
+///       (the cell is no longer in the injection set).
+#[test]
+fn forced_panic_recovers_after_remove_panic_on_eval() {
+    let module = one_cell_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let b_id = ValueCellId::new("T", "b");
+    let b_node = NodeId::Value(b_id.clone());
+
+    // === Pass 1: force panic on b ===
+    engine.set_panic_on_eval(b_id.clone());
+    let _ = engine.eval(&module);
+
+    // (a) b is Failed after the forced panic.
+    let b_freshness_pass1 = engine.cache_store().freshness(&b_node);
+    assert!(
+        matches!(b_freshness_pass1, Freshness::Failed { .. }),
+        "(a) freshness(b) must be Failed after set_panic_on_eval + eval; got {:?}",
+        b_freshness_pass1
+    );
+
+    // (b) remove_panic_on_eval returns true (cell was registered).
+    let removed = engine.remove_panic_on_eval(&b_id);
+    assert!(
+        removed,
+        "(b) remove_panic_on_eval must return true when b was registered"
+    );
+
+    // === Pass 2: re-eval after removing the panic injection ===
+    let _ = engine.eval(&module);
+
+    // (c) b is no longer Failed after re-eval with injection removed.
+    let b_freshness_pass2 = engine.cache_store().freshness(&b_node);
+    assert!(
+        !matches!(b_freshness_pass2, Freshness::Failed { .. }),
+        "(c) freshness(b) must NOT be Failed after remove_panic_on_eval + re-eval; \
+         got {:?}",
+        b_freshness_pass2
+    );
+
+    // (d) A second call to remove_panic_on_eval returns false (no longer registered).
+    let removed_again = engine.remove_panic_on_eval(&b_id);
+    assert!(
+        !removed_again,
+        "(d) remove_panic_on_eval must return false when b is no longer registered"
+    );
+}
+
 /// Build the 3-cell synthetic chain: `let a = 5.0; let b = a * 2.0; let c = b + 1.0`.
 ///
 /// All three cells live in the same template, so they share a topological
