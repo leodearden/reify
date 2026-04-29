@@ -321,6 +321,19 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
         // an initial-guess vector from joint_range_midpoint should skip fixed
         // joints; chain_transform/chain_jacobian_fd handle them transparently.
         "fixed" => Some(Value::Real(0.0)),
+        // 3-DOF planar joint: no f64-scalar motion variable representation.
+        // Planar's motion variable in `transform_at` is a 3-element
+        // `Value::List [x_length, y_length, theta_angle]`, which doesn't fit
+        // this function's `(joint, scalar: f64) -> Option<Value>` signature.
+        // Returning None here causes chain_transform and chain_jacobian_fd to
+        // short-circuit to None for any chain containing a planar joint.
+        // Multi-DOF chain support (including planar) is deferred to PRD v0.2
+        // kinematic task 2 (taskmaster #2670 — "FD fallback for spherical,
+        // cylindrical, planar"), which will refactor the f64-per-joint
+        // signature. Until that lands, callers needing planar transforms must
+        // use `transform_at(planar, list)` or `joint_jacobian(planar)` directly,
+        // not the chain wrappers.
+        "planar" => None,
         _ => None,
     }
 }
