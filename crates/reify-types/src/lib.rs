@@ -56,8 +56,8 @@ pub use provenance::SnapshotProvenance;
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
-    DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, ResultRef, Satisfaction,
-    Value, ValueMap, quaternion_is_finite,
+    DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
+    ResultRef, SampledField, SampledGridKind, Satisfaction, Value, ValueMap, quaternion_is_finite,
 };
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use spanned_ident::SpannedIdent;

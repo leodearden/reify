@@ -31,6 +31,203 @@ use crate::persistent::PersistentMap;
 // rebuilt before use.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Spatial-grid shape stored on a [`SampledField`].
+///
+/// Determines how many axes are active and how the runtime extracts query
+/// coordinates from a `sample(field, point)` argument:
+/// - `Regular1D`: scalar coordinate (`Real` or `Scalar`).
+/// - `Regular2D`: 2-component `Point` / `Vector` (or 2-element list).
+/// - `Regular3D`: 3-component `Point` / `Vector` (or 3-element list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SampledGridKind {
+    Regular1D,
+    Regular2D,
+    Regular3D,
+}
+
+/// Language-level interpolation method declared in `interpolation = …` config.
+///
+/// This is a parallel enum to `reify_expr::interp::InterpolationMethod`; it
+/// lives in `reify-types` because `Value::SampledField` carries it directly,
+/// and `reify-types` cannot depend on `reify-expr` (would form a cycle).
+/// The `From<InterpolationKind> for InterpolationMethod` mapping is defined
+/// in `reify-expr/src/sampled.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InterpolationKind {
+    Linear,
+    NearestNeighbor,
+    Cubic,
+    /// Deferred to post-v0.1; falls back to Linear at runtime with
+    /// `W_INTERPOLATION_DEFERRED` warning emitted by `interp::resolve_method`.
+    Rbf,
+    /// Deferred to post-v0.1; falls back to Linear at runtime with
+    /// `W_INTERPOLATION_DEFERRED` warning emitted by `interp::resolve_method`.
+    Kriging,
+}
+
+/// Runtime payload for a v0.2 sampled field — the data behind
+/// `field def F { source = sampled { … } }`.
+///
+/// Stored as `Arc<Value::SampledField>` under the `lambda` slot of a
+/// `Value::Field { source: FieldSourceKind::Sampled, .. }`. Sample dispatch
+/// in `crates/reify-expr/src/sampled.rs::sample_at_point` extracts query
+/// coordinates from the argument point, detects out-of-bounds, and
+/// delegates to `interp::interpolate_1d/2d/3d`.
+///
+/// # Once-per-field-per-session OOB warning
+///
+/// `oob_emitted` is an `AtomicBool` that backs the once-per-field
+/// `W_FIELD_OUT_OF_BOUNDS` semantics (see
+/// `crates/reify-types/src/diagnostics.rs::DiagnosticCode::FieldOutOfBounds`).
+/// It is intentionally **excluded** from `PartialEq`, `Ord`, `Hash`, and
+/// `content_hash`: it is a runtime-only state slot and not part of the
+/// semantic content. The flag is reset whenever
+/// `engine_eval::elaborate_field` constructs a fresh `SampledField`,
+/// matching the spec's "per session" lifetime.
+#[derive(Debug)]
+pub struct SampledField {
+    /// Field name (used in the `W_FIELD_OUT_OF_BOUNDS` diagnostic message).
+    pub name: String,
+    /// Spatial-grid shape — selects 1D / 2D / 3D dispatch in `sample_at_point`.
+    pub kind: SampledGridKind,
+    /// Per-axis lower bound (in SI units).  Length matches axis count
+    /// (1 / 2 / 3 for `Regular1D` / `Regular2D` / `Regular3D`).
+    pub bounds_min: Vec<f64>,
+    /// Per-axis upper bound (in SI units).
+    pub bounds_max: Vec<f64>,
+    /// Per-axis grid spacing (in SI units).
+    pub spacing: Vec<f64>,
+    /// Per-axis grid coordinates (`linspace(bounds_min[i], bounds_max[i], spacing[i])`).
+    /// Pre-computed at elaboration time so `sample_at_point` can pass slices
+    /// directly to `interp::interpolate_Nd`.
+    pub axis_grids: Vec<Vec<f64>>,
+    /// Interpolation method declared in `interpolation = …` config.
+    pub interpolation: InterpolationKind,
+    /// Flat row-major data values (in SI units).  Length must equal the
+    /// product `axis_grids[0].len() * axis_grids[1].len() * …`.
+    pub data: Vec<f64>,
+    /// Once-per-session OOB warning suppression flag.  Atomic so concurrent
+    /// `sample()` calls (e.g. from a parallel snapshot evaluation) all see
+    /// at-most-one warning.  Excluded from `PartialEq`/`Ord`/`Hash`/content_hash.
+    pub oob_emitted: std::sync::atomic::AtomicBool,
+}
+
+impl Clone for SampledField {
+    /// Cloning a `SampledField` produces a fresh `oob_emitted = false`.
+    /// Cloning is rare in normal operation (the `Arc<Value::SampledField>`
+    /// is shared); this impl exists primarily because `Value` derives
+    /// `Clone` and propagates through every variant.
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            kind: self.kind,
+            bounds_min: self.bounds_min.clone(),
+            bounds_max: self.bounds_max.clone(),
+            spacing: self.spacing.clone(),
+            axis_grids: self.axis_grids.clone(),
+            interpolation: self.interpolation,
+            data: self.data.clone(),
+            // Fresh runtime flag — clones get their own warning slot.
+            oob_emitted: std::sync::atomic::AtomicBool::new(
+                self.oob_emitted.load(std::sync::atomic::Ordering::Acquire),
+            ),
+        }
+    }
+}
+
+impl PartialEq for SampledField {
+    /// Compares all semantic content fields. Excludes `oob_emitted` because
+    /// it is a runtime-mutability slot, NOT semantic content.
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.kind == other.kind
+            && self.bounds_min.len() == other.bounds_min.len()
+            && self
+                .bounds_min
+                .iter()
+                .zip(other.bounds_min.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+            && self.bounds_max.len() == other.bounds_max.len()
+            && self
+                .bounds_max
+                .iter()
+                .zip(other.bounds_max.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+            && self.spacing.len() == other.spacing.len()
+            && self
+                .spacing
+                .iter()
+                .zip(other.spacing.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+            && self.axis_grids.len() == other.axis_grids.len()
+            && self
+                .axis_grids
+                .iter()
+                .zip(other.axis_grids.iter())
+                .all(|(a, b)| {
+                    a.len() == b.len()
+                        && a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits())
+                })
+            && self.interpolation == other.interpolation
+            && self.data.len() == other.data.len()
+            && self
+                .data
+                .iter()
+                .zip(other.data.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+}
+
+impl Eq for SampledField {}
+
+impl PartialOrd for SampledField {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SampledField {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Lexicographic over the semantic content fields, excluding oob_emitted.
+        // Float comparisons use IEEE 754 total_cmp() — consistent with how
+        // Value::Real / Value::Scalar are ordered elsewhere in this module.
+        fn cmp_floats(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+            a.len()
+                .cmp(&b.len())
+                .then_with(|| {
+                    a.iter()
+                        .zip(b.iter())
+                        .map(|(x, y)| x.total_cmp(y))
+                        .find(|o| !o.is_eq())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        }
+        self.name
+            .cmp(&other.name)
+            .then_with(|| format!("{:?}", self.kind).cmp(&format!("{:?}", other.kind)))
+            .then_with(|| cmp_floats(&self.bounds_min, &other.bounds_min))
+            .then_with(|| cmp_floats(&self.bounds_max, &other.bounds_max))
+            .then_with(|| cmp_floats(&self.spacing, &other.spacing))
+            .then_with(|| {
+                self.axis_grids
+                    .len()
+                    .cmp(&other.axis_grids.len())
+                    .then_with(|| {
+                        self.axis_grids
+                            .iter()
+                            .zip(other.axis_grids.iter())
+                            .map(|(a, b)| cmp_floats(a, b))
+                            .find(|o| !o.is_eq())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+            })
+            .then_with(|| {
+                format!("{:?}", self.interpolation).cmp(&format!("{:?}", other.interpolation))
+            })
+            .then_with(|| cmp_floats(&self.data, &other.data))
+    }
+}
+
 /// The source kind of a field value at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldSourceKind {
@@ -212,7 +409,8 @@ pub enum Value {
         /// | `source` variant(s)                                                         | stored value         |
         /// |-----------------------------------------------------------------------------|----------------------|
         /// | `Analytical`, `Composed`                                                    | `Value::Lambda`      |
-        /// | `Sampled`, `Imported`                                                       | `Value::Undef`       |
+        /// | `Sampled`                                                                   | `Value::SampledField` (v0.2) |
+        /// | `Imported`                                                                  | `Value::Undef`       |
         /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
         /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
         lambda: Arc<Value>,
@@ -281,6 +479,12 @@ pub enum Value {
     /// The evaluator in `reify-expr` operates exclusively on the nested-Tensor
     /// representation for matrix arithmetic.
     Matrix(Vec<Vec<Value>>),
+    /// Runtime payload for a v0.2 sampled field — see [`SampledField`].
+    ///
+    /// Stored under the `lambda` slot of a `Value::Field { source: FieldSourceKind::Sampled, .. }`.
+    /// `engine_eval::elaborate_field` constructs a fresh `SampledField` per cold-start,
+    /// so the per-field-per-session `oob_emitted` AtomicBool resets naturally.
+    SampledField(SampledField),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -484,7 +688,8 @@ impl Value {
         // 0=Bool, 1=Int, 2=Real, 3=String, 4=Scalar, 5=Undef, 6=Enum, 7=List,
         // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
         // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
-        // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix
+        // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix,
+        // 26=SampledField
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
@@ -713,6 +918,37 @@ impl Value {
                 }
                 h
             }
+            Value::SampledField(sf) => {
+                // tag=26; combine name + kind + bounds + spacing + interpolation + data.
+                // oob_emitted is intentionally excluded — it's a runtime-mutability
+                // slot, not semantic content (see SampledField doc).
+                let mut h = ContentHash::of(&[26]);
+                h = h.combine(ContentHash::of(sf.name.as_bytes()));
+                h = h.combine(ContentHash::of(format!("{:?}", sf.kind).as_bytes()));
+                let hash_floats = |slice: &[f64]| -> ContentHash {
+                    let mut hh = ContentHash::of(&(slice.len() as u64).to_le_bytes());
+                    for f in slice {
+                        // Canonicalize NaN payloads — match Value::Real / Value::Scalar policy.
+                        let bits = if f.is_nan() {
+                            f64::NAN.to_bits()
+                        } else {
+                            f.to_bits()
+                        };
+                        hh = hh.combine(ContentHash::of(&bits.to_le_bytes()));
+                    }
+                    hh
+                };
+                h = h.combine(hash_floats(&sf.bounds_min));
+                h = h.combine(hash_floats(&sf.bounds_max));
+                h = h.combine(hash_floats(&sf.spacing));
+                h = h.combine(ContentHash::of(&(sf.axis_grids.len() as u64).to_le_bytes()));
+                for grid in &sf.axis_grids {
+                    h = h.combine(hash_floats(grid));
+                }
+                h = h.combine(ContentHash::of(format!("{:?}", sf.interpolation).as_bytes()));
+                h = h.combine(hash_floats(&sf.data));
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -908,6 +1144,9 @@ impl Value {
                 let elem_ty = bound.try_infer_type()?;
                 Some(Type::Range(Box::new(elem_ty)))
             }
+            // SampledField is the runtime payload stored under Value::Field.lambda
+            // for source = sampled fields; it has no standalone Type.
+            Value::SampledField(_) => None,
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -1061,6 +1300,12 @@ impl Value {
                     .unwrap_or_else(|| "..".to_string());
                 format!("{lo}..{hi}")
             }
+            Value::SampledField(sf) => format!(
+                "SampledField('{}', {:?}, {} samples)",
+                sf.name,
+                sf.kind,
+                sf.data.len()
+            ),
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -1201,6 +1446,11 @@ impl Value {
                     lower_bracket, lower_str, upper_str, upper_bracket
                 )
             }
+            Value::SampledField(sf) => format!(
+                "SampledField('{}', {} samples)",
+                sf.name,
+                sf.data.len()
+            ),
             Value::Undef => "undefined".to_string(),
         }
     }
@@ -1480,6 +1730,7 @@ impl PartialEq for Value {
                 al == bl && au == bu && ali == bli && aui == bui
             }
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
+            (Value::SampledField(a), Value::SampledField(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -1509,7 +1760,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -1537,6 +1788,7 @@ impl Ord for Value {
                 Value::Plane { .. } => 22,
                 Value::Axis { .. } => 23,
                 Value::BoundingBox { .. } => 24,
+                Value::SampledField(_) => 25,
             }
         }
 
@@ -1732,6 +1984,7 @@ impl Ord for Value {
                     max: bmax,
                 },
             ) => amin.cmp(bmin).then_with(|| amax.cmp(bmax)),
+            (Value::SampledField(a), Value::SampledField(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -1933,6 +2186,16 @@ impl std::fmt::Display for Value {
                     write!(f, "]")?;
                 }
                 write!(f, "]")
+            }
+            Value::SampledField(sf) => {
+                write!(
+                    f,
+                    "sampled_field({}, {:?}, {} samples, {:?})",
+                    sf.name,
+                    sf.kind,
+                    sf.data.len(),
+                    sf.interpolation
+                )
             }
             Value::Undef => write!(f, "undef"),
         }

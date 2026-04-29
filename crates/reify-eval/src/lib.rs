@@ -174,6 +174,11 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         Value::Axis { .. } => matches!(ty, Type::Axis),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
+        // SampledField is a runtime payload stored under Value::Field.lambda;
+        // it is never a top-level value-cell value, so it has no corresponding
+        // surface Type. Rejecting here is correct (the default-reject case
+        // would also reject) but the explicit arm makes the intent obvious.
+        Value::SampledField(_) => false,
         // Note: `Type::Geometry` and `Type::TypeParam` have no corresponding
         // `Value` variant, so any non-Undef value supplied to a cell of those
         // types falls through this `match` and returns `false`, triggering
