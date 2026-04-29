@@ -1073,6 +1073,54 @@ mod tests {
         );
     }
 
+    // ── errored-mechanism propagation ────────────────────────────────────
+
+    /// Once a Mechanism Map carries an `error` field, subsequent
+    /// `body()` calls must short-circuit and return the errored Map
+    /// unchanged. This locks in idempotent error propagation so
+    /// callers can write the natural `mechanism().body(...).body(...)`
+    /// chain without each link re-validating (which could otherwise
+    /// mask the original error).
+    #[test]
+    fn errored_mechanism_propagates_through_subsequent_body_calls() {
+        // Build an errored mechanism via parent-conflict (cheaper to
+        // set up than the cycle case; both produce error="closed_chain"
+        // so the propagation contract is identical).
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_b, j_x, j_b]);
+        // Sanity: the setup actually produced an errored mechanism.
+        match &errored {
+            Value::Map(m) => {
+                assert_eq!(
+                    m.get(&Value::String("error".to_string())),
+                    Some(&Value::String("closed_chain".to_string())),
+                    "setup precondition: errored mechanism has error='closed_chain'"
+                );
+            }
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        }
+
+        // Now call body() on the errored mechanism with fresh inputs.
+        let new_j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let new_solid = Value::String("solidC".to_string());
+        let propagated = eval_builtin("body", &[errored.clone(), new_solid, new_j]);
+
+        // The propagated mechanism must equal the input errored mechanism
+        // field-by-field — no new body record appended, error fields
+        // preserved.
+        assert_eq!(
+            propagated, errored,
+            "subsequent body() call on errored mechanism must return the errored Map verbatim"
+        );
+    }
+
     // ── duplicate-solid detection ────────────────────────────────────────
 
     /// `body()` calls that try to insert the same solid value twice
