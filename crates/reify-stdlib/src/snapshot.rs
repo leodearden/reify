@@ -335,6 +335,9 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 if !density.is_finite() {
                     return Some(Value::Undef);
                 }
+                if density < 0.0 {
+                    return Some(Value::Undef);
+                }
                 for i in 0..3 {
                     weighted_xyz[i] += density * xyz[i];
                 }
@@ -347,9 +350,9 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             if total_density == 0.0 {
                 return Some(Value::Undef);
             }
-            // total_density > 0 is guaranteed because snap_bodies is non-empty
-            // and each body contributes 1.0 (or, post-step-26, a positive
-            // density — zero/negative densities can be caught there).
+            // total_density > 0 is guaranteed: snap_bodies is non-empty,
+            // negative densities are rejected per-body above, and the
+            // all-zero case is caught by the total_density == 0.0 check.
             let com = [
                 weighted_xyz[0] / total_density,
                 weighted_xyz[1] / total_density,
