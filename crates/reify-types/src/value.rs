@@ -109,6 +109,17 @@ pub struct SampledField {
     /// Once-per-session OOB warning suppression flag.  Atomic so concurrent
     /// `sample()` calls (e.g. from a parallel snapshot evaluation) all see
     /// at-most-one warning.  Excluded from `PartialEq`/`Ord`/`Hash`/content_hash.
+    ///
+    /// **clippy::mutable_key_type note:** because `AtomicBool` has interior
+    /// mutability, every `BTreeMap<Value, _>` site (notably `Value::Map`) is
+    /// flagged by the `mutable_key_type` lint.  The flag is a runtime-only
+    /// observability slot — it never participates in equality/ordering/hash
+    /// — so the lint is suppressed at the crate level for crates that hold
+    /// `Value`-keyed maps (see `#![allow(clippy::mutable_key_type)]` in
+    /// `reify-types`, `reify-stdlib`, `reify-eval`, `reify-expr`,
+    /// `reify-compiler`, `reify-constraints`, `reify-lsp`,
+    /// `reify-test-support`).  Wrapping in `Arc` does NOT silence the
+    /// lint (clippy traverses `Arc<T>` to inspect `T`).
     pub oob_emitted: std::sync::atomic::AtomicBool,
 }
 
