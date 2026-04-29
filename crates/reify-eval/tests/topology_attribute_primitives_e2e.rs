@@ -190,3 +190,102 @@ fn engine_build_records_topology_attributes_for_sphere_realization() {
         "topology_attribute_table must be non-empty after a sphere realization (≥1 face entry expected); got 0"
     );
 }
+
+// ─── step-15: cross-build reset + multi-realization coverage ──────────────────
+
+/// Across two `Engine::build` calls, `topology_attribute_table` must be
+/// reset between builds — the second build's entries must not carry
+/// stale entries from the first.
+///
+/// Concretely: build a single-box structure (table holds 6+12 = 18
+/// entries), then on the **same engine instance** build a single-sphere
+/// structure with no realizations from the box. The table after the
+/// second build must reflect only the sphere's entries, not the
+/// disjoint union.
+///
+/// This pins the reset wire-up in `Engine::build` (the
+/// `self.topology_attribute_table = TopologyAttributeTable::default()`
+/// reset that mirrors the `feature_tag_table` reset in the same call).
+/// A missed reset site would surface here as a table bigger than the
+/// sphere alone after the second build.
+#[test]
+fn engine_build_resets_topology_attribute_table_across_builds() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut engine = engine_with_occt();
+
+    // First build: box. The table should hold 6 face + 12 edge entries.
+    let box_compiled = compile_no_errors("structure A { let body = box(10mm, 10mm, 10mm) }");
+    let box_build = engine.build(&box_compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&box_build);
+    assert_eq!(
+        engine.topology_attribute_table().len(),
+        6 + 12,
+        "first build must seed exactly 6 face + 12 edge entries for a box realization"
+    );
+
+    // Second build: sphere on the SAME engine instance. The table must
+    // be cleared and repopulated — the box's 18 entries must not
+    // persist alongside the sphere's.
+    let sphere_compiled = compile_no_errors("structure B { let body = sphere(5mm) }");
+    let sphere_build = engine.build(&sphere_compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&sphere_build);
+
+    let after_sphere = engine.topology_attribute_table().len();
+    // Sphere's entry count is version-dependent (≥1 face, 0+ edges) but
+    // emphatically less than the 6+12 = 18 the box produced. If the
+    // table didn't reset, after_sphere would be ≥ 18 + 1 = 19.
+    assert!(
+        after_sphere < 6 + 12,
+        "topology_attribute_table must be reset between builds; after the second \
+         (sphere) build the table holds {after_sphere} entries, which is ≥ the box's \
+         18 — the reset before/after `Engine::build` was missed"
+    );
+    assert!(
+        after_sphere >= 1,
+        "second build's sphere realization must seed ≥1 face entry; got {after_sphere}"
+    );
+}
+
+/// A single module with two realizations (`let a = box(...)` followed
+/// by `let b = sphere(...)`) must populate the topology-attribute table
+/// with **both** realizations' entries — the seeder must not be
+/// over-aggressively reset between realizations within a single build.
+///
+/// The two realizations produce distinct `RealizationNodeId`s
+/// (`A(realization_index=0)` and `A(realization_index=1)` since each
+/// `let` becomes a separate realization), and thus distinct
+/// `FeatureId`s. The table after the build must hold:
+/// - the box's 6+12 = 18 entries (feature_id `A.a#realization[0]`)
+/// - plus the sphere's ≥1 face entries (feature_id `A.b#realization[1]`)
+///
+/// A regression that resets the table between realizations within
+/// `Engine::build` would surface here as an entry count equal to only
+/// the second realization's.
+#[test]
+fn engine_build_records_topology_attributes_for_multi_realization_module() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors(
+        "structure A { let a = box(10mm, 10mm, 10mm) let b = sphere(5mm) }",
+    );
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    let table_len = engine.topology_attribute_table().len();
+    // 6 box faces + 12 box edges + ≥1 sphere face = ≥19 entries.
+    // Sphere edge counts are version-dependent (0+).
+    assert!(
+        table_len >= 6 + 12 + 1,
+        "topology_attribute_table must accumulate entries across both realizations; \
+         expected ≥19 (6 box faces + 12 box edges + ≥1 sphere face), got {table_len} — \
+         the table was likely reset between realizations within a single build"
+    );
+}
