@@ -151,9 +151,20 @@ impl<'u> CompilationScope<'u> {
     ///
     /// Stored in `match_arm_groups` — deliberately separate from `names` so that
     /// future duplicate-name diagnostics (task 2375) cannot misfire on cluster
-    /// members. Overwriting a previous registration is harmless because the cluster
-    /// is fully assembled before this call is made.
+    /// members.
+    ///
+    /// Callers must never register the same `name` twice. In practice,
+    /// `compile_match_arm_decl_group` (entity.rs) emits a
+    /// "duplicate match-arm cluster name" diagnostic and returns early before
+    /// reaching this call for a second cluster with the same name. The
+    /// `debug_assert!` below is a defensive backstop: it will fire loudly in
+    /// debug builds if a future refactor bypasses that early return.
     pub(crate) fn register_match_arm_group(&mut self, name: &str, group: GuardedDeclGroup) {
+        debug_assert!(
+            !self.match_arm_groups.contains_key(name),
+            "duplicate cluster registration for '{}'",
+            name
+        );
         self.match_arm_groups.insert(name.to_string(), group);
     }
 
@@ -246,5 +257,25 @@ mod tests {
         );
         let (_, ty, _) = scope.names["x"].clone();
         assert_eq!(ty, Type::Real, "existing type must not be overwritten");
+    }
+
+    /// Task 2612 step-4: registering the same cluster name twice must panic in
+    /// debug builds via `debug_assert!`.
+    ///
+    /// The production-path early-return diagnostic in `compile_match_arm_decl_group`
+    /// (entity.rs) already prevents reaching `register_match_arm_group` a second
+    /// time for the same name during normal compilation. This unit test exercises
+    /// the API contract directly — it documents that `register_match_arm_group` is
+    /// the defensive backstop if that early-return is ever refactored away.
+    ///
+    /// RED before the `debug_assert!` exists; GREEN after.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "duplicate cluster registration for")]
+    fn register_match_arm_group_panics_on_duplicate_in_debug_builds() {
+        let mut scope = CompilationScope::new("TestEntity");
+        scope.register_match_arm_group("head", make_test_group("head"));
+        // Second call with same name must panic via debug_assert!.
+        scope.register_match_arm_group("head", make_test_group("head"));
     }
 }

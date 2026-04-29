@@ -960,3 +960,182 @@ fn match_arm_decl_group_duplicate_cluster_name_emits_diagnostic() {
         compiled.diagnostics
     );
 }
+
+/// Task 2612 step-3: characterization test pinning the current
+/// non-exhaustive-allowed behavior.
+///
+/// `HeadType` has THREE variants (`Hex`, `Socket`, `Button`) but only TWO arms
+/// are declared (`Hex => sub head : HexHead`, `Socket => sub head : SocketHead`).
+/// No exhaustiveness gate exists yet (task 2375 adds it), so:
+///   (a) no diagnostic mentions "exhaustive" or "missing variant", and
+///   (b) a `GuardedDeclGroup` for `"head"` with exactly 2 arms is registered.
+///
+/// **Intentional deviation from strict RED→GREEN:** this test passes on first run
+/// because it pins *current* semantics. Task 2375 must flip assertion (a) and
+/// update (b) when the exhaustiveness gate lands. The change of contract will be
+/// visible in the diff and recorded explicitly.
+#[test]
+fn match_arm_decl_group_non_exhaustive_arms_register_partial_cluster() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+            // "Button" arm intentionally omitted to test non-exhaustive behavior.
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_non_exhaustive_partial_cluster"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                // THREE variants; only two arms declared above.
+                variants: vec![
+                    "Hex".to_string(),
+                    "Socket".to_string(),
+                    "Button".to_string(),
+                ],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) No exhaustiveness diagnostic yet — task 2375 will flip this.
+    let has_exhaustive_diag = compiled.diagnostics.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("exhaustive") || msg.contains("missing variant")
+    });
+    assert!(
+        !has_exhaustive_diag,
+        "expected no exhaustiveness diagnostic (task 2375 adds the gate), got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) The partial cluster should still be registered with 2 arms.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+
+    assert_eq!(
+        bolt_template.match_arm_groups.len(),
+        1,
+        "expected 1 match_arm_groups entry for partial cluster, got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+
+    assert_eq!(
+        bolt_template.match_arm_groups[0].arms.len(),
+        2,
+        "expected 2 arms in the partial cluster, got: {:#?}",
+        bolt_template.match_arm_groups[0]
+    );
+}
+
+/// Task 2612 step-1: a match block whose only arm is `param` (non-Sub) must NOT
+/// register an empty cluster on `TopologyTemplate::match_arm_groups`.
+///
+/// The pre-pass already emits "only 'sub' declarations are supported" for the
+/// Param arm; the per-arm loop then `continue`s, leaving `group_arms` empty.
+/// Before the gate in entity.rs the unconditional `scope.register_match_arm_group`
+/// call would register an empty `GuardedDeclGroup` — this test pins that the gate
+/// makes `match_arm_groups` remain empty.
+///
+/// RED before `if !group_arms.is_empty()` gate; GREEN after.
+#[test]
+fn match_arm_decl_group_param_only_arms_leave_cluster_unregistered() {
+    // Build a match block with a single param arm (not Sub).
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![match_arm_decl("Hex", param_member("head_width", "Real"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_param_only_cluster_unregistered"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Sanity-check: the pre-pass diagnostic must still be present.
+    let has_unsupported_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("only 'sub' declarations are supported"));
+    assert!(
+        has_unsupported_diag,
+        "precondition: expected 'only sub declarations are supported' diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) No empty cluster should be registered — match_arm_groups must be empty.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+
+    assert!(
+        bolt_template.match_arm_groups.is_empty(),
+        "expected no match_arm_groups entry when all arms are Param/non-Sub, got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+}
