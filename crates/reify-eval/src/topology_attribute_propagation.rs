@@ -935,6 +935,75 @@ mod tests {
         assert!(table.is_empty(), "no-op propagation must not write entries");
     }
 
+    /// step-3 — single-result parent must NOT receive a fresh ModEntry.
+    ///
+    /// The parent has exactly one same-kind result record (`face_modified`
+    /// only, no `face_generated` for that parent), so the count is 1 — not
+    /// a split. The propagator must clone the parent attribute pure
+    /// pass-through, preserving any prior `mod_history` exactly. This pins
+    /// the `count > 1` guard in `maybe_append_split_entry`.
+    #[test]
+    fn propagate_skips_mod_entry_for_single_result_parent() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = split_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        // Seed the parent with a NON-empty mod_history — the regression
+        // pin is "preserves prior mod_history; new ModEntry only on splits".
+        let parent_handle = layout.parent_faces[0][0];
+        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        let prior_mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Earlier"),
+            split_index: 5,
+        }];
+        table.record(
+            parent_handle,
+            TopologyAttribute {
+                feature_id: parent_feature_id.clone(),
+                role: Role::Side,
+                local_index: 7,
+                user_label: None,
+                mod_history: prior_mod_history.clone(),
+            },
+        );
+
+        // Exactly ONE face_modified record for this parent; empty
+        // face_generated. count((0,0)) = 1 ⇒ no split, no new ModEntry.
+        let history = BooleanOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 1,
+            }],
+            ..Default::default()
+        };
+
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+            &fuse_feature_id(),
+        )
+        .expect("propagation should succeed for a well-formed single-result history");
+
+        let attr = table
+            .lookup(layout.result_faces[1])
+            .expect("result face 1 should have a propagated entry");
+        assert_eq!(attr.feature_id, parent_feature_id);
+        assert_eq!(attr.role, Role::Side);
+        assert_eq!(attr.local_index, 7);
+        assert!(attr.user_label.is_none());
+        assert_eq!(
+            attr.mod_history, prior_mod_history,
+            "single-result parent (count==1) must propagate prior mod_history unchanged",
+        );
+    }
+
     /// step-1 (RED) — split parent with two `face_modified` records.
     ///
     /// A single parent face (parent 0, subshape 0) is mapped to TWO distinct
