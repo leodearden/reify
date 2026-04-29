@@ -119,7 +119,9 @@ mod tests {
     use super::*;
     use crate::cache::{CachedResult, NodeCache};
     use crate::deps::DependencyTrace;
-    use reify_types::{DeterminacyState, ErrorRef, Freshness, ResultRef, Value, ValueCellId, VersionId};
+    use reify_types::{
+        DeterminacyState, ErrorRef, Freshness, ResultRef, Value, ValueCellId, VersionId,
+    };
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -167,7 +169,12 @@ mod tests {
         let b = ValueCellId::new(e, "b");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
@@ -184,7 +191,14 @@ mod tests {
         let b = ValueCellId::new(e, "b");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Pending { last_substantive: ResultRef::none() }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Pending {
+                last_substantive: ResultRef::none(),
+            },
+            vec![],
+        );
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
@@ -201,7 +215,14 @@ mod tests {
         let b = ValueCellId::new(e, "b");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Failed { error: ErrorRef::new("boom") }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Failed {
+                error: ErrorRef::new("boom"),
+            },
+            vec![],
+        );
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         assert!(
@@ -272,7 +293,12 @@ mod tests {
         let b = ValueCellId::new(e, "b");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(&mut cache, &b, Freshness::Final, vec![a.clone()]);
 
         let gated = vec![NodeId::Value(b.clone())];
@@ -298,7 +324,14 @@ mod tests {
 
         let mut cache = CacheStore::new();
         put_value_entry(&mut cache, &a_final, Freshness::Final, vec![]);
-        put_value_entry(&mut cache, &a_pending, Freshness::Pending { last_substantive: ResultRef::none() }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a_pending,
+            Freshness::Pending {
+                last_substantive: ResultRef::none(),
+            },
+            vec![],
+        );
         put_value_entry(&mut cache, &b1, Freshness::Final, vec![a_final.clone()]);
         put_value_entry(&mut cache, &b2, Freshness::Final, vec![a_final.clone()]);
         put_value_entry(&mut cache, &b3, Freshness::Final, vec![a_pending.clone()]);
@@ -310,7 +343,9 @@ mod tests {
         ];
         let result = unblocked_gated_nodes(&cache, &gated);
 
-        let expected: HashSet<_> = [NodeId::Value(b1.clone()), NodeId::Value(b2.clone())].into_iter().collect();
+        let expected: HashSet<_> = [NodeId::Value(b1.clone()), NodeId::Value(b2.clone())]
+            .into_iter()
+            .collect();
         assert_eq!(
             result, expected,
             "only nodes with all-Final inputs must be returned"
@@ -322,7 +357,10 @@ mod tests {
     fn unblocked_gated_nodes_empty_iterator_returns_empty() {
         let cache = CacheStore::new();
         let result = unblocked_gated_nodes(&cache, &Vec::<NodeId>::new());
-        assert!(result.is_empty(), "empty gated set must produce empty result");
+        assert!(
+            result.is_empty(),
+            "empty gated set must produce empty result"
+        );
     }
 
     /// (e) Gated node not in cache → excluded from result (not "newly unblocked").
@@ -373,8 +411,18 @@ mod tests {
         let c = ValueCellId::new(e, "c");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
-        put_value_entry(&mut cache, &c, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
+        put_value_entry(
+            &mut cache,
+            &c,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(
             &mut cache,
             &b,

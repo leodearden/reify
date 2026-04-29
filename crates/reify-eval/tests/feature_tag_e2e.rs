@@ -88,17 +88,12 @@ fn engine_build_records_top_level_feature_tag_for_box_realization() {
         1,
         "box realization must have exactly 1 feature tag in the compiled IR"
     );
-    assert_eq!(
-        realization.feature_tags[0].step_kind,
-        StepKind::Primitive,
-    );
+    assert_eq!(realization.feature_tags[0].step_kind, StepKind::Primitive,);
     assert_eq!(realization.feature_tags[0].sub_index, 0);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(OcctKernelHandle::spawn())),
-    );
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
 
     let build_result = engine.build(&compiled, ExportFormat::Step);
 

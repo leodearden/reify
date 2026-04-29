@@ -432,12 +432,7 @@ fn always_false_constraint_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(
-                    e,
-                    "x",
-                    Type::Real,
-                    Some(literal(Value::Real(5.0))),
-                )
+                .param(e, "x", Type::Real, Some(literal(Value::Real(5.0))))
                 .constraint(
                     e,
                     0,
@@ -524,8 +519,7 @@ fn constraint_violation_does_not_produce_failed_freshness_or_error_event() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::ConstraintViolated)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::ConstraintViolated)
         })
         .collect();
     assert_eq!(
@@ -598,8 +592,7 @@ fn assert_one_failed_event_at_version(
         .journal()
         .count_matching(|k| matches!(k, EventKind::Failed { .. }));
     assert_eq!(
-        failed_count,
-        1,
+        failed_count, 1,
         "(c) §9.1: exactly one Failed event must be recorded; got {} event(s)",
         failed_count
     );
@@ -620,12 +613,10 @@ fn assert_one_failed_event_at_version(
 
     // (f) version matches the expected eval round.
     assert_eq!(
-        r_failed[0].version,
-        expected,
+        r_failed[0].version, expected,
         "(f) §2554: Failed event version must match the eval round whose \
          values caused the kernel error; got {:?}, expected {:?}",
-        r_failed[0].version,
-        expected
+        r_failed[0].version, expected
     );
 }
 
@@ -883,6 +874,9 @@ fn failed_realization_stub_handle_is_distinct_from_zero_and_invalid() {
                 h
             );
         }
-        other => panic!("expected CachedResult::GeometryHandle stub, got {:?}", other),
+        other => panic!(
+            "expected CachedResult::GeometryHandle stub, got {:?}",
+            other
+        ),
     }
 }

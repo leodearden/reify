@@ -306,6 +306,20 @@ pub fn populate_extrude_attributes(
 /// analysis (face surface contains axis, or near-zero surface area)
 /// that is deferred to a follow-up task per task-5a's documented scope.
 ///
+/// **face_generated provenance (task 2636):** under a full 2π revolution,
+/// OCCT's `Generated()` omits records for profile edges that are
+/// perpendicular to the rotation axis (radial edges).  The C++ FFI layer
+/// (`synthesize_full_revolution_radial_face_records` in occt_wrapper.cpp)
+/// closes this gap by appending synthesized records for those edges and
+/// stable-sorting the combined vector by `parent_subshape_index`.  The
+/// synthesized records are byte-identical to OCCT-reported records in the
+/// `SweepOpHistoryRecords` format, so this function processes them
+/// transparently: both originate as `Role::RevolvedFace` entries with
+/// sequential `local_index`.  The FFI-layer sort guarantees
+/// `local_index == parent_subshape_index` for well-formed revolve sweeps
+/// (same invariant as partial revolutions), ensuring selector portability
+/// between the two cases.
+///
 /// Local-index assignment, parameter semantics, and out-of-range error
 /// behaviour are identical to [`populate_extrude_attributes`]; see
 /// that helper's doc-comment for the parameter contract.

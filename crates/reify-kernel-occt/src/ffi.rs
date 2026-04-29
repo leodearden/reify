@@ -390,6 +390,15 @@ pub mod ffi {
             cy: f64,
             cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        fn make_triangle_face(
+            x1: f64,
+            z1: f64,
+            x2: f64,
+            z2: f64,
+            x3: f64,
+            z3: f64,
+            cy: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Wire queries ---
         fn wire_start_tangent(wire: &OcctShape) -> Result<Point3>;

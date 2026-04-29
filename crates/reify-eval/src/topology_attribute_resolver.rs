@@ -52,6 +52,25 @@ use reify_types::{
 /// - `feature_id` — when `Some`, additionally constrains BOTH branches: a
 ///   candidate is considered only if its `TopologyAttribute::feature_id`
 ///   equals the query value.
+///
+/// ## Contract
+///
+/// At least one of `user_label` or `role_and_index` MUST be `Some`. A query
+/// with `feature_id=Some` but both positional fields `None` is contractually
+/// invalid.
+///
+/// `feature_id` is a **filter**, not a constraint: it narrows whichever
+/// positional branch fires, but by itself it does not supply a query. The
+/// resolver intentionally routes feature_id-only queries through the all-None
+/// positional branch (see [`resolve_unique_by_attribute`]), returning
+/// [`AttributeResolution::Unresolved`] with a `TopologyAttributeStale`
+/// "matched 0 sub-shapes" diagnostic. Callers that hit this in the wild have
+/// a construction bug; the diagnostic shape is intentional and documented here
+/// so it is not mistaken for a topology-change miss.
+///
+/// The regression test
+/// `tests::feature_id_only_query_is_treated_as_all_none_positional_miss` pins
+/// this contract as a behavior guard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeQuery {
     pub user_label: Option<String>,
@@ -136,15 +155,19 @@ pub fn resolve_unique_by_attribute(
         return AttributeResolution::FallbackToComputed;
     }
 
-    // (step-16b) All-None query: the resolver has nothing to match against.
-    // Treat this as a zero-match query so the caller surfaces the same
-    // diagnostic shape as a stale-attribute miss. Defends against
-    // accidental "match-everything" semantics that would otherwise arise
-    // if a future caller construction-defaulted all three fields to None.
-    // Placed AFTER the fallback pre-pass so imported-geometry routing
+    // (step-16b) All-None *positional* query: the resolver has no positional
+    // constraint to match against. This check inspects ONLY `user_label` and
+    // `role_and_index`; `feature_id` is NOT consulted here. A query with
+    // `feature_id=Some` but both positional fields `None` is contract-illegal
+    // per `AttributeQuery`'s docs and intentionally falls into this branch —
+    // `feature_id` is a filter, not a constraint, and by itself it does not
+    // supply a query. Treating the case as zero-match ensures the caller
+    // surfaces the same diagnostic shape as a stale-attribute miss. Defends
+    // against accidental "match-everything" semantics that would otherwise
+    // arise if a future caller construction-defaulted all positional fields to
+    // None. Placed AFTER the fallback pre-pass so imported-geometry routing
     // still wins on import-style candidate sets (consistent with the
-    // FallbackToComputed-takes-priority decision in the resolver
-    // contract).
+    // FallbackToComputed-takes-priority decision in the resolver contract).
     if query.user_label.is_none() && query.role_and_index.is_none() {
         emit_attribute_stale_diagnostic(selector_span, 0, diagnostics);
         return AttributeResolution::Unresolved;
@@ -339,7 +362,10 @@ mod tests {
         let result =
             resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(10)));
-        assert!(diagnostics.is_empty(), "no diagnostics expected on a unique user_label match");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected on a unique user_label match"
+        );
     }
 
     /// step-3 — role+local_index uniquely identifies the sub-shape (no
@@ -360,7 +386,10 @@ mod tests {
         let result =
             resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(20)));
-        assert!(diagnostics.is_empty(), "no diagnostics expected on a unique role/idx match");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected on a unique role/idx match"
+        );
     }
 
     /// step-5 — user_label preference rule (PRD line 62).
@@ -465,8 +494,13 @@ mod tests {
             feature_id: None,
         };
         let mut diagnostics = Vec::new();
-        let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, selector_span, &mut diagnostics);
+        let result = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query,
+            selector_span,
+            &mut diagnostics,
+        );
         assert_eq!(result, AttributeResolution::Unresolved);
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         let diag = &diagnostics[0];
@@ -556,13 +590,8 @@ mod tests {
             feature_id: Some(slot.clone()),
         };
         let mut diagnostics = Vec::new();
-        let result_slot = resolve_unique_by_attribute(
-            &table,
-            &candidates,
-            &query_slot,
-            span(),
-            &mut diagnostics,
-        );
+        let result_slot =
+            resolve_unique_by_attribute(&table, &candidates, &query_slot, span(), &mut diagnostics);
         assert_eq!(
             result_slot,
             AttributeResolution::Resolved(h(71)),
@@ -577,13 +606,8 @@ mod tests {
             feature_id: Some(boss.clone()),
         };
         let mut diagnostics = Vec::new();
-        let result_boss = resolve_unique_by_attribute(
-            &table,
-            &candidates,
-            &query_boss,
-            span(),
-            &mut diagnostics,
-        );
+        let result_boss =
+            resolve_unique_by_attribute(&table, &candidates, &query_boss, span(), &mut diagnostics);
         assert_eq!(
             result_boss,
             AttributeResolution::Resolved(h(70)),
@@ -718,5 +742,62 @@ mod tests {
             "duplicate candidates → resolver dedups, single match"
         );
         assert!(diagnostics.is_empty());
+    }
+
+    /// Regression pin for the feature_id-only contract (plan #2704).
+    ///
+    /// A query with `feature_id=Some` but both positional fields
+    /// (`user_label` and `role_and_index`) `None` is contractually invalid
+    /// per [`AttributeQuery`]'s docs. The resolver intentionally routes such
+    /// queries through the all-None positional branch, returning `Unresolved`
+    /// with a `TopologyAttributeStale` "matched 0 sub-shapes" diagnostic —
+    /// the same outcome as an all-three-fields-None query.
+    ///
+    /// This is a **behavior pin**, not a doc-string assertion: it locks the
+    /// documented contract so a future maintainer cannot silently change the
+    /// all-None positional check to also consult `feature_id` and divert
+    /// feature_id-only queries to the FallbackToComputed arm (which would
+    /// misclassify a caller bug as an imported-geometry signal).
+    #[test]
+    fn feature_id_only_query_is_treated_as_all_none_positional_miss() {
+        // Populate the table with two entries so we are NOT in the
+        // imported-geometry FallbackToComputed arm.
+        // h(90) is attributed to the default feature (feat()).
+        // h(91) is attributed to a different feature — confirming that
+        // feature_id is NOT consulted by the all-None positional pre-pass
+        // even when some candidates would match the filter.
+        let other_feature = FeatureId::new("OtherFeature");
+        let mut table = TopologyAttributeTable::default();
+        table.record(h(90), attr(Role::Side, 0, None));
+        table.record(h(91), attr_for(other_feature, Role::Side, 1, None));
+        let candidates = [h(90), h(91)];
+
+        // feature_id=Some, but both positional fields are None.
+        // This is a contract-illegal query per AttributeQuery's docs.
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: None,
+            feature_id: Some(feat()),
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+
+        // The all-None positional check fires regardless of feature_id, so
+        // the resolver returns Unresolved with the standard zero-match
+        // diagnostic. feature_id alone does not supply a query.
+        assert_eq!(
+            result,
+            AttributeResolution::Unresolved,
+            "feature_id-only query must be routed through the all-None positional branch"
+        );
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 0 sub-shapes"),
+            "message should contain 'matched 0 sub-shapes', got: {}",
+            diag.message
+        );
     }
 }

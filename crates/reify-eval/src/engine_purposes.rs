@@ -875,7 +875,10 @@ mod tests {
     fn tree_contains_placeholder(expr: &CompiledExpr) -> bool {
         let mut found = false;
         expr.walk(&mut |e: &CompiledExpr| {
-            if matches!(e.kind, CompiledExprKind::PurposeReflectiveAggregation { .. }) {
+            if matches!(
+                e.kind,
+                CompiledExprKind::PurposeReflectiveAggregation { .. }
+            ) {
                 found = true;
             }
         });
@@ -951,7 +954,9 @@ mod tests {
                 failures.push(format!("{label}: placeholder not rewritten"));
             }
             if !tree_contains_value_ref_for(&wrapped, entity, "x") {
-                failures.push(format!("{label}: expected ValueRef(Foo/x) in expanded tree"));
+                failures.push(format!(
+                    "{label}: expected ValueRef(Foo/x) in expanded tree"
+                ));
             }
         }
         assert!(
@@ -1408,5 +1413,4 @@ mod tests {
              (no resolution path exists yet, task-1904)"
         );
     }
-
 }

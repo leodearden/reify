@@ -4538,8 +4538,8 @@ mod tests {
     fn try_eval_conformance_query_kernel_reply_true() {
         use reify_test_support::mocks::MockGeometryKernel;
         let handle_id = reify_types::GeometryHandleId(7);
-        let kernel = MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(true));
+        let kernel =
+            MockGeometryKernel::new().with_query_result(handle_id, reify_types::Value::Bool(true));
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
@@ -4547,13 +4547,8 @@ mod tests {
         let expr = conformance_call("is_watertight", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let result = super::try_eval_conformance_query(
-            &expr,
-            &[],
-            &named_steps,
-            &kernel,
-            &mut diagnostics,
-        );
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
 
         assert_eq!(
             result,
@@ -4599,13 +4594,8 @@ mod tests {
         let expr = conformance_call("volume", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let result = super::try_eval_conformance_query(
-            &expr,
-            &[],
-            &named_steps,
-            &kernel,
-            &mut diagnostics,
-        );
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
 
         assert!(
             result.is_none(),
@@ -4634,13 +4624,8 @@ mod tests {
         let expr = conformance_call_literal_arg("is_watertight");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let result = super::try_eval_conformance_query(
-            &expr,
-            &[],
-            &named_steps,
-            &kernel,
-            &mut diagnostics,
-        );
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
 
         assert!(
             result.is_none(),
@@ -4793,13 +4778,8 @@ mod tests {
         let expr = conformance_call("is_watertight", "Bracket", "ghost");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let result = super::try_eval_conformance_query(
-            &expr,
-            &[],
-            &named_steps,
-            &kernel,
-            &mut diagnostics,
-        );
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
 
         assert!(
             result.is_none(),
@@ -4833,13 +4813,8 @@ mod tests {
         let expr = conformance_call("is_watertight", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let result = super::try_eval_conformance_query(
-            &expr,
-            &[],
-            &named_steps,
-            &kernel,
-            &mut diagnostics,
-        );
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
 
         assert_eq!(
             result,
@@ -4886,13 +4861,8 @@ mod tests {
         let expr = conformance_call("is_manifold", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let result = super::try_eval_conformance_query(
-            &expr,
-            &[],
-            &named_steps,
-            &kernel,
-            &mut diagnostics,
-        );
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
 
         assert_eq!(
             result,

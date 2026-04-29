@@ -230,35 +230,40 @@ fn full_revolve_with_history_reports_no_caps() {
         history.end_cap_face_indices
     );
 
-    // (c) face_generated: under FULL revolution, OCCT's
-    // `BRepPrimAPI_MakeRevol::Generated(edge)` reliably reports only the
-    // edges PARALLEL to the rotation axis (the 2 axial edges of the rect),
-    // because they generate truly new lateral cylindrical surfaces. The
-    // edges PERPENDICULAR to the axis (the 2 radial edges) sweep into flat
-    // annular disk faces that close up with the swept solid; OCCT does
-    // not return those faces from `Generated()` under angle == 2π
-    // (verified empirically against OCCT 7.5.x bundled with FreeCAD).
-    //
-    // The result solid still contains all 4 lateral faces (`extract_faces`
-    // returns 4 faces below) — the 2 unaccounted faces simply lack
-    // provenance metadata. Selector stability for those faces is a
-    // follow-up: future work can synthesize provenance via a post-pass
-    // that matches result faces to profile edges by orientation, or
-    // (preferred) by upgrading to OCCT's BRepTools_History interface
-    // which returns more complete records than the legacy MakeShape API.
-    //
-    // We therefore assert ≥2 (the axial cylindrical surfaces), which is
-    // OCCT's reliable contract for full revolution. The PARTIAL case
-    // (test above) asserts the stronger ≥4 guarantee that holds when
-    // angle ∈ (0, 2π).
-    assert!(
-        history.face_generated.len() >= 2,
-        "expected ≥2 generated faces (2 axial profile edges → 2 cylindrical \
-         revolved faces under full revolution; see test comment for the \
-         radial-edge gap), got {} ({:?})",
+    // (c) face_generated: the rect profile has 4 edges — 2 axial (parallel
+    // to Z, reported by OCCT's Generated() for cylindrical surfaces) and
+    // 2 radial (perpendicular to Z, synthesized by the C++ post-pass in
+    // make_revolve_with_history for annular-disk surfaces, task 2636).
+    // Every profile edge produces exactly one face_generated record.
+    assert_eq!(
+        history.face_generated.len(),
+        4,
+        "expected exactly 4 generated-face records (one per rect profile edge: \
+         2 cylindrical from axial edges via OCCT Generated(), \
+         2 annular-disk from radial edges via C++ synthesis post-pass), \
+         got {} ({:?})",
         history.face_generated.len(),
         history.face_generated
     );
+
+    // Edge-coverage: every profile edge index {0, 1, 2, 3} must appear as
+    // a parent_subshape_index in at least one face_generated record.
+    {
+        use std::collections::HashSet;
+        let covered: HashSet<u32> = history
+            .face_generated
+            .iter()
+            .map(|r| r.parent_subshape_index)
+            .collect();
+        for expected_edge in 0u32..4 {
+            assert!(
+                covered.contains(&expected_edge),
+                "profile edge {} has no face_generated record; covered = {:?}",
+                expected_edge,
+                covered
+            );
+        }
+    }
 
     // (d) Result-side indices must be within the result face/edge maps.
     let result_faces = kernel
@@ -294,4 +299,196 @@ fn full_revolve_with_history_reports_no_caps() {
             result_edge_count
         );
     }
+}
+
+/// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
+/// synthesis post-pass (task 2636) beyond the rectangular profile to verify
+/// it generalises correctly.
+///
+/// Triangle vertices in the XZ plane (Y=0):
+///   p1 = (15mm, 0, 0mm) — bottom-left
+///   p2 = (25mm, 0, 0mm) — bottom-right
+///   p3 = (20mm, 0, 10mm) — apex
+///
+/// Profile edges:
+///   e0 = p1→p2 — purely radial (Δz=0, perpendicular to Z)  → 1 synthesized record
+///   e1 = p2→p3 — slanted (OCCT Generated() reports)         → 1 OCCT record
+///   e2 = p3→p1 — slanted (OCCT Generated() reports)         → 1 OCCT record
+///
+/// Expected results:
+///   - positive-volume solid (cone frustum with annular base)
+///   - no caps (full revolution)
+///   - face_generated.len() == 3 (one record per profile edge)
+///   - parent_subshape_index covers {0, 1, 2} exactly once
+///   - all result_subshape_index values in range
+#[test]
+fn full_revolve_triangle_profile_synthesis_regression() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+
+    // Triangle in XZ plane: (15mm,0mm), (25mm,0mm), (20mm,10mm).
+    // Bottom edge (e0) is radial; the two slanted edges (e1, e2) are covered
+    // by OCCT's Generated().
+    let profile_id = kernel
+        .make_triangle_profile_at_for_test(
+            0.015, 0.0,   // p1: x=15mm, z=0mm
+            0.025, 0.0,   // p2: x=25mm, z=0mm
+            0.020, 0.010, // p3: x=20mm, z=10mm
+            0.0,          // cy=0 (XZ plane)
+        )
+        .expect("triangle profile should build");
+
+    // Full 360° revolve about +Z at origin.
+    let (result_handle, history) = kernel
+        .revolve_with_history(
+            profile_id,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            2.0 * std::f64::consts::PI,
+        )
+        .expect("revolve_with_history should succeed for triangle profile");
+
+    // (i) Result is a positive-volume solid.
+    let vol = kernel
+        .query(&GeometryQuery::Volume(result_handle))
+        .expect("volume query should succeed");
+    let vol_si = vol.as_f64().expect("volume should be numeric");
+    assert!(
+        vol_si > 0.0,
+        "triangle full-revolve solid must have positive volume, got {vol_si}"
+    );
+
+    // (ii) No caps (full-revolution invariant).
+    assert!(
+        history.start_cap_face_indices.is_empty(),
+        "full revolution should produce no start caps, got {:?}",
+        history.start_cap_face_indices
+    );
+    assert!(
+        history.end_cap_face_indices.is_empty(),
+        "full revolution should produce no end caps, got {:?}",
+        history.end_cap_face_indices
+    );
+
+    // (iii) Exactly 3 face_generated records (one per profile edge).
+    assert_eq!(
+        history.face_generated.len(),
+        3,
+        "triangle profile (1 radial + 2 slanted) should produce exactly 3 \
+         face_generated records, got {} ({:?})",
+        history.face_generated.len(),
+        history.face_generated
+    );
+
+    // (iv) parent_subshape_index covers {0, 1, 2} exactly once each.
+    {
+        use std::collections::HashSet;
+        let covered: HashSet<u32> = history
+            .face_generated
+            .iter()
+            .map(|r| r.parent_subshape_index)
+            .collect();
+        assert_eq!(
+            covered,
+            [0u32, 1, 2].into_iter().collect::<HashSet<_>>(),
+            "triangle profile edges {{0,1,2}} must each appear exactly once \
+             in face_generated, got covered = {:?}",
+            covered
+        );
+    }
+
+    // (v) All result_subshape_index values in range.
+    let result_faces = kernel
+        .extract_faces(result_handle)
+        .expect("extract_faces on triangle revolve result should succeed");
+    let result_face_count = result_faces.len() as u32;
+    for r in &history.face_generated {
+        assert!(
+            r.result_subshape_index < result_face_count,
+            "face_generated result_subshape_index {} out of range; result has {} faces",
+            r.result_subshape_index,
+            result_face_count
+        );
+    }
+}
+
+/// Selector-stability: the stable-sort in `make_revolve_with_history` guarantees
+/// that `face_generated` records appear in profile-edge order (record position i
+/// ↔ `parent_subshape_index == i`) regardless of geometric dimensions.
+///
+/// This property is what `populate_revolve_attributes` relies on to assign
+/// `local_index = parent_subshape_index` for full-revolution results — the same
+/// invariant that holds naturally for partial revolutions via OCCT's own ordering.
+///
+/// The test runs two full-revolution revolves on different rect dimensions and
+/// asserts that both produce identical `(parent_subshape_index, record_position)`
+/// orderings: `[(0,0), (1,1), (2,2), (3,3)]`.
+#[test]
+fn full_revolve_synthesis_keeps_per_edge_record_ordering_stable_across_dimension_edits() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+
+    // Helper: revolve a rect profile and return the (parent_subshape_index,
+    // record_position) ordering vec, asserting len == 4 along the way.
+    let revolve_rect = |kernel: &mut OcctKernelHandle, width: f64, height: f64, cx: f64| {
+        let profile_id = kernel
+            .make_rect_profile_at_for_test(width, height, cx, 0.0, 0.0)
+            .expect("rect profile should build");
+        let (_result_handle, history) = kernel
+            .revolve_with_history(
+                profile_id,
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                2.0 * std::f64::consts::PI,
+            )
+            .expect("revolve_with_history should succeed");
+        assert_eq!(
+            history.face_generated.len(),
+            4,
+            "rect full-revolve must produce exactly 4 face_generated records \
+             (2 axial via OCCT Generated() + 2 radial via synthesis), \
+             got {} ({:?}) for {}×{} rect at cx={}",
+            history.face_generated.len(),
+            history.face_generated,
+            width * 1000.0,
+            height * 1000.0,
+            cx * 1000.0,
+        );
+        // Build the (parent_subshape_index, sequential_record_position) vec.
+        history
+            .face_generated
+            .iter()
+            .enumerate()
+            .map(|(pos, r)| (r.parent_subshape_index, pos as u32))
+            .collect::<Vec<_>>()
+    };
+
+    // Run 1: 5×10mm rect at cx=17.5mm (same profile as the other tests).
+    let ordering_5x10 = revolve_rect(&mut kernel, 5.0e-3, 10.0e-3, 17.5e-3);
+
+    // Run 2: 8×6mm rect at cx=20mm (different dimensions, same profile topology).
+    let ordering_8x6 = revolve_rect(&mut kernel, 8.0e-3, 6.0e-3, 20.0e-3);
+
+    // Both orderings must be [(0,0), (1,1), (2,2), (3,3)] — profile-edge order.
+    let expected: Vec<(u32, u32)> = vec![(0, 0), (1, 1), (2, 2), (3, 3)];
+    assert_eq!(
+        ordering_5x10, expected,
+        "5×10mm rect: face_generated must be in profile-edge order, got {:?}",
+        ordering_5x10
+    );
+    assert_eq!(
+        ordering_8x6, expected,
+        "8×6mm rect: face_generated must be in profile-edge order, got {:?}",
+        ordering_8x6
+    );
+    assert_eq!(
+        ordering_5x10, ordering_8x6,
+        "per-edge record ordering must be identical across dimension changes"
+    );
 }

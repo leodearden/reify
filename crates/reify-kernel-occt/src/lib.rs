@@ -1825,6 +1825,30 @@ impl OcctKernel {
         h.id
     }
 
+    /// Create a triangular face in the plane Y=cy with vertices
+    /// (x1, cy, z1), (x2, cy, z2), (x3, cy, z3), store it in the kernel,
+    /// and return its `GeometryHandleId` (registered with `ReprKind::Face`).
+    ///
+    /// Used by the revolve history regression test (task 2636, step-3) to
+    /// exercise a non-rectangular profile with one radial edge (bottom edge
+    /// perpendicular to Z) and two slanted edges.  With cy=0, the face lies
+    /// in the XZ plane, suitable for revolving about the Z axis.
+    pub fn store_triangle_face_at_for_test(
+        &mut self,
+        x1: f64,
+        z1: f64,
+        x2: f64,
+        z2: f64,
+        x3: f64,
+        z3: f64,
+        cy: f64,
+    ) -> GeometryHandleId {
+        let shape = ffi::ffi::make_triangle_face(x1, z1, x2, z2, x3, z3, cy)
+            .expect("make_triangle_face should succeed in test fixture");
+        let h = self.store_with_repr(shape, ReprKind::Face);
+        h.id
+    }
+
     /// Build a non-manifold compound (3 faces sharing 1 edge) and store it.
     ///
     /// Returns the `GeometryHandleId` of the stored compound. Used by

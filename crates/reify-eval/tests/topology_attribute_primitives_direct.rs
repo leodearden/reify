@@ -68,10 +68,7 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
     }
 
     let mut kernel = OcctKernelHandle::spawn();
-    let box_id = kernel
-        .execute(&box_op())
-        .expect("box should build")
-        .id;
+    let box_id = kernel.execute(&box_op()).expect("box should build").id;
 
     // Pre-extract face/edge handles ONCE — extract_* allocates fresh ids
     // on each call, so we must reuse these vectors for both seeding and
@@ -371,10 +368,7 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
     // ── Sub-case (1): Box → 12 edges, all Role::NewEdge ──────────────────────
     {
         let mut kernel = OcctKernelHandle::spawn();
-        let box_id = kernel
-            .execute(&box_op())
-            .expect("box should build")
-            .id;
+        let box_id = kernel.execute(&box_op()).expect("box should build").id;
         let face_handles = kernel
             .extract_faces(box_id)
             .expect("extract_faces(box) should succeed");
@@ -505,9 +499,7 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
             &feature_id,
             &cylinder_op(),
         )
-        .expect(
-            "seed_primitive_attributes for a cylinder should succeed (step-7: faces + edges)",
-        );
+        .expect("seed_primitive_attributes for a cylinder should succeed (step-7: faces + edges)");
 
         assert_eq!(
             table.len(),
@@ -582,9 +574,7 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
             &feature_id,
             &sphere_op(),
         )
-        .expect(
-            "seed_primitive_attributes for a sphere should succeed (step-7: faces + edges)",
-        );
+        .expect("seed_primitive_attributes for a sphere should succeed (step-7: faces + edges)");
 
         assert_eq!(
             table.len(),

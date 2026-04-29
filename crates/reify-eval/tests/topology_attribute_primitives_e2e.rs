@@ -54,10 +54,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 
 fn engine_with_occt() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(OcctKernelHandle::spawn())),
-    )
+    reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
 fn assert_no_geometry_errors(build_result: &reify_eval::BuildResult) {
@@ -272,9 +269,8 @@ fn engine_build_records_topology_attributes_for_multi_realization_module() {
         return;
     }
 
-    let compiled = compile_no_errors(
-        "structure A { let a = box(10mm, 10mm, 10mm) let b = sphere(5mm) }",
-    );
+    let compiled =
+        compile_no_errors("structure A { let a = box(10mm, 10mm, 10mm) let b = sphere(5mm) }");
     let mut engine = engine_with_occt();
     let build_result = engine.build(&compiled, ExportFormat::Step);
     assert_no_geometry_errors(&build_result);

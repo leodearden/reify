@@ -1196,7 +1196,9 @@ purpose p1(subject : S) {
     //     the rebuilt index drops every composed-field edge.
     engine.activate_purpose("p1", "S");
     {
-        let state = engine.eval_state().expect("eval_state after activate_purpose");
+        let state = engine
+            .eval_state()
+            .expect("eval_state after activate_purpose");
         let f1_deps = state.reverse_index.dependents_of(&f1_cell);
         assert!(
             f1_deps.contains(&f3_node),

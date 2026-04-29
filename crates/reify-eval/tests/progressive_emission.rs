@@ -350,12 +350,7 @@ fn progressive_emission_does_not_recompute_downstream_value() {
             .set_freshness(&a_node, Freshness::Final),
         "a must still be in the cache"
     );
-    freshness_walk::propagate_freshness_only(
-        engine.cache_store_mut(),
-        &reverse_index,
-        &changed,
-        4,
-    );
+    freshness_walk::propagate_freshness_only(engine.cache_store_mut(), &reverse_index, &changed, 4);
 
     // ── "No value recomputation" witness ──────────────────────────────────
     // Snapshot b's entry AFTER the full emission cycle.

@@ -189,7 +189,10 @@ fn faces_by_normal_box_top_face_one_degree_tolerance_returns_one() {
         "faces_by_normal([0,0,1], 1°) on a 10x10x10 box should return exactly the top face, got {} ids",
         result.len()
     );
-    assert_ne!(result[0], box_id, "filtered id must differ from the source box");
+    assert_ne!(
+        result[0], box_id,
+        "filtered id must differ from the source box"
+    );
 }
 
 #[test]

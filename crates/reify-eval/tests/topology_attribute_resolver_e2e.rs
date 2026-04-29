@@ -39,8 +39,8 @@ use reify_eval::{
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    FeatureId, GeometryHandleId, GeometryOp, RealizationNodeId, Role, SourceSpan, TopologyAttribute,
-    TopologyAttributeTable, Value,
+    FeatureId, GeometryHandleId, GeometryOp, RealizationNodeId, Role, SourceSpan,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -161,13 +161,8 @@ fn resolver_dispatches_against_seeded_box_attributes() {
         feature_id: None,
     };
     let mut diagnostics = Vec::new();
-    let result_b = resolve_unique_by_attribute(
-        &table,
-        &face_handles,
-        &query_label,
-        span,
-        &mut diagnostics,
-    );
+    let result_b =
+        resolve_unique_by_attribute(&table, &face_handles, &query_label, span, &mut diagnostics);
     assert_eq!(
         result_b,
         AttributeResolution::Resolved(face_handles[0]),
@@ -203,13 +198,8 @@ fn resolver_dispatches_against_seeded_box_attributes() {
         feature_id: None,
     };
     let mut diagnostics = Vec::new();
-    let result_c = resolve_unique_by_attribute(
-        &table,
-        &[unallocated],
-        &query_any,
-        span,
-        &mut diagnostics,
-    );
+    let result_c =
+        resolve_unique_by_attribute(&table, &[unallocated], &query_any, span, &mut diagnostics);
     assert_eq!(
         result_c,
         AttributeResolution::FallbackToComputed,

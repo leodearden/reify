@@ -18,7 +18,9 @@
 
 use reify_eval::topology_selectors;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, SourceSpan, StepKind, Value};
+use reify_types::{
+    FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, SourceSpan, StepKind, Value,
+};
 
 // ─── edges_by_length_with_tags ────────────────────────────────────────────────
 
@@ -52,16 +54,26 @@ fn edges_by_length_with_tags_matches_baseline_and_records_per_edge_tags() {
     assert_eq!(baseline, vec![e3], "baseline: expected only the 10mm edge");
 
     let mut table = FeatureTagTable::default();
-    let tagged =
-        topology_selectors::edges_by_length_with_tags(&mut kernel, &mut table, parent, parent_tag, 0.008, 0.012)
-            .expect("edges_by_length_with_tags should succeed");
+    let tagged = topology_selectors::edges_by_length_with_tags(
+        &mut kernel,
+        &mut table,
+        parent,
+        parent_tag,
+        0.008,
+        0.012,
+    )
+    .expect("edges_by_length_with_tags should succeed");
     assert_eq!(
         tagged, baseline,
         "tagged variant must return the same filtered vec as baseline"
     );
 
     // (b) every extracted edge (pre-filter) has a tag.
-    assert_eq!(table.len(), 3, "table must have one entry per extracted edge");
+    assert_eq!(
+        table.len(),
+        3,
+        "table must have one entry per extracted edge"
+    );
     for &id in &[e2, e3, e4] {
         assert!(
             table.lookup(id).is_some(),
@@ -129,19 +141,33 @@ fn faces_by_area_with_tags_matches_baseline_and_records_per_face_tags() {
     // (a) baseline and tagged variant must return the same filtered vec.
     let baseline = topology_selectors::faces_by_area(&mut kernel, parent, 2.0e-4, 5.0e-4)
         .expect("faces_by_area should succeed");
-    assert_eq!(baseline, vec![f3], "baseline: expected only the 4.0e-4 m^2 face");
+    assert_eq!(
+        baseline,
+        vec![f3],
+        "baseline: expected only the 4.0e-4 m^2 face"
+    );
 
     let mut table = FeatureTagTable::default();
-    let tagged =
-        topology_selectors::faces_by_area_with_tags(&mut kernel, &mut table, parent, parent_tag, 2.0e-4, 5.0e-4)
-            .expect("faces_by_area_with_tags should succeed");
+    let tagged = topology_selectors::faces_by_area_with_tags(
+        &mut kernel,
+        &mut table,
+        parent,
+        parent_tag,
+        2.0e-4,
+        5.0e-4,
+    )
+    .expect("faces_by_area_with_tags should succeed");
     assert_eq!(
         tagged, baseline,
         "tagged variant must return the same filtered vec as baseline"
     );
 
     // (b) every extracted face (pre-filter) has a tag.
-    assert_eq!(table.len(), 3, "table must have one entry per extracted face");
+    assert_eq!(
+        table.len(),
+        3,
+        "table must have one entry per extracted face"
+    );
     for &id in &[f2, f3, f4] {
         assert!(
             table.lookup(id).is_some(),
@@ -211,9 +237,13 @@ fn edges_parallel_to_with_tags_matches_baseline_and_records_per_edge_tags() {
     };
 
     // (a) baseline and tagged variant must return the same filtered vec.
-    let baseline =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1f64.to_radians())
-            .expect("edges_parallel_to should succeed");
+    let baseline = topology_selectors::edges_parallel_to(
+        &mut kernel,
+        parent,
+        [1.0, 0.0, 0.0],
+        1f64.to_radians(),
+    )
+    .expect("edges_parallel_to should succeed");
     assert_eq!(
         baseline,
         vec![e2, e3],
@@ -236,7 +266,11 @@ fn edges_parallel_to_with_tags_matches_baseline_and_records_per_edge_tags() {
     );
 
     // (b) every extracted edge (pre-filter, including rejected +y) has a tag.
-    assert_eq!(table.len(), 3, "table must have one entry per extracted edge");
+    assert_eq!(
+        table.len(),
+        3,
+        "table must have one entry per extracted edge"
+    );
     for &id in &[e2, e3, e4] {
         assert!(
             table.lookup(id).is_some(),
@@ -361,7 +395,10 @@ fn edges_by_length_with_tags_bad_query_reply_propagates_error() {
                 "error message should mention 'non-real value', got: {msg:?}"
             );
         }
-        other => panic!("expected Err(QueryFailed) for non-real EdgeLength, got {:?}", other),
+        other => panic!(
+            "expected Err(QueryFailed) for non-real EdgeLength, got {:?}",
+            other
+        ),
     }
     // Tags are recorded pre-filter (before query_per_subshape runs), so the
     // table IS populated even on a query error.
@@ -410,7 +447,10 @@ fn faces_by_area_with_tags_bad_query_reply_propagates_error() {
                 "error message should mention 'non-real value', got: {msg:?}"
             );
         }
-        other => panic!("expected Err(QueryFailed) for non-real SurfaceArea, got {:?}", other),
+        other => panic!(
+            "expected Err(QueryFailed) for non-real SurfaceArea, got {:?}",
+            other
+        ),
     }
     // Tags are recorded pre-filter, so table IS populated even on query error.
     assert_eq!(

@@ -146,14 +146,7 @@ pub(crate) fn seed_primitive_attributes_for_handle(
     }
     let face_handles = kernel.extract_faces(result_handle)?;
     let edge_handles = kernel.extract_edges(result_handle)?;
-    seed_primitive_attributes(
-        table,
-        kernel,
-        &face_handles,
-        &edge_handles,
-        feature_id,
-        op,
-    )
+    seed_primitive_attributes(table, kernel, &face_handles, &edge_handles, feature_id, op)
 }
 
 /// Returns `true` for `GeometryOp` variants that this seeder originates
@@ -483,15 +476,8 @@ mod tests {
         // entries (rather than seeding garbage), but a fall-through into
         // the kernel for a Cylinder-shaped variant would still surface
         // via the kernel's `MockKernel::query` error.
-        seed_primitive_attributes(
-            &mut table,
-            &mut kernel,
-            &[],
-            &[],
-            &feature_id(),
-            op,
-        )
-        .expect("seed_primitive_attributes must return Ok(()) for non-seedable variants");
+        seed_primitive_attributes(&mut table, &mut kernel, &[], &[], &feature_id(), op)
+            .expect("seed_primitive_attributes must return Ok(()) for non-seedable variants");
         assert!(
             table.is_empty(),
             "seed_primitive_attributes must not write any entries for non-seedable variants; \

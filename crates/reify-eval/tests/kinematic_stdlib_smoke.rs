@@ -190,7 +190,10 @@ fn kinematic_stdlib_smoke_e2e() {
     // t_id = transform3_identity()
     let t_id = get_value(v, "t_id");
     let (t_id_rot, t_id_trans) = match t_id {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("t_id: expected Transform, got {other:?}"),
     };
     assert_orientation_close(t_id_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "t_id rotation");
@@ -199,7 +202,10 @@ fn kinematic_stdlib_smoke_e2e() {
     // t_unit_x = transform3(r_id, vec3(1mm, 0mm, 0mm))
     let t_ux = get_value(v, "t_unit_x");
     let (t_ux_rot, t_ux_trans) = match t_ux {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("t_unit_x: expected Transform, got {other:?}"),
     };
     assert_orientation_close(t_ux_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "t_unit_x rotation");
@@ -209,10 +215,18 @@ fn kinematic_stdlib_smoke_e2e() {
     // t_composed = compose(t_unit_x, t_unit_x) → translation [2mm, 0, 0]
     let t_co = get_value(v, "t_composed");
     let (t_co_rot, t_co_trans) = match t_co {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("t_composed: expected Transform, got {other:?}"),
     };
-    assert_vec3_close(t_co_trans, [2e-3, 0.0, 0.0], 1e-15, "t_composed translation");
+    assert_vec3_close(
+        t_co_trans,
+        [2e-3, 0.0, 0.0],
+        1e-15,
+        "t_composed translation",
+    );
     // Dimension-tag regression guard: compose must preserve LENGTH on the
     // translation. A regression that silently drops dim tags through the
     // eval pipeline would make the value-equality assert above pass while
@@ -236,7 +250,10 @@ fn kinematic_stdlib_smoke_e2e() {
     // producing non-identical results for these specific inputs.
     let t_co_op = get_value(v, "t_composed_op");
     let (t_co_op_rot, t_co_op_trans) = match t_co_op {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("t_composed_op: expected Transform, got {other:?}"),
     };
     // Extract expected rotation/translation from the already-verified t_co values.
@@ -284,11 +301,7 @@ fn kinematic_stdlib_smoke_e2e() {
         other => panic!("t_inv: expected Transform, got {other:?}"),
     };
     assert_vec3_close(t_in_trans, [-1e-3, 0.0, 0.0], 1e-15, "t_inv translation");
-    assert_vec3_dim(
-        t_in_trans,
-        DimensionVector::LENGTH,
-        "t_inv translation dim",
-    );
+    assert_vec3_dim(t_in_trans, DimensionVector::LENGTH, "t_inv translation dim");
 
     // ── transform_log/exp round-trip on t_unit_x ──────────────────────
     // twist = log(t_unit_x) → Map { angular=[0,0,0], linear=[1mm,0,0] }
@@ -300,21 +313,25 @@ fn kinematic_stdlib_smoke_e2e() {
     // Twist convention: angular=DIMENSIONLESS (axis*angle in radians, but
     // dimensionless because the angle is implicit), linear=LENGTH because
     // t_unit_x's translation was LENGTH-typed.
-    assert_vec3_dim(
-        ang,
-        DimensionVector::DIMENSIONLESS,
-        "twist.angular dim",
-    );
+    assert_vec3_dim(ang, DimensionVector::DIMENSIONLESS, "twist.angular dim");
     assert_vec3_dim(lin, DimensionVector::LENGTH, "twist.linear dim");
 
     // t_round = exp(twist) → ≈ t_unit_x (Transform with identity rotation, [1mm,0,0] translation)
     let t_round = get_value(v, "t_round");
     let (t_round_rot, t_round_trans) = match t_round {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("t_round: expected Transform, got {other:?}"),
     };
     assert_orientation_close(t_round_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "t_round rotation");
-    assert_vec3_close(t_round_trans, [1e-3, 0.0, 0.0], 1e-15, "t_round translation");
+    assert_vec3_close(
+        t_round_trans,
+        [1e-3, 0.0, 0.0],
+        1e-15,
+        "t_round translation",
+    );
 
     // ── joint_jacobian on prismatic and revolute ──────────────────────
     let prism_jac = get_value(v, "prism_jac");
@@ -357,12 +374,19 @@ fn kinematic_stdlib_smoke_e2e() {
         Some(&Value::String("fixed".to_string())),
         "fixed_joint: kind field should be 'fixed'"
     );
-    assert_eq!(fj_map.len(), 1, "fixed_joint: Map should have exactly 1 key");
+    assert_eq!(
+        fj_map.len(),
+        1,
+        "fixed_joint: Map should have exactly 1 key"
+    );
 
     // fixed_xform = transform_at(fixed_joint, 0) → identity Transform
     let fixed_xform = get_value(v, "fixed_xform");
     let (fx_rot, fx_trans) = match fixed_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("fixed_xform: expected Transform, got {other:?}"),
     };
     assert_orientation_close(fx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "fixed_xform rotation");

@@ -695,10 +695,8 @@ impl Engine {
         // composed fields. Field-to-field deps land via the augmented
         // `Lambda { captures, .. }` injected by the compiler's
         // `phase_augment_composed_captures` post-pass.
-        let reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
-            &snapshot.graph,
-            &module.fields,
-        );
+        let reverse_index =
+            ReverseDependencyIndex::build_from_graph_and_fields(&snapshot.graph, &module.fields);
         let trace_map = crate::deps::build_trace_map_and_fields(&snapshot.graph, &module.fields);
 
         // Set up demand registry: demand all value cells, constraints, and
@@ -2139,11 +2137,7 @@ impl Engine {
                     .expect("sorted_lets ⊆ let_traces.keys() by detect_let_cycle invariant");
                 let (gate_freshness, gate_cause) = self
                     .cache
-                    .derive_output_freshness_from_trace_with_cause(
-                        trace_peek,
-                        false,
-                        version_id,
-                    );
+                    .derive_output_freshness_from_trace_with_cause(trace_peek, false, version_id);
                 if matches!(gate_freshness, Freshness::Pending { .. })
                     && let Some(cause) = gate_cause
                     && self.cache.mark_pending_with_cause(&node_id, cause)
@@ -2152,12 +2146,7 @@ impl Engine {
                     // never reached for this iteration; the existing
                     // entry's `dependency_trace` is preserved (stable
                     // structure invariant during incremental re-eval).
-                    let _ = take_trace(
-                        &mut let_traces,
-                        &node_id,
-                        "sorted_lets",
-                        "let_traces",
-                    );
+                    let _ = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
@@ -2184,15 +2173,12 @@ impl Engine {
             // `if force_panic { panic!(…) }` branch are both
             // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
             // are absent in production builds.
-            let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
-                .with_determinacy(&snapshot.values);
+            let eval_ctx =
+                eval_ctx_with_meta(values, functions, meta_map).with_determinacy(&snapshot.values);
             let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 #[cfg(any(test, feature = "test-instrumentation"))]
                 if force_panic {
-                    panic!(
-                        "test-instrumentation forced panic for {:?}",
-                        cell_id
-                    );
+                    panic!("test-instrumentation forced panic for {:?}", cell_id);
                 }
                 reify_expr::eval_expr(expr, &eval_ctx)
             }));
@@ -2214,12 +2200,7 @@ impl Engine {
                     // its freshness in place. We write a stub Undef result so
                     // the entry exists; mark_failed then overrides freshness
                     // to Failed { error }.
-                    let trace = take_trace(
-                        &mut let_traces,
-                        &node_id,
-                        "sorted_lets",
-                        "let_traces",
-                    );
+                    let trace = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
                     self.cache.record_evaluation_propagating_freshness(
                         node_id.clone(),
                         CachedResult::Value(Value::Undef, DeterminacyState::Determined),

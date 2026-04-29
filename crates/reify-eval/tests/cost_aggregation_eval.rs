@@ -63,7 +63,10 @@ structure def MoneySumProbe {
         )
     });
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - 30.0).abs() < 1e-9,
                 "expected total si_value 30.0 (10USD + 20USD), got {}",
@@ -93,9 +96,8 @@ structure def MoneySumProbe {
 /// the raw 36.88.
 #[test]
 fn cost_aggregation_example_evaluates_total_cost_to_expected_money_value() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
-        panic!("failed to read examples/cost_aggregation.ri: {}", e)
-    });
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("failed to read examples/cost_aggregation.ri: {}", e));
 
     let compiled = parse_and_compile_with_stdlib(&source);
     let mut engine = make_simple_engine();
@@ -119,7 +121,10 @@ fn cost_aggregation_example_evaluates_total_cost_to_expected_money_value() {
         )
     });
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - 36.88).abs() < 1e-9,
                 "expected total_cost si_value 36.88 (CapScrew 0.12*24 + MotorMount 8.50*4), \

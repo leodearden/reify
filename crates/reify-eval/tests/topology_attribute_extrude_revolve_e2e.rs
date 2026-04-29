@@ -268,13 +268,10 @@ fn collect_attrs_at(
 #[test]
 fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entries() {
     let module = extrude_module();
-    let result_faces: Vec<GeometryHandleId> =
-        (5000..5010).map(GeometryHandleId).collect();
-    let result_edges: Vec<GeometryHandleId> =
-        (6000..6020).map(GeometryHandleId).collect();
+    let result_faces: Vec<GeometryHandleId> = (5000..5010).map(GeometryHandleId).collect();
+    let result_edges: Vec<GeometryHandleId> = (6000..6020).map(GeometryHandleId).collect();
     let profile_faces = vec![GeometryHandleId(5050)];
-    let profile_edges: Vec<GeometryHandleId> =
-        (5060..5064).map(GeometryHandleId).collect();
+    let profile_edges: Vec<GeometryHandleId> = (5060..5064).map(GeometryHandleId).collect();
     let history = SweepOpHistoryRecords {
         face_generated: vec![
             HistoryRecord {
@@ -381,13 +378,10 @@ fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entr
 #[test]
 fn engine_build_partial_revolve_populates_cap_start_end_and_revolved_face() {
     let module = revolve_module();
-    let result_faces: Vec<GeometryHandleId> =
-        (7000..7008).map(GeometryHandleId).collect();
-    let result_edges: Vec<GeometryHandleId> =
-        (8000..8016).map(GeometryHandleId).collect();
+    let result_faces: Vec<GeometryHandleId> = (7000..7008).map(GeometryHandleId).collect();
+    let result_edges: Vec<GeometryHandleId> = (8000..8016).map(GeometryHandleId).collect();
     let profile_faces = vec![GeometryHandleId(7050)];
-    let profile_edges: Vec<GeometryHandleId> =
-        (7060..7064).map(GeometryHandleId).collect();
+    let profile_edges: Vec<GeometryHandleId> = (7060..7064).map(GeometryHandleId).collect();
     let history = SweepOpHistoryRecords {
         face_generated: vec![
             HistoryRecord {
@@ -491,13 +485,10 @@ fn engine_build_partial_revolve_populates_cap_start_end_and_revolved_face() {
 #[test]
 fn engine_build_full_revolve_populates_only_revolved_face_no_caps() {
     let module = revolve_module();
-    let result_faces: Vec<GeometryHandleId> =
-        (9000..9008).map(GeometryHandleId).collect();
-    let result_edges: Vec<GeometryHandleId> =
-        (10000..10016).map(GeometryHandleId).collect();
+    let result_faces: Vec<GeometryHandleId> = (9000..9008).map(GeometryHandleId).collect();
+    let result_edges: Vec<GeometryHandleId> = (10000..10016).map(GeometryHandleId).collect();
     let profile_faces = vec![GeometryHandleId(9050)];
-    let profile_edges: Vec<GeometryHandleId> =
-        (9060..9064).map(GeometryHandleId).collect();
+    let profile_edges: Vec<GeometryHandleId> = (9060..9064).map(GeometryHandleId).collect();
     let history = SweepOpHistoryRecords {
         face_generated: vec![
             HistoryRecord {

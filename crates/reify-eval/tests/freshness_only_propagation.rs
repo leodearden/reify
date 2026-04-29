@@ -14,7 +14,9 @@ use reify_eval::freshness_walk;
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, ContentHash, ErrorRef, Freshness, ModulePath, ResultRef, Type, Value, ValueCellId};
+use reify_types::{
+    BinOp, ContentHash, ErrorRef, Freshness, ModulePath, ResultRef, Type, Value, ValueCellId,
+};
 use std::collections::HashSet;
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.
@@ -79,7 +81,11 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
 
     // Snapshot b's entry BEFORE any freshness manipulation. b's result_hash
     // and Value are what we use as the "no value evaluator ran" witness.
-    let b_before = engine.cache_store().get(&b_node).expect("b cached after eval").clone();
+    let b_before = engine
+        .cache_store()
+        .get(&b_node)
+        .expect("b cached after eval")
+        .clone();
     let b_before_hash = b_before.result_hash;
     let b_before_value = match &b_before.result {
         CachedResult::Value(v, _) => v.clone(),
@@ -158,14 +164,21 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
     // Snapshot b's entry AFTER the walk and assert "no value evaluator
     // calls fired" by checking byte-identical equality of the value-bearing
     // fields against the pre-walk snapshot.
-    let b_after = engine.cache_store().get(&b_node).expect("b still cached").clone();
+    let b_after = engine
+        .cache_store()
+        .get(&b_node)
+        .expect("b still cached")
+        .clone();
     assert_eq!(
         b_after.result_hash, b_before_hash,
         "b's result_hash must be byte-identical (the walk MUST NOT recompute values)"
     );
     let b_after_value = match &b_after.result {
         CachedResult::Value(v, _) => v.clone(),
-        other => panic!("expected b to still have CachedResult::Value, got {:?}", other),
+        other => panic!(
+            "expected b to still have CachedResult::Value, got {:?}",
+            other
+        ),
     };
     assert_eq!(
         b_after_value, b_before_value,
@@ -208,7 +221,11 @@ fn walk_over_engine_propagates_failed_upstream_to_pending_with_cause() {
 
     // Snapshot b's entry BEFORE any freshness manipulation — used as the
     // "no value evaluator ran" witness (result_hash + inner Value).
-    let b_before = engine.cache_store().get(&b_node).expect("b cached after eval").clone();
+    let b_before = engine
+        .cache_store()
+        .get(&b_node)
+        .expect("b cached after eval")
+        .clone();
     let b_before_hash: ContentHash = b_before.result_hash;
     let b_before_value = match &b_before.result {
         CachedResult::Value(v, _) => v.clone(),
@@ -318,7 +335,11 @@ fn walk_over_engine_forwards_pending_cause_through_chain() {
     let b_node = NodeId::Value(b_id.clone());
 
     // Snapshot b's entry BEFORE any freshness manipulation.
-    let b_before = engine.cache_store().get(&b_node).expect("b cached after eval").clone();
+    let b_before = engine
+        .cache_store()
+        .get(&b_node)
+        .expect("b cached after eval")
+        .clone();
     let b_before_hash: ContentHash = b_before.result_hash;
     let b_before_value = match &b_before.result {
         CachedResult::Value(v, _) => v.clone(),
