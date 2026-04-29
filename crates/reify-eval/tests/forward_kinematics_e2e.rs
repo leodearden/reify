@@ -226,3 +226,58 @@ fn forward_kinematics_two_link_chain_e2e() {
     );
     assert!(cz.abs() < 1e-6, "com.z should be 0, got {cz}");
 }
+
+/// Source: an errored mechanism produced by giving the same `at` joint two
+/// distinct parents (closed_chain).  `mechanism::body()` short-circuits the
+/// second-body call to a Map carrying `error="closed_chain"`, and any
+/// downstream `snapshot()` / `transform_of(...)` must surface that as Undef.
+///
+/// This pins that the parse → compile → eval pipeline does NOT collapse the
+/// errored mechanism into a "successful" Snapshot value-cell — Undef must
+/// propagate through the full evaluation, not be silently swallowed.
+const ERRORED_SOURCE: &str = r#"
+structure def KinematicErrored {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "a", j_x, j_a)
+    // Reusing j_x with a different parent (j_b) closes the chain →
+    // m2 carries `error="closed_chain"`.
+    let m2 = body(m1, "b", j_x, j_b)
+
+    let s = snapshot(m2, [])
+}
+"#;
+
+/// Errored-mechanism propagation: when source code constructs a closed-chain
+/// mechanism, `snapshot(m, ...)` must yield Undef through the full eval
+/// pipeline.  Mirrors `snapshot_on_errored_mechanism_returns_undef` (unit
+/// test) but asserts the same invariant survives parse → compile → eval.
+#[test]
+fn forward_kinematics_errored_mechanism_propagates_undef_e2e() {
+    let compiled = parse_and_compile_with_stdlib(ERRORED_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Eval should not raise an Error-severity diagnostic just because a
+    // builtin returned Undef — Undef is a first-class value, not an error.
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // s must be Undef — the errored mechanism short-circuits `snapshot()`.
+    let s_id = ValueCellId::new("KinematicErrored", "s");
+    let s = result
+        .values
+        .get(&s_id)
+        .unwrap_or_else(|| panic!("KinematicErrored.s not found in eval result"));
+    assert!(
+        matches!(s, Value::Undef),
+        "snapshot() on an errored mechanism must propagate Undef through \
+         the eval pipeline, got {s:?}"
+    );
+}
