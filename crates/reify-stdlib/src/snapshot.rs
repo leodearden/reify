@@ -906,4 +906,103 @@ mod tests {
             "snapshot() on errored mechanism must yield Undef"
         );
     }
+
+    // ── bodies(snapshot) accessor ─────────────────────────────────────────
+
+    /// Helper: build a 2-body Snapshot whose bodies sit at distinct
+    /// world positions.
+    ///
+    /// Layout:
+    /// - body 0: solid="a", at j_neg (prismatic +X with offset bound to -0.5m
+    ///   via binding) — world translation (-0.5, 0, 0)
+    /// - body 1: solid="b", at j_pos (prismatic +X bound to +0.5m) —
+    ///   world translation (+0.5, 0, 0)
+    ///
+    /// Each body has parent=world and identity pose, so the body's
+    /// `world_transform` equals its `at` joint's transform.  Returns
+    /// the Snapshot and the two joints (so accessor tests can build
+    /// expected-transform fixtures via `transform_at`).
+    fn make_two_body_snapshot() -> (Value, Value, Value) {
+        let j_neg = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(-1.0))),
+                    upper: Some(Box::new(Value::length(0.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_pos = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("a".to_string()), j_neg.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("b".to_string()), j_pos.clone()],
+        );
+
+        let bind_neg = eval_builtin("bind", &[j_neg.clone(), Value::length(-0.5)]);
+        let bind_pos = eval_builtin("bind", &[j_pos.clone(), Value::length(0.5)]);
+
+        let s = eval_builtin("snapshot", &[m2, Value::List(vec![bind_neg, bind_pos])]);
+        (s, j_neg, j_pos)
+    }
+
+    /// `bodies(s)` returns a `Value::List` of body ids in insertion
+    /// order (matching the source mechanism's bodies list).
+    #[test]
+    fn bodies_returns_id_list_in_insertion_order() {
+        let (s, _, _) = make_two_body_snapshot();
+        let result = eval_builtin("bodies", &[s]);
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Int(0), Value::Int(1)]),
+            "bodies(s) should return [Int(0), Int(1)]"
+        );
+    }
+
+    /// `bodies(empty_snapshot)` returns the empty `Value::List`.
+    #[test]
+    fn bodies_on_empty_snapshot_returns_empty_list() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let s = eval_builtin("snapshot", &[m0, Value::List(vec![])]);
+        let result = eval_builtin("bodies", &[s]);
+        assert_eq!(
+            result,
+            Value::List(vec![]),
+            "bodies on an empty snapshot should be the empty List"
+        );
+    }
+
+    /// `bodies()` validation surface: arity != 1 and non-snapshot
+    /// args[0] both return `Value::Undef`.
+    #[test]
+    fn bodies_validation_returns_undef() {
+        let (s, _, _) = make_two_body_snapshot();
+        // Wrong arity (0, 2 args)
+        assert!(eval_builtin("bodies", &[]).is_undef());
+        assert!(eval_builtin("bodies", &[s.clone(), Value::Int(0)]).is_undef());
+        // Non-snapshot first arg: Real, world sentinel, mechanism
+        assert!(eval_builtin("bodies", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("bodies", &[eval_builtin("world", &[])]).is_undef());
+        let m0 = eval_builtin("mechanism", &[]);
+        assert!(eval_builtin("bodies", &[m0]).is_undef());
+    }
 }
