@@ -36,9 +36,19 @@
 //! `per_joint_jacobian_local` are wired but not yet composed into chain
 //! Jacobians via SE(3) adjoint transport — that optimisation is a v0.2
 //! follow-up.  Singularity detection: Gauss-Newton normal-equations matrix
-//! is factorised inline with LDLᵀ; min-pivot below 1e-12 dispatches to
+//! is factorised inline with LDLᵀ; min-pivot below
+//! [`NewtonConfig::singularity_pivot_eps`] dispatches to
 //! [`NewtonOutcome::Singular`] (the signal task 9 will translate into the
 //! PRD's `W_KINEMATIC_SINGULARITY` warning).
+//!
+//! Robustness scope (v0.2 task 2 MVP): the solver is pure Gauss-Newton with
+//! no damping or line search.  A monotonic-divergence guard (see
+//! [`DIVERGENCE_LIMIT`]) bails out early as `NotConverged` if the residual
+//! norm increases for several iterations in a row, preventing run-away
+//! step-uphill behaviour from exhausting `max_iters` on the wrong iterate.
+//! Levenberg–Marquardt damping and an Armijo line search are tracked as
+//! follow-ups for v0.2 task 9 once real-world non-linear loops surface
+//! cases the bare Gauss-Newton step cannot handle.
 //!
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
 //! full design rationale.
@@ -46,7 +56,8 @@
 /// Convergence and iteration knobs for [`newton_solve`] / [`solve_loop_closure`].
 ///
 /// PRD defaults — `tol_pos_m = 1e-6` (1 µm position), `tol_rot_rad = 1e-6`
-/// (1 µrad rotation), `max_iters = 50`.  See
+/// (1 µrad rotation), `max_iters = 50`,
+/// `singularity_pivot_eps = 1e-12`.  See
 /// `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver".
 #[derive(Debug, Clone)]
 pub struct NewtonConfig {
@@ -56,6 +67,12 @@ pub struct NewtonConfig {
     pub tol_rot_rad: f64,
     /// Maximum Newton iterations before giving up.
     pub max_iters: usize,
+    /// Min absolute LDLᵀ pivot below which the normal-equations matrix
+    /// `JᵀJ` is treated as singular (rank-deficient Jacobian).  Tightening
+    /// this admits more conditioned-but-near-singular problems; loosening
+    /// it triggers the [`NewtonOutcome::Singular`] path earlier.  Default
+    /// `1e-12` is a conservative double-precision threshold.
+    pub singularity_pivot_eps: f64,
 }
 
 impl Default for NewtonConfig {
@@ -64,6 +81,7 @@ impl Default for NewtonConfig {
             tol_pos_m: 1e-6,
             tol_rot_rad: 1e-6,
             max_iters: 50,
+            singularity_pivot_eps: DEFAULT_SINGULARITY_PIVOT_EPS,
         }
     }
 }
@@ -131,8 +149,15 @@ pub enum NewtonOutcome {
     },
 }
 
-/// Pivot threshold below which the LDLᵀ factor is treated as singular.
-const SINGULARITY_PIVOT_EPS: f64 = 1e-12;
+/// Default pivot threshold below which the LDLᵀ factor is treated as
+/// singular.  Used by [`NewtonConfig::default()`] —
+/// [`NewtonConfig::singularity_pivot_eps`] is the user-configurable knob.
+const DEFAULT_SINGULARITY_PIVOT_EPS: f64 = 1e-12;
+
+/// Number of consecutive residual-norm increases that trigger the
+/// divergence guard in [`newton_solve`].  See the module-level rustdoc
+/// "Robustness scope" note for rationale.
+const DIVERGENCE_LIMIT: usize = 3;
 
 /// Compute split position / rotation residual sub-norms over a stacked twist
 /// residual.
@@ -162,10 +187,14 @@ fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
 /// matrix supplied as `n×n` row-major nested `Vec`, using inlined LDLᵀ
 /// factorisation.
 ///
-/// Returns `None` if the min absolute pivot drops below
-/// [`SINGULARITY_PIVOT_EPS`] — that is the signal that the Gauss-Newton
-/// normal-equations matrix `JᵀJ` is rank-deficient.
-fn solve_normal_equations(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+/// Returns `None` if the min absolute pivot drops below `pivot_eps` — that
+/// is the signal that the Gauss-Newton normal-equations matrix `JᵀJ` is
+/// rank-deficient.  Callers should pass [`NewtonConfig::singularity_pivot_eps`].
+fn solve_normal_equations(
+    mut a: Vec<Vec<f64>>,
+    mut b: Vec<f64>,
+    pivot_eps: f64,
+) -> Option<Vec<f64>> {
     let n = a.len();
     if n == 0 {
         return Some(vec![]);
@@ -181,7 +210,7 @@ fn solve_normal_equations(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f
         for (k, row) in a.iter().enumerate().take(j) {
             d_jj -= a[j][k] * a[j][k] * row[k];
         }
-        if d_jj.abs() < SINGULARITY_PIVOT_EPS {
+        if d_jj.abs() < pivot_eps {
             return None;
         }
         a[j][j] = d_jj;
@@ -229,8 +258,19 @@ fn solve_normal_equations(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f
 ///
 /// Convergence rule: per [`NewtonConfig::tol_pos_m`] / [`NewtonConfig::tol_rot_rad`],
 /// we converge iff `linear_norm < tol_pos_m` AND `angular_norm < tol_rot_rad`.
-/// Singularity rule: per the inlined LDLᵀ pivot check (1e-12 threshold), any
-/// rank-deficient `JᵀJ` returns `NewtonOutcome::Singular`.
+/// Singularity rule: per the inlined LDLᵀ pivot check
+/// ([`NewtonConfig::singularity_pivot_eps`] threshold), any rank-deficient
+/// `JᵀJ` returns `NewtonOutcome::Singular`.
+///
+/// Divergence guard: if the combined residual norm strictly increases for
+/// [`DIVERGENCE_LIMIT`] consecutive iterations, the solver bails out early
+/// as `NotConverged` with the iterate at which divergence was detected.
+/// This prevents an undamped Gauss-Newton step from running uphill until
+/// `max_iters` is reached.  See the module-level "Robustness scope" note.
+///
+/// Result invariant: `NotConverged.x` and `NotConverged.residual_norm` always
+/// correspond to the same iterate — `residual_norm` is the combined norm
+/// (`sqrt(linear² + angular²)`) of `r(x)` at the returned `x`.
 pub fn newton_solve<F>(
     x0: Vec<f64>,
     mut residual_jac: F,
@@ -242,6 +282,8 @@ where
     let mut x = x0;
     let n = x.len();
     let mut last_residual_norm = f64::INFINITY;
+    let mut prev_combined_norm: Option<f64> = None;
+    let mut diverging_streak: usize = 0;
 
     for iter in 0..config.max_iters {
         let (r, j_cols) = match residual_jac(&x) {
@@ -254,25 +296,53 @@ where
             }
         };
         let (ang_norm, lin_norm) = position_rotation_norms(&r);
-        last_residual_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
+        let combined_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
+        last_residual_norm = combined_norm;
+
         if lin_norm < config.tol_pos_m && ang_norm < config.tol_rot_rad {
             return NewtonOutcome::Converged {
                 x,
                 iters: iter,
-                residual_norm: last_residual_norm,
+                residual_norm: combined_norm,
             };
         }
+
+        // Divergence guard: residual strictly grew vs. previous iter.  After
+        // DIVERGENCE_LIMIT consecutive growths, bail out — undamped
+        // Gauss-Newton has no recovery, so iterating further only wastes
+        // work and risks numerical blow-up.  See module rustdoc.
+        if let Some(prev) = prev_combined_norm {
+            if combined_norm > prev {
+                diverging_streak += 1;
+                if diverging_streak >= DIVERGENCE_LIMIT {
+                    return NewtonOutcome::NotConverged {
+                        x,
+                        residual_norm: combined_norm,
+                    };
+                }
+            } else {
+                diverging_streak = 0;
+            }
+        }
+        prev_combined_norm = Some(combined_norm);
+
         // Build JᵀJ (n×n) and Jᵀr (n).
+        // TODO(perf, suggestion #5): JᵀJ is allocated as a fresh vec-of-vecs
+        // per iteration, and the full n×n matrix is populated even though it
+        // is symmetric.  For multi-loop / many-DOF problems this defeats
+        // cache locality.  A future pass should reuse a single contiguous
+        // `Vec<f64>` scratch buffer (length n*n) across iterations and only
+        // populate j>=i, mirroring the rest.
         if j_cols.len() != n {
             return NewtonOutcome::NotConverged {
                 x,
-                residual_norm: last_residual_norm,
+                residual_norm: combined_norm,
             };
         }
         if j_cols.iter().any(|c| c.len() != r.len()) {
             return NewtonOutcome::NotConverged {
                 x,
-                residual_norm: last_residual_norm,
+                residual_norm: combined_norm,
             };
         }
         let mut jtj: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
@@ -293,7 +363,7 @@ where
         }
         // Solve JᵀJ · δx = -Jᵀr.
         let neg_jtr: Vec<f64> = jtr.iter().map(|v| -v).collect();
-        let dx = match solve_normal_equations(jtj, neg_jtr) {
+        let dx = match solve_normal_equations(jtj, neg_jtr, config.singularity_pivot_eps) {
             Some(d) => d,
             None => {
                 return NewtonOutcome::Singular { x, iters: iter };
@@ -304,13 +374,14 @@ where
         }
     }
 
-    // After max_iters: re-evaluate the residual at the final x so the
-    // reported norm reflects the final iterate (not the last pre-step
-    // residual).  If max_iters == 0, last_residual_norm is INFINITY; we
-    // need to evaluate once at x0 to honour the user contract.
-    if config.max_iters == 0
-        && let Some((r, _)) = residual_jac(&x)
-    {
+    // After max_iters (without convergence): re-evaluate r(x) at the
+    // final iterate so `residual_norm` matches the returned `x`.  Without
+    // this, `last_residual_norm` would reflect r(x_{N-1}) — the iterate
+    // BEFORE the final Newton step — which is misleading to callers that
+    // use `residual_norm` to gauge how close they got to a solution.
+    // Fall back to `last_residual_norm` if the closure refuses the final
+    // iterate (e.g. a chain that goes Value::Undef under the new values).
+    if let Some((r, _)) = residual_jac(&x) {
         let (ang_norm, lin_norm) = position_rotation_norms(&r);
         last_residual_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
     }
@@ -439,6 +510,7 @@ mod tests {
         assert_eq!(cfg.tol_pos_m, 1e-6);
         assert_eq!(cfg.tol_rot_rad, 1e-6);
         assert_eq!(cfg.max_iters, 50);
+        assert_eq!(cfg.singularity_pivot_eps, 1e-12);
     }
 
     #[test]
@@ -447,10 +519,12 @@ mod tests {
             tol_pos_m: 1e-3,
             tol_rot_rad: 1e-4,
             max_iters: 100,
+            singularity_pivot_eps: 1e-10,
         };
         assert_eq!(cfg.tol_pos_m, 1e-3);
         assert_eq!(cfg.tol_rot_rad, 1e-4);
         assert_eq!(cfg.max_iters, 100);
+        assert_eq!(cfg.singularity_pivot_eps, 1e-10);
     }
 
     #[test]
@@ -541,6 +615,7 @@ mod tests {
             tol_pos_m: 1e-6,
             tol_rot_rad: 1e-6,
             max_iters: 0,
+            ..NewtonConfig::default()
         };
         let outcome = newton_solve(vec![0.5], linear_1d_closure(0.3), &cfg);
         match outcome {
@@ -605,6 +680,91 @@ mod tests {
         }
     }
 
+    // ── Residual-consistency invariant (suggestion 1) ───────────────────
+
+    #[test]
+    fn newton_solve_not_converged_residual_matches_returned_x() {
+        // Force NotConverged with max_iters > 0 and a residual that the
+        // Newton step won't fully resolve at the final iterate (we
+        // construct a linear residual whose root is reachable, but cap
+        // max_iters before the convergence-check iteration runs).
+        //
+        // Linear residual r(x) = x[0] - 0.3, J = 1.  From x0 = 0.5:
+        //   iter 0:  r(0.5) = 0.2 → step → x = 0.3
+        //   iter 1:  r(0.3) = 0.0 → would converge.
+        // With max_iters = 1 we exit AFTER stepping at iter 0 without
+        // the iter-1 convergence check.  The returned x must be 0.3,
+        // and the returned residual_norm must be the norm of r(x=0.3) = 0,
+        // NOT the pre-step r(x=0.5) = 0.2.
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-12,
+            tol_rot_rad: 1e-12,
+            max_iters: 1,
+            ..NewtonConfig::default()
+        };
+        let outcome = newton_solve(vec![0.5], linear_1d_closure(0.3), &cfg);
+        match outcome {
+            NewtonOutcome::NotConverged { x, residual_norm } => {
+                assert!((x[0] - 0.3).abs() < 1e-9, "expected x≈0.3, got {}", x[0]);
+                // r(0.3) = 0 → residual_norm should be ≈ 0, not 0.2.
+                assert!(
+                    residual_norm < 1e-9,
+                    "residual_norm should match r(x_final)=0, got {residual_norm}"
+                );
+            }
+            other => panic!("expected NotConverged, got {other:?}"),
+        }
+    }
+
+    // ── Divergence guard (suggestion 2) ─────────────────────────────────
+
+    #[test]
+    fn newton_solve_divergence_guard_bails_out_on_monotonic_growth() {
+        // Construct a closure whose residual grows monotonically with
+        // each iteration, simulating an undamped Gauss-Newton run-away.
+        //
+        // We track call count via a Cell so the closure is FnMut.  Each
+        // call returns a residual whose linear x-component is `2.0 *
+        // call_count` and whose Jacobian column is identity (so the
+        // Newton step = -residual, but we ignore the geometry — what
+        // matters is that the *next* call sees a larger residual).
+        let mut iter_counter: usize = 0;
+        let closure = move |_x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            iter_counter += 1;
+            // Residual grows linearly with iteration.
+            let r = vec![0.0, 0.0, 0.0, iter_counter as f64, 0.0, 0.0];
+            // Identity-ish J — the algebraic step doesn't matter, the
+            // closure's residual ramp drives divergence detection.
+            let j = vec![vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0]];
+            Some((r, j))
+        };
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 50,
+            ..NewtonConfig::default()
+        };
+        let outcome = newton_solve(vec![0.0], closure, &cfg);
+        match outcome {
+            NewtonOutcome::NotConverged { residual_norm, .. } => {
+                // Guard fires after DIVERGENCE_LIMIT (=3) consecutive
+                // increases.  We start at iter 0 with norm 1, then 2, 3, 4.
+                // First "increase" tracked at iter 1 (1→2), streak=1.
+                // Iter 2 (2→3): streak=2.  Iter 3 (3→4): streak=3 → bail.
+                // Final norm should be at iter 3's residual = 4.
+                assert!(
+                    residual_norm.is_finite(),
+                    "expected finite residual_norm at divergence bail-out"
+                );
+                assert!(
+                    residual_norm < 50.0,
+                    "divergence guard must bail before max_iters; got residual_norm {residual_norm}"
+                );
+            }
+            other => panic!("expected NotConverged from divergence guard, got {other:?}"),
+        }
+    }
+
     #[test]
     fn newton_solve_closure_returning_none_returns_not_converged() {
         let cfg = NewtonConfig::default();
@@ -656,6 +816,7 @@ mod tests {
             tol_pos_m: 1e-6,
             tol_rot_rad: 1e-6,
             max_iters: 0,
+            ..NewtonConfig::default()
         };
 
         let outcome = solve_loop_closure(
@@ -728,6 +889,7 @@ mod tests {
             tol_pos_m: 1e-3,
             tol_rot_rad: 1e-3,
             max_iters: 100,
+            ..NewtonConfig::default()
         };
 
         let outcome = solve_loop_closure(
@@ -764,6 +926,7 @@ mod tests {
             tol_pos_m: 1e-9,
             tol_rot_rad: 1e-9,
             max_iters: 100,
+            ..NewtonConfig::default()
         };
 
         let outcome = solve_loop_closure(
@@ -801,6 +964,7 @@ mod tests {
             tol_pos_m: 1e-3,
             tol_rot_rad: 1e-3,
             max_iters: 0,
+            ..NewtonConfig::default()
         };
         let closure = |_x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
             // [ω_x, ω_y, ω_z, v_x, v_y, v_z]
