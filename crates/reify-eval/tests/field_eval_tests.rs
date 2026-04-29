@@ -6,10 +6,13 @@
 use std::sync::Arc;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_test_support::{eval_source, make_engine, parse_and_compile};
+use reify_test_support::{
+    collect_errors, eval_source, make_engine, make_simple_engine, parse_and_compile,
+    parse_and_compile_with_stdlib,
+};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    ResolvedFunction, Type, Value, ValueCellId, ValueMap,
+    InterpolationKind, ResolvedFunction, SampledGridKind, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
@@ -1143,4 +1146,104 @@ fn eval_sample_von_mises_spatially_varying_field() {
     let sample_low = make_sample_at(vm_expr_low, 25.0, Type::Real);
     let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
     assert_real_approx(&result_low, sigma_b, "point=25 (<50): von Mises");
+}
+
+// ── Task 2341 step-9: eval-time elaboration of sampled field ────────────────
+//
+// Pins the v0.2 contract for `engine_eval::elaborate_field`'s Sampled arm:
+// the five-key config is evaluated, the resulting Values parse into a
+// `SampledField`, and the field's `lambda: Arc<Value>` slot holds
+// `Value::SampledField(...)`. This test is the elaboration pin — sample
+// dispatch is exercised separately by step-11/13/15/17 tests below.
+//
+// The source uses stdlib builtins `bbox` and `point3` to construct a
+// `Value::BoundingBox`. Reify's `bbox(...)` constructor takes only 3D
+// `Point3` arguments today; for `Regular1D` fields the eval-time parser
+// uses just the x-component of the bounding box's min/max points.
+
+#[test]
+fn eval_sampled_field_elaborates_to_sampled_field_value() {
+    let source = r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "f");
+    let field_val = result
+        .values
+        .get(&field_id)
+        .unwrap_or_else(|| panic!("field 'f' not found in eval result values"));
+
+    let lambda = match field_val {
+        Value::Field {
+            source,
+            lambda,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "expected FieldSourceKind::Sampled, got: {:?}",
+                source
+            );
+            lambda
+        }
+        other => panic!("expected Value::Field, got: {:?}", other),
+    };
+
+    let sf = match lambda.as_ref() {
+        Value::SampledField(sf) => sf,
+        other => panic!(
+            "expected Value::SampledField in field.lambda for Sampled source, got: {:?}",
+            other
+        ),
+    };
+
+    assert_eq!(sf.name, "f", "SampledField.name");
+    assert_eq!(
+        sf.kind,
+        SampledGridKind::Regular1D,
+        "expected Regular1D for grid = \"RegularGrid1\""
+    );
+    assert_eq!(
+        sf.bounds_min,
+        vec![0.0],
+        "Regular1D bounds_min should be the x-component of the bbox min"
+    );
+    assert_eq!(
+        sf.bounds_max,
+        vec![2.0],
+        "Regular1D bounds_max should be the x-component of the bbox max"
+    );
+    assert_eq!(sf.spacing, vec![1.0], "spacing in SI metres");
+    assert_eq!(
+        sf.interpolation,
+        InterpolationKind::Linear,
+        "interpolation = \"Linear\""
+    );
+    assert_eq!(
+        sf.data,
+        vec![0.0, 1.0, 2.0],
+        "data in SI units, row-major"
+    );
+    assert_eq!(
+        sf.axis_grids.len(),
+        1,
+        "Regular1D should have one axis grid"
+    );
+    // axis_grids[0] is linspace(0, 2, spacing=1) → [0.0, 1.0, 2.0]
+    let grid0 = &sf.axis_grids[0];
+    assert_eq!(grid0.len(), 3, "axis_grids[0] should have 3 nodes");
+    for (i, &expected) in [0.0_f64, 1.0, 2.0].iter().enumerate() {
+        assert!(
+            (grid0[i] - expected).abs() < 1e-12,
+            "axis_grids[0][{i}]: expected {expected}, got {}",
+            grid0[i]
+        );
+    }
 }
