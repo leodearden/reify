@@ -10,9 +10,28 @@
 //!   leaves of the feature tree (primitives), which have no parent.
 //!
 //! Scope of this task (#2574):
-//! - `GeometryOp::Box` — face entries seeded; edge entries arrive in step-7/8.
+//! - `GeometryOp::Box` / `GeometryOp::Sphere` — every face seeded
+//!   `Role::Side`; every edge seeded `Role::NewEdge`. `local_index` is
+//!   the construction-order (TopExp) position within `(feature_id, role)`.
+//! - `GeometryOp::Cylinder` — faces classified into `Cap(Top)`, `Cap(Bottom)`,
+//!   or `Side` via `GeometryQuery::FaceNormal`'s z-component (each role
+//!   appears exactly once, so `local_index` is always 0); every edge seeded
+//!   `Role::NewEdge`.
 //! - All other variants are intentional no-ops; the dispatch is widened in
-//!   subsequent steps.
+//!   subsequent tasks.
+//!
+//! ## Edge-role convention (PRD line 66, construction-order tiebreak)
+//!
+//! All edges of a primitive constructor receive `Role::NewEdge` with
+//! `local_index` equal to their position in `kernel.extract_edges(handle)`'s
+//! TopExp-ordered output. Per PRD line 66 the local-index ordering should be
+//! "deterministic geometric ordering with construction-order tiebreak only
+//! for genuine geometric ties"; primitives have no per-edge geometric
+//! distinguisher (a box's 12 edges are all axis-aligned, a cylinder's
+//! cap circles are isomorphic to each other, etc.), so construction-order
+//! is the canonical ordering. Cap-vs-side edge classification (e.g. for
+//! cylinders the cap-circle edges are different from the seam) is left to
+//! later refinement tasks if/when selector vocabulary requires it.
 //!
 //! Variants intentionally deferred:
 //! - `GeometryOp::Tube` — composed via `boolean_cut` at the kernel layer; its
@@ -89,15 +108,13 @@ pub fn seed_primitive_attributes(
     feature_id: &FeatureId,
     op: &GeometryOp,
 ) -> Result<(), QueryError> {
-    // Suppress unused-variable warning while only face arms are wired —
-    // edge arms (step-8) consume `edge_handles`.
-    let _ = edge_handles;
     match op {
         // Box and Sphere have byte-identical face-seeding semantics — every
         // face gets Role::Side with construction-order local_index. The
         // shared helper avoids per-arm drift if the invariant changes.
         GeometryOp::Box { .. } | GeometryOp::Sphere { .. } => {
             record_all_faces_as_side(table, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
         }
         GeometryOp::Cylinder { .. } => {
@@ -120,12 +137,14 @@ pub fn seed_primitive_attributes(
                     },
                 );
             }
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
         }
-        // All other variants are intentional no-ops at this step. Subsequent
-        // steps widen the dispatch to cover Sphere (step-6), and edge
-        // seeding (step-8). Sweep / local-feature / boolean variants land
-        // in tasks 5, 7, 8 of the PRD.
+        // All other variants are intentional no-ops. Per-op auto-population
+        // for sweep / local-feature / boolean variants lands in PRD tasks 5,
+        // 7, 8 respectively. The `_ => Ok(())` arm is the closed-extension
+        // contract pin tested by the unit tests in step-9/10: the seeder
+        // never calls into the kernel for non-primitive variants.
         _ => Ok(()),
     }
 }
@@ -150,6 +169,34 @@ fn record_all_faces_as_side(
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role: Role::Side,
+                local_index: idx as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+}
+
+/// Record every supplied edge handle as `Role::NewEdge` with construction-
+/// order `local_index` and the task-1 default metadata
+/// (`user_label = None`, `mod_history = Vec::new()`).
+///
+/// Shared by the Box, Cylinder, and Sphere arms — all primitive constructors
+/// classify their construction edges uniformly as `NewEdge`. PRD line 66
+/// permits construction-order tiebreak (TopExp order) for genuine geometric
+/// ties, which is the case here (a primitive's edges have no per-edge
+/// geometric distinguisher in the current selector vocabulary).
+fn record_all_edges_as_new_edge(
+    table: &mut TopologyAttributeTable,
+    edge_handles: &[GeometryHandleId],
+    feature_id: &FeatureId,
+) {
+    for (idx, &edge_id) in edge_handles.iter().enumerate() {
+        table.record(
+            edge_id,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role: Role::NewEdge,
                 local_index: idx as u32,
                 user_label: None,
                 mod_history: Vec::new(),

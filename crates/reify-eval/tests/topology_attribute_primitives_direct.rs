@@ -102,12 +102,14 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
     )
     .expect("seed_primitive_attributes for a 10mm box should succeed");
 
-    // After step-1 (faces only) the table should hold exactly 6 entries —
-    // edges-only seeding lands in step-8 and is pinned in step-7's test.
+    // The faces-only assertion this test originally pinned was relaxed in
+    // step-8 once the seeder also writes edges (step-7's test covers the
+    // edges contract). The 6-face contract is still pinned per-handle below;
+    // the table simply holds 6 face entries plus 12 edge entries now.
     assert_eq!(
         table.len(),
-        6,
-        "step-1 contract: exactly 6 face entries (no edges yet)"
+        6 + edge_handles.len(),
+        "box: 6 face entries + edge entries (step-1 face contract preserved)"
     );
 
     let mut local_indices: HashSet<u32> = HashSet::new();
@@ -206,12 +208,13 @@ fn seed_primitive_attributes_cylinder_classifies_cap_top_cap_bottom_and_side() {
     )
     .expect("seed_primitive_attributes for a cylinder should succeed");
 
-    // Step-3 contract: faces only — exactly 3 entries, one per face. (Edges
-    // are step-7's contract.)
+    // Step-3 originally pinned faces only; step-8 widened to include edges
+    // too (covered by step-7's dedicated test). The 3-face contract is still
+    // pinned per-role below; the table simply also holds the cylinder's edges.
     assert_eq!(
         table.len(),
-        3,
-        "step-3 contract: exactly 3 face entries (no edges yet)"
+        3 + edge_handles.len(),
+        "cylinder: 3 face entries + edge entries (step-3 face contract preserved)"
     );
 
     let mut cap_top_count = 0;
@@ -307,11 +310,14 @@ fn seed_primitive_attributes_sphere_records_role_side_for_each_face() {
     )
     .expect("seed_primitive_attributes for a sphere should succeed");
 
-    // Step-5 contract: faces only — one entry per face. Edges arrive in step-8.
+    // Step-5 originally pinned faces only; step-8 widened to include edges
+    // (covered by step-7's dedicated test). The "one entry per face" contract
+    // is still pinned per-handle below; the table simply also holds any edges
+    // OCCT produces for the sphere.
     assert_eq!(
         table.len(),
-        face_handles.len(),
-        "step-5 contract: exactly one face entry per extracted face"
+        face_handles.len() + edge_handles.len(),
+        "sphere: one entry per face + one per edge (step-5 face contract preserved)"
     );
 
     for (idx, &face_id) in face_handles.iter().enumerate() {
