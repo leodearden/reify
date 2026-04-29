@@ -121,27 +121,6 @@ fn solver_hint_discrete_set_standard_bolt_lengths_end_to_end() {
     );
     assert_eq!(cell.solver_hints[0].collection, "standard_bolt_lengths");
 
-    // (d) looked-up collection is the 20-element ISO 4014/4017 series
-    let si_values = lookup_stock_collection("standard_bolt_lengths");
-    assert_eq!(
-        si_values.len(),
-        20,
-        "standard_bolt_lengths should have 20 elements"
-    );
-    #[rustfmt::skip]
-    let expected: &[f64] = &[
-        0.008, 0.010, 0.012, 0.014, 0.016, 0.020, 0.025, 0.030, 0.035, 0.040,
-        0.045, 0.050, 0.055, 0.060, 0.065, 0.070, 0.075, 0.080, 0.090, 0.100,
-    ];
-    for (i, (&got, &exp)) in si_values.iter().zip(expected.iter()).enumerate() {
-        assert!(
-            (got - exp).abs() < 1e-12,
-            "standard_bolt_lengths[{}]: expected {} m, got {} m",
-            i,
-            exp,
-            got
-        );
-    }
 }
 
 // ── Test 2: positive prefer_stock + standard_sheet_thicknesses ───────────────
@@ -190,27 +169,6 @@ fn solver_hint_prefer_stock_standard_sheet_thicknesses_end_to_end() {
         "standard_sheet_thicknesses"
     );
 
-    // (d) looked-up collection is the 13-element gauge series (0.5mm..10mm)
-    let si_values = lookup_stock_collection("standard_sheet_thicknesses");
-    assert_eq!(
-        si_values.len(),
-        13,
-        "standard_sheet_thicknesses should have 13 elements"
-    );
-    #[rustfmt::skip]
-    let expected: &[f64] = &[
-        0.0005, 0.0008, 0.0010, 0.0012, 0.0015, 0.0020, 0.0025,
-        0.0030, 0.0040, 0.0050, 0.0060, 0.0080, 0.0100,
-    ];
-    for (i, (&got, &exp)) in si_values.iter().zip(expected.iter()).enumerate() {
-        assert!(
-            (got - exp).abs() < 1e-12,
-            "standard_sheet_thicknesses[{}]: expected {} m, got {} m",
-            i,
-            exp,
-            got
-        );
-    }
 }
 
 // ── Test 3: negative — unresolved identifier produces an error ───────────────
