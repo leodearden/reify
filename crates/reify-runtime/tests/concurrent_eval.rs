@@ -3597,6 +3597,105 @@ mod execute_with_config_tests {
         );
     }
 
+    /// Regression-pin: OnlyRunOnFinalInputs node with a real CacheStore whose inputs
+    /// are all-Final must be SPAWNED (not skipped), and must appear in `result.changed`.
+    ///
+    /// This test pins the wiring of the precomputed `has_non_final` flag at both former
+    /// call sites in `execute_with_config` under the conditions where the refactor's
+    /// invariant is observable:
+    ///
+    /// - Skip predicate: `if override_ == OnlyRunOnFinalInputs && has_non_final_flag`
+    ///   must evaluate to `false` (all-Final → flag = false → NOT skipped).
+    /// - Spawn loop: `has_intermediate` must be `false` (same flag, once computed).
+    ///
+    /// Complement: `test_only_run_on_final_inputs_skipped` covers the symmetric
+    /// all-Intermediate case.  `test_only_run_on_final_inputs_runs_when_final` covers
+    /// the same all-Final path but with `cache: None`.  This test is the only witness
+    /// for `cache: Some(&cs)` + all-Final + OnlyRunOnFinalInputs.
+    #[tokio::test]
+    async fn test_only_run_on_final_inputs_runs_when_final_with_cache() {
+        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let e = "FINAL_CACHE";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let upstream = ValueCellId::new(e, "upstream");
+
+        // Build CacheStore: upstream at Final, node_b reads it (also Final).
+        // node_a is absent → has_non_final_inputs returns false (vacuously runnable).
+        let mut cs = CacheStore::new();
+        cs.put(
+            NodeId::Value(upstream.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace { reads: vec![] },
+                VersionId(1),
+            ),
+        );
+        cs.put(
+            node_b.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace { reads: vec![upstream.clone()] },
+                VersionId(1),
+            ),
+        );
+
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        // node_b has OnlyRunOnFinalInputs override
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+        // cache: Some(&cs) — has_non_final_inputs will be called against the real
+        // CacheStore and must return false (all inputs are Final).
+        let config = SchedulerConfig {
+            node_overrides,
+            cache: Some(&cs),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_b must be spawned (not skipped) because all inputs are Final.
+        // This pins the skip predicate: flag = false → OnlyRunOnFinalInputs does not block.
+        assert!(
+            result.changed.contains(&node_b),
+            "node_b should be in changed (OnlyRunOnFinalInputs with all-Final cache inputs → runs normally)"
+        );
+        assert!(
+            !result.skipped.contains(&node_b),
+            "node_b should NOT be in skipped (inputs are Final, gating does not block)"
+        );
+
+        // node_a should also be evaluated (default CommitIfSlow, absent from cache)
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (default CommitIfSlow)"
+        );
+    }
+
     /// Test that a type-level override in NodePolicyOverrides routes through resolve().
     ///
     /// Two Value nodes at the same level; `set_type(NodeKind::Value, OnlyRunOnFinalInputs)`
