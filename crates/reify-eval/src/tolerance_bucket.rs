@@ -85,24 +85,26 @@ impl<V> ToleranceBucket<V> {
         if self.entries.iter().any(|(cached_tol, _)| *cached_tol <= tol) {
             return false;
         }
-        // Locate the insertion index: count of entries strictly less than `tol`.
-        // `partition_point` returns the index where the predicate transitions from
-        // true to false, which is exactly the number of entries with t < tol.
-        let idx = self
-            .entries
-            .partition_point(|(t, _)| t.partial_cmp(&tol).expect("finite tolerances are total-ordered") == std::cmp::Ordering::Less);
-        self.entries.insert(idx, (tol, val));
-        // Evict loosest (largest cached_tol) entries when cardinality exceeds the cap.
+        // The rejection rule above guarantees every remaining entry has `cached_tol > tol`,
+        // so the new entry is strictly tighter than all existing ones and belongs at
+        // index 0 — the ascending-sorted front of the Vec.  No `partition_point` needed.
+        self.entries.insert(0, (tol, val));
+        debug_assert!(
+            self.entries.windows(2).all(|w| w[0].0 <= w[1].0),
+            "ToleranceBucket: sorted-ascending invariant violated after insert"
+        );
+        // Evict the loosest (largest cached_tol) entry when cardinality exceeds the cap.
         //
-        // Because entries are sorted ascending, the loosest entries are at the end of
-        // the Vec.  `truncate` from the end is O(1) per dropped entry.
+        // Because entries are sorted ascending, the loosest entry is always at the end.
+        // Each successful insert adds exactly one entry, so at most one entry needs to be
+        // evicted per call — `pop` reads directly as "drop the loosest if over cap".
         //
-        // Eviction never invalidates future cache hits: any request that the evicted
-        // entry would have satisfied is also satisfied by every tighter entry that
-        // remains in the bucket (by the partial-order rule `cached_tol <= requested_tol`).
-        // Evicted entries are therefore always redundant at the moment of eviction.
+        // Eviction never invalidates future cache hits: any request the evicted entry
+        // would have satisfied is also satisfied by every tighter entry that remains
+        // (by the partial-order rule `cached_tol <= requested_tol`).  Evicted entries
+        // are therefore always redundant at the moment of eviction.
         if self.entries.len() > SOFT_CAPACITY {
-            self.entries.truncate(SOFT_CAPACITY);
+            self.entries.pop();
         }
         true
     }
