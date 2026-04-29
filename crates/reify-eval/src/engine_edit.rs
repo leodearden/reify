@@ -672,8 +672,9 @@ impl Drop for PendingWarmSeedsGuard<'_> {
             target: "reify_eval::engine_edit",
             count = len,
             "PendingWarmSeedsGuard safety-net fired: re-donating staged \
-             warm-pool entries from Drop (panic between edit_source steps 4c–14b \
-             in production; benign in unit tests)"
+             warm-pool entries from Drop (fires if a panic unwinds between \
+             staging warm seeds and the post-eval drain in production; \
+             benign in unit tests)"
         );
         for (nid, (state, stamp)) in self.map.drain() {
             self.pool.donate_preserving_lru(nid, state, stamp);
@@ -4389,9 +4390,10 @@ mod tests {
     /// `count` carries — but does **not** assert the message-body wording.
     /// It mirrors `auto_trim_warn_omits_invariant_current_len_field` in
     /// `warm_pool.rs` by combining a positive `contains_key("count")` check,
-    /// a value-pin `assert_eq!(…, Some("1"))`, and a discriminating negative
-    /// `!contains_key("cap")` (the auto-trim WARN's signature field must not
-    /// appear in the drop path).
+    /// a value-pin `assert_eq!(…, Some(1usize))` (parsed from the captured
+    /// string to be invariant to visitor integer formatting), and a
+    /// discriminating negative `!contains_key("cap")` (the auto-trim WARN's
+    /// signature field must not appear in the drop path).
     ///
     /// Structured fields with actionable, varying values are the unit of
     /// log-aggregator queries; body wording is verified by code review.
@@ -4426,13 +4428,14 @@ mod tests {
              got fields: {event_fields:?}"
         );
 
-        // Value-pin: `count` must equal "1" for a single staged entry.
-        // The test-support visitor captures integer fields via record_debug,
-        // which stores format!("{value:?}"); for usize, Debug == Display == "1".
+        // Value-pin: `count` must equal 1 for a single staged entry.
+        // Parsed from the captured string to be invariant to visitor formatting
+        // (whether the visitor stores "1" or "1usize" in a future version,
+        // parse::<usize>() resolves both correctly).
         assert_eq!(
-            event_fields.get("count").map(String::as_str),
-            Some("1"),
-            "safety-net WARN's `count` field must equal \"1\" for a single staged \
+            event_fields.get("count").and_then(|s| s.parse::<usize>().ok()),
+            Some(1usize),
+            "safety-net WARN's `count` field must parse as 1 for a single staged \
              entry; got fields: {event_fields:?}"
         );
 
