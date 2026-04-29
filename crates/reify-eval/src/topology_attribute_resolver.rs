@@ -261,6 +261,23 @@ mod tests {
         }
     }
 
+    /// Variant of [`attr`] that takes an explicit `feature_id`. Used by
+    /// step-13's feature_id-constraint test.
+    fn attr_for(
+        feature_id: FeatureId,
+        role: Role,
+        local_index: u32,
+        user_label: Option<&str>,
+    ) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id,
+            role,
+            local_index,
+            user_label: user_label.map(|s| s.to_string()),
+            mod_history: Vec::new(),
+        }
+    }
+
     fn h(n: u64) -> GeometryHandleId {
         GeometryHandleId(n)
     }
@@ -465,5 +482,100 @@ mod tests {
             resolve_unique_by_attribute(&table_b, &candidates, &query, span(), &mut diagnostics);
         assert_eq!(result_b, AttributeResolution::FallbackToComputed);
         assert!(diagnostics.is_empty());
+    }
+
+    /// step-13 — `feature_id` constrains BOTH match branches.
+    ///
+    /// Two candidates share `(role, local_index) = (Role::Side, 0)` but
+    /// originate from different features ("Boss" vs "Slot"). With no
+    /// feature_id constraint the role/idx branch would multi-match and
+    /// emit Unresolved; constraining by feature_id picks the unique
+    /// candidate from the named feature.
+    ///
+    /// Sub-cases:
+    /// - feature_id=Some("Slot") → Resolved(handle 71)
+    /// - feature_id=Some("Boss") → Resolved(handle 70)
+    /// - feature_id=Some("Other") → Unresolved with zero-match diagnostic
+    ///   (entries exist on both candidates but neither matches "Other"
+    ///   — distinguishes from FallbackToComputed which fires only when
+    ///   NO candidate carries an entry).
+    #[test]
+    fn feature_id_constraint_filters_candidates() {
+        let boss = FeatureId::new("Boss");
+        let slot = FeatureId::new("Slot");
+        let other = FeatureId::new("Other");
+        let mut table = TopologyAttributeTable::default();
+        table.record(h(70), attr_for(boss.clone(), Role::Side, 0, None));
+        table.record(h(71), attr_for(slot.clone(), Role::Side, 0, None));
+        let candidates = [h(70), h(71)];
+
+        // (a) feature_id=Slot → handle 71.
+        let query_slot = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: Some(slot.clone()),
+        };
+        let mut diagnostics = Vec::new();
+        let result_slot = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query_slot,
+            span(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_slot,
+            AttributeResolution::Resolved(h(71)),
+            "feature_id=Slot should pick handle 71"
+        );
+        assert!(diagnostics.is_empty());
+
+        // (b) feature_id=Boss → handle 70.
+        let query_boss = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: Some(boss.clone()),
+        };
+        let mut diagnostics = Vec::new();
+        let result_boss = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query_boss,
+            span(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_boss,
+            AttributeResolution::Resolved(h(70)),
+            "feature_id=Boss should pick handle 70"
+        );
+        assert!(diagnostics.is_empty());
+
+        // (c) feature_id=Other → Unresolved with zero-match diagnostic.
+        // Entries exist on candidates (so we are NOT in the
+        // imported-geometry FallbackToComputed arm), but no candidate
+        // matches feature_id="Other".
+        let query_other = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: Some(other),
+        };
+        let mut diagnostics = Vec::new();
+        let result_other = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query_other,
+            span(),
+            &mut diagnostics,
+        );
+        assert_eq!(result_other, AttributeResolution::Unresolved);
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 0 sub-shapes"),
+            "message should contain 'matched 0 sub-shapes', got: {}",
+            diag.message
+        );
     }
 }
