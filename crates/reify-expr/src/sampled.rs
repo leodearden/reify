@@ -14,6 +14,17 @@
 //! the surrounding `Engine::eval` to drain. When absent, warnings are
 //! silently dropped — preserving the old `EvalContext::simple` semantics
 //! used by ad-hoc tests.
+//!
+//! End-to-end behaviour of these contracts is pinned by the integration
+//! tests in `crates/reify-eval/tests/field_eval_tests.rs`:
+//! * `sample_sampled_field_out_of_bounds_returns_undef_and_emits_warning_once`
+//!   — OOB → `Value::Undef` and exactly one `W_FIELD_OUT_OF_BOUNDS` across
+//!   N OOB calls on the same field.
+//! * `sample_sampled_field_with_rbf_emits_interpolation_deferred_warning_and_falls_back_to_linear`
+//!   — RBF / Kriging emit `W_INTERPOLATION_DEFERRED` and the value matches
+//!   the Linear-fallback baseline.
+//! * 1D / 2D / 3D positive-path tests confirm the fully-supported methods
+//!   (Linear / NearestNeighbor / Cubic) leave `result.diagnostics` empty.
 
 use std::sync::atomic::Ordering;
 
