@@ -58,6 +58,66 @@ pub fn chain_transform(chain: &[Value], values: &[f64]) -> Option<Value> {
     Some(acc)
 }
 
+/// Compute the SE(3) loop-closure residual twist between two chains.
+///
+/// Returns `transform_log(transform_inverse(T_a) ⋅ T_b)` flattened to a
+/// 6-element `[f64; 6]` in `[ω_x, ω_y, ω_z, v_x, v_y, v_z]` ordering.
+///
+/// Returns `None` if either chain produces a `None` from `chain_transform`,
+/// or if any underlying SE(3) operation produces `Value::Undef`.
+pub fn loop_residual_twist(
+    chain_a: &[Value],
+    vals_a: &[f64],
+    chain_b: &[Value],
+    vals_b: &[f64],
+) -> Option<[f64; 6]> {
+    let t_a = chain_transform(chain_a, vals_a)?;
+    let t_b = chain_transform(chain_b, vals_b)?;
+    let t_a_inv = eval_builtin("transform_inverse", &[t_a]);
+    if t_a_inv.is_undef() {
+        return None;
+    }
+    let t_rel = eval_builtin("transform_compose", &[t_a_inv, t_b]);
+    if t_rel.is_undef() {
+        return None;
+    }
+    let twist_map = eval_builtin("transform_log", &[t_rel]);
+    if twist_map.is_undef() {
+        return None;
+    }
+    twist_map_to_array(&twist_map)
+}
+
+/// Convert a twist `Value::Map { angular, linear }` into the canonical
+/// `[ω_x, ω_y, ω_z, v_x, v_y, v_z]` `[f64; 6]` layout.
+///
+/// Reads each Vector3 component via `Value::as_f64` (accepts `Real`, `Int`,
+/// `Scalar`).  Returns `None` if either field is missing, malformed, or any
+/// component is non-numeric.
+fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
+    let map = match twist_map {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let read_vec3 = |key: &str| -> Option<[f64; 3]> {
+        match map.get(&Value::String(key.to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => {
+                let a = items[0].as_f64()?;
+                let b = items[1].as_f64()?;
+                let c = items[2].as_f64()?;
+                if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+                    return None;
+                }
+                Some([a, b, c])
+            }
+            _ => None,
+        }
+    };
+    let ang = read_vec3("angular")?;
+    let lin = read_vec3("linear")?;
+    Some([ang[0], ang[1], ang[2], lin[0], lin[1], lin[2]])
+}
+
 /// Wrap a raw f64 motion variable in a dimensioned `Value` appropriate for
 /// the joint kind: `Value::length` for prismatic, `Value::angle` for revolute.
 /// Coupling joints delegate to their parent's kind.
