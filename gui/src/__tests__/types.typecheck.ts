@@ -16,6 +16,7 @@ import type {
   ValueUpdate,
   ConstraintUpdate,
   DiagnosticInfo,
+  EntityTreeNode,
 } from '../types';
 import { convertRawMesh } from '../types';
 
@@ -54,7 +55,25 @@ const value: ValueData = {
   determinacy: 'determined',
   entity_path: 'Bracket.width',
   kind: 'Param',
+  freshness: 'final',
 };
+
+// --- ValueData.freshness is string typed (not unknown) ---
+const _freshStr: string = value.freshness;
+void _freshStr;
+
+// --- ValueData.freshness is required (not optional) ---
+// @ts-expect-error freshness is a required field; omitting it is a type error
+const _valueNoFreshness: ValueData = {
+  cell_id: 'cell_002',
+  name: 'height',
+  value: '100.0',
+  unit: 'mm',
+  determinacy: 'determined',
+  entity_path: 'Bracket.height',
+  kind: 'Param',
+};
+void _valueNoFreshness;
 
 // --- ConstraintData ---
 const constraint: ConstraintData = {
@@ -99,6 +118,21 @@ const diag: DiagnosticInfo = {
   message: 'geometry error: kernel failure',
   code: null,
 };
+
+// --- EntityTreeNode ---
+const node: EntityTreeNode = {
+  entity_path: 'Bracket',
+  kind: 'structure',
+  type_name: null,
+  has_mesh: false,
+  trait_geometry: false,
+  freshness: 'final',
+  children: [],
+};
+
+// --- EntityTreeNode.freshness is string typed ---
+const _nodeFreshStr: string = node.freshness;
+void _nodeFreshStr;
 
 // --- GuiState ---
 const state: GuiState = {
@@ -178,6 +212,7 @@ void constraint;
 void constraintWithLabel;
 void loc;
 void file;
+void node;
 void state;
 void idle;
 void evaluating;

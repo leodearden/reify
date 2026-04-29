@@ -1532,17 +1532,25 @@ impl Engine {
                     }
 
                     // Check cache reuse (not dirty, no override)
+                    // Preserve existing freshness (Failed/Pending) — see the
+                    // analogous let-cell block comment for rationale (arch §7.1/§9.2).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
                     {
                         let val = val.clone();
+                        let preserved_freshness = entry.freshness.clone();
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache
-                            .record_evaluation(node_id.clone(), result, version, trace);
+                        self.cache.record_evaluation_with_freshness(
+                            node_id.clone(),
+                            result,
+                            version,
+                            trace,
+                            preserved_freshness,
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -1659,17 +1667,25 @@ impl Engine {
 
                     // Check if cache entry still exists and is not dirty.
                     // For params without overrides, we can reuse cached values.
+                    // Preserve existing freshness (Failed/Pending) — see the
+                    // let-cell block comment for rationale (arch §7.1/§9.2).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
                     {
                         let val = val.clone();
+                        let preserved_freshness = entry.freshness.clone();
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache
-                            .record_evaluation(node_id.clone(), result, version, trace);
+                        self.cache.record_evaluation_with_freshness(
+                            node_id.clone(),
+                            result,
+                            version,
+                            trace,
+                            preserved_freshness,
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -1811,16 +1827,33 @@ impl Engine {
                     // Check if cache entry still exists and is not dirty.
                     // If so, the node's dependencies haven't changed, so we
                     // can reuse the cached result and update its basis_version.
+                    //
+                    // Freshness preservation: use `record_evaluation_with_freshness`
+                    // with the *existing* freshness rather than `record_evaluation`
+                    // (which hard-codes `Freshness::Final`). A cell that is
+                    // `Failed { error }` or `Pending { .. }` because of a prior
+                    // computation failure must retain that state when it is not
+                    // re-evaluated — its inputs have not changed, so the failure
+                    // would recur if the cell were executed. Resetting to `Final`
+                    // would silently discard the failure state and suppress the
+                    // freshness-diagnostic block that reads these states downstream.
+                    // See arch §7.1 / §9.2 and task #2337 step-18.
                     if !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
                     {
                         let val = val.clone();
+                        let preserved_freshness = entry.freshness.clone();
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache
-                            .record_evaluation(node_id.clone(), result, version, trace);
+                        self.cache.record_evaluation_with_freshness(
+                            node_id.clone(),
+                            result,
+                            version,
+                            trace,
+                            preserved_freshness,
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,

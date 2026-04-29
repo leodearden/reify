@@ -66,6 +66,7 @@ const sampleValue: ValueData = {
   determinacy: 'determined',
   entity_path: 'Bracket.width',
   kind: 'Param',
+  freshness: 'final',
 };
 
 const sampleConstraint: ConstraintData = {
@@ -132,6 +133,7 @@ describe('engineStore', () => {
         determinacy: 'determined',
         entity_path: 'Bracket.height',
         kind: 'Param',
+        freshness: 'final',
       };
       applyValueUpdates([sampleValue, value2]);
       expect(state.values['cell_001']).toEqual(sampleValue);
@@ -223,9 +225,9 @@ describe('engineStore', () => {
       expect(updateCount).toBe(0);
 
       const values: ValueData[] = [
-        { cell_id: 'a', name: 'a', value: '1', unit: 'mm', determinacy: 'determined', entity_path: 'X.a', kind: 'Param' },
-        { cell_id: 'b', name: 'b', value: '2', unit: 'mm', determinacy: 'determined', entity_path: 'X.b', kind: 'Param' },
-        { cell_id: 'c', name: 'c', value: '3', unit: 'mm', determinacy: 'determined', entity_path: 'X.c', kind: 'Param' },
+        { cell_id: 'a', name: 'a', value: '1', unit: 'mm', determinacy: 'determined', entity_path: 'X.a', kind: 'Param', freshness: 'final' },
+        { cell_id: 'b', name: 'b', value: '2', unit: 'mm', determinacy: 'determined', entity_path: 'X.b', kind: 'Param', freshness: 'final' },
+        { cell_id: 'c', name: 'c', value: '3', unit: 'mm', determinacy: 'determined', entity_path: 'X.c', kind: 'Param', freshness: 'final' },
       ];
 
       applyValueUpdates(values);
@@ -590,6 +592,60 @@ describe('engineStore tessellationDiagnostics', () => {
 
       tessCb!([diag]);
       expect(store.state.tessellationDiagnostics).toEqual([diag]);
+      dispose();
+    });
+  });
+});
+
+describe('engineStore freshness pass-through', () => {
+  it('initFromState preserves freshness=failed round-trip through state.values', () => {
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const failedValue: ValueData = {
+        cell_id: 'cell_failed',
+        name: 'depth',
+        value: '',
+        unit: 'mm',
+        determinacy: 'undef',
+        entity_path: 'Bracket.depth',
+        kind: 'Let',
+        freshness: 'failed',
+      };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [failedValue],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+      };
+      initFromState(guiState);
+      expect(state.values['cell_failed'].freshness).toBe('failed');
+      dispose();
+    });
+  });
+
+  it('applyValueUpdates reflects a Pending→Final freshness transition in state.values', () => {
+    createRoot((dispose) => {
+      const { state, applyValueUpdates } = createEngineStore();
+      // Step 1: insert a cell with freshness 'pending'
+      const pendingValue: ValueData = {
+        cell_id: 'cell_p2f',
+        name: 'radius',
+        value: '',
+        unit: 'mm',
+        determinacy: 'undef',
+        entity_path: 'Bracket.radius',
+        kind: 'Let',
+        freshness: 'pending',
+      };
+      applyValueUpdates([pendingValue]);
+      expect(state.values['cell_p2f'].freshness).toBe('pending');
+
+      // Step 2: update the same cell to freshness 'final'
+      const finalValue: ValueData = { ...pendingValue, freshness: 'final', value: '12.5' };
+      applyValueUpdates([finalValue]);
+      expect(state.values['cell_p2f'].freshness).toBe('final');
+      expect(state.values['cell_p2f'].value).toBe('12.5');
       dispose();
     });
   });

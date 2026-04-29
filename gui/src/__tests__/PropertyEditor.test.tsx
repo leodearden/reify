@@ -13,6 +13,7 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     determinacy: overrides.determinacy ?? 'determined',
     entity_path: overrides.entity_path ?? 'Bracket.param',
     kind: overrides.kind ?? 'Param',
+    freshness: overrides.freshness ?? 'final',
   };
 }
 
@@ -1033,4 +1034,68 @@ describe('PropertyEditor whitespace-only input rejection', () => {
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
+});
+describe('PropertyEditor freshness badge', () => {
+  it('final freshness renders no freshness badge', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'final' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    expect(screen.queryByTestId('freshness-badge-c1')).toBeNull();
+  });
+
+  it('intermediate freshness renders badge with data-freshness="intermediate"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'intermediate' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-freshness')).toBe('intermediate');
+    expect(badge.getAttribute('aria-label')).toBe('freshness intermediate');
+  });
+
+  it('pending freshness renders badge with data-freshness="pending"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'pending' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-freshness')).toBe('pending');
+    expect(badge.getAttribute('aria-label')).toBe('freshness pending');
+  });
+
+  it('failed freshness renders badge with data-freshness="failed"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'failed' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-freshness')).toBe('failed');
+    expect(badge.getAttribute('aria-label')).toBe('freshness failed');
+  });
+
+  it('freshness badge and determinacy badge are both visible simultaneously', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'failed', determinacy: 'determined' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const freshnessBadge = screen.getByTestId('freshness-badge-c1');
+    expect(freshnessBadge.getAttribute('data-freshness')).toBe('failed');
+    const container = screen.getByTestId('property-editor');
+    const determinacyBadge = container.querySelector('[data-determinacy="determined"]');
+    expect(determinacyBadge).toBeTruthy();
+  });
 });

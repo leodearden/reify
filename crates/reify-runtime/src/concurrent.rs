@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use reify_eval::cache::{EvalOutcome, NodeId};
+use reify_eval::cache::{CacheStore, EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
+use reify_eval::gating;
 use reify_types::ValueCellId;
 
 use crate::Priority;
@@ -21,7 +22,7 @@ use crate::priority_promotion::SharedPriorityPromoter;
 /// behavior overrides during concurrent evaluation. `Default` gives
 /// exact current `execute` behavior (no priority sorting, no commitment
 /// tracking, no skip overrides).
-pub struct SchedulerConfig {
+pub struct SchedulerConfig<'a> {
     /// Optional commitment tracker for commitment-aware cancellation.
     pub commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>,
     /// Optional priority promoter for priority-based spawn ordering.
@@ -30,18 +31,20 @@ pub struct SchedulerConfig {
     pub node_overrides: NodePolicyOverrides,
     /// Per-node scheduling priorities.
     pub node_priorities: HashMap<NodeId, Priority>,
-    /// Callback to check if a node has intermediate (non-final) inputs.
-    pub has_intermediate_inputs: Arc<dyn Fn(&NodeId) -> bool + Send + Sync>,
+    /// Cache reference used by `gating::has_non_final_inputs` to decide
+    /// whether `OnlyRunOnFinalInputs` nodes are runnable. `None` means no
+    /// gating — equivalent to treating every node as having all-Final inputs.
+    pub cache: Option<&'a CacheStore>,
 }
 
-impl Default for SchedulerConfig {
+impl Default for SchedulerConfig<'_> {
     fn default() -> Self {
         Self {
             commitment_tracker: None,
             priority_promoter: None,
             node_overrides: NodePolicyOverrides::new(),
             node_priorities: HashMap::new(),
-            has_intermediate_inputs: Arc::new(|_| false),
+            cache: None,
         }
     }
 }
@@ -215,7 +218,7 @@ impl ConcurrentScheduler {
         traces: &HashMap<NodeId, DependencyTrace>,
         cancel: &CancellationToken,
         changed_cells: &HashSet<ValueCellId>,
-        config: SchedulerConfig,
+        config: SchedulerConfig<'_>,
     ) -> Result<SchedulerResult, SchedulerError> {
         if eval_set.is_empty() {
             return Ok(SchedulerResult {
@@ -223,6 +226,14 @@ impl ConcurrentScheduler {
                 skipped: HashSet::new(),
             });
         }
+
+        // Single helper that calls gating::has_non_final_inputs when a cache
+        // reference is present; returns false otherwise (no-op default).
+        let has_non_final = |node: &NodeId| -> bool {
+            config
+                .cache
+                .is_some_and(|cs| gating::has_non_final_inputs(cs, node))
+        };
 
         let node_set: HashSet<NodeId> = eval_set.into_iter().collect();
         let levels = reify_eval::dirty::compute_levels(&node_set, traces);
@@ -260,7 +271,7 @@ impl ConcurrentScheduler {
                     let override_ = config.node_overrides.resolve(&node);
                     // Check OnlyRunOnFinalInputs override before adding to dirty
                     if override_ == NodeCommitmentOverride::OnlyRunOnFinalInputs
-                        && (config.has_intermediate_inputs)(&node)
+                        && has_non_final(&node)
                     {
                         skipped.insert(node);
                     } else {
@@ -316,7 +327,7 @@ impl ConcurrentScheduler {
                 let n = node.clone();
                 let cancel_clone = cancel.clone();
                 let tracker_clone = config.commitment_tracker.clone();
-                let has_intermediate = (config.has_intermediate_inputs)(&n);
+                let has_intermediate = has_non_final(&n);
                 join_set.spawn(async move {
                     let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;

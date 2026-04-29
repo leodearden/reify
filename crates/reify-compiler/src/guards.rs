@@ -562,7 +562,10 @@ pub(crate) fn compile_guarded_members(
             | reify_syntax::MemberDecl::Chain(_)
             | reify_syntax::MemberDecl::AssociatedType(_)
             | reify_syntax::MemberDecl::MetaBlock(_)
-            | reify_syntax::MemberDecl::ConstraintInst(_) => {
+            | reify_syntax::MemberDecl::ConstraintInst(_)
+            // task 2372: match-arm decl group members inside a where{} guard are
+            // handled in the parent compile_entity loop, not here.
+            | reify_syntax::MemberDecl::MatchArmDeclGroup(_) => {
                 // Not yet handled inside guarded blocks. Enumerated explicitly so
                 // adding a new MemberDecl variant produces a `non-exhaustive match`
                 // compile error here, forcing an intentional decision about how the

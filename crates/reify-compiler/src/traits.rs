@@ -449,6 +449,17 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
+            reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "match-arm decl groups in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        m.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
         }
     }
 

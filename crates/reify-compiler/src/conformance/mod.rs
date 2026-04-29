@@ -3911,6 +3911,7 @@ mod tests {
             is_recursive: false,
             annotations: vec![],
             pragmas: vec![],
+            match_arm_groups: vec![],
         }
     }
 

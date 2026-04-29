@@ -1,6 +1,92 @@
-use reify_types::{DimensionVector, Value};
+use std::collections::BTreeMap;
+
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
+
+/// Decompose a `Value::Vector` of exactly three components carrying a single
+/// shared dimension into its three finite f64 components and that dimension.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `v` is not a `Value::Vector` of length 3,
+/// - the three components have mixed dimensions, or
+/// - any component is non-numeric or non-finite.
+///
+/// Used by `decompose_transform` for the translation field and by
+/// `transform_exp` to validate the `angular` / `linear` fields of the input
+/// twist `Map`.
+fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
+    let items = match v {
+        Value::Vector(items) if items.len() == 3 => items,
+        _ => return None,
+    };
+    let dim = items[0].dimension();
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
+    let (a, b, c) = match (items[0].as_f64(), items[1].as_f64(), items[2].as_f64()) {
+        (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+        _ => return None,
+    };
+    Some(([a, b, c], dim))
+}
+
+/// `(w, x, y, z)` quaternion components extracted from a `Value::Orientation`.
+type QuatComponents = (f64, f64, f64, f64);
+
+/// Decomposed `Value::Transform`: rotation quaternion components, the three
+/// translation f64 components, and the shared dimension carried on the
+/// translation vector.
+type DecomposedTransform = (QuatComponents, [f64; 3], DimensionVector);
+
+/// Decompose a `Value::Transform` into its quaternion components, three
+/// translation f64 components, and the shared dimension carried on the
+/// translation vector.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `v` is not a `Value::Transform`,
+/// - `rotation` is not an `Orientation` or has non-finite components,
+/// - `translation` is not a `Vector` of exactly three components,
+/// - the three translation components have mixed dimensions, or
+/// - any component is non-numeric or non-finite.
+///
+/// This consolidates the destructure-and-validate pattern shared by
+/// `transform_compose`, `transform_inverse`, `transform_log`, and
+/// `transform_exp`.
+fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
+    let (rotation, translation) = match v {
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
+        _ => return None,
+    };
+    let (rw, rx, ry, rz) = match rotation {
+        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+        _ => return None,
+    };
+    if !quaternion_is_finite(rw, rx, ry, rz) {
+        return None;
+    }
+    let (t, dim) = decompose_vec3(translation)?;
+    Some(((rw, rx, ry, rz), t, dim))
+}
+
+/// Build a translation/twist component preserving the carried dimension:
+/// `DIMENSIONLESS → Value::Real(v)`, otherwise `Value::Scalar { si_value, dim }`.
+///
+/// This consolidates the inline closure shared by `transform_compose`,
+/// `transform_inverse`, `transform_log`, and `transform_exp`.
+fn make_dimensioned_component(dim: DimensionVector, value: f64) -> Value {
+    if dim.is_dimensionless() {
+        Value::Real(value)
+    } else {
+        Value::Scalar {
+            si_value: value,
+            dimension: dim,
+        }
+    }
+}
 
 pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -179,6 +265,278 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 None => Value::Undef,
+            }
+        }
+
+        "transform_exp" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            let angular_val = match map.get(&Value::String("angular".to_string())) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            let linear_val = match map.get(&Value::String("linear".to_string())) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Extract angular: must be Vector3<DIMENSIONLESS>.
+            let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            if ang_dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let (wx, wy, wz) = (ang_comps[0], ang_comps[1], ang_comps[2]);
+            // Extract linear: must be Vector3 with a single shared dimension.
+            //
+            // Twist linear convention (polymorphic, mirrored on transform_log):
+            //   • LENGTH       — canonical (matches Twist type in the doc reference)
+            //   • DIMENSIONLESS — accepted for unit-less twists / numerical work
+            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            //
+            // This matches transform_log, which preserves the input translation's
+            // dimension verbatim — so the round-trip log↔exp works for both
+            // LENGTH and DIMENSIONLESS Transforms.
+            let (lin_comps, lin_dim) = match decompose_vec3(linear_val) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            if lin_dim != DimensionVector::LENGTH && lin_dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let (lx, ly, lz) = (lin_comps[0], lin_comps[1], lin_comps[2]);
+            // Compute R = orient_exp(angular).
+            let theta_sq = wx * wx + wy * wy + wz * wz;
+            let theta = theta_sq.sqrt();
+            const EPS: f64 = 1e-12;
+            let r_val = if theta < EPS {
+                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+            } else {
+                let half = theta / 2.0;
+                let s = half.sin() / theta;
+                match normalize_quaternion(half.cos(), s * wx, s * wy, s * wz) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                }
+            };
+            // Compute V * linear, where V is the SE(3) left Jacobian:
+            //   V = I + ((1−cos|ω|)/|ω|²) [ω]× + ((|ω|−sin|ω|)/|ω|³) [ω]×²
+            // For |ω| ≈ 0, use Taylor: V ≈ I + 0.5*[ω]× + (1/6)*[ω]×² + ...
+            let (a_coef, b_coef) = if theta < 1.0e-4 {
+                // Taylor series:
+                //   (1 − cos|ω|)/|ω|² ≈ 1/2 − |ω|²/24 + |ω|⁴/720 − ...
+                //   (|ω| − sin|ω|)/|ω|³ ≈ 1/6 − |ω|²/120 + ...
+                (
+                    0.5 - theta_sq / 24.0,
+                    1.0 / 6.0 - theta_sq / 120.0,
+                )
+            } else {
+                ((1.0 - theta.cos()) / theta_sq, (theta - theta.sin()) / (theta_sq * theta))
+            };
+            // [ω]× linear = ω × linear.
+            let cx = wy * lz - wz * ly;
+            let cy = wz * lx - wx * lz;
+            let cz = wx * ly - wy * lx;
+            // [ω]×² linear = ω × (ω × linear).
+            let ccx = wy * cz - wz * cy;
+            let ccy = wz * cx - wx * cz;
+            let ccz = wx * cy - wy * cx;
+            let tx = lx + a_coef * cx + b_coef * ccx;
+            let ty = ly + a_coef * cy + b_coef * ccy;
+            let tz = lz + a_coef * cz + b_coef * ccz;
+            if !tx.is_finite() || !ty.is_finite() || !tz.is_finite() {
+                return Some(Value::Undef);
+            }
+            Value::Transform {
+                rotation: Box::new(r_val),
+                translation: Box::new(Value::Vector(vec![
+                    make_dimensioned_component(lin_dim, tx),
+                    make_dimensioned_component(lin_dim, ty),
+                    make_dimensioned_component(lin_dim, tz),
+                ])),
+            }
+        }
+
+        "transform_log" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (r_q, t, t_dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            let (tx, ty, tz) = (t[0], t[1], t[2]);
+            // Compute angular = orient_log(R): rotation vector ω.
+            let (rw, rx, ry, rz) = r_q;
+            // Normalize quaternion first.
+            let r_norm_sq = rw * rw + rx * rx + ry * ry + rz * rz;
+            if r_norm_sq < f64::EPSILON {
+                return Some(Value::Undef);
+            }
+            let r_norm = r_norm_sq.sqrt();
+            let (nw, nx, ny, nz) = (rw / r_norm, rx / r_norm, ry / r_norm, rz / r_norm);
+            // Canonicalize quaternion sign: q and -q represent the same SO(3)
+            // rotation. Flipping when nw < 0 ensures the small-angle Taylor
+            // branch always sees nw ≈ +1 (so ω = +2*(nx,ny,nz) for q≈identity,
+            // not −2*(nx,ny,nz) for q≈−identity). The general atan2 branch
+            // still produces the correct magnitude either way, but the sign
+            // of the rotation axis matches the canonical hemisphere only
+            // after this flip — so we apply it for both branches.
+            let (nw, nx, ny, nz) = if nw < 0.0 {
+                (-nw, -nx, -ny, -nz)
+            } else {
+                (nw, nx, ny, nz)
+            };
+            let v_norm = (nx * nx + ny * ny + nz * nz).sqrt();
+            const EPS: f64 = 1e-12;
+            let (wx, wy, wz) = if v_norm < EPS {
+                // Near-identity → ω ≈ 2*(x,y,z) (Taylor leading order).
+                (2.0 * nx, 2.0 * ny, 2.0 * nz)
+            } else {
+                let angle = 2.0 * v_norm.atan2(nw);
+                let scale = angle / v_norm;
+                (scale * nx, scale * ny, scale * nz)
+            };
+            if !wx.is_finite() || !wy.is_finite() || !wz.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Compute V_inv * t where V is the SE(3) left Jacobian.
+            // |ω|² is the squared magnitude of the rotation vector.
+            let theta_sq = wx * wx + wy * wy + wz * wz;
+            let theta = theta_sq.sqrt();
+            // Apply V_inv = I − 0.5*[ω]× + α*[ω]×², where
+            //   α = 1/|ω|² − cot(|ω|/2)/(2|ω|).
+            // For small |ω|, use Taylor: α ≈ 1/12 + |ω|²/720 + ...
+            // Use the small-angle Taylor when theta < ~1e-4 to keep FP accurate.
+            let alpha = if theta < 1.0e-4 {
+                1.0 / 12.0 + theta_sq / 720.0
+            } else {
+                let half = theta / 2.0;
+                let cot_half = half.cos() / half.sin();
+                1.0 / theta_sq - cot_half / (2.0 * theta)
+            };
+            // [ω]× t = ω × t (cross product).
+            let cx = wy * tz - wz * ty;
+            let cy = wz * tx - wx * tz;
+            let cz = wx * ty - wy * tx;
+            // [ω]×² t = ω × (ω × t).
+            let ccx = wy * cz - wz * cy;
+            let ccy = wz * cx - wx * cz;
+            let ccz = wx * cy - wy * cx;
+            let lx = tx - 0.5 * cx + alpha * ccx;
+            let ly = ty - 0.5 * cy + alpha * ccy;
+            let lz = tz - 0.5 * cz + alpha * ccz;
+            if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
+                return Some(Value::Undef);
+            }
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("angular".to_string()),
+                Value::Vector(vec![
+                    Value::Real(wx),
+                    Value::Real(wy),
+                    Value::Real(wz),
+                ]),
+            );
+            m.insert(
+                Value::String("linear".to_string()),
+                Value::Vector(vec![
+                    make_dimensioned_component(t_dim, lx),
+                    make_dimensioned_component(t_dim, ly),
+                    make_dimensioned_component(t_dim, lz),
+                ]),
+            );
+            Value::Map(m)
+        }
+
+        "transform_inverse" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (r_q, t, t_dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Normalize R first to be safe with non-unit input quaternions.
+            let r_norm_sq = r_q.0 * r_q.0 + r_q.1 * r_q.1 + r_q.2 * r_q.2 + r_q.3 * r_q.3;
+            if r_norm_sq < f64::EPSILON {
+                return Some(Value::Undef);
+            }
+            let r_norm = r_norm_sq.sqrt();
+            let r_n = (
+                r_q.0 / r_norm,
+                r_q.1 / r_norm,
+                r_q.2 / r_norm,
+                r_q.3 / r_norm,
+            );
+            // Inverse rotation = conjugate (for unit quaternion).
+            let r_inv = quat_conj(r_n);
+            let r_inv_val = match normalize_quaternion(r_inv.0, r_inv.1, r_inv.2, r_inv.3) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Inverse translation: t_inv = -R^-1 * t.
+            let (rtx, rty, rtz) = quat_rotate(r_inv, t[0], t[1], t[2]);
+            Value::Transform {
+                rotation: Box::new(r_inv_val),
+                translation: Box::new(Value::Vector(vec![
+                    make_dimensioned_component(t_dim, -rtx),
+                    make_dimensioned_component(t_dim, -rty),
+                    make_dimensioned_component(t_dim, -rtz),
+                ])),
+            }
+        }
+
+        "transform_compose" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (r1_q, t1, t1_dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            let (r2_q, t2, t2_dim) = match decompose_transform(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            if t1_dim != t2_dim {
+                return Some(Value::Undef);
+            }
+            // Normalize R1 (matches operator-level semantics in reify-expr).
+            let r1_norm_sq =
+                r1_q.0 * r1_q.0 + r1_q.1 * r1_q.1 + r1_q.2 * r1_q.2 + r1_q.3 * r1_q.3;
+            if r1_norm_sq < f64::EPSILON {
+                return Some(Value::Undef);
+            }
+            let r1_norm = r1_norm_sq.sqrt();
+            let r1_n = (
+                r1_q.0 / r1_norm,
+                r1_q.1 / r1_norm,
+                r1_q.2 / r1_norm,
+                r1_q.3 / r1_norm,
+            );
+            // R = R1 * R2 (Hamilton product), then normalize.
+            let composed_r = quat_mul(r1_n, r2_q);
+            let r_val =
+                match normalize_quaternion(composed_r.0, composed_r.1, composed_r.2, composed_r.3) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+            // t = R1 * t2 + t1.
+            let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
+            Value::Transform {
+                rotation: Box::new(r_val),
+                translation: Box::new(Value::Vector(vec![
+                    make_dimensioned_component(t1_dim, rt2x + t1[0]),
+                    make_dimensioned_component(t1_dim, rt2y + t1[1]),
+                    make_dimensioned_component(t1_dim, rt2z + t1[2]),
+                ])),
             }
         }
 
@@ -2105,5 +2463,829 @@ mod tests {
             basis: Box::new(make_identity_orientation()),
         };
         assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
+    }
+
+    // ── transform_compose tests (step-15) ────────────────────────────────────
+
+    /// Helper: build a Transform from rotation quaternion and translation (LENGTH).
+    fn make_transform(rotation: Value, tx: f64, ty: f64, tz: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(rotation),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(tx),
+                Value::length(ty),
+                Value::length(tz),
+            ])),
+        }
+    }
+
+    /// transform_compose(identity, T) == T
+    #[test]
+    fn transform_compose_identity_left() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_compose", &[id, t.clone()]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!((tz - 3.0).abs() < 1e-12, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_compose(T, identity) == T
+    #[test]
+    fn transform_compose_identity_right() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_compose", &[t.clone(), id]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!((tz - 3.0).abs() < 1e-12, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Pure translation composition: (R=I, t=[1,0,0]) * (R=I, t=[0,2,0]) == (R=I, t=[1,2,0]).
+    #[test]
+    fn transform_compose_pure_translation() {
+        let t1 = make_transform(make_identity_orientation(), 1.0, 0.0, 0.0);
+        let t2 = make_transform(make_identity_orientation(), 0.0, 2.0, 0.0);
+        let result = eval_builtin("transform_compose", &[t1, t2]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!(tz.abs() < 1e-12, "tz = {tz}, expected 0");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Translation rotated by R1: (R=90Z, t=0) * (R=I, t=[1,0,0]) == (R=90Z, t=[0,1,0]).
+    /// Composition formula: t = R1*t2 + t1 = 90Z*(1,0,0) + 0 = (0,1,0).
+    #[test]
+    fn transform_compose_rotation_then_translation() {
+        let t1 = make_transform(make_rot90z(), 0.0, 0.0, 0.0);
+        let t2 = make_transform(make_identity_orientation(), 1.0, 0.0, 0.0);
+        let result = eval_builtin("transform_compose", &[t1, t2]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(tx.abs() < 1e-12, "tx = {tx}, expected 0");
+                        assert!((ty - 1.0).abs() < 1e-12, "ty = {ty}, expected 1");
+                        assert!(tz.abs() < 1e-12, "tz = {tz}, expected 0");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_compose(T1, T2) numerically matches the (R1*R2, R1*t2+t1)
+    /// formula used by the `Transform * Transform` operator in reify-expr.
+    ///
+    /// This test does NOT invoke the operator code path itself — `eval_mul`
+    /// is private to reify-expr and not callable from this crate's unit
+    /// tests. Instead, it asserts numeric equivalence with the same algebra,
+    /// using the same shared helpers (quat_mul / quat_rotate). The
+    /// kinematic_stdlib_smoke E2E test in `crates/reify-eval/tests` is the
+    /// place that drives the actual operator path through the eval pipeline
+    /// and compares against `transform_compose`'s output.
+    #[test]
+    fn transform_compose_matches_named_function_formula() {
+        // Use transform3_identity-derived inputs that don't already pre-normalize quaternions.
+        let q1 = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let q2 = Value::Orientation {
+            w: 0.5,
+            x: -0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t1 = make_transform(q1, 1.0, 2.0, 3.0);
+        let t2 = make_transform(q2, 4.0, 5.0, 6.0);
+        let composed = eval_builtin("transform_compose", &[t1.clone(), t2.clone()]);
+        // Mirror the exact algebra used by the operator-level path:
+        //   R = normalize(q1) * q2
+        //   t = normalize(q1) * t2 + t1  (vector rotation)
+        // Construct the expected result component-by-component and compare.
+        let q1_t = (0.5, 0.5, 0.5, 0.5);
+        let q2_t = (0.5, -0.5, 0.5, 0.5);
+        // q1 already has norm 1 → no-op.
+        let (rw, rx, ry, rz) = super::quat_mul(q1_t, q2_t);
+        let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
+        let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
+        let (rt2x, rt2y, rt2z) = super::quat_rotate(q1_t, 4.0, 5.0, 6.0);
+        match composed {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, rw, rx, ry, rz, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(
+                            (tx - (rt2x + 1.0)).abs() < 1e-12,
+                            "tx = {tx}, expected {}",
+                            rt2x + 1.0
+                        );
+                        assert!(
+                            (ty - (rt2y + 2.0)).abs() < 1e-12,
+                            "ty = {ty}, expected {}",
+                            rt2y + 2.0
+                        );
+                        assert!(
+                            (tz - (rt2z + 3.0)).abs() < 1e-12,
+                            "tz = {tz}, expected {}",
+                            rt2z + 3.0
+                        );
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_compose with wrong arg count → Undef.
+    #[test]
+    fn transform_compose_wrong_arg_count_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_compose", &[]).is_undef());
+        assert!(eval_builtin("transform_compose", std::slice::from_ref(&t)).is_undef());
+        assert!(
+            eval_builtin("transform_compose", &[t.clone(), t.clone(), t.clone()]).is_undef()
+        );
+    }
+
+    /// transform_compose with non-Transform arg → Undef.
+    #[test]
+    fn transform_compose_non_transform_arg_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_compose", &[Value::Real(1.0), t.clone()]).is_undef());
+        assert!(eval_builtin("transform_compose", &[t, Value::Real(1.0)]).is_undef());
+    }
+
+    /// transform_compose with mixed-dimension translations → Undef.
+    /// (LENGTH translation in T1, ANGLE translation in T2)
+    #[test]
+    fn transform_compose_mixed_dimension_translations_returns_undef() {
+        let t1 = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        let t2 = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::angle(0.0),
+                Value::angle(0.0),
+                Value::angle(0.0),
+            ])),
+        };
+        assert!(eval_builtin("transform_compose", &[t1, t2]).is_undef());
+    }
+
+    // ── transform_inverse tests (step-17) ────────────────────────────────────
+
+    /// transform_inverse(identity) == identity.
+    #[test]
+    fn transform_inverse_identity_is_identity() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let result = eval_builtin("transform_inverse", &[id]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-12, "translation[{i}] = {v}, expected 0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_inverse((R=90Z, t=[1,0,0])) has R = -90Z (conjugate of 90Z) and t = -R^-1 * (1,0,0) = (0,1,0).
+    /// Computation: R^-1 = conj(R) = (s, 0, 0, -s). R^-1 * (1,0,0) = quat_rotate(R^-1, (1,0,0)) = (0,-1,0).
+    /// t_inv = -R^-1 * t = -(0,-1,0) = (0,1,0).
+    #[test]
+    fn transform_inverse_90z_with_translation() {
+        let t = make_transform(make_rot90z(), 1.0, 0.0, 0.0);
+        let result = eval_builtin("transform_inverse", &[t]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, -s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(tx.abs() < 1e-12, "tx = {tx}, expected 0");
+                        assert!((ty - 1.0).abs() < 1e-12, "ty = {ty}, expected 1");
+                        assert!(tz.abs() < 1e-12, "tz = {tz}, expected 0");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// inverse(inverse(T)) ≈ T (round-trip with sign_insensitive on rotation).
+    #[test]
+    fn transform_inverse_round_trip() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q.clone(), 1.5, 2.5, -3.5);
+        let inv = eval_builtin("transform_inverse", std::slice::from_ref(&t));
+        let back = eval_builtin("transform_inverse", &[inv]);
+        match back {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.5).abs() < 1e-12, "tx = {tx}, expected 1.5");
+                        assert!((ty - 2.5).abs() < 1e-12, "ty = {ty}, expected 2.5");
+                        assert!((tz - (-3.5)).abs() < 1e-12, "tz = {tz}, expected -3.5");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// compose(T, inverse(T)) ≈ identity for an arbitrary T.
+    #[test]
+    fn transform_inverse_compose_t_inv_t_is_identity() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q, 1.5, 2.5, -3.5);
+        let inv = eval_builtin("transform_inverse", std::slice::from_ref(&t));
+        let composed = eval_builtin("transform_compose", &[t, inv]);
+        match composed {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected ~0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_inverse with wrong arg count → Undef.
+    #[test]
+    fn transform_inverse_wrong_arg_count_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_inverse", &[]).is_undef());
+        assert!(eval_builtin("transform_inverse", &[t.clone(), t]).is_undef());
+    }
+
+    /// transform_inverse with non-Transform arg → Undef.
+    #[test]
+    fn transform_inverse_non_transform_arg_returns_undef() {
+        assert!(eval_builtin("transform_inverse", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("transform_inverse", &[make_identity_orientation()]).is_undef());
+    }
+
+    // ── transform_log tests (step-19) ────────────────────────────────────────
+
+    /// Helper: extract a Vector3's three f64 components from a Map's value at `key`.
+    fn map_vec3_components(map: &Value, key: &str) -> [f64; 3] {
+        let map_inner = match map {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        let v = map_inner
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("missing key {:?}", key));
+        match v {
+            Value::Vector(items) if items.len() == 3 => [
+                items[0].as_f64().unwrap(),
+                items[1].as_f64().unwrap(),
+                items[2].as_f64().unwrap(),
+            ],
+            other => panic!("expected Vector3 at key {:?}, got {:?}", key, other),
+        }
+    }
+
+    /// Helper: dimension of a Map's vector value at `key`.
+    fn map_vec3_dim(map: &Value, key: &str) -> DimensionVector {
+        let map_inner = match map {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        let v = map_inner
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("missing key {:?}", key));
+        match v {
+            Value::Vector(items) if items.len() == 3 => items[0].dimension(),
+            other => panic!("expected Vector3 at key {:?}, got {:?}", key, other),
+        }
+    }
+
+    /// transform_log(identity) == Map { angular=[0,0,0] DIMENSIONLESS, linear=[0,0,0] LENGTH }.
+    #[test]
+    fn transform_log_identity_is_zero_twist() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let result = eval_builtin("transform_log", &[id]);
+        let ang = map_vec3_components(&result, "angular");
+        let lin = map_vec3_components(&result, "linear");
+        for (i, v) in ang.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "angular[{i}] = {v}, expected 0");
+        }
+        for (i, v) in lin.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
+        }
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::DIMENSIONLESS);
+        assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
+    }
+
+    /// Pure translation: T=(identity, [1,2,3] m) → angular=[0,0,0], linear=[1,2,3].
+    /// (When ω=0, V=I, so V_inv*t = t.)
+    #[test]
+    fn transform_log_pure_translation() {
+        let t = make_transform(make_identity_orientation(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        let lin = map_vec3_components(&result, "linear");
+        for (i, v) in ang.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "angular[{i}] = {v}, expected 0");
+        }
+        assert!((lin[0] - 1.0).abs() < 1e-12, "linear[0] = {}, expected 1", lin[0]);
+        assert!((lin[1] - 2.0).abs() < 1e-12, "linear[1] = {}, expected 2", lin[1]);
+        assert!((lin[2] - 3.0).abs() < 1e-12, "linear[2] = {}, expected 3", lin[2]);
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::DIMENSIONLESS);
+        assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
+    }
+
+    /// Pure 90°z rotation, no translation: angular=[0,0,π/2], linear=[0,0,0].
+    #[test]
+    fn transform_log_pure_rotation() {
+        let t = make_transform(make_rot90z(), 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        let lin = map_vec3_components(&result, "linear");
+        let expected_z = std::f64::consts::FRAC_PI_2;
+        assert!(ang[0].abs() < 1e-12, "angular[0] = {}, expected 0", ang[0]);
+        assert!(ang[1].abs() < 1e-12, "angular[1] = {}, expected 0", ang[1]);
+        assert!(
+            (ang[2] - expected_z).abs() < 1e-12,
+            "angular[2] = {}, expected π/2",
+            ang[2]
+        );
+        for (i, v) in lin.iter().enumerate() {
+            assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
+        }
+    }
+
+    /// Small-rotation transform: angular components match rotation vector linearly.
+    /// For a small angle ε about axis (0,0,1) with no translation, angular ≈ [0, 0, ε].
+    #[test]
+    fn transform_log_small_rotation() {
+        let eps: f64 = 1e-6;
+        // Build a small-z rotation manually: q = (cos(eps/2), 0, 0, sin(eps/2)).
+        let half = eps / 2.0;
+        let q = Value::Orientation {
+            w: half.cos(),
+            x: 0.0,
+            y: 0.0,
+            z: half.sin(),
+        };
+        let t = make_transform(q, 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        // angular[2] should be ≈ eps within ~1e-12.
+        assert!(ang[0].abs() < 1e-10, "angular[0] = {}, expected ~0", ang[0]);
+        assert!(ang[1].abs() < 1e-10, "angular[1] = {}, expected ~0", ang[1]);
+        assert!(
+            (ang[2] - eps).abs() < 1e-12,
+            "angular[2] = {}, expected {}",
+            ang[2],
+            eps
+        );
+    }
+
+    /// Negated-quaternion (w ≈ -1) input represents the same rotation as
+    /// identity, so transform_log must canonicalize the sign before computing
+    /// ω. Without canonicalization, the small-angle Taylor branch (v_norm < EPS)
+    /// would emit ω ≈ −2*(nx,ny,nz) — wrong-signed for q whose nw is exactly 0
+    /// or near −1. After the canonical sign-flip, both q and −q yield the same
+    /// rotation vector.
+    #[test]
+    fn transform_log_negated_identity_quaternion_canonicalizes_sign() {
+        // q = (-1, 0, 0, 0): identity rotation in the "negative hemisphere".
+        let q = Value::Orientation {
+            w: -1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let t = make_transform(q, 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        for (i, v) in ang.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-12,
+                "negated-identity angular[{i}] = {v}, expected 0 after sign canonicalization"
+            );
+        }
+    }
+
+    /// Slightly-perturbed q with w near −1 (near-identity in the negative
+    /// hemisphere) must produce ω ≈ +2*(nx,ny,nz), not −2*(nx,ny,nz).
+    #[test]
+    fn transform_log_near_negative_identity_emits_positive_axis() {
+        // Construct q such that nw ≈ −1 + tiny, with small (x,y,z) of definite sign.
+        let small = 1e-10_f64;
+        let w0 = -(1.0 - small * small / 2.0); // ≈ -1 + tiny
+        let q = Value::Orientation {
+            w: w0,
+            x: small,
+            y: 0.0,
+            z: 0.0,
+        };
+        let t = make_transform(q, 0.0, 0.0, 0.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let ang = map_vec3_components(&result, "angular");
+        // After canonicalization (flip sign so nw>0), nx becomes -small, but
+        // ω = 2*nx = -2*small (with magnitude 2*small ≈ 2e-10). The key check
+        // is that the magnitude is ~2*small and y/z components are ~0.
+        assert!(
+            (ang[0].abs() - 2.0 * small).abs() < 1e-15,
+            "|angular[0]| = {}, expected ≈ {}",
+            ang[0].abs(),
+            2.0 * small
+        );
+        assert!(ang[1].abs() < 1e-15, "angular[1] = {}, expected 0", ang[1]);
+        assert!(ang[2].abs() < 1e-15, "angular[2] = {}, expected 0", ang[2]);
+    }
+
+    /// transform_log with wrong arg count → Undef.
+    #[test]
+    fn transform_log_wrong_arg_count_returns_undef() {
+        let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
+        assert!(eval_builtin("transform_log", &[]).is_undef());
+        assert!(eval_builtin("transform_log", &[t.clone(), t]).is_undef());
+    }
+
+    /// transform_log with non-Transform arg → Undef.
+    #[test]
+    fn transform_log_non_transform_arg_returns_undef() {
+        assert!(eval_builtin("transform_log", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("transform_log", &[make_identity_orientation()]).is_undef());
+    }
+
+    // ── transform_exp tests (step-21) ────────────────────────────────────────
+
+    /// Helper: build a twist Map with given angular & linear vectors.
+    fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![
+                Value::Real(angular[0]),
+                Value::Real(angular[1]),
+                Value::Real(angular[2]),
+            ]),
+        );
+        let make_lin = |v: f64| -> Value {
+            if linear_dim.is_dimensionless() {
+                Value::Real(v)
+            } else {
+                Value::Scalar {
+                    si_value: v,
+                    dimension: linear_dim,
+                }
+            }
+        };
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![make_lin(linear[0]), make_lin(linear[1]), make_lin(linear[2])]),
+        );
+        Value::Map(m)
+    }
+
+    /// transform_exp(zero twist) == identity transform.
+    #[test]
+    fn transform_exp_zero_twist_is_identity() {
+        let zero = make_twist([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let result = eval_builtin("transform_exp", &[zero]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-12, "translation[{i}] = {v}, expected 0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_exp(angular=[0,0,π/2], linear=0) → 90°z rotation, zero translation.
+    #[test]
+    fn transform_exp_pure_rotation() {
+        let twist = make_twist(
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
+            [0.0, 0.0, 0.0],
+            DimensionVector::LENGTH,
+        );
+        let result = eval_builtin("transform_exp", &[twist]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected 0");
+                        }
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_exp(angular=0, linear=[1,2,3]) → (identity, [1,2,3] m).
+    #[test]
+    fn transform_exp_pure_translation() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        let result = eval_builtin("transform_exp", &[twist]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-12);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.0).abs() < 1e-12, "tx = {tx}, expected 1");
+                        assert!((ty - 2.0).abs() < 1e-12, "ty = {ty}, expected 2");
+                        assert!((tz - 3.0).abs() < 1e-12, "tz = {tz}, expected 3");
+                        // Verify dimension is LENGTH.
+                        assert_eq!(items[0].dimension(), DimensionVector::LENGTH);
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: transform_log(transform_exp(twist)) ≈ twist for several non-trivial twists.
+    #[test]
+    fn transform_exp_log_round_trip() {
+        let twists = [
+            ([0.1, 0.2, 0.3], [1.0, 2.0, 3.0]),
+            ([0.5, -0.3, 0.7], [-1.0, 0.5, 2.0]),
+            ([0.01, 0.02, 0.03], [0.1, 0.1, 0.1]),
+        ];
+        for (i, (ang, lin)) in twists.iter().enumerate() {
+            let twist = make_twist(*ang, *lin, DimensionVector::LENGTH);
+            let t = eval_builtin("transform_exp", &[twist]);
+            let back = eval_builtin("transform_log", &[t]);
+            let ang_back = map_vec3_components(&back, "angular");
+            let lin_back = map_vec3_components(&back, "linear");
+            for j in 0..3 {
+                assert!(
+                    (ang_back[j] - ang[j]).abs() < 1e-10,
+                    "case {i}: angular[{j}] = {}, expected {}",
+                    ang_back[j],
+                    ang[j]
+                );
+                assert!(
+                    (lin_back[j] - lin[j]).abs() < 1e-10,
+                    "case {i}: linear[{j}] = {}, expected {}",
+                    lin_back[j],
+                    lin[j]
+                );
+            }
+        }
+    }
+
+    /// Round-trip: transform_exp(transform_log(T)) ≈ T (with sign_insensitive on rotation).
+    #[test]
+    fn transform_log_exp_round_trip() {
+        // Use a non-axis-aligned rotation to exercise the general case.
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q.clone(), 1.5, -2.5, 3.0);
+        let twist = eval_builtin("transform_log", std::slice::from_ref(&t));
+        let back = eval_builtin("transform_exp", &[twist]);
+        match back {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.5).abs() < 1e-10, "tx = {tx}, expected 1.5");
+                        assert!((ty - (-2.5)).abs() < 1e-10, "ty = {ty}, expected -2.5");
+                        assert!((tz - 3.0).abs() < 1e-10, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// transform_exp with Map missing "angular" key → Undef.
+    #[test]
+    fn transform_exp_missing_angular_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with Map missing "linear" key → Undef.
+    #[test]
+    fn transform_exp_missing_linear_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::Real(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with non-DIMENSIONLESS angular dimension → Undef.
+    #[test]
+    fn transform_exp_angular_wrong_dimension_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of DIMENSIONLESS
+        );
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with non-LENGTH linear dimension → Undef.
+    #[test]
+    fn transform_exp_linear_wrong_dimension_returns_undef() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::Real(0.0); 3]),
+        );
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::angle(0.0); 3]), // ANGLE instead of LENGTH
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// transform_exp with NaN component → Undef.
+    #[test]
+    fn transform_exp_nan_angular_returns_undef() {
+        let twist = make_twist([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(eval_builtin("transform_exp", &[twist]).is_undef());
+    }
+
+    #[test]
+    fn transform_exp_inf_linear_returns_undef() {
+        let twist = make_twist([0.0, 0.0, 0.0], [f64::INFINITY, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(eval_builtin("transform_exp", &[twist]).is_undef());
+    }
+
+    /// transform_exp with wrong arg count → Undef.
+    #[test]
+    fn transform_exp_wrong_arg_count_returns_undef() {
+        let twist = make_twist([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(eval_builtin("transform_exp", &[]).is_undef());
+        assert!(eval_builtin("transform_exp", &[twist.clone(), twist]).is_undef());
     }
 }
