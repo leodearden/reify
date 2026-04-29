@@ -51,4 +51,23 @@ mod tests {
         // Use exact float equality — the multiplication is exact for this input.
         assert_eq!(per_stage_tolerance(0.001, 1), 0.001 * 0.8);
     }
+
+    #[test]
+    fn geometric_split_multi_stages() {
+        // Pin the formula expected = tol^(1/N) * 0.8 at N ∈ {2, 3, 5} for two
+        // representative tolerances. The step-2 minimal impl (tol * 0.8) is correct
+        // only for N=1; at N=2,3,5 it returns 0.0008 (for tol=1e-3) while the
+        // correct values are ~0.025298, ~0.080000, ~0.200951 — so this test must fail.
+        let eps = 1e-12;
+        for &tol in &[1e-3_f64, 1e-4_f64] {
+            for &n in &[2_usize, 3, 5] {
+                let expected = tol.powf(1.0 / n as f64) * 0.8;
+                let observed = per_stage_tolerance(tol, n);
+                assert!(
+                    (observed - expected).abs() < eps,
+                    "per_stage_tolerance({tol}, {n}): expected {expected}, got {observed}"
+                );
+            }
+        }
+    }
 }
