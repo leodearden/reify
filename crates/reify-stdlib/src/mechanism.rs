@@ -1042,10 +1042,19 @@ mod tests {
     /// existing parent recorded — the cycle is detected by the DFS
     /// from `at` through `joint_parents` (step-18).
     ///
-    /// The test only pins the error-kind and that at least one path
-    /// contains the cyclic sequence terminating at the conflict point;
-    /// it does not pin the exact ordering of paths since either path
-    /// is a valid characterization of the cycle.
+    /// Both paths are pinned exactly, mirroring the precision of the
+    /// parent-conflict test. Canonical shapes (traced through
+    /// `walk_to_world` + the `cycle_introduced` arm of `append_body`):
+    ///   `path1 = [world, j_b]`         — `walk_to_world({j_a:j_b}, j_b)` yields
+    ///                                    `[j_b]` because j_b has no recorded parent
+    ///                                    in the pre-edge graph; world prepended.
+    ///   `path2 = [world, j_b, j_a, j_b]` — `walk_to_world({j_a:j_b}, j_a)` yields
+    ///                                      `[j_b, j_a]` top-down; world prepended;
+    ///                                      closing edge `at = j_b` appended. j_b
+    ///                                      appears twice — per the `path2` comment
+    ///                                      in `append_body`'s `cycle_introduced`
+    ///                                      arm ("the cycle manifests as `at`
+    ///                                      appearing twice").
     #[test]
     fn closed_chain_via_joint_graph_cycle_emits_error_with_cycle_path() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1086,10 +1095,6 @@ mod tests {
             other => panic!("expected error_message String, got {:?}", other),
         }
 
-        // At least one of the paths must contain the cyclic joint
-        // sequence (j_a and j_b both appear in the cycle). The exact
-        // order/length is not pinned — the contract is "the mechanism
-        // is errored and the paths reflect the cycle".
         let path1 = match map.get(&Value::String("error_path1".to_string())) {
             Some(Value::List(p)) => p.clone(),
             other => panic!("expected error_path1 List, got {:?}", other),
@@ -1098,14 +1103,81 @@ mod tests {
             Some(Value::List(p)) => p.clone(),
             other => panic!("expected error_path2 List, got {:?}", other),
         };
-        let path1_has_cycle = path1.contains(&j_a) && path1.contains(&j_b);
-        let path2_has_cycle = path2.contains(&j_a) && path2.contains(&j_b);
-        assert!(
-            path1_has_cycle || path2_has_cycle,
-            "at least one error_path should contain both cycle joints (j_a, j_b); \
-             got path1={:?} path2={:?}",
+        let world = eval_builtin("world", &[]);
+        assert_eq!(
             path1,
-            path2
+            vec![world.clone(), j_b.clone()],
+            "path1 should walk world → j_b (j_b has no recorded parent in the pre-edge graph)"
+        );
+        assert_eq!(
+            path2,
+            vec![world, j_b.clone(), j_a, j_b],
+            "path2 should walk world → j_b → j_a → j_b: walk_to_world({{j_a:j_b}}, j_a) \
+             yields [j_b, j_a] top-down, then `at=j_b` appended as closing edge \
+             (j_b appears twice — per the path2 comment in append_body's cycle_introduced arm)"
+        );
+    }
+
+    // ── closed-chain detection: self-loop ────────────────────────────────
+
+    /// `body()` with the same joint as both `at` and `parent` produces a
+    /// `closed_chain` error immediately.
+    ///
+    /// Regression-prevention intent: today the case is caught by
+    /// `cycle_introduced` comparing `current` (initialised to `parent`) with
+    /// `at` on the very first iteration — with `at == parent` this evaluates
+    /// to `true` immediately. An unsuspecting refactor of `cycle_introduced`
+    /// that started the comparison only *after* one ancestor hop would
+    /// silently pass the self-loop through. This test pins that contract.
+    ///
+    /// Pin shapes (fresh mechanism, `joint_parents` empty):
+    ///   `path1 = [world, j]`    — `walk_to_world({}, j)` yields `[j]`; world prepended.
+    ///   `path2 = [world, j, j]` — same walk yields `[j]`; world prepended;
+    ///                             closing edge `at = j` appended (j appears twice).
+    #[test]
+    fn body_self_loop_emits_closed_chain_error() {
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solid".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        // Pass j as both `at` (args[2]) and `parent` (args[3]).
+        let result = eval_builtin("body", &[m0, solid, j.clone(), j.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("closed_chain".to_string())),
+            "self-loop should be reported as closed_chain"
+        );
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(s)) => {
+                assert!(!s.is_empty(), "error_message should be non-empty");
+            }
+            other => panic!("expected error_message String, got {:?}", other),
+        }
+        let path1 = match map.get(&Value::String("error_path1".to_string())) {
+            Some(Value::List(p)) => p,
+            other => panic!("expected error_path1 List, got {:?}", other),
+        };
+        let path2 = match map.get(&Value::String("error_path2".to_string())) {
+            Some(Value::List(p)) => p,
+            other => panic!("expected error_path2 List, got {:?}", other),
+        };
+        let world = eval_builtin("world", &[]);
+        assert_eq!(
+            path1,
+            &vec![world.clone(), j.clone()],
+            "path1 should walk world → j (j has no recorded parent in fresh mechanism)"
+        );
+        assert_eq!(
+            path2,
+            &vec![world, j.clone(), j],
+            "path2 should walk world → j → j: walk_to_world yields [j], world prepended, \
+             then closing edge `at = j` appended (j appears twice)"
         );
     }
 
