@@ -2044,15 +2044,26 @@ mod tests {
     #[test]
     fn boolean_op_parents_nary_constructor_accepts_matched_lengths() {
         let f0: Vec<GeometryHandleId> = vec![GeometryHandleId(1)];
+        let f1: Vec<GeometryHandleId> = vec![GeometryHandleId(2), GeometryHandleId(3)];
+        let f2: Vec<GeometryHandleId> = vec![];
         let e0: Vec<GeometryHandleId> = vec![GeometryHandleId(10)];
-        let face_inputs: [&[GeometryHandleId]; 1] = [&f0];
-        let edge_inputs: [&[GeometryHandleId]; 1] = [&e0];
+        let e1: Vec<GeometryHandleId> = vec![];
+        let e2: Vec<GeometryHandleId> = vec![GeometryHandleId(11), GeometryHandleId(12)];
 
-        // nary succeeds and returns the same value as try_nary(...).unwrap().
-        assert_eq!(
-            BooleanOpParents::nary(&face_inputs, &edge_inputs),
-            BooleanOpParents::try_nary(&face_inputs, &edge_inputs).unwrap()
-        );
+        let face_inputs: [&[GeometryHandleId]; 3] = [&f0, &f1, &f2];
+        let edge_inputs: [&[GeometryHandleId]; 3] = [&e0, &e1, &e2];
+
+        let parents = BooleanOpParents::nary(&face_inputs, &edge_inputs);
+
+        assert_eq!(parents.face_slices().len(), 3);
+        assert_eq!(parents.face_slices()[0], &f0[..]);
+        assert_eq!(parents.face_slices()[1], &f1[..]);
+        assert_eq!(parents.face_slices()[2], &f2[..]);
+
+        assert_eq!(parents.edge_slices().len(), 3);
+        assert_eq!(parents.edge_slices()[0], &e0[..]);
+        assert_eq!(parents.edge_slices()[1], &e1[..]);
+        assert_eq!(parents.edge_slices()[2], &e2[..]);
     }
 
     #[test]
