@@ -220,7 +220,7 @@ fn render_one_item(item: ItemDoc) -> String {
 
 /// Each `ItemDoc` variant must render as `<section id="{name}">…<h2>…</h2>…`.
 /// Verifies the H2 heading text matches the keyword/visibility/name
-/// convention from `ItemDoc::keyword`.
+/// convention from `ItemKind::keyword`.
 #[test]
 fn item_section_h2_per_variant() {
     let cases: Vec<(ItemDoc, &str)> = vec![

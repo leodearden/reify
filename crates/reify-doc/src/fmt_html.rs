@@ -297,7 +297,7 @@ fn render_toc(out: &mut String, items: &[&ItemDoc]) {
 /// Render a single `ItemDoc` to `out` as `<section id="{name}">…</section>`.
 ///
 /// Emits the `<h2>` heading using the visibility/keyword/name convention
-/// inherited from `ItemDoc::keyword` in `model.rs`.
+/// inherited from `ItemKind::keyword` in `model.rs`.
 fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_>>) {
     let name = item.name();
     let kw = item.keyword();
