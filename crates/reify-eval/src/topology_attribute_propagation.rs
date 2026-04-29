@@ -395,7 +395,10 @@ mod tests {
         HistoryRecord, QueryError, Role, SweepOpHistoryRecords, TopologyAttributeTable,
     };
 
-    use super::{populate_extrude_attributes, propagate_attributes_via_brepalgoapi_history};
+    use super::{
+        populate_extrude_attributes, populate_revolve_attributes,
+        propagate_attributes_via_brepalgoapi_history,
+    };
 
     /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
     /// `face_modified` entry and every other vector empty.
@@ -897,5 +900,256 @@ mod tests {
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
+    }
+
+    // -- populate_revolve_attributes tests (task 5a, step-13) --
+    //
+    // Mirrors the extrude helper but with revolve-specific role
+    // assignments: `start_cap_face_indices` → `Cap(Start)`,
+    // `end_cap_face_indices` → `Cap(End)`, `face_generated` →
+    // `RevolvedFace` (NOT `Side`). Empty cap lists encode full-2π
+    // revolutions (no cap faces).
+
+    /// Layout for a half-rect-face revolve: 1 profile face, 4 profile
+    /// edges (axis-side + far-side + 2 perpendiculars), 8 result faces
+    /// (indices 0..=7), 16 result edges. Sized to fit step-13's
+    /// (a) PARTIAL fixture (start=2, end=3, face_generated=4..=7).
+    fn revolve_layout_for_step13() -> ExtrudeLayout {
+        ExtrudeLayout {
+            profile_faces: vec![GeometryHandleId(301)],
+            profile_edges: vec![
+                GeometryHandleId(401),
+                GeometryHandleId(402),
+                GeometryHandleId(403),
+                GeometryHandleId(404),
+            ],
+            result_faces: (0..8).map(|i| GeometryHandleId(3000 + i)).collect(),
+            result_edges: (0..16).map(|i| GeometryHandleId(4000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic SweepOpHistoryRecords matching the step-13 (a) PARTIAL
+    /// fixture: start_cap = [2], end_cap = [3], face_generated =
+    /// [(0,0,4), (0,1,5), (0,2,6), (0,3,7)].
+    fn step13_partial_revolve_history() -> SweepOpHistoryRecords {
+        SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 4,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 5,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 2,
+                    result_subshape_index: 6,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 3,
+                    result_subshape_index: 7,
+                },
+            ],
+            start_cap_face_indices: vec![2],
+            end_cap_face_indices: vec![3],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_partial_revolve_writes_cap_start_and_cap_end_for_cap_indices() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = step13_partial_revolve_history();
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-13 partial-revolve history is well-formed");
+
+        let start_cap = table
+            .lookup(layout.result_faces[2])
+            .expect("start_cap_face_indices[0] = 2 should have an entry");
+        assert_eq!(start_cap.role, Role::Cap(CapKind::Start));
+        assert_eq!(start_cap.local_index, 0);
+        assert_eq!(start_cap.feature_id, feature_id);
+        assert!(start_cap.user_label.is_none());
+        assert!(start_cap.mod_history.is_empty());
+
+        let end_cap = table
+            .lookup(layout.result_faces[3])
+            .expect("end_cap_face_indices[0] = 3 should have an entry");
+        assert_eq!(end_cap.role, Role::Cap(CapKind::End));
+        assert_eq!(end_cap.local_index, 0);
+        assert_eq!(end_cap.feature_id, feature_id);
+        assert!(end_cap.user_label.is_none());
+        assert!(end_cap.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_partial_revolve_writes_revolved_face_with_sequential_local_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = step13_partial_revolve_history();
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-13 partial-revolve history is well-formed");
+
+        for (sequential_idx, result_face_idx) in [4_usize, 5, 6, 7].iter().enumerate() {
+            let attr = table
+                .lookup(layout.result_faces[*result_face_idx])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "face_generated[{sequential_idx}].result_subshape_index = \
+                         {result_face_idx} should have an entry"
+                    )
+                });
+            assert_eq!(
+                attr.role,
+                Role::RevolvedFace,
+                "revolve face_generated must use Role::RevolvedFace not Role::Side",
+            );
+            assert_eq!(attr.local_index, sequential_idx as u32);
+            assert_eq!(attr.feature_id, feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+        }
+    }
+
+    #[test]
+    fn populate_full_revolve_writes_only_revolved_face_no_caps() {
+        // FULL-2π revolve fixture: empty cap lists, face_generated only.
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 0,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 1,
+                },
+            ],
+            start_cap_face_indices: vec![],
+            end_cap_face_indices: vec![],
+            ..Default::default()
+        };
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-13 full-revolve history is well-formed");
+
+        assert_eq!(
+            table.len(),
+            2,
+            "full-2π revolve has no caps; only the 2 revolved faces are keyed",
+        );
+
+        for (sequential_idx, result_face_idx) in [0_usize, 1].iter().enumerate() {
+            let attr = table
+                .lookup(layout.result_faces[*result_face_idx])
+                .expect("expected revolved face entry");
+            assert_eq!(attr.role, Role::RevolvedFace);
+            assert_eq!(attr.local_index, sequential_idx as u32);
+        }
+    }
+
+    #[test]
+    fn populate_revolve_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![123], // result has only 8 faces.
+            ..Default::default()
+        };
+
+        let err = populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("123"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_revolve_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 256, // > result faces (8).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("256"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
     }
 }
