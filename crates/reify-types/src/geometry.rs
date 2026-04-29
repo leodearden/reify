@@ -926,6 +926,71 @@ pub struct BooleanOpHistoryRecords {
     pub edge_deleted: Vec<DeletedRecord>,
 }
 
+/// Typed wrapper for the per-parent face/edge handle slices passed to
+/// [`reify_eval::propagate_attributes_via_brepalgoapi_history`].
+///
+/// Introduced in v0.2 persistent-naming-v2 (task 2590 / PRD §6.5) to
+/// replace the raw `&[&[GeometryHandleId]]` slice-of-slices parameters
+/// and make the binary-fuse parent-index semantics explicit at the
+/// call site.
+///
+/// ## Variant semantics
+///
+/// - **`Binary`** — exactly two parents, `faces[0]` / `edges[0]` is the
+///   left operand and `faces[1]` / `edges[1]` is the right operand,
+///   matching `HistoryRecord::parent_index` (`0` = left, `1` = right per
+///   the doc on [`HistoryRecord`]).  Use this for `BRepAlgoAPI_Fuse`,
+///   `BRepAlgoAPI_Cut`, and `BRepAlgoAPI_Common`.
+///
+/// - **`NAry`** — arbitrary number of parents for multi-input fuse
+///   (`BRepAlgoAPI_BuilderAlgo`). `faces[i]` / `edges[i]` correspond to
+///   parent `i` (i.e. `HistoryRecord::parent_index == i`). The two inner
+///   slices must have the same length; this is a caller invariant — the
+///   propagation function surfaces `QueryFailed` for any out-of-bounds
+///   index.
+///
+/// The accessor methods [`face_slices`][Self::face_slices] and
+/// [`edge_slices`][Self::edge_slices] return a unified
+/// `&[&'a [GeometryHandleId]]` view regardless of variant, so the inner
+/// propagation helper works on raw indices without variant awareness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BooleanOpParents<'a> {
+    /// Binary boolean (fuse / cut / common): exactly two parents.
+    /// `faces[0]` / `edges[0]` = left operand;
+    /// `faces[1]` / `edges[1]` = right operand.
+    Binary {
+        faces: [&'a [GeometryHandleId]; 2],
+        edges: [&'a [GeometryHandleId]; 2],
+    },
+    /// N-ary boolean (multi-input fuse): arbitrary number of parents.
+    /// `faces[i]` / `edges[i]` correspond to `HistoryRecord::parent_index == i`.
+    /// The two slices must have the same length (caller invariant).
+    NAry {
+        faces: &'a [&'a [GeometryHandleId]],
+        edges: &'a [&'a [GeometryHandleId]],
+    },
+}
+
+impl<'a> BooleanOpParents<'a> {
+    /// Returns the per-parent face-handle slices as a flat slice of slices,
+    /// regardless of variant. Index `i` gives the face handles for parent `i`.
+    pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
+        match self {
+            Self::Binary { faces, .. } => &faces[..],
+            Self::NAry { faces, .. } => faces,
+        }
+    }
+
+    /// Returns the per-parent edge-handle slices as a flat slice of slices,
+    /// regardless of variant. Index `i` gives the edge handles for parent `i`.
+    pub fn edge_slices(&self) -> &[&'a [GeometryHandleId]] {
+        match self {
+            Self::Binary { edges, .. } => &edges[..],
+            Self::NAry { edges, .. } => edges,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
