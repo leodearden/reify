@@ -16,6 +16,13 @@
 //! Composing N stages each at their per-stage tolerance yields
 //! `requested_tol × 0.8^N`, which is always ≤ the requested tolerance
 //! (the safety property the heuristic delivers).
+//!
+//! **Composition model:** this heuristic assumes stages compose
+//! *multiplicatively* (each stage's output quality-factor multiplies): the
+//! composed tolerance is the product of per-stage tolerances, not their sum.
+//! Per-stage values may therefore exceed `requested_tol` when
+//! `requested_tol < 1` (e.g. tol=1e-3, N=2 → per_stage ≈ 0.0253) — that
+//! is by design.
 
 /// Safety factor applied on top of the geometric split.
 ///
@@ -54,10 +61,16 @@ mod tests {
 
     #[test]
     fn single_stage_applies_safety_factor() {
-        // N=1: per_stage_tolerance(tol, 1) == tol * 0.8.
-        // At N=1, the geometric split collapses to tol^(1/1) * 0.8 = tol * 0.8.
-        // Use exact float equality — the multiplication is exact for this input.
-        assert_eq!(per_stage_tolerance(0.001, 1), 0.001 * 0.8);
+        // N=1: per_stage = tol^(1/1) * 0.8 = tol * 0.8.
+        // Use an epsilon comparison — powf(1.0) is not guaranteed bit-exact by
+        // all libm implementations, so assert_eq! could regress on musl or
+        // alternate platforms even though the result is cosmetically equal.
+        let observed = per_stage_tolerance(0.001, 1);
+        let expected = 0.001 * SAFETY_FACTOR;
+        assert!(
+            (observed - expected).abs() < 1e-15,
+            "per_stage_tolerance(0.001, 1): expected {expected}, got {observed}"
+        );
     }
 
     #[cfg(debug_assertions)]
@@ -88,9 +101,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "n_stages must be")]
     fn n_stages_zero_panics_in_debug() {
-        // n_stages=0 is a programmer error (1/0 = inf, tol^inf is nonsense).
-        // The debug_assert in step-7 will fire; until then this test fails the
-        // should_panic harness because no panic occurs.
+        // Precondition: n_stages > 0. Zero is a programmer error
+        // (1/0 = inf, tol^inf is nonsense). Enforced by a debug_assert.
         per_stage_tolerance(0.001, 0);
     }
 
@@ -136,10 +148,7 @@ mod tests {
 
     #[test]
     fn geometric_split_multi_stages() {
-        // Pin the formula expected = tol^(1/N) * 0.8 at N ∈ {2, 3, 5} for two
-        // representative tolerances. The step-2 minimal impl (tol * 0.8) is correct
-        // only for N=1; at N=2,3,5 it returns 0.0008 (for tol=1e-3) while the
-        // correct values are ~0.025298, ~0.080000, ~0.200951 — so this test must fail.
+        // Pin per_stage = tol^(1/N) * SAFETY_FACTOR for representative N and tol.
         let eps = 1e-12;
         for &tol in &[1e-3_f64, 1e-4_f64] {
             for &n in &[2_usize, 3, 5] {
