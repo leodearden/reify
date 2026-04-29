@@ -168,17 +168,25 @@ structure Kinematic {
 }
 "#;
 
-/// A closed-chain mechanism: j_x is used as the "at" joint for both solid_a
-/// and solid_b, creating a parent-conflict that stamps `error="closed_chain"`
-/// on the resulting mechanism Map (step 9).
-const CLOSED_CHAIN_SOURCE: &str = r#"
+/// An errored mechanism via duplicate-solid: the same solid string `"solid_a"`
+/// is attached twice (first via `j_a`, then via `j_b`), which stamps
+/// `error="duplicate_solid"` on the resulting mechanism Map.
+///
+/// Migration note: this fixture previously triggered `error="closed_chain"`
+/// via a parent-conflict pattern, but under v0.2 closed kinematic chains are
+/// recorded as loop-closure constraints rather than errored — so the
+/// parent-conflict trigger no longer surfaces an `error` key.  The
+/// duplicate-solid trigger (canonical recipe per
+/// crates/reify-stdlib/src/snapshot.rs `snapshot_on_errored_mechanism_returns_undef`)
+/// preserves the test contract: the resulting mechanism Map carries an
+/// `error` key, and `get_mechanism_descriptors` must filter it out.
+const DUPLICATE_SOLID_SOURCE: &str = r#"
 structure Kinematic {
     let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
     let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
-    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
     let m0  = mechanism()
-    let m1  = body(m0, "solid_a", j_x, j_a)
-    let m2  = body(m1, "solid_b", j_x, j_b)
+    let m1  = body(m0, "solid_a", j_a)
+    let m2  = body(m1, "solid_a", j_b)
 }
 "#;
 
@@ -292,27 +300,35 @@ fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
 
 #[test]
 fn get_mechanism_descriptors_filters_errored_mechanisms() {
-    // Step-9 RED / Step-10 GREEN: load a closed-chain mechanism (j_x used as
-    // "at" for both solid_a and solid_b).  When `body(m1, "solid_b", j_x, j_b)`
-    // is evaluated, j_x is already registered as the "at" joint of solid_a in
-    // m1, so the mechanism stdlib stamps `error="closed_chain"` on m2 (the
-    // 2-body result).  m0 (0 bodies) and m1 (1 body) are valid intermediate
-    // mechanism Maps without an error key and may legitimately appear.
+    // Load a duplicate-solid mechanism: m2 attaches "solid_a" a second time
+    // (via j_b) after m1 already registered it (via j_a), so the mechanism
+    // stdlib stamps `error="duplicate_solid"` on m2.  m0 (0 bodies) and m1
+    // (1 body) are valid intermediate mechanism Maps without an error key
+    // and may legitimately appear.
     //
-    // What MUST be true: no descriptor with `bodies_count == 2` appears in the
-    // list — the errored mechanism Map must be filtered out by the `error` key
-    // check (engine.rs, `get_mechanism_descriptors`).
+    // What MUST be true: no descriptor with `name == "m2"` appears in the
+    // list — the errored mechanism Map must be filtered out by the `error`
+    // key check (engine.rs, `get_mechanism_descriptors`).
+    //
+    // Migration note: under v0.2 the prior closed-chain trigger no longer
+    // produces an `error` key (closed chains are now recorded as
+    // loop-closure constraints, not errors).  The contract under test
+    // (errored cells filtered from descriptor output) is unchanged; only
+    // the trigger is duplicate_solid instead of closed_chain.  A
+    // name-based identifier is used here because under duplicate_solid the
+    // input m1's bodies list is preserved verbatim on m2, so
+    // `bodies_count == 2` is no longer a clean discriminator.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
     session
-        .load_from_source(CLOSED_CHAIN_SOURCE, "kinematic")
-        .expect("load_from_source should not fail for closed-chain (error is at eval, not compile)");
+        .load_from_source(DUPLICATE_SOLID_SOURCE, "kinematic")
+        .expect("load_from_source should not fail for duplicate-solid (error is at eval, not compile)");
 
     let descriptors = session.get_mechanism_descriptors();
     assert!(
-        !descriptors.iter().any(|d| d.bodies_count == 2),
-        "errored (closed-chain) mechanism (bodies_count=2) must be filtered out; got {:?}",
+        !descriptors.iter().any(|d| d.name == "m2"),
+        "errored (duplicate-solid) mechanism cell `m2` must be filtered out; got {:?}",
         descriptors
     );
 }
