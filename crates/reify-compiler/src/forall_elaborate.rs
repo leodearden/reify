@@ -74,10 +74,21 @@ fn resolve_forall_elements(
                 .iter()
                 .find(|s| s.name == *name && s.is_collection)
             {
-                let count = sub
+                // Resolve the count cell to a literal integer.
+                // PRD criterion 7 first-half: when the count is not yet
+                // determined (cell missing, default not a literal Int, or
+                // multi-hop indirection beyond one level), return `None` to
+                // signal "defer silently — emit zero decls, no diagnostic".
+                // Re-elaboration on count change is future SchemaNode work
+                // (out of scope for task 2365).
+                let count_opt = sub
                     .count_cell
                     .as_ref()
-                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id))?;
+                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
+                let count = match count_opt {
+                    Some(n) => n,
+                    None => return None, // PRD criterion 7 first-half: count not yet determined.
+                };
                 let coll_span = collection.span;
                 return Some(
                     (0..count)
