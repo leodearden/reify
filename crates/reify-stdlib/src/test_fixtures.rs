@@ -56,3 +56,7 @@ pub(crate) fn planar_xy_joint() -> Value {
         angle_range_0_to_pi(),
     ])
 }
+
+pub(crate) fn spherical_joint() -> Value {
+    eval_builtin("spherical", &[angle_range_0_to_pi()])
+}

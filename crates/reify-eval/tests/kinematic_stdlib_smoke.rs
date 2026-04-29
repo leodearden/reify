@@ -46,6 +46,14 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `planar_xform`   = `transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])`
 ///                     → Transform { translation=[0.5m, 0.3m, 0], rotation=quat(+Z, 0.5rad) }
 ///   `planar_jac`     = `joint_jacobian(planar_joint)` → zero-twist Map (FD-fallback placeholder)
+///   `sj`             = `spherical(0rad..pi)` → Map { kind="spherical", range_angle } (2 keys)
+///   `q_z90`          = `orient_axis_angle([0,0,1], pi/2)` (canonical user-side construction)
+///   `sj_xform`       = `transform_at(sj, q_z90)` → Transform { rotation=q_z90, translation=0 }
+///   `sj_jac`         = `joint_jacobian(sj)` → zero-twist Map (FD-fallback placeholder)
+///   `q_euler_in`     = `orient_euler("xyz", 0.1, 0.2, 0.3)` → unit quaternion
+///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
+///   `sj_euler_back`  = `orient_to_euler("xyz", q_euler_in)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
+///   `sj_aa_back`     = `orient_to_axis_angle(q_euler_in)` → Map { angle, axis } (axis-angle facade)
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
     let r_id       = orient_identity()
@@ -74,6 +82,15 @@ structure def Kinematic {
     let planar_joint = planar(vec3(1, 0, 0), vec3(0, 1, 0), 0mm .. 1m, 0mm .. 1m, 0rad .. 6.283185rad)
     let planar_xform = transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])
     let planar_jac   = joint_jacobian(planar_joint)
+
+    let sj             = spherical(0rad .. 3.141592653589793rad)
+    let q_z90          = orient_axis_angle(vec3(0, 0, 1), 1.5707963267948966)
+    let sj_xform       = transform_at(sj, q_z90)
+    let sj_jac         = joint_jacobian(sj)
+    let q_euler_in     = orient_euler("xyz", 0.1, 0.2, 0.3)
+    let sj_xform_euler = transform_at(sj, q_euler_in)
+    let sj_euler_back  = orient_to_euler("xyz", q_euler_in)
+    let sj_aa_back     = orient_to_axis_angle(q_euler_in)
 }
 "#;
 
@@ -467,5 +484,190 @@ fn kinematic_stdlib_smoke_e2e() {
         [0.0, 0.0, 0.0],
         1e-12,
         "planar_jac.linear",
+    );
+
+    // ── spherical joint (3-DOF SO(3), quaternion-internal motion variable) ─
+    // sj = spherical(0rad..π) → Map { kind="spherical", range_angle } (2 keys)
+    // No axis stored (spherical is axis-isotropic on SO(3)); range_angle bounds
+    // the axis-angle magnitude (cone half-angle).
+    let sj = get_value(v, "sj");
+    let sj_map = match sj {
+        Value::Map(m) => m,
+        other => panic!("sj: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        sj_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("spherical".to_string())),
+        "sj: kind field should be 'spherical'"
+    );
+    assert_eq!(sj_map.len(), 2, "sj: Map should have exactly 2 keys (kind, range_angle)");
+
+    // sj_xform = transform_at(sj, q_z90) → Transform { rotation=q_z90, translation=0 }
+    // The spherical arm normalises the input quaternion (defence-in-depth) and
+    // produces a Transform whose rotation is exactly that quaternion (up to
+    // normalisation) and whose translation is zero — confirming the canonical
+    // "quaternion in, quaternion out" contract.
+    let sj_xform = get_value(v, "sj_xform");
+    let (sjx_rot, sjx_trans) = match sj_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("sj_xform: expected Transform, got {other:?}"),
+    };
+    assert_orientation_close(sjx_rot, (cos_q, 0.0, 0.0, sin_q), 1e-12, "sj_xform rotation");
+    assert_vec3_close(sjx_trans, [0.0, 0.0, 0.0], 1e-12, "sj_xform translation");
+    assert_vec3_dim(sjx_trans, DimensionVector::LENGTH, "sj_xform translation dim");
+
+    // sj_jac = joint_jacobian(sj) → zero-twist Map (FD-fallback placeholder).
+    // Analytic 3-column SO(3) Jacobian deferred to PRD task 2 / #2670.
+    let sj_jac = get_value(v, "sj_jac");
+    assert_vec3_close(
+        map_vec3(sj_jac, "angular", "sj_jac.angular"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "sj_jac.angular",
+    );
+    assert_vec3_close(
+        map_vec3(sj_jac, "linear", "sj_jac.linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "sj_jac.linear",
+    );
+
+    // ── Euler / axis-angle facade demonstration ───────────────────────────
+    // Canonical pattern: build quaternion via orient_euler(...), drive
+    // transform_at(spherical, q), then read back via orient_to_euler /
+    // orient_to_axis_angle on the rotation component. This validates the
+    // resolved design decision: the user constructs the quaternion via
+    // existing builtins; spherical's transform_at consumes it as-is; the
+    // human-readable forms are recovered by the same builtins on output.
+
+    // q_euler_in = orient_euler("xyz", 0.1, 0.2, 0.3) — unit quaternion built
+    // from intrinsic xyz Euler angles. Sanity-check that it is a finite
+    // Orientation; the exact (w,x,y,z) is implementation-defined and round-
+    // tripped via sj_euler_back below.
+    let q_euler_in = get_value(v, "q_euler_in");
+    let (qei_w, qei_x, qei_y, qei_z) = match q_euler_in {
+        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+        other => panic!("q_euler_in: expected Orientation, got {other:?}"),
+    };
+    let qei_norm = (qei_w * qei_w + qei_x * qei_x + qei_y * qei_y + qei_z * qei_z).sqrt();
+    assert!(
+        (qei_norm - 1.0).abs() < 1e-12,
+        "q_euler_in must be a unit quaternion, got |q|={qei_norm}"
+    );
+
+    // sj_xform_euler = transform_at(sj, q_euler_in) → rotation matches
+    // q_euler_in (sign-insensitive), translation zero.
+    let sj_xform_euler = get_value(v, "sj_xform_euler");
+    let (sxe_rot, sxe_trans) = match sj_xform_euler {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("sj_xform_euler: expected Transform, got {other:?}"),
+    };
+    assert_orientation_close(
+        sxe_rot,
+        (qei_w, qei_x, qei_y, qei_z),
+        1e-12,
+        "sj_xform_euler rotation",
+    );
+    assert_vec3_close(sxe_trans, [0.0, 0.0, 0.0], 1e-12, "sj_xform_euler translation");
+    assert_vec3_dim(sxe_trans, DimensionVector::LENGTH, "sj_xform_euler translation dim");
+
+    // sj_euler_back = orient_to_euler("xyz", q_euler_in) → List of 3 angle
+    // scalars round-tripping the input (0.1, 0.2, 0.3) within 1e-12. Note
+    // the input angles are away from gimbal-lock singularities (asin(r02)
+    // domain interior), so the round-trip is bit-stable.
+    let sj_euler_back = get_value(v, "sj_euler_back");
+    let euler_items = match sj_euler_back {
+        Value::List(items) if items.len() == 3 => items,
+        other => panic!("sj_euler_back: expected 3-element List, got {other:?}"),
+    };
+    let expected_euler = [0.1_f64, 0.2_f64, 0.3_f64];
+    for (i, item) in euler_items.iter().enumerate() {
+        assert_eq!(
+            item.dimension(),
+            DimensionVector::ANGLE,
+            "sj_euler_back[{i}]: expected ANGLE-dimensioned Scalar, got {:?}",
+            item.dimension()
+        );
+        let v = item
+            .as_f64()
+            .unwrap_or_else(|| panic!("sj_euler_back[{i}]: not numeric: {item:?}"));
+        assert!(
+            (v - expected_euler[i]).abs() < 1e-12,
+            "sj_euler_back[{i}]: expected {}, got {v}",
+            expected_euler[i]
+        );
+    }
+
+    // sj_aa_back = orient_to_axis_angle(q_euler_in) → Map { angle, axis }.
+    // angle is an ANGLE-dimensioned Scalar; axis is a Vector3 of unit-magnitude
+    // Real components. Together they reconstruct q_euler_in via the half-angle
+    // identity: q = (cos(angle/2), axis * sin(angle/2)).
+    let sj_aa_back = get_value(v, "sj_aa_back");
+    let aa_map = match sj_aa_back {
+        Value::Map(m) => m,
+        other => panic!("sj_aa_back: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        aa_map.len(),
+        2,
+        "sj_aa_back: Map should have exactly 2 keys (angle, axis)"
+    );
+    let aa_angle = aa_map
+        .get(&Value::String("angle".to_string()))
+        .unwrap_or_else(|| panic!("sj_aa_back: missing 'angle' key"));
+    assert_eq!(
+        aa_angle.dimension(),
+        DimensionVector::ANGLE,
+        "sj_aa_back.angle: expected ANGLE dimension"
+    );
+    let aa_angle_f = aa_angle
+        .as_f64()
+        .expect("sj_aa_back.angle should be numeric");
+    let aa_axis = aa_map
+        .get(&Value::String("axis".to_string()))
+        .unwrap_or_else(|| panic!("sj_aa_back: missing 'axis' key"));
+    let aa_axis_items = match aa_axis {
+        Value::Vector(v) if v.len() == 3 => v,
+        other => panic!("sj_aa_back.axis: expected Vector3, got {other:?}"),
+    };
+    let aa_axis_f: [f64; 3] = [
+        aa_axis_items[0]
+            .as_f64()
+            .expect("sj_aa_back.axis[0] numeric"),
+        aa_axis_items[1]
+            .as_f64()
+            .expect("sj_aa_back.axis[1] numeric"),
+        aa_axis_items[2]
+            .as_f64()
+            .expect("sj_aa_back.axis[2] numeric"),
+    ];
+    let aa_axis_norm = (aa_axis_f[0] * aa_axis_f[0]
+        + aa_axis_f[1] * aa_axis_f[1]
+        + aa_axis_f[2] * aa_axis_f[2])
+        .sqrt();
+    assert!(
+        (aa_axis_norm - 1.0).abs() < 1e-12,
+        "sj_aa_back.axis must be a unit vector, got |axis|={aa_axis_norm}"
+    );
+    // Reconstruct: q = (cos(angle/2), axis * sin(angle/2)). Sign-insensitive,
+    // matching the convention of orient_to_axis_angle (which canonicalises the
+    // axis sign per its non-negative-w preference; we accept either sign here
+    // for forward-compatibility with future canonicalisation tweaks).
+    let half = aa_angle_f * 0.5;
+    let recon_w = half.cos();
+    let recon_x = aa_axis_f[0] * half.sin();
+    let recon_y = aa_axis_f[1] * half.sin();
+    let recon_z = aa_axis_f[2] * half.sin();
+    let pos_diff = (recon_w - qei_w).abs()
+        + (recon_x - qei_x).abs()
+        + (recon_y - qei_y).abs()
+        + (recon_z - qei_z).abs();
+    let neg_diff = (recon_w + qei_w).abs()
+        + (recon_x + qei_x).abs()
+        + (recon_y + qei_y).abs()
+        + (recon_z + qei_z).abs();
+    assert!(
+        pos_diff < 1e-12 || neg_diff < 1e-12,
+        "sj_aa_back: axis-angle round-trip failed; reconstructed ±({recon_w}, {recon_x}, {recon_y}, {recon_z}), expected ({qei_w}, {qei_x}, {qei_y}, {qei_z})"
     );
 }

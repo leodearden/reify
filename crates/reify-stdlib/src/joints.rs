@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::{tensor_components_f64, trig_input};
 use crate::orientation::normalize_quaternion;
@@ -93,6 +93,27 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 args[3].clone(),
                 args[4].clone(),
             )
+        }
+        // 3-DOF spherical joint: free rotation in SO(3), no translation.
+        // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 4.
+        //
+        // Signature: spherical(range_angle: Range<Angle>) — single Range<Angle>
+        // bounding the swing magnitude (axis-angle / cone half-angle). The joint
+        // is axis-isotropic — there is no preferred direction — so no axis is
+        // stored. The motion variable for `transform_at` is a unit quaternion
+        // (`Value::Orientation`); Euler / axis-angle exposure is the user's
+        // responsibility via composition of `orient_euler` / `orient_axis_angle`
+        // and `orient_to_euler` / `orient_to_axis_angle`.
+        "spherical" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            // Validate range_angle: bounded, ANGLE-dimensioned. Mirrors the
+            // prismatic / revolute / planar precedent.
+            if validate_range(&args[0], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_spherical(args[0].clone())
         }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
@@ -220,6 +241,41 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         return Some(Value::Undef);
                     }
                     t_planar
+                }
+                // 3-DOF spherical joint: motion variable is `Value::Orientation`
+                // (a unit quaternion). Per PRD task 4 design decision, the user
+                // constructs the quaternion via `orient_axis_angle` /
+                // `orient_euler` / `orient_quaternion` before calling
+                // `transform_at`; the spherical arm renormalises via
+                // `normalize_quaternion` as defence-in-depth against hand-built
+                // `Value::Orientation` carrying non-unit components. The result
+                // is `Value::Transform { rotation = normalised_q, translation = 0 }`.
+                //
+                // Non-`Value::Orientation` inputs (Undef, Real, Vector, List,
+                // bare Map, etc.) fall through to Undef. The same Undef applies
+                // when `quaternion_is_finite` rejects NaN/Inf components or
+                // `normalize_quaternion` rejects a zero-norm quaternion (the
+                // latter is documented at orientation.rs:560).
+                "spherical" => {
+                    let (w, x, y, z) = match &args[1] {
+                        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                        _ => return Some(Value::Undef),
+                    };
+                    if !quaternion_is_finite(w, x, y, z) {
+                        return Some(Value::Undef);
+                    }
+                    let rotation = match normalize_quaternion(w, x, y, z) {
+                        Some(q) => q,
+                        None => return Some(Value::Undef),
+                    };
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(0.0),
+                            Value::length(0.0),
+                            Value::length(0.0),
+                        ])),
+                    }
                 }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
@@ -500,6 +556,21 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // `if unit_axes_xy_from_planar_map(map).is_none() { return Value::Undef; }`
         // if you need stricter defence-in-depth for malformed fixtures.
         "planar" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 3-DOF spherical joint: zero-twist placeholder column — deferred design
+        // decision matching the planar/fixed pattern. A spherical joint has a
+        // 6×3 Jacobian (three angular columns spanning so(3); zero linear), but
+        // the v0.1 single-column convention returns one Map per joint. The
+        // analytic 3-column form is deferred per PRD task 2 / #2670 ("FD fallback
+        // for multi-DOF kinds"). Note: chain_jacobian_fd also returns None for
+        // chains containing a spherical joint because `value_for_joint` returns
+        // None for spherical (the f64-per-joint chain machinery cannot represent
+        // a quaternion motion variable); this zero placeholder is NOT equivalent
+        // to "FD chain Jacobians work for spherical" — they do not yet.
+        //
+        // Field validation is deliberately skipped (matching the planar/fixed
+        // arms): the result is zero regardless of the stored range_angle, so a
+        // hand-built Map with a missing field returns the same correct placeholder.
+        "spherical" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
@@ -725,7 +796,7 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// runtime slice membership, so those arms **must be kept in sync with
 /// this constant** when a new kind is added.
 /// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar"];
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
@@ -773,6 +844,21 @@ fn make_planar(axis_x: Value, axis_y: Value, range_x: Value, range_y: Value, ran
     m.insert(Value::String("range_x".to_string()), range_x);
     m.insert(Value::String("range_y".to_string()), range_y);
     m.insert(Value::String("range_theta".to_string()), range_theta);
+    Value::Map(m)
+}
+
+/// Build a spherical joint `Value::Map` with the two-key layout:
+/// `"kind"`, `"range_angle"`.
+///
+/// Keys are in BTreeMap alphabetical order. The spherical joint is axis-isotropic
+/// (no preferred direction), so no axis is stored. The `range_angle` value is
+/// a `Value::Range` of `Angle`-dimensioned bounds — see PRD task 4 design
+/// decision: the range bounds the rotation magnitude (axis-angle / cone
+/// half-angle) regardless of the axis direction.
+fn make_spherical(range_angle: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("spherical".to_string()));
+    m.insert(Value::String("range_angle".to_string()), range_angle);
     Value::Map(m)
 }
 
@@ -888,7 +974,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
     use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
 
@@ -2850,6 +2936,13 @@ mod tests {
                 planar_xy_joint(),
                 Value::List(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0)]),
             )],
+            // 3-DOF spherical joint: motion variable is a unit-quaternion `Value::Orientation`.
+            // The identity quaternion is the minimal-rotation fixture, exercising the
+            // `transform_at` and `joint_jacobian_value` spherical arms via the dispatch tests.
+            "spherical" => vec![(
+                spherical_joint(),
+                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            )],
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
                  add a minimal well-formed fixture here and confirm that both \
@@ -3441,6 +3534,226 @@ mod tests {
         }
     }
 
+    // ── transform_at on spherical: invalid motion-var (step-9) ───────────────
+
+    /// `transform_at(spherical, motion)` returns Undef whenever `motion` is
+    /// not a finite, non-zero `Value::Orientation`. Covers:
+    ///   (a) bare Real
+    ///   (b) Vector(4) (the wrong "quaternion-ish" shape)
+    ///   (c) List of three angles (Euler-tuple shape, deliberately rejected)
+    ///   (d) Orientation with NaN in any component
+    ///   (e) Orientation with Inf in any component
+    ///   (f) Orientation with all-zero components (zero-norm quaternion)
+    #[test]
+    fn transform_at_spherical_invalid_motion_var_returns_undef() {
+        let sj = spherical_joint();
+
+        let cases: Vec<(&str, Value)> = vec![
+            // (a) bare Real
+            ("bare Real(0.5)", Value::Real(0.5)),
+            // (b) Vector(4) — wrong container even though component count matches
+            ("Vector(4)", Value::Vector(vec![
+                Value::Real(0.0), Value::Real(0.0), Value::Real(0.0), Value::Real(1.0),
+            ])),
+            // (c) Euler-tuple shape (List of three angles) — deliberately rejected
+            ("List(3 angles)", Value::List(vec![
+                Value::angle(0.1), Value::angle(0.2), Value::angle(0.3),
+            ])),
+            // (d) NaN components
+            ("Orientation w=NaN", Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+            ("Orientation x=NaN", Value::Orientation { w: 1.0, x: f64::NAN, y: 0.0, z: 0.0 }),
+            ("Orientation y=NaN", Value::Orientation { w: 1.0, x: 0.0, y: f64::NAN, z: 0.0 }),
+            ("Orientation z=NaN", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NAN }),
+            // (e) Inf components — one Inf per axis covers the symmetric
+            // `quaternion_is_finite` arms; +Inf and -Inf are mixed across
+            // axes to exercise both signs.
+            ("Orientation w=Inf", Value::Orientation { w: f64::INFINITY, x: 0.0, y: 0.0, z: 0.0 }),
+            ("Orientation x=Inf", Value::Orientation { w: 1.0, x: f64::INFINITY, y: 0.0, z: 0.0 }),
+            ("Orientation y=Inf", Value::Orientation { w: 1.0, x: 0.0, y: f64::INFINITY, z: 0.0 }),
+            ("Orientation z=-Inf", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NEG_INFINITY }),
+            // (f) zero-norm quaternion (normalize_quaternion returns None)
+            ("Orientation all-zero", Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 }),
+        ];
+
+        for (label, motion) in &cases {
+            assert!(
+                eval_builtin("transform_at", &[sj.clone(), motion.clone()]).is_undef(),
+                "transform_at(spherical, {label}) should return Undef but didn't"
+            );
+        }
+    }
+
+    // ── transform_at on spherical: identity quaternion (step-5) ──────────────
+
+    #[test]
+    fn transform_at_spherical_identity_quaternion_returns_identity() {
+        let sj = spherical_joint();
+        let identity_q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("transform_at", &[sj, identity_q]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical identity quaternion → identity Transform",
+        );
+    }
+
+    // ── transform_at on spherical: general quaternions (step-7) ──────────────
+
+    /// `transform_at(spherical, q)` returns a Transform whose rotation matches
+    /// `q` (component-wise) and whose translation is the LENGTH zero vector.
+    /// Covers three non-identity cases: 90° about +Z, 180° about +X, and a
+    /// general rotation built via `orient_axis_angle([1,1,0], π/3)`.
+    #[test]
+    fn transform_at_spherical_general_quaternion_preserves_rotation() {
+        let pi = std::f64::consts::PI;
+
+        // (a) 90° about +Z: q = (cos(π/4), 0, 0, sin(π/4))
+        let cos_q4 = (pi / 4.0).cos();
+        let sin_q4 = (pi / 4.0).sin();
+        let q_z90 = Value::Orientation { w: cos_q4, x: 0.0, y: 0.0, z: sin_q4 };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_z90]);
+        assert_transform_approx(
+            &result,
+            (cos_q4, 0.0, 0.0, sin_q4),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, 90° about +Z",
+        );
+
+        // (b) 180° about +X: q = (0, 1, 0, 0)
+        let q_x180 = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_x180]);
+        assert_transform_approx(
+            &result,
+            (0.0, 1.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, 180° about +X",
+        );
+
+        // (c) Build a general quaternion via orient_axis_angle([1,1,0], π/3).
+        // The rotation sits on a non-axis-aligned axis, so all four quaternion
+        // components are non-zero.
+        let axis_xy = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        let q_general = eval_builtin("orient_axis_angle", &[axis_xy, Value::Real(pi / 3.0)]);
+        let (gw, gx, gy, gz) = match &q_general {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("orient_axis_angle did not produce an Orientation: {:?}", other),
+        };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_general.clone()]);
+        assert_transform_approx(
+            &result,
+            (gw, gx, gy, gz),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, general axis-angle [1,1,0]/√2 by π/3",
+        );
+    }
+
+    // ── spherical constructor: validation surface (step-3) ───────────────────
+
+    #[test]
+    fn spherical_invalid_args_returns_undef() {
+        let unbounded_upper = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        let unbounded_lower = Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        };
+
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            // (a) wrong arg counts
+            ("0 args",  vec![]),
+            ("2 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            ("3 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            // (b) range_angle wrong dimension (LENGTH-typed range)
+            ("LENGTH-typed range", vec![length_range_0_to_1m()]),
+            // (c) range_angle unbounded
+            ("unbounded upper", vec![unbounded_upper]),
+            ("unbounded lower", vec![unbounded_lower]),
+            // (d) range_angle non-Range types
+            ("bare Real",   vec![Value::Real(0.0)]),
+            ("bare Vector", vec![Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])]),
+            ("bare Map",    vec![Value::Map(Default::default())]),
+        ];
+
+        for (label, args) in &cases {
+            assert!(
+                eval_builtin("spherical", args).is_undef(),
+                "spherical({label}) should return Undef but didn't"
+            );
+        }
+    }
+
+    // ── spherical constructor: happy path (step-1) ────────────────────────────
+
+    #[test]
+    fn spherical_returns_map_with_correct_fields() {
+        let range_angle = angle_range_0_to_pi();
+        let result = eval_builtin("spherical", &[range_angle.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("spherical".to_string())),
+            "kind field should be 'spherical'"
+        );
+        assert_eq!(
+            map.get(&Value::String("range_angle".to_string())),
+            Some(&range_angle),
+            "range_angle field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            2,
+            "spherical joint Map should have exactly 2 keys (kind, range_angle), got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // ── joint_jacobian for spherical (step-11) ───────────────────────────────
+
+    /// `joint_jacobian(spherical_joint)` returns a zero-twist Map placeholder.
+    ///
+    /// Design decision: spherical is a 3-DOF joint with a 6×3 angular Jacobian
+    /// (three rotational columns), but the v0.1 single-column convention returns
+    /// one Map per joint. A zero column preserves the uniform `{ angular, linear }`
+    /// shape across all kinds (matching the fixed-joint and planar-joint pattern),
+    /// so `joint_jacobian_dispatches_for_every_joint_kind` can assert non-Undef
+    /// for every kind in JOINT_KINDS. The analytic 3-column form is deferred to
+    /// PRD task 2 / #2670 ("FD fallback for multi-DOF kinds").
+    #[test]
+    fn joint_jacobian_spherical_returns_zero_column_placeholder() {
+        let sj = spherical_joint();
+        let result = eval_builtin("joint_jacobian", &[sj]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("joint_jacobian(spherical): expected Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("angular".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "angular twist column should be [0, 0, 0]"
+        );
+        assert_eq!(
+            map.get(&Value::String("linear".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "linear twist column should be [0, 0, 0]"
+        );
+    }
+
     // ── JOINT_KINDS membership regression pin (step-15) ──────────────────────
     //
     // Asserts that `"planar"` is a member of `JOINT_KINDS` so that:
@@ -3456,6 +3769,26 @@ mod tests {
             "\"planar\" must be in JOINT_KINDS so that is_joint_value accepts planar joints \
              and the dispatch-coverage tests exercise the planar arms in transform_at and \
              joint_jacobian_value. Add \"planar\" to the JOINT_KINDS const."
+        );
+    }
+
+    // ── JOINT_KINDS membership regression pin for spherical (step-13) ────────
+    //
+    // Asserts that `"spherical"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts spherical joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests
+    //     (`transform_at_dispatches_for_every_joint_kind` and
+    //     `joint_jacobian_dispatches_for_every_joint_kind`) iterate over spherical.
+    //
+    // This test fails until step-14 appends `"spherical"` to `JOINT_KINDS` and
+    // adds the spherical arm to `joint_kind_minimal_fixture`.
+    #[test]
+    fn joint_kinds_includes_spherical() {
+        assert!(
+            JOINT_KINDS.contains(&"spherical"),
+            "\"spherical\" must be in JOINT_KINDS so that is_joint_value accepts spherical \
+             joints and the dispatch-coverage tests exercise the spherical arms in \
+             transform_at and joint_jacobian_value. Add \"spherical\" to the JOINT_KINDS const."
         );
     }
 
