@@ -349,6 +349,20 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
         // use `transform_at(planar, list)` or `joint_jacobian(planar)` directly,
         // not the chain wrappers.
         "planar" => None,
+        // 3-DOF spherical joint: no f64-scalar motion variable representation.
+        // Spherical's motion variable in `transform_at` is a `Value::Orientation`
+        // (unit quaternion), which doesn't fit this function's
+        // `(joint, scalar: f64) -> Option<Value>` signature. The explicit arm
+        // makes the contract source-visible (rather than relying on the
+        // catch-all `_ => None`) so a future kind addition cannot silently
+        // change spherical's behaviour. Returning None here causes
+        // chain_transform and chain_jacobian_fd to short-circuit to None for
+        // any chain containing a spherical joint. Multi-DOF chain support is
+        // deferred to PRD v0.2 kinematic task 2 (taskmaster #2670). Until
+        // that lands, callers needing spherical transforms must use
+        // `transform_at(spherical, q)` or `joint_jacobian(spherical)` directly,
+        // not the chain wrappers.
+        "spherical" => None,
         _ => None,
     }
 }
