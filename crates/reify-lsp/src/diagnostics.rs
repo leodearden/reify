@@ -1544,6 +1544,91 @@ structure S {
         }
     }
 
+    /// (b2) The `computation-pending` diagnostic message must embed the upstream
+    /// cell name (e.g. `"S.base"`) so the user sees which dependency failed.
+    ///
+    /// Setup is identical to the sibling test above: `S.base` → `S.derived`
+    /// let-chain; force `S.base` Failed; `S.derived` becomes Pending.
+    ///
+    /// Asserts:
+    ///   (i)   at least one `computation-pending` diagnostic exists.
+    ///   (ii)  its `message` starts with the static prefix
+    ///         `"computation pending: upstream dependency failed"` (backward-
+    ///         compatible prefix that editor integrations may match on).
+    ///   (iii) its `message` contains `"S.base"` — the name of the upstream
+    ///         cell that failed.
+    ///
+    /// Step-3 test: will fail with today's static message until step-4 enriches
+    /// the Pending arm to call `Engine::pending_cause`.
+    #[cfg(any(test, feature = "test-support"))]
+    #[test]
+    fn pending_diagnostic_message_includes_upstream_cell_name() {
+        // Same let-chain source and setup as the sibling pending-diagnostic test.
+        let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
+        let base_id = ValueCellId::new("S", "base");
+
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+        // Pass 1: cold eval — initialises cache (all cells → Final).
+        let _ = engine.eval(&compiled);
+
+        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
+        engine.set_panic_on_eval(base_id);
+        let _ = engine.eval(&compiled);
+
+        // Package into EvalState with matching hash so next call uses eval_cached.
+        let mut state = EvalState::new();
+        state.engine = engine;
+        state.last_content_hash = Some(compiled.content_hash);
+        state.version_counter = 2;
+
+        let uri = test_uri();
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        let pending_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code
+                    == Some(lsp_types::NumberOrString::String(
+                        "computation-pending".to_string(),
+                    ))
+            })
+            .collect();
+
+        // (i) At least one pending diagnostic must exist.
+        assert!(
+            !pending_diags.is_empty(),
+            "expected at least one 'computation-pending' diagnostic \
+             (S.derived is Pending because S.base failed); \
+             got zero; all diagnostics: {:#?}",
+            result.diagnostics
+        );
+
+        for d in &pending_diags {
+            // (ii) Prefix must be preserved for backward compatibility.
+            assert!(
+                d.message
+                    .starts_with("computation pending: upstream dependency failed"),
+                "computation-pending message must start with the static prefix; \
+                 got: {:?}",
+                d.message
+            );
+
+            // (iii) The upstream cell name must appear in the message.
+            assert!(
+                d.message.contains("S.base"),
+                "computation-pending message must contain the upstream cell name \
+                 \"S.base\" (the failed dependency); got: {:?}",
+                d.message
+            );
+        }
+    }
+
     /// (c) A normal evaluation (all cells Final) must produce zero freshness-code
     /// diagnostics.  This covers both Final (success) and the Intermediate case
     /// (Intermediate → no emission, arch §7.2): since a completed eval leaves all
