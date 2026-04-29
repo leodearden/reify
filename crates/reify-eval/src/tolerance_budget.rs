@@ -95,6 +95,21 @@ mod tests {
     }
 
     #[test]
+    fn zero_tolerance_returns_zero() {
+        // Zero is a valid finite, non-negative tolerance ("perfect" representation).
+        // 0.0_f64.powf(x) == 0.0 for any x > 0 per IEEE 754, so per_stage(0.0, N)
+        // returns 0.0 for all valid N. Pins the edge-case against future asserts
+        // that might accidentally tighten the precondition to > 0.0.
+        for &n in &[1_usize, 2, 3, 5] {
+            assert_eq!(
+                per_stage_tolerance(0.0, n),
+                0.0,
+                "per_stage_tolerance(0.0, {n}) must return 0.0"
+            );
+        }
+    }
+
+    #[test]
     fn composition_within_budget() {
         // Safety invariant: composing N stages each at per_stage(tol, N) yields
         // tol * 0.8^N, which is always ≤ tol (because 0.8 < 1).
