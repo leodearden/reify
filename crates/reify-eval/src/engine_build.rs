@@ -1353,9 +1353,19 @@ mod tests {
              shadowed it"
         );
 
+        // Filter to error-severity only: the v0.2 topology-attribute seeder
+        // (#2574) emits a Diagnostic::warning when extract_faces / extract_edges
+        // fail (e.g. on a mock kernel without an extraction fixture). The
+        // happy-path contract is "no Error diagnostics"; auxiliary-metadata
+        // warnings are expected noise on mock kernels.
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .collect();
         assert!(
-            diagnostics.is_empty(),
-            "no errors expected for two valid realizations"
+            errors.is_empty(),
+            "no errors expected for two valid realizations, got: {:?}",
+            errors
         );
     }
 
@@ -1425,9 +1435,15 @@ mod tests {
             &mut None,
         );
         let h1 = named_steps["body"];
+        // Filter to error-severity only: see comment in the happy-path test.
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .collect();
         assert!(
-            diagnostics.is_empty(),
-            "first realization must succeed cleanly"
+            errors.is_empty(),
+            "first realization must succeed cleanly, got: {:?}",
+            errors
         );
 
         // Second binding: let body = <invalid> — fails (rollback path).

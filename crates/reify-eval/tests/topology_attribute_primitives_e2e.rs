@@ -109,3 +109,84 @@ fn engine_build_records_topology_attributes_for_box_realization() {
         table.len()
     );
 }
+
+// ─── step-13: Engine::build records topology attributes for cylinder/sphere ──
+
+/// After `Engine::build()` on a `cylinder(...)` realization, the engine's
+/// `topology_attribute_table()` must contain entries for the cylinder's 3
+/// faces + N edges (N ≥ 2: at minimum the top and bottom cap circles, plus
+/// a possible seam edge depending on OCCT's parameterisation).
+///
+/// Per-role distribution (1×Cap(Top), 1×Cap(Bottom), 1×Side faces; N×NewEdge
+/// edges) is pinned by the direct-kernel test
+/// `seed_primitive_attributes_cylinder_classifies_cap_top_cap_bottom_and_side`
+/// in `topology_attribute_primitives_direct.rs` — see this file's module
+/// rustdoc for why iteration-based assertions live there, not here. This
+/// e2e test pins only the count contract: that the seeder is invoked from
+/// `Engine::execute_realization_ops` for the `cylinder(...)` constructor
+/// (a missed wire would leave the table empty).
+///
+/// Will fail if `Engine::execute_realization_ops` doesn't seed for the
+/// `Cylinder` arm.
+#[test]
+fn engine_build_records_topology_attributes_for_cylinder_realization() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors("structure A { let body = cylinder(5mm, 10mm) }");
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    let table = engine.topology_attribute_table();
+    // Lower bound: 3 faces + 2 cap-circle edges. OCCT may emit a third
+    // (seam) edge — see the cylinder sub-case of
+    // `seed_primitive_attributes_records_new_edge_for_every_extracted_edge`
+    // in the direct tests for the per-version variance. A `>=` lower bound
+    // is enough to prove the seeder is wired (the per-role counts are pinned
+    // by the direct tests).
+    assert!(
+        table.len() >= 3 + 2,
+        "topology_attribute_table must hold ≥3 face + ≥2 edge entries after a cylinder realization, got {}",
+        table.len()
+    );
+}
+
+/// After `Engine::build()` on a `sphere(...)` realization, the engine's
+/// `topology_attribute_table()` must contain entries for the sphere's
+/// faces + edges. OCCT's sphere parameterisation may emit ≥1 face and
+/// 0+ edges (varies across OCCT versions and seam handling). The contract
+/// pinned here is "non-empty" — proof the seeder ran for the `Sphere` arm.
+///
+/// Per-face assertions (every face is `Role::Side`, no `Cap` entries) are
+/// pinned by the direct-kernel test
+/// `seed_primitive_attributes_sphere_records_role_side_for_each_face` in
+/// `topology_attribute_primitives_direct.rs`.
+///
+/// Will fail if `Engine::execute_realization_ops` doesn't seed for the
+/// `Sphere` arm.
+#[test]
+fn engine_build_records_topology_attributes_for_sphere_realization() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors("structure A { let body = sphere(5mm) }");
+    let mut engine = engine_with_occt();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    assert_no_geometry_errors(&build_result);
+
+    let table = engine.topology_attribute_table();
+    // Lower bound: ≥1 face entry. Sphere edges are version-dependent; the
+    // table may hold 1 face entry (smooth sphere) or more (with seams).
+    // The "non-empty" contract is enough to prove the Sphere arm was
+    // invoked from the engine — the per-face role distribution is pinned
+    // by the direct-kernel test.
+    assert!(
+        !table.is_empty(),
+        "topology_attribute_table must be non-empty after a sphere realization (≥1 face entry expected); got 0"
+    );
+}
