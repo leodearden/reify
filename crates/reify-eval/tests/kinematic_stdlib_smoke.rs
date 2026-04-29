@@ -54,6 +54,17 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
 ///   `sj_euler_back`  = `orient_to_euler("xyz", q_euler_in)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
 ///   `sj_aa_back`     = `orient_to_axis_angle(q_euler_in)` → Map { angle, axis } (axis-angle facade)
+///   `screw_joint`    = `screw(prism, 1mm)` → coupling Map { kind="coupling", ratio=1mm/(2π) }
+///   `screw_xform`    = `transform_at(screw_joint, 6.283185307179586)` (2π rad-equivalent input)
+///                     → Transform { translation=[1mm,0,0], rotation=identity }
+///   `screw_jac`      = `joint_jacobian(screw_joint)` → Map { angular=[0,0,0], linear=[1mm/(2π),0,0] }
+///   `gear_joint`     = `gear(rev, 20, 30)` → coupling Map { kind="coupling", ratio=−1.5 }
+///   `gear_xform`     = `transform_at(gear_joint, 1.0471975511965976)` (π/3 rad)
+///                     → Transform { rotation=(cos(−π/4),0,0,sin(−π/4)), translation=0 }
+///   `gear_jac`       = `joint_jacobian(gear_joint)` → Map { angular=[0,0,−1.5], linear=[0,0,0] }
+///   `rp_joint`       = `rack_and_pinion(prism, 10mm)` → coupling Map { kind="coupling", ratio=0.01 }
+///   `rp_xform`       = `transform_at(rp_joint, 6.283185307179586)` → Transform { translation=[0.02π,0,0] }
+///   `rp_jac`         = `joint_jacobian(rp_joint)` → Map { angular=[0,0,0], linear=[0.01,0,0] }
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
     let r_id       = orient_identity()
