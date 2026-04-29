@@ -1240,4 +1240,210 @@ mod tests {
             "last sweep_grid element should equal snapshot at (hi, hi)"
         );
     }
+
+    // ── sweep_grid() input validation: full surface returns Undef ────────
+    //
+    // Validation allow-list (matches `eval_sweep::sweep_grid` arm):
+    //   args.len() == 2                             → arity guard
+    //   args[0] is Map with kind="mechanism"        → mechanism guard
+    //   no `error` key on the mechanism Map         → errored-mech guard
+    //   args[1] is Value::List                      → dims-list shape
+    //   each entry is Value::Map with kind="sweep_dim",
+    //     present joint/range/steps fields, and the
+    //     same joint-kind / range-dim / steps>=0
+    //     constraints that dim() enforces           → per-entry shape
+    // Any guard failure returns `Value::Undef`.
+
+    /// `sweep_grid()` with an arity outside {2} returns Undef.
+    #[test]
+    fn sweep_grid_wrong_arity_returns_undef() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+        let dims_empty = Value::List(vec![]);
+
+        // 0, 1, 3 args
+        assert!(eval_builtin("sweep_grid", &[]).is_undef());
+        assert!(eval_builtin("sweep_grid", std::slice::from_ref(&m)).is_undef());
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[m, dims_empty.clone(), dims_empty]
+            )
+            .is_undef()
+        );
+    }
+
+    /// `sweep_grid(non_mechanism, dims)` returns Undef when args[0] is
+    /// not a Mechanism Map.
+    #[test]
+    fn sweep_grid_non_mechanism_returns_undef() {
+        let dims_empty = Value::List(vec![]);
+
+        // Real
+        assert!(
+            eval_builtin("sweep_grid", &[Value::Real(1.0), dims_empty.clone()]).is_undef()
+        );
+
+        // world sentinel — Map with kind="world"
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[eval_builtin("world", &[]), dims_empty.clone()]
+            )
+            .is_undef()
+        );
+
+        // Map with a different kind discriminator
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("other".to_string()),
+        );
+        assert!(eval_builtin("sweep_grid", &[Value::Map(m), dims_empty]).is_undef());
+    }
+
+    /// `sweep_grid(m, non_list)` returns Undef when args[1] is not a
+    /// `Value::List`.
+    #[test]
+    fn sweep_grid_non_list_dims_returns_undef() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+
+        // Real
+        assert!(
+            eval_builtin("sweep_grid", &[m.clone(), Value::Real(1.0)]).is_undef()
+        );
+
+        // Map (a SweepDim by itself, not wrapped in a List)
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let single_dim = eval_builtin(
+            "dim",
+            &[j, length_range_0_to_1m(), Value::Int(2)],
+        );
+        assert!(eval_builtin("sweep_grid", &[m.clone(), single_dim]).is_undef());
+
+        // Undef
+        assert!(eval_builtin("sweep_grid", &[m, Value::Undef]).is_undef());
+    }
+
+    /// `sweep_grid(m, [bad_entry])` returns Undef when any dim entry is
+    /// invalid — whole-call rejection. Covers: non-Map entries, Maps
+    /// without kind="sweep_dim", and SweepDim Maps missing required
+    /// fields.
+    #[test]
+    fn sweep_grid_invalid_dim_entry_returns_undef() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+
+        // Real entry
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[m.clone(), Value::List(vec![Value::Real(1.0)])]
+            )
+            .is_undef()
+        );
+
+        // Map without kind="sweep_dim" (a Mechanism, for instance)
+        let mech_other = eval_builtin("mechanism", &[]);
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[m.clone(), Value::List(vec![mech_other])]
+            )
+            .is_undef()
+        );
+
+        // Map with kind="sweep_dim" but missing the `joint` field
+        let mut bad_map = std::collections::BTreeMap::new();
+        bad_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("sweep_dim".to_string()),
+        );
+        bad_map.insert(
+            Value::String("range".to_string()),
+            length_range_0_to_1m(),
+        );
+        bad_map.insert(Value::String("steps".to_string()), Value::Int(2));
+        // No `joint` key
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[m.clone(), Value::List(vec![Value::Map(bad_map)])]
+            )
+            .is_undef()
+        );
+
+        // Map with kind="sweep_dim" but missing the `range` field
+        let mut bad_map2 = std::collections::BTreeMap::new();
+        bad_map2.insert(
+            Value::String("kind".to_string()),
+            Value::String("sweep_dim".to_string()),
+        );
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        bad_map2.insert(Value::String("joint".to_string()), j);
+        bad_map2.insert(Value::String("steps".to_string()), Value::Int(2));
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[m.clone(), Value::List(vec![Value::Map(bad_map2)])]
+            )
+            .is_undef()
+        );
+
+        // Map with kind="sweep_dim" but missing the `steps` field
+        let mut bad_map3 = std::collections::BTreeMap::new();
+        bad_map3.insert(
+            Value::String("kind".to_string()),
+            Value::String("sweep_dim".to_string()),
+        );
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        bad_map3.insert(Value::String("joint".to_string()), j);
+        bad_map3.insert(
+            Value::String("range".to_string()),
+            length_range_0_to_1m(),
+        );
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[m, Value::List(vec![Value::Map(bad_map3)])]
+            )
+            .is_undef()
+        );
+    }
+
+    /// `sweep_grid()` on an errored Mechanism returns `Value::Undef` —
+    /// not a partial result. Mirrors the `sweep()` short-circuit.
+    #[test]
+    fn sweep_grid_on_errored_mechanism_returns_undef() {
+        // Build an errored mechanism via parent-conflict (same recipe
+        // as snapshot.rs::snapshot_on_errored_mechanism_returns_undef).
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_b, j_x.clone(), j_b]);
+        match &errored {
+            Value::Map(m) => assert_eq!(
+                m.get(&Value::String("error".to_string())),
+                Some(&Value::String("closed_chain".to_string())),
+                "setup precondition: errored mechanism has error='closed_chain'"
+            ),
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        }
+
+        let dim_x = eval_builtin(
+            "dim",
+            &[j_x, angle_range_0_to_pi(), Value::Int(3)],
+        );
+        assert!(
+            eval_builtin(
+                "sweep_grid",
+                &[errored, Value::List(vec![dim_x])]
+            )
+            .is_undef(),
+            "sweep_grid() on errored mechanism must yield Undef"
+        );
+    }
 }
