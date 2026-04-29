@@ -205,4 +205,119 @@ mod tests {
         assert!(eval_builtin("world", &[Value::Int(0), Value::Int(1)]).is_undef());
         assert!(eval_builtin("world", &[Value::Real(1.0)]).is_undef());
     }
+
+    // ── body() 3-arg form (default parent = world, identity pose) ─────────
+
+    /// Test fixtures (copies of the joint fixtures in joints.rs::tests). A
+    /// follow-up could promote these to a shared internal helpers module;
+    /// for v0.1 we duplicate to keep the cross-module wiring minimal.
+    fn axis_x_unit() -> Value {
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    }
+
+    fn length_range_0_to_1m() -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
+    /// Build the canonical identity `Value::Transform` (zero translation,
+    /// unit-quaternion rotation). Mirror of the default-pose helper used
+    /// inside `mechanism.rs`'s `append_body`.
+    fn identity_transform_value() -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        }
+    }
+
+    /// `body(m, solid, j)` with the 3-arg form appends a body record with
+    /// id=0, the supplied solid+at, parent defaulted to the world sentinel,
+    /// and pose defaulted to the identity transform. The Mechanism map's
+    /// `next_id` advances to 1 and `joint_parents` records `j → world`.
+    #[test]
+    fn body_three_args_appends_record_with_default_parent_and_pose() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+
+        let m1 = eval_builtin("body", &[m0, solid.clone(), j.clone()]);
+        let map = match m1 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+
+        // bodies list has one entry
+        let bodies = match map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 1, "bodies should have exactly one record");
+
+        let body = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("expected body record Map, got {:?}", other),
+        };
+        assert_eq!(
+            body.get(&Value::String("id".to_string())),
+            Some(&Value::Int(0)),
+            "body id should be Int(0) for the first appended body"
+        );
+        assert_eq!(
+            body.get(&Value::String("solid".to_string())),
+            Some(&solid),
+            "body record's solid field should match"
+        );
+        assert_eq!(
+            body.get(&Value::String("at".to_string())),
+            Some(&j),
+            "body record's at field should equal the supplied joint"
+        );
+
+        // Parent defaulted to world sentinel
+        let world = eval_builtin("world", &[]);
+        assert_eq!(
+            body.get(&Value::String("parent".to_string())),
+            Some(&world),
+            "3-arg body() defaults parent to world sentinel"
+        );
+
+        // Pose defaulted to identity transform
+        assert_eq!(
+            body.get(&Value::String("pose".to_string())),
+            Some(&identity_transform_value()),
+            "3-arg body() defaults pose to identity"
+        );
+
+        // next_id is now Int(1)
+        assert_eq!(
+            map.get(&Value::String("next_id".to_string())),
+            Some(&Value::Int(1)),
+            "next_id should advance to 1 after appending the first body"
+        );
+
+        // joint_parents records j → world
+        let jp = match map.get(&Value::String("joint_parents".to_string())) {
+            Some(Value::Map(jp)) => jp,
+            other => panic!("expected joint_parents Map, got {:?}", other),
+        };
+        assert_eq!(
+            jp.get(&j),
+            Some(&world),
+            "joint_parents should record j → world for the 3-arg default"
+        );
+        assert_eq!(jp.len(), 1, "joint_parents should have exactly one entry");
+    }
 }
