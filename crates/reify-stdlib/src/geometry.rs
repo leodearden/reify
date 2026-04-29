@@ -371,9 +371,14 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            // Gate translation dimension: must be LENGTH or DIMENSIONLESS, matching
-            // the identical check in transform_exp so the log↔exp round-trip is
-            // symmetric on both accept and reject.
+            // Transform translation convention (polymorphic, mirrored on transform_exp):
+            //   • LENGTH        — canonical (matches Transform type in the doc reference)
+            //   • DIMENSIONLESS — accepted for unit-less transforms / numerical work
+            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            //
+            // transform_exp applies the identical LENGTH|DIMENSIONLESS gate on the
+            // twist linear field and preserves the dimension on output, so the
+            // log↔exp round-trip is symmetric on both accept and reject.
             if t_dim != DimensionVector::LENGTH && t_dim != DimensionVector::DIMENSIONLESS {
                 return Some(Value::Undef);
             }
