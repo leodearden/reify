@@ -1838,6 +1838,38 @@ impl Engine {
                     // would silently discard the failure state and suppress the
                     // freshness-diagnostic block that reads these states downstream.
                     // See arch §7.1 / §9.2 and task #2337 step-18.
+                    //
+                    // Caveat — `Pending { last_substantive }`: the "inputs have not
+                    // changed, so the failure would recur" argument is strictly correct
+                    // for `Failed` but weaker for `Pending`.  A `Pending` cell was
+                    // recorded because one of its upstreams was `Failed` at evaluation
+                    // time; that upstream's own freshness can later transition
+                    // `Failed → Final` (e.g. via `mark_failed` / `restore_final`)
+                    // without altering its `result_hash`.  If such a transition
+                    // happened without re-marking this cell dirty, we would incorrectly
+                    // preserve `Pending` even though the blocking condition has cleared.
+                    //
+                    // Soundness rests on the dirty-propagation invariant: every
+                    // production code path that mutates an upstream's freshness
+                    // pre-marks all transitive dependents dirty before `eval_cached`'s
+                    // per-cell loop runs.  Reaching this branch with
+                    // `is_dirty(node) == false` therefore proves no upstream has
+                    // transitioned since the entry was last written, and preserving
+                    // `Pending` is sound.  Enforcement sites:
+                    //
+                    //   • `crate::dirty::compute_dirty_cone` (`dirty.rs:22-41`) — BFS
+                    //     over `ReverseDependencyIndex` that yields the transitive
+                    //     dependent set of a changed-cell frontier.
+                    //   • `Engine::edit_param` (`engine_edit.rs:~840`) and
+                    //     `Engine::edit_source` (`engine_edit.rs:~1702`) — both call
+                    //     `compute_dirty_cone` and pre-mark every node in the resulting
+                    //     eval_set via `cache.mark_pending` before any per-cell
+                    //     evaluator runs.
+                    //   • `CacheStore::invalidate_dependents` (`cache.rs:~411`) —
+                    //     direct-read marking used by `set_param_and_invalidate`; the
+                    //     full `eval()` that follows rebuilds from cold, so the
+                    //     cache-reuse path is not reachable until the next
+                    //     `eval_cached` after the invalidation.
                     if !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
