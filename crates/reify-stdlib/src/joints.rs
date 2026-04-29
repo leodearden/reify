@@ -3762,4 +3762,24 @@ mod tests {
         );
     }
 
+    // ── JOINT_KINDS membership regression pin for spherical (step-13) ────────
+    //
+    // Asserts that `"spherical"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts spherical joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests
+    //     (`transform_at_dispatches_for_every_joint_kind` and
+    //     `joint_jacobian_dispatches_for_every_joint_kind`) iterate over spherical.
+    //
+    // This test fails until step-14 appends `"spherical"` to `JOINT_KINDS` and
+    // adds the spherical arm to `joint_kind_minimal_fixture`.
+    #[test]
+    fn joint_kinds_includes_spherical() {
+        assert!(
+            JOINT_KINDS.contains(&"spherical"),
+            "\"spherical\" must be in JOINT_KINDS so that is_joint_value accepts spherical \
+             joints and the dispatch-coverage tests exercise the spherical arms in \
+             transform_at and joint_jacobian_value. Add \"spherical\" to the JOINT_KINDS const."
+        );
+    }
+
 }
