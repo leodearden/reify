@@ -1206,6 +1206,85 @@ structure S {
 
     // ── Arc-sharing invariant: ResolutionProblem.functions (task #2286) ───────
 
+    /// Shared harness for the three `ResolutionProblem.functions`-sharing sentinel
+    /// tests. Builds the common spy-solver + thickness/limit module fixture, runs
+    /// `engine.eval(&module)` once (populating the spy with the eval-path problem),
+    /// then calls `drive(&mut engine, limit_id)` to trigger the variant-specific
+    /// code path, and finally asserts `Arc::ptr_eq` + `strong_count >= 2` on the
+    /// most-recently-captured problem.
+    ///
+    /// `trigger_label` is interpolated into assertion failure messages so each
+    /// calling test produces diagnostics as specific as the original inlined bodies.
+    fn assert_problem_shares_functions_arc<F>(trigger_label: &str, drive: F)
+    where
+        F: FnOnce(&mut Engine, reify_types::ValueCellId),
+    {
+        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
+        };
+        use reify_types::{ModulePath, Type, ValueCellId};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let thickness_id = ValueCellId::new("S", "thickness");
+        let limit_id = ValueCellId::new("S", "limit");
+
+        // Solver returns thickness = 5mm each time it's called.
+        let mut solved_values = HashMap::new();
+        solved_values.insert(thickness_id.clone(), mm(5.0));
+
+        let spy = SpyConstraintSolver::new_solved(solved_values);
+        let captured = spy.captured_problem();
+
+        // Template: auto thickness, regular param limit (default 2mm),
+        // constraint: thickness > limit.  This shape supports all three triggers
+        // (eval / edit_param(limit) / prepare+resolve_concurrent_edit(limit)).
+        let template = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "thickness", Type::length())
+            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
+            .constraint(
+                "S",
+                0,
+                None,
+                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine =
+            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+        // Initial eval — solver fires once; captured holds the eval-path problem.
+        engine.eval(&module);
+
+        // Drive the engine into the variant-specific code path.
+        drive(&mut engine, limit_id);
+
+        // The spy now holds the most-recent ResolutionProblem (eval, edit_param, or
+        // resolve_concurrent_edit, depending on the trigger).
+        let guard = captured.lock().unwrap();
+        let problem = guard.as_ref().unwrap_or_else(|| {
+            panic!("solver should have been called during {trigger_label}")
+        });
+
+        assert!(
+            Arc::ptr_eq(&engine.functions, &problem.functions),
+            "ResolutionProblem.functions must share the same Arc allocation as \
+            Engine.functions in the {trigger_label} path — proves the construction \
+            is O(1) Arc::clone, not a deep clone (task #2286)"
+        );
+        assert!(
+            Arc::strong_count(&engine.functions) >= 2,
+            "strong_count must be >= 2 (engine + captured problem both hold a ref) \
+            in the {trigger_label} path; got {}",
+            Arc::strong_count(&engine.functions)
+        );
+    }
+
     /// Arc-sharing invariant: after `eval()`, the `ResolutionProblem.functions`
     /// passed to the solver must share the *same* Arc allocation as
     /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
