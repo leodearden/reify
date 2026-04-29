@@ -2936,6 +2936,13 @@ mod tests {
                 planar_xy_joint(),
                 Value::List(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0)]),
             )],
+            // 3-DOF spherical joint: motion variable is a unit-quaternion `Value::Orientation`.
+            // The identity quaternion is the minimal-rotation fixture, exercising the
+            // `transform_at` and `joint_jacobian_value` spherical arms via the dispatch tests.
+            "spherical" => vec![(
+                spherical_joint(),
+                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            )],
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
                  add a minimal well-formed fixture here and confirm that both \
