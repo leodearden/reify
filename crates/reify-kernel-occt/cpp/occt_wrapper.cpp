@@ -6,6 +6,8 @@
 #include "line_wire_floors.h"
 
 // stdlib
+#include <algorithm>
+#include <numeric>
 #include <set>
 #include <string>
 #include <vector>
@@ -548,6 +550,188 @@ void emit_cap_face_indices(
     }
 }
 
+/// Tolerance for classifying profile-edge direction relative to the
+/// rotation axis during full-revolution radial-edge synthesis.
+///   |dot| ≤ DIR_TOL    → purely radial  (synthesize annular-disk record)
+///   |dot| ≥ 1.0-DIR_TOL → purely axial   (OCCT Generated() should cover; skip)
+///   otherwise           → slanted (OCCT reports conical sweeps correctly; skip)
+constexpr double DIR_TOL = 1e-6;
+
+/// Positional tolerance (m) for matching a result face's centroid axial
+/// coordinate to the source radial edge's midpoint axial coordinate.
+constexpr double POS_TOL = 1e-6;
+
+/// Synthesize `face_generated` records for purely-radial profile edges
+/// in a full-2π revolution.
+///
+/// OCCT 7.5.x's `BRepPrimAPI_MakeRevol::Generated()` silently omits records
+/// for edges that are perpendicular to the rotation axis (radial edges) when
+/// angle == 2π — they sweep into annular-disk faces, but OCCT's internal
+/// tracking map does not capture them.  This helper closes that gap by
+/// geometrically matching each unaccounted radial profile edge to its
+/// corresponding annular-disk result face using two invariants:
+///   1. The face surface normal is (anti-)parallel to the axis direction
+///      (annular disks are perpendicular to the rotation axis).
+///   2. The face centroid's axial coordinate equals the edge midpoint's
+///      axial coordinate within POS_TOL (m).
+///
+/// After appending synthesized records the combined face_generated vector
+/// is stable-sorted in groups of 3 by parent_subshape_index so synthesized
+/// records interleave with OCCT-reported ones in profile-edge order.
+/// This preserves the `local_index = parent_subshape_index` invariant that
+/// `populate_revolve_attributes` (crates/reify-eval) relies on.
+///
+/// Coverage by profile shape:
+///   rect    (2 axial + 2 radial)     → 2 OCCT-reported + 2 synthesized
+///   triangle (2 slanted + 1 radial)  → 2 OCCT-reported + 1 synthesized
+///   circle / smooth curves (no radial edges) → no synthesis triggered
+static void synthesize_full_revolution_radial_face_records(
+    const TopTools_IndexedMapOfShape& profile_edge_map,
+    const TopTools_IndexedMapOfShape& result_face_map,
+    const gp_Ax1& axis,
+    SweepOpHistory& history) {
+
+    gp_Vec axis_dir(axis.Direction());
+
+    // Collect parent_subshape_indices already covered by OCCT's Generated().
+    std::set<uint32_t> tracked_parent_edges;
+    for (std::size_t k = 1; k < history.face_generated.size(); k += 3) {
+        tracked_parent_edges.insert(history.face_generated[k]);
+    }
+
+    // Collect result face indices already matched (generated + cap lists).
+    std::set<uint32_t> tracked_result_faces;
+    for (std::size_t k = 2; k < history.face_generated.size(); k += 3) {
+        tracked_result_faces.insert(history.face_generated[k]);
+    }
+    // Caps are empty for full revolution, but include them for robustness.
+    for (uint32_t idx : history.start_cap_face_indices) {
+        tracked_result_faces.insert(idx);
+    }
+    for (uint32_t idx : history.end_cap_face_indices) {
+        tracked_result_faces.insert(idx);
+    }
+
+    const Standard_Integer n_edges = profile_edge_map.Extent();
+    const Standard_Integer n_faces = result_face_map.Extent();
+
+    for (Standard_Integer i = 1; i <= n_edges; ++i) {
+        const uint32_t edge_idx_0 = static_cast<uint32_t>(i - 1);
+        if (tracked_parent_edges.count(edge_idx_0)) {
+            continue; // Already reported by OCCT's Generated().
+        }
+
+        const TopoDS_Shape& edge_shape = profile_edge_map.FindKey(i);
+        TopoDS_Vertex v1, v2;
+        TopExp::Vertices(TopoDS::Edge(edge_shape), v1, v2);
+        if (v1.IsNull() || v2.IsNull()) {
+            continue; // Degenerate — skip.
+        }
+        gp_Pnt p1 = BRep_Tool::Pnt(v1);
+        gp_Pnt p2 = BRep_Tool::Pnt(v2);
+        gp_Vec edge_vec(p1, p2);
+        double edge_sq = edge_vec.SquareMagnitude();
+        if (edge_sq < CPP_LINE_WIRE_MIN_LENGTH_SQ) {
+            continue; // Zero-length edge — skip.
+        }
+        edge_vec /= std::sqrt(edge_sq); // Normalize.
+
+        double dot = std::abs(edge_vec.Dot(axis_dir));
+        if (dot > 1.0 - DIR_TOL) {
+            continue; // Axial — OCCT Generated() should have caught this.
+        }
+        if (dot > DIR_TOL) {
+            continue; // Slanted — OCCT reports conical sweeps correctly.
+        }
+
+        // Purely radial edge. Compute its midpoint axial coordinate.
+        gp_Pnt midpoint = p1.Translated(gp_Vec(p1, p2).Scaled(0.5));
+        double target_axial = gp_Vec(axis.Location(), midpoint).Dot(axis_dir);
+
+        // Scan result faces for the matching annular-disk face.
+        for (Standard_Integer j = 1; j <= n_faces; ++j) {
+            const uint32_t face_idx_0 = static_cast<uint32_t>(j - 1);
+            if (tracked_result_faces.count(face_idx_0)) {
+                continue; // Already matched to another edge.
+            }
+
+            const TopoDS_Shape& fshape = result_face_map.FindKey(j);
+            if (fshape.ShapeType() != TopAbs_FACE) {
+                continue;
+            }
+            const TopoDS_Face face = TopoDS::Face(fshape);
+
+            // Compute face normal at centroid (mirrors query_face_normal).
+            GProp_GProps fprops;
+            BRepGProp::SurfaceProperties(face, fprops);
+            gp_Pnt centroid = fprops.CentreOfMass();
+
+            Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+            if (surf.IsNull()) {
+                continue;
+            }
+            ShapeAnalysis_Surface analyzer(surf);
+            gp_Pnt2d uv = analyzer.ValueOfUV(centroid, 1e-9);
+
+            BRepAdaptor_Surface adaptor(face);
+            gp_Pnt p_unused;
+            gp_Vec du, dv;
+            adaptor.D1(uv.X(), uv.Y(), p_unused, du, dv);
+
+            gp_Vec face_normal = du.Crossed(dv);
+            double n_mag = face_normal.Magnitude();
+            if (n_mag < CPP_DIR_MAG_MIN) {
+                continue; // Degenerate face.
+            }
+            face_normal /= n_mag;
+            if (face.Orientation() == TopAbs_REVERSED) {
+                face_normal.Reverse();
+            }
+
+            // Test 1: face normal must be (anti-)parallel to the rotation axis.
+            double n_dot = std::abs(face_normal.Dot(axis_dir));
+            if (n_dot < 1.0 - DIR_TOL) {
+                continue; // Not an annular-disk face.
+            }
+
+            // Test 2: face centroid axial coordinate must match the edge midpoint.
+            double face_axial = gp_Vec(axis.Location(), centroid).Dot(axis_dir);
+            if (std::abs(face_axial - target_axial) >= POS_TOL) {
+                continue; // Wrong axial position.
+            }
+
+            // Match found — emit synthesized record and stop searching.
+            history.face_generated.push_back(0u);
+            history.face_generated.push_back(edge_idx_0);
+            history.face_generated.push_back(face_idx_0);
+            tracked_result_faces.insert(face_idx_0);
+            break;
+        }
+    }
+
+    // Stable-sort face_generated in groups of 3 by parent_subshape_index
+    // so synthesized records interleave with OCCT-reported ones in
+    // profile-edge order — preserving local_index = parent_subshape_index.
+    const std::size_t n_recs = history.face_generated.size() / 3;
+    if (n_recs >= 2) {
+        std::vector<std::size_t> order(n_recs);
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(),
+            [&](std::size_t a, std::size_t b) {
+                return history.face_generated[a * 3 + 1]
+                     < history.face_generated[b * 3 + 1];
+            });
+        std::vector<uint32_t> sorted;
+        sorted.reserve(history.face_generated.size());
+        for (std::size_t idx : order) {
+            sorted.push_back(history.face_generated[idx * 3 + 0]);
+            sorted.push_back(history.face_generated[idx * 3 + 1]);
+            sorted.push_back(history.face_generated[idx * 3 + 2]);
+        }
+        history.face_generated = std::move(sorted);
+    }
+}
+
 } // anonymous namespace
 
 std::unique_ptr<SweepOpHistory> make_prism_with_history(
@@ -736,6 +920,17 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
         if (!is_full_revolution) {
             emit_cap_face_indices(first_cap, result_face_map, history->start_cap_face_indices);
             emit_cap_face_indices(last_cap,  result_face_map, history->end_cap_face_indices);
+        } else {
+            // Under full 2π revolution OCCT's Generated() silently omits
+            // records for radial profile edges (those perpendicular to the
+            // axis) — they sweep into annular-disk lateral faces that OCCT's
+            // internal tracking map does not capture.  The synthesis post-pass
+            // closes this gap by geometrically matching each unaccounted
+            // radial edge to its corresponding annular-disk result face and
+            // appending a synthesized record byte-identical to OCCT-reported
+            // ones.  See task 2636 and the helper's doc-comment for details.
+            synthesize_full_revolution_radial_face_records(
+                profile.edge_map(), result_face_map, axis, *history);
         }
 
         return history;
