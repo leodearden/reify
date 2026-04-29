@@ -380,6 +380,18 @@ pub enum CompiledForallBody {
     /// `engine_edit.rs`.
     Constraint {
         /// Compiled body expression with placeholder cells (entity == `<parent>.<sub>[0]`).
+        ///
+        /// **Semantic divergence vs. the resolved (non-deferred) path**
+        /// (reviewer flag, esc-2629-25 #2): in the resolved path, a body
+        /// containing an explicit `coll[0]` reference stays as `coll[0]` for
+        /// every iteration. Here, the runtime rewriter in `engine_edit.rs`
+        /// matches every cell whose entity equals `<parent>.<sub>[0]`, so a
+        /// user-written `coll[0]` ref inside the body is *also* rewritten to
+        /// `coll[i]` for each `i`. This is vanishingly rare in practice (the
+        /// bound variable `v` is the only natural way to reference an element
+        /// inside a `forall v in coll` body), but a real divergence — pin a
+        /// test if a use case appears, or migrate to a sentinel placeholder
+        /// entity that never collides with user-written index expressions.
         body_expr: CompiledExpr,
     },
 }

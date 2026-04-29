@@ -1401,6 +1401,36 @@ impl Engine {
         // contract names this engine_edit hook point explicitly.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
+            // Hoisted out of the per-col_sub loop: cloning every iteration
+            // would deep-copy each template's `CompiledExpr` body once per
+            // collection sub even when most subs are unaffected (reviewer
+            // perf flag, esc-2629-25 #1).
+            let forall_templates = new_snapshot.graph.forall_templates.clone();
+
+            // Strict ledger/templates alignment. Templates today come from a
+            // stable CompiledModule (resize is only ever a grow), but if a
+            // future swap shortens `graph.forall_templates`, stale ledger
+            // entries beyond the new template count would otherwise persist
+            // forever, holding `ConstraintNodeId`s that have been removed from
+            // `graph.constraints` (or worse, IDs reused by unrelated
+            // constraints). Drain the tail back into the graph + cache before
+            // truncating the ledger so realignment is observable as a node
+            // removal rather than a silent leak (reviewer robustness flag,
+            // esc-2629-25 #5).
+            if new_snapshot.forall_emitted.len() > forall_templates.len() {
+                let drained: Vec<Vec<ConstraintNodeId>> = new_snapshot
+                    .forall_emitted
+                    .drain(forall_templates.len()..)
+                    .collect();
+                for stale_id in drained.iter().flatten() {
+                    new_snapshot.graph.constraints.remove(stale_id);
+                    self.cache.invalidate(&NodeId::Constraint(stale_id.clone()));
+                }
+            }
+            new_snapshot
+                .forall_emitted
+                .resize_with(forall_templates.len(), Vec::new);
+
             for col_sub in &collection_subs {
                 let new_count_val = values
                     .get(&col_sub.count_cell)
@@ -1532,20 +1562,11 @@ impl Engine {
                 // `<parent>.<sub>[i]` for `i ∈ 0..new_count`.
                 //
                 // Hook point named in `forall_elaborate.rs`'s contract block.
-                // ConnectBody re-emission is handled by step-13.
-                let forall_templates = new_snapshot.graph.forall_templates.clone();
-                if new_snapshot.forall_emitted.len() < forall_templates.len() {
-                    new_snapshot
-                        .forall_emitted
-                        .resize(forall_templates.len(), Vec::new());
-                }
-                // The ledger and the templates must stay aligned. Templates
-                // come from a stable CompiledModule today (so the resize
-                // above only ever grows the ledger, never shrinks it), but
-                // a future code path that swaps `graph.forall_templates`
-                // for a shorter Vec (partial recompile, snapshot fork from
-                // a different module) would silently leak ledger entries
-                // for departed templates without this tripwire.
+                // ConnectBody re-emission is reserved for follow-up task 2690.
+                //
+                // `forall_templates` and the ledger were hoisted + realigned
+                // above the outer collection_subs loop; the loop body only
+                // reads `forall_templates` and `&mut`s `forall_emitted`.
                 debug_assert_eq!(
                     new_snapshot.forall_emitted.len(),
                     forall_templates.len(),
