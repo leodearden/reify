@@ -426,4 +426,126 @@ mod tests {
         assert!(ty.abs() < 1e-12, "ty should be 0, got {}", ty);
         assert!(tz.abs() < 1e-12, "tz should be 0, got {}", tz);
     }
+
+    // ── Analytic two-link chain (multi-level parent walk) ─────────────────
+
+    fn axis_z_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    fn angle_range_0_to_pi() -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
+    fn length_range_0_to_2m() -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(2.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
+    /// Headline acceptance test (PRD task 4): analytic two-link chain.
+    ///
+    /// `j_rev = revolute(+Z, 0..π)` at world; `j_pris = prismatic(+X, 0..2m)`
+    /// parented to `j_rev`. Body A at `j_rev` (parent=world), body B at
+    /// `j_pris` (parent=`j_rev`). Bindings: bind(j_rev, π/4), bind(j_pris, 2 m).
+    ///
+    /// Analytic answer for body B:
+    ///   T_rev_world = R_z(π/4)
+    ///   T_pris_world = R_z(π/4) ∘ T_x(2m)
+    ///   body B's world_transform = T_pris_world ∘ identity_pose = T_pris_world
+    ///   Translation: R_z(π/4) ⋅ (2, 0, 0) = (2·cos(π/4), 2·sin(π/4), 0) = (√2, √2, 0)
+    ///   Rotation:    quaternion(angle=π/4, axis=+Z) = (cos(π/8), 0, 0, sin(π/8))
+    ///                up to sign.
+    #[test]
+    fn snapshot_analytic_two_link_chain_world_transform() {
+        let j_rev = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let j_pris = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_2m()]);
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        // Body A: at j_rev, parent defaulted to world.
+        let m1 = eval_builtin("body", &[m0, solid_a, j_rev.clone()]);
+        // Body B: at j_pris, parent j_rev.
+        let m2 = eval_builtin(
+            "body",
+            &[m1, solid_b, j_pris.clone(), j_rev.clone()],
+        );
+
+        let bind_rev = eval_builtin(
+            "bind",
+            &[j_rev, Value::angle(std::f64::consts::FRAC_PI_4)],
+        );
+        let bind_pris = eval_builtin("bind", &[j_pris, Value::length(2.0)]);
+
+        let s = eval_builtin("snapshot", &[m2, Value::List(vec![bind_rev, bind_pris])]);
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected snapshot bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 2, "snapshot should have 2 bodies (A and B)");
+
+        // Body B is the second record (id=1).
+        let body_b = match &bodies[1] {
+            Value::Map(b) => b,
+            other => panic!("expected snapshot body record Map, got {:?}", other),
+        };
+        let wt = body_b
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body B must carry a world_transform field");
+        let ((rw, rx, ry, rz), [tx, ty, tz]) = decompose_transform_for_assert(wt);
+
+        // Expected translation: (√2, √2, 0).
+        let sqrt2 = std::f64::consts::SQRT_2;
+        assert!(
+            (tx - sqrt2).abs() < 1e-9,
+            "body B tx should be √2 ≈ {}, got {}",
+            sqrt2,
+            tx
+        );
+        assert!(
+            (ty - sqrt2).abs() < 1e-9,
+            "body B ty should be √2 ≈ {}, got {}",
+            sqrt2,
+            ty
+        );
+        assert!(tz.abs() < 1e-9, "body B tz should be 0, got {}", tz);
+
+        // Expected rotation: quaternion for R_z(π/4) = (cos(π/8), 0, 0, sin(π/8))
+        // up to sign — check both the quaternion and its negation.
+        let half = std::f64::consts::FRAC_PI_8;
+        let qw = half.cos();
+        let qz = half.sin();
+        let matches_pos = (rw - qw).abs() < 1e-9
+            && rx.abs() < 1e-9
+            && ry.abs() < 1e-9
+            && (rz - qz).abs() < 1e-9;
+        let matches_neg = (rw + qw).abs() < 1e-9
+            && rx.abs() < 1e-9
+            && ry.abs() < 1e-9
+            && (rz + qz).abs() < 1e-9;
+        assert!(
+            matches_pos || matches_neg,
+            "body B rotation should be quaternion(R_z(π/4)) = ({}, 0, 0, {}) up to sign, \
+             got ({}, {}, {}, {})",
+            qw,
+            qz,
+            rw,
+            rx,
+            ry,
+            rz
+        );
+    }
 }
