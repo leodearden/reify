@@ -903,3 +903,94 @@ structure S {
         forall_constraints_count
     );
 }
+
+/// Every per-element `CompiledConstraint` emitted by a statement-form forall
+/// must carry a `span` whose byte range equals the source
+/// `MemberDecl::ForallConstraint(f).span`. Together with the
+/// `forall@<var>[<idx>]` label format pinned by
+/// `forall_constraint_label_encodes_element_index`, the span and label
+/// satisfy the PRD's "span info pointing back to the forall plus the
+/// element index" criterion: the span identifies the source forall site for
+/// diagnostic anchoring; the label disambiguates per-element provenance.
+///
+/// Pins step-21: covers the "span" half of the dual-piece criterion. Uses a
+/// 3-element collection-sub forall (rather than a list literal) so the test
+/// also exercises the indexed-substitution path — the substituted body's
+/// expression spans differ per element, but the emitted constraint span
+/// must remain anchored at the forall declaration. Also pins that the
+/// recovered span is non-empty and not the prelude sentinel (i.e. it
+/// identifies a real range in user source).
+#[test]
+fn forall_constraint_decl_span_anchors_at_forall_source() {
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for span-anchoring test, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    let forall_constraints: Vec<_> = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@v["))
+        })
+        .collect();
+
+    assert_eq!(
+        forall_constraints.len(),
+        3,
+        "expected exactly 3 forall@v[*] constraints, got {}",
+        forall_constraints.len()
+    );
+
+    // Recover the source forall span via re-parse. Pin the structural
+    // properties first so a regression in `f.span` itself (e.g. an unset
+    // span defaulting to the prelude sentinel) is reported clearly rather
+    // than as an opaque equality mismatch.
+    let forall_span = find_forall_constraint_span(source, "S");
+    assert!(
+        !forall_span.is_empty(),
+        "ForallConstraint source span must be non-empty, got {}..{}",
+        forall_span.start,
+        forall_span.end
+    );
+    assert!(
+        !forall_span.is_prelude(),
+        "ForallConstraint source span must not be the prelude sentinel, got {}..{}",
+        forall_span.start,
+        forall_span.end
+    );
+
+    // Every emitted per-element constraint's span must equal the source
+    // forall span exactly (byte range identical). This is the diagnostic
+    // anchor — a per-element failure points back to the user-visible forall
+    // site. The element index travels via the label (pinned separately).
+    for c in &forall_constraints {
+        assert_eq!(
+            c.span, forall_span,
+            "forall-emitted constraint span must equal the source forall span; \
+             label = {:?}, span = {}..{}, expected = {}..{}",
+            c.label, c.span.start, c.span.end, forall_span.start, forall_span.end
+        );
+    }
+}
