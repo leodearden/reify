@@ -169,7 +169,7 @@ pub struct ModuleCrossRefs {
 /// use reify_doc::model::ItemHeader;
 /// let _ = ItemHeader::default();
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemHeader {
     pub name: String,
     pub doc: Option<String>,
