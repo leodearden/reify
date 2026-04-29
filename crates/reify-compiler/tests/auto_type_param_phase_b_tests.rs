@@ -218,3 +218,49 @@ fn filter_treats_indeterminate_as_feasible_per_arch_2_5() {
         "Indeterminate result must be treated as feasible (arch §2.5); candidate must be accepted"
     );
 }
+
+// ─── step-11: only Violated ids are recorded, not Indeterminate ──────────
+
+/// When a template has two constraints and constraint 0 is Violated while
+/// constraint 1 is Indeterminate, only id 0 must appear in
+/// `RejectedCandidate::violated_constraints` — id 1 must NOT appear
+/// (Indeterminate does not falsify).
+///
+/// Pins the "only-Violated-ids" contract from the design decision.
+/// A regression that recorded all non-Satisfied ids (including Indeterminate)
+/// would fail this test by including id 1.
+#[test]
+fn filter_only_violated_constraints_are_recorded_in_rejection() {
+    let cnid_0 = ConstraintNodeId::new("Bearing", 0);
+    let cnid_1 = ConstraintNodeId::new("Bearing", 1);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("Bearing")
+        .constraint("Bearing", 0, None, expr.clone())
+        .constraint("Bearing", 1, None, expr)
+        .build();
+    // Constraint 0: Violated; constraint 1: Indeterminate (the default).
+    let checker = MockConstraintChecker::new()
+        .with_default(Satisfaction::Indeterminate)
+        .with_result(cnid_0.clone(), Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(
+        &["ORingSeal".to_string()],
+        &template,
+        &checker,
+        functions,
+    );
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Empty {
+            rejected: vec![RejectedCandidate {
+                name: "ORingSeal".to_string(),
+                // Only id 0 (Violated); id 1 (Indeterminate) must NOT appear.
+                violated_constraints: vec![cnid_0],
+            }],
+        },
+        "only Violated constraint ids must be recorded; Indeterminate id must not appear"
+    );
+    let _ = cnid_1; // Documents that constraint 1 exists but must not appear in rejected.
+}
