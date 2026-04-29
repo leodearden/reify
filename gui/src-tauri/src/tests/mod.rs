@@ -20,7 +20,10 @@ fn assert_ipc_contract<T: serde::Serialize + serde::de::DeserializeOwned + Clone
 fn public_api_types_are_accessible() {
     use crate::commands::AppState;
     use crate::engine::EngineSession;
-    use crate::types::{ConstraintData, FileData, GuiState, MeshData, ValueData};
+    use crate::types::{
+        ConstraintData, FileData, GuiState, JointDescriptor, MechanismDescriptor, MeshData,
+        ValueData,
+    };
     use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
     // Verify full IPC contract (Serialize + DeserializeOwned + Clone + Debug + PartialEq)
@@ -32,6 +35,9 @@ fn public_api_types_are_accessible() {
     assert_ipc_contract::<FileData>();
     // DiagnosticInfo is the MCP canonical replacement for the removed GUI-local type
     assert_ipc_contract::<DiagnosticInfo>();
+    // Mechanism descriptor types introduced in task 2536
+    assert_ipc_contract::<MechanismDescriptor>();
+    assert_ipc_contract::<JointDescriptor>();
 
     // Verify AppState and EngineSession are usable as types
     let _ = std::any::type_name::<AppState>();
