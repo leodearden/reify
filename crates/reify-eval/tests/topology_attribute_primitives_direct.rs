@@ -344,3 +344,288 @@ fn seed_primitive_attributes_sphere_records_role_side_for_each_face() {
         );
     }
 }
+
+// ─── step-7: Edge seeding for Box / Cylinder / Sphere ─────────────────────────
+//
+// Every face arm (Box / Cylinder / Sphere) must also walk `edge_handles` and
+// record one `TopologyAttribute` per edge with `Role::NewEdge` and a sequential
+// `local_index` (PRD line 66 — construction-order tiebreak for genuine
+// geometric ties). This is a single integration test that asserts the
+// edges-and-faces co-population contract for all three seedable primitives in
+// one place: the seeder writes both kinds of entries in a single call, and
+// neither side regresses. The corresponding implementation lands in step-8.
+
+#[test]
+fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // ── Sub-case (1): Box → 12 edges, all Role::NewEdge ──────────────────────
+    {
+        let mut kernel = OcctKernelHandle::spawn();
+        let box_id = kernel
+            .execute(&box_op())
+            .expect("box should build")
+            .id;
+        let face_handles = kernel
+            .extract_faces(box_id)
+            .expect("extract_faces(box) should succeed");
+        let edge_handles = kernel
+            .extract_edges(box_id)
+            .expect("extract_edges(box) should succeed");
+        assert_eq!(
+            edge_handles.len(),
+            12,
+            "a 10mm box should have exactly 12 edges in TopExp order"
+        );
+        // Face-count regression guard from step-1: must still be 6.
+        assert_eq!(
+            face_handles.len(),
+            6,
+            "step-1 regression: box should still emit 6 faces"
+        );
+
+        let feature_id = body_realization_feature_id();
+        let mut table = TopologyAttributeTable::default();
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &feature_id,
+            &box_op(),
+        )
+        .expect("seed_primitive_attributes for a box should succeed (step-7: faces + edges)");
+
+        // After step-8 the table holds 6 face entries + 12 edge entries.
+        assert_eq!(
+            table.len(),
+            6 + 12,
+            "box: 6 face entries + 12 edge entries (step-7 contract)"
+        );
+
+        // Faces still correct (regression guard for step-2's helper).
+        for &face_id in face_handles.iter() {
+            let attr = table
+                .lookup(face_id)
+                .expect("box face must still have an entry after step-8");
+            assert_eq!(
+                attr.role,
+                Role::Side,
+                "box face role must remain Role::Side after edges were added"
+            );
+        }
+
+        // Edges: each Role::NewEdge with local_index == idx, default metadata.
+        let mut edge_local_indices: HashSet<u32> = HashSet::new();
+        for (idx, &edge_id) in edge_handles.iter().enumerate() {
+            let attr = table.lookup(edge_id).unwrap_or_else(|| {
+                panic!(
+                    "box edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, edge_id
+                )
+            });
+            assert_eq!(
+                attr.feature_id, feature_id,
+                "box edge #{idx} feature_id should equal Body#realization[0]"
+            );
+            assert_eq!(
+                attr.role,
+                Role::NewEdge,
+                "box edge #{idx} role should be Role::NewEdge"
+            );
+            assert_eq!(
+                attr.local_index, idx as u32,
+                "box edge #{idx} local_index should be the consecutive 0..n value {idx}"
+            );
+            assert_eq!(
+                attr.user_label, None,
+                "box edge #{idx} user_label should be None per task-1 invariant"
+            );
+            assert!(
+                attr.mod_history.is_empty(),
+                "box edge #{idx} mod_history should be empty per task-1 invariant"
+            );
+            assert!(
+                edge_local_indices.insert(attr.local_index),
+                "box edge #{idx} has duplicate local_index {}; \
+                 each edge must have a unique local_index in 0..12",
+                attr.local_index
+            );
+        }
+        assert_eq!(
+            edge_local_indices.len(),
+            12,
+            "box edge local_indices must cover 12 distinct values"
+        );
+    }
+
+    // ── Sub-case (2): Cylinder → ≥2 edges, all Role::NewEdge ─────────────────
+    {
+        let mut kernel = OcctKernelHandle::spawn();
+        let cyl_id = kernel
+            .execute(&cylinder_op())
+            .expect("cylinder should build")
+            .id;
+        let face_handles = kernel
+            .extract_faces(cyl_id)
+            .expect("extract_faces(cylinder) should succeed");
+        let edge_handles = kernel
+            .extract_edges(cyl_id)
+            .expect("extract_edges(cylinder) should succeed");
+        // OCCT cylinder edge count varies (2-3) depending on seam handling;
+        // the contract is "at least 2" (the two cap circles are non-negotiable).
+        assert!(
+            edge_handles.len() >= 2,
+            "cylinder should emit at least 2 edges (top + bottom cap circles), got {}",
+            edge_handles.len()
+        );
+        // Face-count regression guard from step-3.
+        assert_eq!(
+            face_handles.len(),
+            3,
+            "step-3 regression: cylinder should still emit 3 faces"
+        );
+
+        let feature_id = body_realization_feature_id();
+        let mut table = TopologyAttributeTable::default();
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &feature_id,
+            &cylinder_op(),
+        )
+        .expect(
+            "seed_primitive_attributes for a cylinder should succeed (step-7: faces + edges)",
+        );
+
+        assert_eq!(
+            table.len(),
+            face_handles.len() + edge_handles.len(),
+            "cylinder: face entries + edge entries (step-7 contract)"
+        );
+
+        // Edges: each Role::NewEdge with sequential local_index.
+        let mut edge_local_indices: HashSet<u32> = HashSet::new();
+        for (idx, &edge_id) in edge_handles.iter().enumerate() {
+            let attr = table.lookup(edge_id).unwrap_or_else(|| {
+                panic!(
+                    "cylinder edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, edge_id
+                )
+            });
+            assert_eq!(
+                attr.feature_id, feature_id,
+                "cylinder edge #{idx} feature_id should equal Body#realization[0]"
+            );
+            assert_eq!(
+                attr.role,
+                Role::NewEdge,
+                "cylinder edge #{idx} role should be Role::NewEdge"
+            );
+            assert_eq!(
+                attr.local_index, idx as u32,
+                "cylinder edge #{idx} local_index should be the consecutive 0..n value {idx}"
+            );
+            assert_eq!(
+                attr.user_label, None,
+                "cylinder edge #{idx} user_label should be None per task-1 invariant"
+            );
+            assert!(
+                attr.mod_history.is_empty(),
+                "cylinder edge #{idx} mod_history should be empty per task-1 invariant"
+            );
+            assert!(
+                edge_local_indices.insert(attr.local_index),
+                "cylinder edge #{idx} has duplicate local_index {}",
+                attr.local_index
+            );
+        }
+    }
+
+    // ── Sub-case (3): Sphere → 0+ edges, all Role::NewEdge if any ────────────
+    {
+        let mut kernel = OcctKernelHandle::spawn();
+        let sphere_id = kernel
+            .execute(&sphere_op())
+            .expect("sphere should build")
+            .id;
+        let face_handles = kernel
+            .extract_faces(sphere_id)
+            .expect("extract_faces(sphere) should succeed");
+        let edge_handles = kernel
+            .extract_edges(sphere_id)
+            .expect("extract_edges(sphere) should succeed");
+        // Face-count regression guard from step-5.
+        assert!(
+            !face_handles.is_empty(),
+            "step-5 regression: sphere should still emit ≥1 face"
+        );
+
+        let feature_id = body_realization_feature_id();
+        let mut table = TopologyAttributeTable::default();
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &feature_id,
+            &sphere_op(),
+        )
+        .expect(
+            "seed_primitive_attributes for a sphere should succeed (step-7: faces + edges)",
+        );
+
+        assert_eq!(
+            table.len(),
+            face_handles.len() + edge_handles.len(),
+            "sphere: face entries + edge entries (step-7 contract)"
+        );
+
+        // Edges: if any, each must be Role::NewEdge with sequential local_index.
+        // OCCT may emit 0 edges (smooth sphere) or a meridian seam — record
+        // whatever extract_edges returns. Skip the per-edge assertion only if
+        // the kernel returned an empty vector.
+        if !edge_handles.is_empty() {
+            let mut edge_local_indices: HashSet<u32> = HashSet::new();
+            for (idx, &edge_id) in edge_handles.iter().enumerate() {
+                let attr = table.lookup(edge_id).unwrap_or_else(|| {
+                    panic!(
+                        "sphere edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                        idx, edge_id
+                    )
+                });
+                assert_eq!(
+                    attr.feature_id, feature_id,
+                    "sphere edge #{idx} feature_id should equal Body#realization[0]"
+                );
+                assert_eq!(
+                    attr.role,
+                    Role::NewEdge,
+                    "sphere edge #{idx} role should be Role::NewEdge"
+                );
+                assert_eq!(
+                    attr.local_index, idx as u32,
+                    "sphere edge #{idx} local_index should be the consecutive 0..n value {idx}"
+                );
+                assert_eq!(
+                    attr.user_label, None,
+                    "sphere edge #{idx} user_label should be None per task-1 invariant"
+                );
+                assert!(
+                    attr.mod_history.is_empty(),
+                    "sphere edge #{idx} mod_history should be empty per task-1 invariant"
+                );
+                assert!(
+                    edge_local_indices.insert(attr.local_index),
+                    "sphere edge #{idx} has duplicate local_index {}",
+                    attr.local_index
+                );
+            }
+        }
+    }
+}
