@@ -1035,12 +1035,7 @@ impl<'a> BooleanOpParents<'a> {
         faces: &'a [&'a [GeometryHandleId]],
         edges: &'a [&'a [GeometryHandleId]],
     ) -> Self {
-        Self::try_nary(faces, edges).unwrap_or_else(|BooleanOpParentsError::LengthMismatch { faces, edges }| {
-            panic!(
-                "BooleanOpParents::NAry: faces.len() ({faces}) != edges.len() ({edges}); \
-                 each parent must have an entry in both slices"
-            )
-        })
+        Self::try_nary(faces, edges).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Returns the per-parent face-handle slices as a flat slice of slices,
@@ -1049,11 +1044,22 @@ impl<'a> BooleanOpParents<'a> {
     /// For [`NAry`][Self::NAry] instances, length correctness is the caller's
     /// responsibility when using direct enum-literal construction. Use
     /// [`try_nary`][Self::try_nary] or [`nary`][Self::nary] to obtain a
-    /// checked instance.
+    /// checked instance. A `debug_assert_eq!` fires in debug builds if a
+    /// direct-literal construction is called with mismatched lengths.
     pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { faces, .. } => &faces[..],
-            Self::NAry { faces, .. } => faces,
+            Self::NAry { faces, edges } => {
+                debug_assert_eq!(
+                    faces.len(),
+                    edges.len(),
+                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
+                     each parent must have an entry in both slices",
+                    faces.len(),
+                    edges.len()
+                );
+                faces
+            }
         }
     }
 
@@ -1063,11 +1069,22 @@ impl<'a> BooleanOpParents<'a> {
     /// For [`NAry`][Self::NAry] instances, length correctness is the caller's
     /// responsibility when using direct enum-literal construction. Use
     /// [`try_nary`][Self::try_nary] or [`nary`][Self::nary] to obtain a
-    /// checked instance.
+    /// checked instance. A `debug_assert_eq!` fires in debug builds if a
+    /// direct-literal construction is called with mismatched lengths.
     pub fn edge_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { edges, .. } => &edges[..],
-            Self::NAry { edges, .. } => edges,
+            Self::NAry { faces, edges } => {
+                debug_assert_eq!(
+                    faces.len(),
+                    edges.len(),
+                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
+                     each parent must have an entry in both slices",
+                    faces.len(),
+                    edges.len()
+                );
+                edges
+            }
         }
     }
 }
@@ -2022,26 +2039,15 @@ mod tests {
     #[test]
     fn boolean_op_parents_nary_constructor_accepts_matched_lengths() {
         let f0: Vec<GeometryHandleId> = vec![GeometryHandleId(1)];
-        let f1: Vec<GeometryHandleId> = vec![GeometryHandleId(2), GeometryHandleId(3)];
-        let f2: Vec<GeometryHandleId> = vec![];
         let e0: Vec<GeometryHandleId> = vec![GeometryHandleId(10)];
-        let e1: Vec<GeometryHandleId> = vec![];
-        let e2: Vec<GeometryHandleId> = vec![GeometryHandleId(11), GeometryHandleId(12)];
+        let face_inputs: [&[GeometryHandleId]; 1] = [&f0];
+        let edge_inputs: [&[GeometryHandleId]; 1] = [&e0];
 
-        let face_inputs: [&[GeometryHandleId]; 3] = [&f0, &f1, &f2];
-        let edge_inputs: [&[GeometryHandleId]; 3] = [&e0, &e1, &e2];
-
-        let parents = BooleanOpParents::nary(&face_inputs, &edge_inputs);
-
-        assert_eq!(parents.face_slices().len(), 3);
-        assert_eq!(parents.face_slices()[0], &f0[..]);
-        assert_eq!(parents.face_slices()[1], &f1[..]);
-        assert_eq!(parents.face_slices()[2], &f2[..]);
-
-        assert_eq!(parents.edge_slices().len(), 3);
-        assert_eq!(parents.edge_slices()[0], &e0[..]);
-        assert_eq!(parents.edge_slices()[1], &e1[..]);
-        assert_eq!(parents.edge_slices()[2], &e2[..]);
+        // nary succeeds and returns the same value as try_nary(...).unwrap().
+        assert_eq!(
+            BooleanOpParents::nary(&face_inputs, &edge_inputs),
+            BooleanOpParents::try_nary(&face_inputs, &edge_inputs).unwrap()
+        );
     }
 
     #[test]
