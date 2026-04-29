@@ -3053,6 +3053,303 @@ mod tests {
         );
     }
 
+    // ── gear constructor: happy path ─────────────────────────────────────────
+
+    #[test]
+    fn gear_returns_correct_coupling_and_transform_at_works() {
+        // gear(revolute-Z, teeth_a=20, teeth_b=30) → coupling Map with:
+        //   kind="coupling", parent=revolute-Z, ratio=-(30/20)=-1.5, offset=angle(0)
+        // transform_at(result, angle(π/3)) → coupled angle = -1.5 * π/3 = -π/2
+        //   → rotation = (cos(-π/4), 0, 0, sin(-π/4))
+        let pi = std::f64::consts::PI;
+        let parent = revolute_z_joint();
+        let result = eval_builtin("gear", &[parent.clone(), Value::Int(20), Value::Int(30)]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("gear: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "gear: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "gear: parent should match the revolute joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(-30.0 / 20.0)),
+            "gear: ratio should be Value::Real(-teeth_b/teeth_a) = -1.5"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::angle(0.0)),
+            "gear: default offset for revolute parent should be Value::angle(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, angle(π/3))
+        // Math: coupled = -1.5 * (π/3) = -π/2 rad about Z-axis
+        //   → rotation quaternion for -π/2 about Z = (cos(-π/4), 0, 0, sin(-π/4))
+        let xform = eval_builtin("transform_at", &[result, Value::angle(pi / 3.0)]);
+        let cos_q = (-pi / 4.0).cos();
+        let sin_q = (-pi / 4.0).sin();
+        assert_transform_approx(&xform, (cos_q, 0.0, 0.0, sin_q), [0.0, 0.0, 0.0], 1e-12,
+            "gear transform_at: 20:30 ratio, π/3 input → -π/2 rotation about Z");
+    }
+
+    // ── gear constructor: validation rejections ──────────────────────────────
+
+    #[test]
+    fn gear_zero_args_returns_undef() {
+        assert!(eval_builtin("gear", &[]).is_undef(), "0 args should return Undef");
+    }
+
+    #[test]
+    fn gear_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint()]).is_undef(),
+            "1 arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_two_args_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(20)]).is_undef(),
+            "2 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_four_args_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(20), Value::Int(30), Value::Real(0.0)]).is_undef(),
+            "4 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_non_map_parent_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[Value::Real(1.0), Value::Int(20), Value::Int(30)]).is_undef(),
+            "non-Map parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_coupling_parent_returns_undef() {
+        // nested coupling: Undef must propagate from couple()
+        let inner = eval_builtin("gear", &[revolute_z_joint(), Value::Int(20), Value::Int(30)]);
+        assert!(
+            eval_builtin("gear", &[inner, Value::Int(20), Value::Int(30)]).is_undef(),
+            "coupling parent (kind='coupling') should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_a_zero_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(0), Value::Int(30)]).is_undef(),
+            "teeth_a=0 should return Undef (division by zero)"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_a_negative_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(-5), Value::Int(30)]).is_undef(),
+            "negative teeth_a should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_b_zero_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(20), Value::Int(0)]).is_undef(),
+            "teeth_b=0 should return Undef (degenerate)"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_b_negative_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(20), Value::Int(-3)]).is_undef(),
+            "negative teeth_b should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_a_real_returns_undef() {
+        // Int-only contract: even integer-valued Real is rejected
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Real(20.0), Value::Int(30)]).is_undef(),
+            "Real teeth_a should return Undef (Int-only contract)"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_b_real_returns_undef() {
+        // Int-only contract: even integer-valued Real is rejected
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::Int(20), Value::Real(30.0)]).is_undef(),
+            "Real teeth_b should return Undef (Int-only contract)"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_a_scalar_returns_undef() {
+        // Dimensionless Scalar should be rejected (Int-only)
+        use reify_types::DimensionVector;
+        let scalar = Value::Scalar { si_value: 20.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), scalar, Value::Int(30)]).is_undef(),
+            "Scalar teeth_a should return Undef"
+        );
+    }
+
+    #[test]
+    fn gear_teeth_a_string_returns_undef() {
+        assert!(
+            eval_builtin("gear", &[revolute_z_joint(), Value::String("bad".to_string()), Value::Int(30)]).is_undef(),
+            "String teeth_a should return Undef"
+        );
+    }
+
+    // ── rack_and_pinion constructor: happy path ───────────────────────────────
+
+    #[test]
+    fn rack_and_pinion_returns_correct_coupling_and_transform_at_works() {
+        // rack_and_pinion(prismatic-X, pitch_radius=10mm) → coupling Map with:
+        //   kind="coupling", parent=prismatic-X, ratio=0.01, offset=length(0)
+        // transform_at(result, length(2π)) → coupled length = 0.01 * 2π = 0.02π m
+        //   → translation [0.02π, 0, 0], identity rotation
+        let pi = std::f64::consts::PI;
+        let parent = prismatic_x_joint();
+        let pitch_radius = Value::length(0.01); // 10 mm
+        let result = eval_builtin("rack_and_pinion", &[parent.clone(), pitch_radius]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("rack_and_pinion: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "rack_and_pinion: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "rack_and_pinion: parent should match the prismatic joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(0.01)),
+            "rack_and_pinion: ratio should be Value::Real(pitch_radius_si)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "rack_and_pinion: default offset for prismatic parent should be Value::length(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, length(2π))
+        // Math: coupled = 0.01 * 2π + 0 = 0.02π m, translated along prismatic-X axis.
+        let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
+        let expected_x = 0.01 * 2.0 * pi;
+        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [expected_x, 0.0, 0.0], 1e-12,
+            "rack_and_pinion transform_at: 10mm pitch, 2π input → 0.02π translation");
+    }
+
+    // ── rack_and_pinion constructor: validation rejections ───────────────────
+
+    #[test]
+    fn rack_and_pinion_zero_args_returns_undef() {
+        assert!(eval_builtin("rack_and_pinion", &[]).is_undef(), "0 args should return Undef");
+    }
+
+    #[test]
+    fn rack_and_pinion_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("rack_and_pinion", &[prismatic_x_joint()]).is_undef(),
+            "1 arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_three_args_returns_undef() {
+        assert!(
+            eval_builtin("rack_and_pinion", &[
+                prismatic_x_joint(),
+                Value::length(0.01),
+                Value::Real(0.0),
+            ]).is_undef(),
+            "3 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_non_map_parent_returns_undef() {
+        assert!(
+            eval_builtin("rack_and_pinion", &[Value::Real(1.0), Value::length(0.01)]).is_undef(),
+            "non-Map parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_coupling_parent_returns_undef() {
+        // nested coupling: Undef propagates from couple()
+        let inner = eval_builtin("rack_and_pinion", &[prismatic_x_joint(), Value::length(0.01)]);
+        assert!(
+            eval_builtin("rack_and_pinion", &[inner, Value::length(0.01)]).is_undef(),
+            "coupling parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_map_missing_kind_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            eval_builtin("rack_and_pinion", &[Value::Map(m), Value::length(0.01)]).is_undef(),
+            "Map parent missing kind key should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_mass_pitch_radius_returns_undef() {
+        use reify_types::DimensionVector;
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        assert!(
+            eval_builtin("rack_and_pinion", &[prismatic_x_joint(), mass]).is_undef(),
+            "MASS-dimensioned pitch_radius should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_nan_pitch_radius_returns_undef() {
+        assert!(
+            eval_builtin("rack_and_pinion", &[prismatic_x_joint(), Value::Real(f64::NAN)]).is_undef(),
+            "NaN pitch_radius should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_inf_pitch_radius_returns_undef() {
+        assert!(
+            eval_builtin("rack_and_pinion", &[prismatic_x_joint(), Value::Real(f64::INFINITY)]).is_undef(),
+            "Inf pitch_radius should return Undef"
+        );
+    }
+
+    #[test]
+    fn rack_and_pinion_string_pitch_radius_returns_undef() {
+        assert!(
+            eval_builtin("rack_and_pinion", &[prismatic_x_joint(), Value::String("bad".to_string())]).is_undef(),
+            "String pitch_radius should return Undef"
+        );
+    }
+
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
 
     /// All negative-case inputs for `is_joint_value` in one table-driven test.
