@@ -53,6 +53,31 @@ mod tests {
     }
 
     #[test]
+    fn composition_within_budget() {
+        // Safety invariant: composing N stages each at per_stage(tol, N) yields
+        // tol * 0.8^N, which is always ≤ tol (because 0.8 < 1).
+        //
+        // Closed-form check: per_stage(tol, N)^N ≈ tol * 0.8^N within float-eps,
+        // and that composed value is strictly < tol for tol > 0 and N ≥ 1.
+        let float_eps = 1e-10;
+        for &tol in &[1e-3_f64, 1e-2_f64] {
+            for &n in &[1_usize, 2, 3, 5] {
+                let per_stage = per_stage_tolerance(tol, n);
+                let composed = per_stage.powi(n as i32);
+                let expected_composed = tol * 0.8_f64.powi(n as i32);
+                assert!(
+                    (composed - expected_composed).abs() < float_eps,
+                    "per_stage({tol},{n})^{n} = {composed} should ≈ tol*0.8^N = {expected_composed}"
+                );
+                assert!(
+                    composed < tol,
+                    "safety violation: per_stage({tol},{n})^{n} = {composed} ≥ tol = {tol}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn geometric_split_multi_stages() {
         // Pin the formula expected = tol^(1/N) * 0.8 at N ∈ {2, 3, 5} for two
         // representative tolerances. The step-2 minimal impl (tol * 0.8) is correct
