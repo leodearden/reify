@@ -145,6 +145,50 @@ impl<V> ToleranceBucket<V> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn insert_rejects_equal_tolerance() {
+        // Boundary of the `<=` rule: an existing entry at exactly `tol` already
+        // satisfies any request at that tolerance, so a second insert at the same
+        // value must be rejected and leave the bucket unchanged.
+        let mut bucket = ToleranceBucket::<u32>::new();
+        assert!(bucket.insert(0.01, 1u32));
+        assert_eq!(bucket.len(), 1);
+        assert!(!bucket.insert(0.01, 2u32), "equal-tolerance insert must be rejected");
+        assert_eq!(bucket.len(), 1, "bucket must be unchanged after rejection");
+        assert_eq!(bucket.lookup(0.01), Some(&1u32));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn insert_panics_on_infinite_tolerance() {
+        let mut bucket = ToleranceBucket::<u32>::new();
+        bucket.insert(f64::INFINITY, 0u32);
+    }
+
+    #[test]
+    fn successful_insert_always_lands_at_front() {
+        // The rejection rule guarantees every successful insert is strictly tighter
+        // than all existing entries, so it always lands at index 0 (the tightest slot).
+        // Verify through exact-tolerance lookups: the most recently inserted entry must
+        // be reachable at its precise tolerance, and loosest-satisfying semantics must
+        // still return the correct (loosest) entry for wider requests.
+        let mut bucket = ToleranceBucket::<u8>::new();
+        assert!(bucket.insert(0.1, 1u8));
+        assert_eq!(bucket.lookup(0.1), Some(&1u8));
+
+        // 0.01 is tighter than 0.1 → succeeds; reachable at its exact tol.
+        assert!(bucket.insert(0.01, 2u8));
+        assert_eq!(bucket.lookup(0.01), Some(&2u8));
+        assert_eq!(bucket.lookup(0.1), Some(&1u8));   // loosest satisfying 0.1 is still 0.1
+
+        // 0.001 is tighter than both → succeeds; reachable at its exact tol.
+        assert!(bucket.insert(0.001, 3u8));
+        assert_eq!(bucket.lookup(0.001), Some(&3u8)); // tightest entry, exact tol
+        assert_eq!(bucket.lookup(0.01), Some(&2u8));  // loosest satisfying 0.01 is 0.01
+        assert_eq!(bucket.lookup(0.1), Some(&1u8));   // loosest satisfying 0.1 is 0.1
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
