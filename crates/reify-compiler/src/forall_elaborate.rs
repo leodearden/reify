@@ -84,9 +84,9 @@ pub(crate) fn elaborate_forall_constraint(
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     _constraint_inst_counts: &mut HashMap<String, usize>,
-    _guarded_groups: &mut Vec<CompiledGuardedGroup>,
-    _structure_controlling: &mut std::collections::HashSet<ValueCellId>,
-    _guard_index: &mut u32,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut std::collections::HashSet<ValueCellId>,
+    guard_index: &mut u32,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_syntax::{Expr, ExprKind, ForallConstraintBody};
@@ -161,13 +161,35 @@ pub(crate) fn elaborate_forall_constraint(
         };
         *constraint_index += 1;
 
-        // Step-12: route through compile_per_decl_constraint_guard when
-        // body_constraint.where_clause is Some. For step-2, the test source
-        // has no where clause, so we push directly.
-        if body_constraint.where_clause.is_none() {
-            constraints.push(cc);
+        // PRD criterion 9: when the body has a `where` clause, route the
+        // per-element constraint through `compile_per_decl_constraint_guard`
+        // so it lives inside its own single-constraint guarded group with
+        // the (per-element substituted) condition as the guard. Mirrors the
+        // shape used for plain `MemberDecl::Constraint(c)` with a where
+        // clause at entity.rs:951-963.
+        if let Some(wc) = &body_constraint.where_clause {
+            // Substitute the bound variable inside the where condition. The
+            // condition often does not reference the bound var (e.g. a
+            // structure-level Bool flag), in which case substitution is a
+            // no-op — but in general the spec allows the condition to
+            // reference the per-element value, so we always substitute.
+            let substituted_wc = reify_syntax::WhereClause {
+                condition: substitute_expr(&wc.condition, &bindings),
+                span: wc.span,
+            };
+            compile_per_decl_constraint_guard(
+                entity_name,
+                &substituted_wc,
+                cc,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                guarded_groups,
+                structure_controlling,
+                guard_index,
+            );
         } else {
-            // Step-12 stub: drop on the floor for now.
             constraints.push(cc);
         }
     }
