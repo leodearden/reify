@@ -134,6 +134,109 @@ fn parse_imported_field_with_full_block() {
     }
 }
 
+// ── Step 2665-3: imported field keys in any order ───────────────────
+
+#[test]
+fn parse_imported_field_keys_any_order() {
+    // Keys reordered: grid → path → format (vs the canonical path → format → grid)
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { grid = "vonMises" path = "fea.vdb" format = OpenVDB } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { path, format, grid } => {
+            assert_eq!(path.as_deref(), Some("fea.vdb"), "path mismatch");
+            assert_eq!(format.as_deref(), Some("OpenVDB"), "format mismatch");
+            assert_eq!(grid.as_deref(), Some("vonMises"), "grid mismatch");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
+
+// ── Step 2665-5: imported field with partial keys ────────────────────
+
+#[test]
+fn parse_imported_field_partial_keys() {
+    // Only path provided; format and grid are absent.
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { path = "fea.vdb" } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { path, format, grid } => {
+            assert_eq!(path.as_deref(), Some("fea.vdb"));
+            assert_eq!(*format, None, "format should be None when absent");
+            assert_eq!(*grid, None, "grid should be None when absent");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
+
+// ── Step 2665-7: format identifier captured verbatim ─────────────────
+
+#[test]
+fn parse_imported_field_format_identifier_captured_verbatim() {
+    // Deliberately uses HDF5 (not yet supported in v0.2) to pin that the parser
+    // captures identifiers verbatim and does NOT validate against an allowlist.
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { path = "x.vdb" format = HDF5 grid = "g" } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { format, .. } => {
+            assert_eq!(format.as_deref(), Some("HDF5"), "format should be captured verbatim");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
+
+// ── Step 2665-9: unknown keys silently ignored ───────────────────────
+
+#[test]
+fn parse_imported_field_unknown_keys_silently_ignored() {
+    // Includes `units` and `interpolation` keys that v0.2 explicitly does NOT support.
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { path = "x.vdb" format = OpenVDB grid = "g" units = MPa interpolation = trilinear } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { path, format, grid } => {
+            assert_eq!(path.as_deref(), Some("x.vdb"), "path should be populated");
+            assert_eq!(format.as_deref(), Some("OpenVDB"), "format should be populated");
+            assert_eq!(grid.as_deref(), Some("g"), "grid should be populated");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
+
 // ── Step 7: pub field ───────────────────────────────────────────────
 
 #[test]
