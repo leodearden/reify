@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use reify_compiler::{
-    CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind, find_template,
+    CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
+    ValueCellKind, find_template,
 };
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
@@ -115,6 +116,19 @@ pub struct EvaluationGraph {
     /// in the fingerprint only once they materialize in `constraints` at
     /// runtime emission.
     pub forall_templates: Vec<CompiledForallTemplate>,
+    /// Compiled connections carried through from `template.connections`
+    /// (task 2690). Mutated at runtime by `Engine::edit_param`'s
+    /// collection-count phase to materialise per-element forall-Connect
+    /// emissions when a `__count_<sub>` cell becomes known. Each entry's
+    /// `compatibility_constraint` ties it to the synthesised
+    /// `ConstraintNodeData` in `constraints`; runtime cleanup walks
+    /// `Snapshot::forall_emitted` and removes matching entries here as
+    /// well as in `constraints`.
+    ///
+    /// **Hash stability:** mixed into `topology_fingerprint` (a sixth
+    /// per-bucket sub-hash with domain separation) so cache keys vary
+    /// when the connection set changes.
+    pub connections: Vec<CompiledConnection>,
 }
 
 impl EvaluationGraph {
@@ -136,6 +150,14 @@ impl EvaluationGraph {
             graph
                 .forall_templates
                 .extend(template.forall_templates.iter().cloned());
+
+            // task 2690: carry compile-time connections into the runtime
+            // graph. The forall-Connect runtime arm in
+            // `engine_edit::edit_param` mutates this Vec in lockstep with
+            // `graph.constraints` when a deferred-count cell becomes known.
+            graph
+                .connections
+                .extend(template.connections.iter().cloned());
 
             for cell in &template.value_cells {
                 let id_hash = ContentHash::of_str(&format!("{}", cell.id));
