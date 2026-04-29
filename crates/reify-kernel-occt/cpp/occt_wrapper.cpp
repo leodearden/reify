@@ -408,6 +408,357 @@ rust::Vec<uint32_t> boolean_op_history_edge_deleted(const BooleanOpHistory& hist
     return to_rust_vec(history.edge_deleted);
 }
 
+// --- BRepPrimAPI sweep history (v0.2 persistent-naming-v2, task 2573) ---
+
+namespace {
+
+/// Walk `parent_map` (canonical TopExp 1-based order) on a single-parent
+/// sweep operation, querying `algo.Modified()/IsDeleted()` for each parent
+/// sub-shape and looking up children in `result_map` of the SAME shape type
+/// (face → face, edge → edge). Indices are 0-based at the FFI boundary; the
+/// `parent_index` field is hard-coded to 0 because sweep ops have a single
+/// parent profile.
+///
+/// Note: `Generated()` is handled SEPARATELY by `emit_sweep_generated_cross_type`
+/// because sweeps generate higher-dimensional shapes from lower-dimensional
+/// parents (vertex → edge, edge → face, face → solid) — the parent and
+/// result shape types differ, so we can't share a single result_map.
+///
+/// Templated over the algorithm class (BRepPrimAPI_MakePrism /
+/// BRepPrimAPI_MakeRevol, etc.) so the same helper handles both sweep
+/// variants. The algorithm must expose `Modified(const TopoDS_Shape&)` and
+/// `IsDeleted(const TopoDS_Shape&)` (inherited from `BRepBuilderAPI_MakeShape`).
+template <typename SweepAlgo>
+void emit_sweep_modified_deleted_for_parent(
+    SweepAlgo& algo,
+    const TopTools_IndexedMapOfShape& parent_map,
+    const TopTools_IndexedMapOfShape& result_map,
+    std::vector<uint32_t>& out_modified,
+    std::vector<uint32_t>& out_deleted) {
+    const Standard_Integer n = parent_map.Extent();
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        const TopoDS_Shape& parent_sub = parent_map.FindKey(i);
+        const uint32_t parent_idx_0 = static_cast<uint32_t>(i - 1);
+
+        // Modified: parent sub-shape replaced by N same-type result sub-shapes.
+        const TopTools_ListOfShape& modified = algo.Modified(parent_sub);
+        for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
+            const TopoDS_Shape& child = it.Value();
+            Standard_Integer one_based = result_map.FindIndex(child);
+            if (one_based < 1) {
+                continue;
+            }
+            out_modified.push_back(0u);                                          // parent_index always 0 for sweeps
+            out_modified.push_back(parent_idx_0);
+            out_modified.push_back(static_cast<uint32_t>(one_based - 1));
+        }
+
+        // Deleted: parent sub-shape has no result analogue.
+        if (algo.IsDeleted(parent_sub)) {
+            out_deleted.push_back(0u);
+            out_deleted.push_back(parent_idx_0);
+        }
+    }
+}
+
+/// Walk `parent_map` and emit Generated records routing each parent
+/// sub-shape's generated children into `result_map` (potentially of a
+/// different topological dimension). Filters child shapes by
+/// `child_shape_type` so we only consume the dimension-matched results
+/// (edge parents → face children for prism/revolve lateral faces; vertex
+/// parents → edge children for swept lateral edges).
+///
+/// For sweep ops, the dimensional-bump pattern is:
+///   profile vertex → swept lateral edge (TopAbs_EDGE)
+///   profile edge   → swept lateral face (TopAbs_FACE)
+///   profile face   → swept solid (rarely relevant — caps go through
+///                    FirstShape/LastShape, not Generated)
+template <typename SweepAlgo>
+void emit_sweep_generated_cross_type(
+    SweepAlgo& algo,
+    const TopTools_IndexedMapOfShape& parent_map,
+    const TopTools_IndexedMapOfShape& result_map,
+    TopAbs_ShapeEnum child_shape_type,
+    std::vector<uint32_t>& out_generated) {
+    const Standard_Integer n = parent_map.Extent();
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        const TopoDS_Shape& parent_sub = parent_map.FindKey(i);
+        const uint32_t parent_idx_0 = static_cast<uint32_t>(i - 1);
+
+        const TopTools_ListOfShape& generated = algo.Generated(parent_sub);
+        for (TopTools_ListIteratorOfListOfShape it(generated); it.More(); it.Next()) {
+            const TopoDS_Shape& child = it.Value();
+            if (child.ShapeType() != child_shape_type) {
+                continue;
+            }
+            Standard_Integer one_based = result_map.FindIndex(child);
+            if (one_based < 1) {
+                continue;
+            }
+            out_generated.push_back(0u);
+            out_generated.push_back(parent_idx_0);
+            out_generated.push_back(static_cast<uint32_t>(one_based - 1));
+        }
+    }
+}
+
+/// Look up `cap_shape` in the result `face_map` and push every face under
+/// it onto `out_indices` (0-based). For a single-face cap (typical), exactly
+/// one entry is pushed. For a multi-face cap (e.g. a compound profile),
+/// every constituent face is enumerated. Skips silently if the shape is
+/// null or contains no mapped faces.
+void emit_cap_face_indices(
+    const TopoDS_Shape& cap_shape,
+    const TopTools_IndexedMapOfShape& result_face_map,
+    std::vector<uint32_t>& out_indices) {
+    if (cap_shape.IsNull()) {
+        return;
+    }
+    // Direct lookup if the cap_shape is itself a face mapped in the result.
+    Standard_Integer one_based = result_face_map.FindIndex(cap_shape);
+    if (one_based >= 1) {
+        out_indices.push_back(static_cast<uint32_t>(one_based - 1));
+        return;
+    }
+    // Otherwise enumerate constituent faces (for compound / shell caps).
+    for (TopExp_Explorer ex(cap_shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        Standard_Integer idx = result_face_map.FindIndex(ex.Current());
+        if (idx >= 1) {
+            out_indices.push_back(static_cast<uint32_t>(idx - 1));
+        }
+    }
+}
+
+} // anonymous namespace
+
+std::unique_ptr<SweepOpHistory> make_prism_with_history(
+    const OcctShape& profile, double dx, double dy, double dz) {
+    return wrap_occt_call("make_prism_with_history", [&]() {
+        // DEFENSE-IN-DEPTH: mirror make_prism's input checks so callers
+        // bypassing the Rust validation layer still get a clean error.
+        double mag_sq = dx*dx + dy*dy + dz*dz;
+        if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
+            throw std::runtime_error("make_prism_with_history: direction vector components must be finite");
+        }
+        if (mag_sq < CPP_AXIS_MAG_SQ_MIN) {
+            throw std::runtime_error("make_prism_with_history: direction vector magnitude must be > 0");
+        }
+        gp_Vec vec(dx, dy, dz);
+        BRepPrimAPI_MakePrism maker(profile.shape, vec);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakePrism failed");
+        }
+        auto history = std::make_unique<SweepOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = maker.Shape();
+
+        // Build result face/edge maps once via the cached lazy accessors.
+        const auto& result_face_map = history->result->face_map();
+        const auto& result_edge_map = history->result->edge_map();
+
+        // Build a profile-vertex map ad-hoc (not cached on OcctShape because
+        // vertex maps are rarely needed; sweeps are the exception).
+        TopTools_IndexedMapOfShape profile_vertex_map;
+        TopExp::MapShapes(profile.shape, TopAbs_VERTEX, profile_vertex_map);
+
+        // Faces (same-type modified): profile face → result face. Modified
+        // is typically empty for prism (face sub-shapes go to FirstShape /
+        // LastShape, captured separately as caps); IsDeleted is empty too.
+        // We still walk it for completeness — non-trivial profiles can
+        // produce face-typed Modified entries.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.face_map(), result_face_map,
+            history->face_modified, history->face_deleted);
+
+        // Edges (same-type modified): profile edge → result edge. Modified
+        // edges from a prism are also typically empty.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.edge_map(), result_edge_map,
+            history->edge_modified, history->edge_deleted);
+
+        // Cross-type Generated: profile EDGES generate result FACES (the
+        // lateral side faces of the swept solid). parent_subshape_index in
+        // each face_generated record is the profile edge index.
+        emit_sweep_generated_cross_type(
+            maker, profile.edge_map(), result_face_map, TopAbs_FACE,
+            history->face_generated);
+
+        // Cross-type Generated: profile VERTICES generate result EDGES
+        // (the lateral edges joining the start/end caps). parent_subshape_index
+        // in each edge_generated record is the profile vertex index.
+        emit_sweep_generated_cross_type(
+            maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
+            history->edge_generated);
+
+        // Caps: FirstShape() == profile-as-placed (start cap),
+        //       LastShape()  == swept-end (end cap).
+        // BRepPrimAPI_MakePrism is a BRepPrimAPI_MakeSweep, so these accessors exist.
+        emit_cap_face_indices(maker.FirstShape(), result_face_map, history->start_cap_face_indices);
+        emit_cap_face_indices(maker.LastShape(),  result_face_map, history->end_cap_face_indices);
+
+        return history;
+    });
+}
+
+std::unique_ptr<SweepOpHistory> make_revolve_with_history(
+    const OcctShape& profile,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    double angle_rad) {
+    return wrap_occt_call("make_revolve_with_history", [&]() {
+        // DEFENSE-IN-DEPTH: mirror make_revolve's input checks so callers
+        // bypassing the Rust validation layer still get a clean error
+        // (this is the same threshold pattern used by make_prism_with_history).
+        if (!(std::isfinite(ox) && std::isfinite(oy) && std::isfinite(oz) &&
+              std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az) &&
+              std::isfinite(angle_rad))) {
+            throw std::runtime_error("make_revolve_with_history: all parameters must be finite");
+        }
+        double axis_mag_sq = ax*ax + ay*ay + az*az;
+        if (axis_mag_sq < CPP_AXIS_MAG_SQ_MIN) {
+            throw std::runtime_error("make_revolve_with_history: axis direction must not be zero-length");
+        }
+        if (std::abs(angle_rad) < CPP_ANGLE_ABS_MIN) {
+            throw std::runtime_error("make_revolve_with_history: angle must not be zero");
+        }
+        gp_Pnt origin(ox, oy, oz);
+        gp_Dir dir(ax, ay, az);
+        gp_Ax1 axis(origin, dir);
+        BRepPrimAPI_MakeRevol maker(profile.shape, axis, angle_rad);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeRevol failed");
+        }
+
+        // Capture FirstShape/LastShape BEFORE the Shell→Solid conversion
+        // — the conversion produces a fresh TopoDS_Solid whose face_map
+        // re-indexes the lateral faces, but the IsSame()/IsEqual() identity
+        // of the cap shapes themselves is preserved by OCCT's TopoDS_Shape
+        // sharing semantics. We do the IsSame()-vs-distinct decision here,
+        // then look up the indices in the result face_map AFTER conversion.
+        TopoDS_Shape first_cap = maker.FirstShape();
+        TopoDS_Shape last_cap  = maker.LastShape();
+        // Full-revolution detection: under angle_rad ≈ 2π · k (k ≠ 0)
+        // OCCT collapses FirstShape() and LastShape() to the same closed
+        // surface. We detect this via TopoDS_Shape::IsSame which is
+        // tolerance-free and preserved across Shell→Solid conversion.
+        const bool is_full_revolution =
+            !first_cap.IsNull() && !last_cap.IsNull() && first_cap.IsSame(last_cap);
+
+        TopoDS_Shape rev_shape = maker.Shape();
+        // Some OCCT versions produce a Shell instead of Solid when revolving
+        // a Face. Convert Shell → Solid so volume queries work correctly
+        // (mirrors make_revolve's post-processing at occt_wrapper.cpp:1508-1521).
+        if (rev_shape.ShapeType() == TopAbs_SHELL) {
+            BRepBuilderAPI_MakeSolid solidMaker(TopoDS::Shell(rev_shape));
+            if (solidMaker.IsDone()) {
+                rev_shape = solidMaker.Solid();
+            } else {
+                throw std::runtime_error("make_revolve_with_history: Shell\xe2\x86\x92Solid conversion failed \xe2\x80\x94 BRepBuilderAPI_MakeSolid did not complete");
+            }
+        }
+        // Fix face orientations so volume computation works correctly.
+        if (rev_shape.ShapeType() == TopAbs_SOLID) {
+            TopoDS_Solid solid = TopoDS::Solid(rev_shape);
+            BRepLib::OrientClosedSolid(solid);
+            rev_shape = solid;
+        }
+
+        auto history = std::make_unique<SweepOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = rev_shape;
+
+        // Build result face/edge maps once via the cached lazy accessors
+        // (rev_shape is the post-conversion solid, so the maps reflect the
+        // final face indexing).
+        const auto& result_face_map = history->result->face_map();
+        const auto& result_edge_map = history->result->edge_map();
+
+        // Build a profile-vertex map ad-hoc (vertices generate result edges
+        // for sweeps; not cached on OcctShape because vertex maps are rarely
+        // needed except for sweeps).
+        TopTools_IndexedMapOfShape profile_vertex_map;
+        TopExp::MapShapes(profile.shape, TopAbs_VERTEX, profile_vertex_map);
+
+        // Faces (same-type modified): profile face → result face. Modified
+        // is typically empty for revolve (face sub-shapes go to FirstShape /
+        // LastShape, captured separately as caps under partial revolution);
+        // IsDeleted is empty too. We still walk it for completeness.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.face_map(), result_face_map,
+            history->face_modified, history->face_deleted);
+
+        // Edges (same-type modified): profile edge → result edge. Modified
+        // edges from a revolve are also typically empty.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.edge_map(), result_edge_map,
+            history->edge_modified, history->edge_deleted);
+
+        // Cross-type Generated: profile EDGES generate result FACES (the
+        // lateral revolved faces). parent_subshape_index in each
+        // face_generated record is the profile edge index.
+        emit_sweep_generated_cross_type(
+            maker, profile.edge_map(), result_face_map, TopAbs_FACE,
+            history->face_generated);
+
+        // Cross-type Generated: profile VERTICES generate result EDGES
+        // (lateral edges joining the start/end caps under partial
+        // revolution; circular trace edges under full revolution).
+        emit_sweep_generated_cross_type(
+            maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
+            history->edge_generated);
+
+        // Caps: under PARTIAL revolution, FirstShape() and LastShape()
+        // reference distinct cap faces and both lists are populated.
+        // Under FULL revolution (FirstShape().IsSame(LastShape())) both
+        // lists remain empty so consumers can encode the no-caps case
+        // naturally. BRepPrimAPI_MakeRevol is a BRepPrimAPI_MakeSweep,
+        // so these accessors exist.
+        if (!is_full_revolution) {
+            emit_cap_face_indices(first_cap, result_face_map, history->start_cap_face_indices);
+            emit_cap_face_indices(last_cap,  result_face_map, history->end_cap_face_indices);
+        }
+
+        return history;
+    });
+}
+
+std::unique_ptr<OcctShape> sweep_op_history_take_result_shape(SweepOpHistory& history) {
+    return std::move(history.result);
+}
+
+rust::Vec<uint32_t> sweep_op_history_face_modified(const SweepOpHistory& history) {
+    return to_rust_vec(history.face_modified);
+}
+
+rust::Vec<uint32_t> sweep_op_history_face_generated(const SweepOpHistory& history) {
+    return to_rust_vec(history.face_generated);
+}
+
+rust::Vec<uint32_t> sweep_op_history_face_deleted(const SweepOpHistory& history) {
+    return to_rust_vec(history.face_deleted);
+}
+
+rust::Vec<uint32_t> sweep_op_history_edge_modified(const SweepOpHistory& history) {
+    return to_rust_vec(history.edge_modified);
+}
+
+rust::Vec<uint32_t> sweep_op_history_edge_generated(const SweepOpHistory& history) {
+    return to_rust_vec(history.edge_generated);
+}
+
+rust::Vec<uint32_t> sweep_op_history_edge_deleted(const SweepOpHistory& history) {
+    return to_rust_vec(history.edge_deleted);
+}
+
+rust::Vec<uint32_t> sweep_op_history_start_cap_face_indices(const SweepOpHistory& history) {
+    return to_rust_vec(history.start_cap_face_indices);
+}
+
+rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& history) {
+    return to_rust_vec(history.end_cap_face_indices);
+}
+
 bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
     return wrap_occt_call("shapes_intersect", [&]() {
         // Use BRepExtrema_DistShapeShape (same algorithm as min_clearance / query_distance)

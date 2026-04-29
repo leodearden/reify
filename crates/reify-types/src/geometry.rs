@@ -549,11 +549,59 @@ impl fmt::Display for BooleanOpParentsError {
 
 impl std::error::Error for BooleanOpParentsError {}
 
+/// Per-op attribute-history record returned by
+/// [`GeometryKernel::execute_with_history`].
+///
+/// Each variant carries the kernel-specific records needed by the
+/// `reify_eval` propagation helpers to seed `TopologyAttributeTable`
+/// entries for the result handles. `None` is the default for kernels
+/// that do not override `execute_with_history` and for ops that do not
+/// produce per-op attribute history (primitives, transforms, etc.).
+///
+/// Open for extension — task 5b adds `Sweep`/`Loft`, tasks 6-8 add
+/// primitive/local/boolean variants. Consumers must pattern-match
+/// exhaustively (no `Other(_)` escape hatch) so the dispatch site
+/// surfaces missing variants at compile time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeHistory {
+    /// No history available (default-impl path; non-attributable op).
+    None,
+    /// Records produced by `BRepPrimAPI_MakePrism` for `GeometryOp::Extrude`.
+    Extrude(SweepOpHistoryRecords),
+    /// Records produced by `BRepPrimAPI_MakeRevol` for `GeometryOp::Revolve`.
+    Revolve(SweepOpHistoryRecords),
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
     /// Execute a geometry operation, returning a handle to the result.
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError>;
+
+    /// Execute a geometry operation, returning the result handle paired with
+    /// any per-op attribute-history records the kernel produces.
+    ///
+    /// The default implementation forwards to `execute(op)` and returns
+    /// `AttributeHistory::None`, so non-overriding kernels (mocks,
+    /// non-OCCT backends) compile and behave identically to today's
+    /// `execute`-only path. Overriding kernels (e.g. `OcctKernelHandle`,
+    /// task 5a) return `AttributeHistory::Extrude` /
+    /// `AttributeHistory::Revolve` for ops where they have history records;
+    /// the engine's dispatch site (`Engine::execute_realization_ops`)
+    /// matches on the returned variant to seed `TopologyAttributeTable`
+    /// entries.
+    ///
+    /// This is intentionally additive (rather than replacing `execute`) so
+    /// the existing `execute(&op)` call sites can continue to use it
+    /// without acquiring an unwanted `AttributeHistory` they would
+    /// immediately discard.
+    fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        let handle = self.execute(op)?;
+        Ok((handle, AttributeHistory::None))
+    }
 
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
@@ -789,10 +837,22 @@ impl From<&crate::identity::RealizationNodeId> for FeatureId {
 }
 
 /// Cap orientation for the `Role::Cap` variant.
+///
+/// Two semantic flavours of cap exist:
+///   - `Top` / `Bottom`: gravitational orientation, used by extrude
+///     (where `Top` is the swept-end face / `LastShape()` and `Bottom`
+///     is the profile-as-placed / `FirstShape()`).
+///   - `Start` / `End`: parametric sequence along a sweep parameter,
+///     used by revolve (where `Start` is the profile at angle 0 /
+///     `FirstShape()` and `End` is the profile at the angle endpoint /
+///     `LastShape()`). For full-2π revolutions both caps collapse and
+///     no `Cap` entries are emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapKind {
     Top,
     Bottom,
+    Start,
+    End,
 }
 
 /// One entry in a topology entity's mod-history postfix.
@@ -816,15 +876,35 @@ pub struct ModEntry {
 /// local features, booleans) will add per-op variants here as a closed
 /// extension — there is intentionally no `Other(String)` escape hatch so
 /// that selector-resolution exhaustive matching remains auditable.
+///
+/// Per-op vocabulary:
+///   - **Extrude** (`GeometryOp::Extrude`): `Cap(Top)` / `Cap(Bottom)` for
+///     end faces, `Side` for lateral faces, `NewEdge` for cap-to-side edges.
+///   - **Revolve** (`GeometryOp::Revolve`): `Cap(Start)` / `Cap(End)` for
+///     profile faces of partial revolutions (omitted for full-2π),
+///     `RevolvedFace` for lateral revolved faces, `AxisFace` reserved for
+///     faces that touch the revolve axis (declared but not yet detected
+///     by `populate_revolve_attributes`; see task 5a design decisions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
-    /// A cap face (`top` / `bottom`) of the feature, e.g. extrude end caps.
+    /// A cap face (`top`/`bottom` for extrude, `start`/`end` for revolve)
+    /// of the feature.
     Cap(CapKind),
-    /// A side (lateral) face of the feature.
+    /// A lateral side face of the feature (extrude convention).
     Side,
     /// An edge created by the feature's construction (e.g. cap-to-side
     /// boundary edges of an extrude).
     NewEdge,
+    /// A revolved lateral face — a face generated by sweeping a profile
+    /// edge around the revolve axis (revolve convention; distinct from
+    /// `Side` so selectors can match per-op).
+    RevolvedFace,
+    /// A face that touches the revolve axis (e.g. zero-area axis-coincident
+    /// face, or a face whose surface contains the axis). Reserved for
+    /// detection in a follow-up task; not currently emitted by
+    /// `populate_revolve_attributes` but declared here so the variant
+    /// space is stable for selector vocabulary v2 (PRD line 102).
+    AxisFace,
 }
 
 /// Per-topology-entity attribute record for v0.2 persistent naming.
@@ -947,6 +1027,53 @@ pub struct BooleanOpHistoryRecords {
     pub edge_modified: Vec<HistoryRecord>,
     pub edge_generated: Vec<HistoryRecord>,
     pub edge_deleted: Vec<DeletedRecord>,
+}
+
+/// All Modified / Generated / Deleted history records for a single
+/// **single-parent sweep operation** (extrude / revolve, currently;
+/// sweep / loft in task 5b).
+///
+/// Mirrors `BooleanOpHistoryRecords` but for ops with one parent profile
+/// instead of two operands; `parent_index` on the inner records is
+/// always `0` and is included only for layout-uniformity with the
+/// boolean variant. The two extra fields `start_cap_face_indices` and
+/// `end_cap_face_indices` capture the cap-face information that is
+/// **not** exposed via Modified/Generated maps but is available via
+/// `BRepBuilderAPI_Sweep::FirstShape()` and `LastShape()`.
+///
+/// Cap orientation conventions (per `populate_extrude_attributes` /
+/// `populate_revolve_attributes`):
+///   - For extrude: `start_cap_face_indices` → `Cap(Top)` (the
+///     swept-end face / `LastShape()`-derived; chosen so a positive-Z
+///     prism's "top" face matches gravitational orientation),
+///     `end_cap_face_indices` → `Cap(Bottom)`.
+///   - For revolve: `start_cap_face_indices` → `Cap(Start)` (profile at
+///     angle 0, FirstShape), `end_cap_face_indices` → `Cap(End)`
+///     (profile at the angle endpoint, LastShape). Both lists are empty
+///     for full-2π revolutions.
+///
+/// Returned by `OcctKernel::extrude_with_history` and
+/// `OcctKernel::revolve_with_history` (task 5a). Consumed by
+/// `reify_eval::populate_extrude_attributes` and
+/// `populate_revolve_attributes` to seed `TopologyAttributeTable`
+/// entries on the result handles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepOpHistoryRecords {
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+    /// Result-face indices (into the result shape's TopExp face map)
+    /// that correspond to the profile-as-placed cap (extrude bottom /
+    /// revolve start).
+    pub start_cap_face_indices: Vec<u32>,
+    /// Result-face indices (into the result shape's TopExp face map)
+    /// that correspond to the swept-end cap (extrude top / revolve
+    /// end). Empty for full-2π revolutions where the start and end
+    /// profile coincide and no cap face exists.
+    pub end_cap_face_indices: Vec<u32>,
 }
 
 /// Typed wrapper for the per-parent face/edge handle slices passed to
@@ -1756,6 +1883,418 @@ mod tests {
         assert_eq!(r, s);
         let copy = r.clone();
         assert_eq!(r, copy);
+    }
+
+    // --- task 5a (#2573): new Role + CapKind variants for revolve ---
+
+    #[test]
+    fn cap_kind_start_and_end_are_distinct() {
+        assert_ne!(CapKind::Start, CapKind::End);
+    }
+
+    #[test]
+    fn cap_kind_start_and_end_differ_from_top_and_bottom() {
+        // Per design decision: Top/Bottom is gravitational orientation
+        // (extrude convention); Start/End is parametric sequence (revolve
+        // angle convention). All four must be pairwise distinct.
+        assert_ne!(CapKind::Start, CapKind::Top);
+        assert_ne!(CapKind::Start, CapKind::Bottom);
+        assert_ne!(CapKind::End, CapKind::Top);
+        assert_ne!(CapKind::End, CapKind::Bottom);
+    }
+
+    #[test]
+    fn cap_kind_start_and_end_debug_format() {
+        let dbg_start = format!("{:?}", CapKind::Start);
+        let dbg_end = format!("{:?}", CapKind::End);
+        assert!(dbg_start.contains("Start"), "expected Start in {dbg_start}");
+        assert!(dbg_end.contains("End"), "expected End in {dbg_end}");
+    }
+
+    #[test]
+    fn cap_kind_start_and_end_clone_round_trips() {
+        let s = CapKind::Start;
+        let s_copy = s;
+        assert_eq!(s, s_copy);
+        let s_clone = s.clone();
+        assert_eq!(s, s_clone);
+
+        let e = CapKind::End;
+        let e_copy = e;
+        assert_eq!(e, e_copy);
+        let e_clone = e.clone();
+        assert_eq!(e, e_clone);
+    }
+
+    #[test]
+    fn role_revolved_face_and_axis_face_are_distinct() {
+        assert_ne!(Role::RevolvedFace, Role::AxisFace);
+    }
+
+    #[test]
+    fn role_revolved_face_differs_from_side_and_caps() {
+        // RevolvedFace is the per-op distinguisher for revolve lateral faces;
+        // it must not collide with Side (extrude lateral) or any Cap variant.
+        assert_ne!(Role::RevolvedFace, Role::Side);
+        assert_ne!(Role::RevolvedFace, Role::NewEdge);
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::Top));
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::Bottom));
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::Start));
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::End));
+    }
+
+    #[test]
+    fn role_axis_face_differs_from_side_and_caps() {
+        // AxisFace is reserved for axis-touching faces (revolve only); it
+        // must be distinct from every other variant including RevolvedFace.
+        assert_ne!(Role::AxisFace, Role::Side);
+        assert_ne!(Role::AxisFace, Role::NewEdge);
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::Top));
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::Bottom));
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::Start));
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::End));
+    }
+
+    #[test]
+    fn role_cap_start_and_cap_end_distinct_from_existing_caps() {
+        assert_ne!(Role::Cap(CapKind::Start), Role::Cap(CapKind::End));
+        assert_ne!(Role::Cap(CapKind::Start), Role::Cap(CapKind::Top));
+        assert_ne!(Role::Cap(CapKind::End), Role::Cap(CapKind::Bottom));
+    }
+
+    #[test]
+    fn role_revolved_face_and_axis_face_debug_format() {
+        let dbg_rf = format!("{:?}", Role::RevolvedFace);
+        let dbg_af = format!("{:?}", Role::AxisFace);
+        assert!(
+            dbg_rf.contains("RevolvedFace"),
+            "expected RevolvedFace in {dbg_rf}"
+        );
+        assert!(dbg_af.contains("AxisFace"), "expected AxisFace in {dbg_af}");
+    }
+
+    #[test]
+    fn role_revolved_face_and_axis_face_clone_round_trips() {
+        let r = Role::RevolvedFace;
+        let r_copy = r;
+        assert_eq!(r, r_copy);
+        let r_clone = r.clone();
+        assert_eq!(r, r_clone);
+
+        let a = Role::AxisFace;
+        let a_copy = a;
+        assert_eq!(a, a_copy);
+        let a_clone = a.clone();
+        assert_eq!(a, a_clone);
+    }
+
+    // --- task 5a (#2573): SweepOpHistoryRecords (single-parent sweep ops) ---
+
+    #[test]
+    fn sweep_op_history_records_default_is_empty() {
+        let records = SweepOpHistoryRecords::default();
+        assert!(records.face_modified.is_empty());
+        assert!(records.face_generated.is_empty());
+        assert!(records.face_deleted.is_empty());
+        assert!(records.edge_modified.is_empty());
+        assert!(records.edge_generated.is_empty());
+        assert!(records.edge_deleted.is_empty());
+        assert!(records.start_cap_face_indices.is_empty());
+        assert!(records.end_cap_face_indices.is_empty());
+    }
+
+    #[test]
+    fn sweep_op_history_records_construct_with_all_vec_fields() {
+        // Smoke-test that every field is a populated `Vec<...>` of the expected
+        // record type. Mirrors the BooleanOpHistoryRecords field shape but with
+        // explicit cap-index lists for caps (Modified/Generated alone do not
+        // identify which faces are caps; the cap lists come from
+        // BRepBuilderAPI_Sweep::FirstShape()/LastShape()).
+        let records = SweepOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 1,
+                result_subshape_index: 2,
+            }],
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 7,
+            }],
+            face_deleted: vec![DeletedRecord {
+                parent_index: 0,
+                parent_subshape_index: 9,
+            }],
+            edge_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 3,
+                result_subshape_index: 4,
+            }],
+            edge_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 5,
+                result_subshape_index: 6,
+            }],
+            edge_deleted: vec![DeletedRecord {
+                parent_index: 0,
+                parent_subshape_index: 8,
+            }],
+            start_cap_face_indices: vec![5, 6],
+            end_cap_face_indices: vec![7],
+        };
+        assert_eq!(records.face_modified.len(), 1);
+        assert_eq!(records.face_generated.len(), 1);
+        assert_eq!(records.face_deleted.len(), 1);
+        assert_eq!(records.edge_modified.len(), 1);
+        assert_eq!(records.edge_generated.len(), 1);
+        assert_eq!(records.edge_deleted.len(), 1);
+        assert_eq!(records.start_cap_face_indices, vec![5_u32, 6]);
+        assert_eq!(records.end_cap_face_indices, vec![7_u32]);
+    }
+
+    #[test]
+    fn sweep_op_history_records_clone_preserves_value() {
+        let records = SweepOpHistoryRecords {
+            face_modified: Vec::new(),
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 7,
+            }],
+            face_deleted: Vec::new(),
+            edge_modified: Vec::new(),
+            edge_generated: Vec::new(),
+            edge_deleted: Vec::new(),
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+        };
+        let cloned = records.clone();
+        assert_eq!(records, cloned);
+        assert_eq!(cloned.start_cap_face_indices, vec![5_u32]);
+        assert_eq!(cloned.end_cap_face_indices, vec![6_u32]);
+    }
+
+    #[test]
+    fn sweep_op_history_records_full_revolution_has_empty_cap_lists() {
+        // For a full-2π revolve, FirstShape() and LastShape() reference the
+        // same closed surface; the FFI layer leaves both cap lists empty in
+        // that case. The record type allows expressing this directly.
+        let records = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 0,
+            }],
+            ..SweepOpHistoryRecords::default()
+        };
+        assert!(records.start_cap_face_indices.is_empty());
+        assert!(records.end_cap_face_indices.is_empty());
+        assert_eq!(records.face_generated.len(), 1);
+    }
+
+    // --- task 5a (#2573): AttributeHistory enum + execute_with_history default ---
+
+    #[test]
+    fn attribute_history_variants_construct_and_match() {
+        // None — used by non-OCCT kernels and non-attributable ops.
+        let none = AttributeHistory::None;
+        match &none {
+            AttributeHistory::None => {}
+            _ => panic!("expected AttributeHistory::None"),
+        }
+
+        // Extrude — wraps SweepOpHistoryRecords.
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..SweepOpHistoryRecords::default()
+        });
+        match &extrude {
+            AttributeHistory::Extrude(records) => {
+                assert_eq!(records.start_cap_face_indices, vec![5_u32]);
+                assert_eq!(records.end_cap_face_indices, vec![6_u32]);
+            }
+            _ => panic!("expected AttributeHistory::Extrude"),
+        }
+
+        // Revolve — same shape as Extrude but a distinct variant so the
+        // dispatch site can route per-op.
+        let revolve = AttributeHistory::Revolve(SweepOpHistoryRecords::default());
+        match &revolve {
+            AttributeHistory::Revolve(records) => {
+                assert!(records.start_cap_face_indices.is_empty());
+                assert!(records.end_cap_face_indices.is_empty());
+            }
+            _ => panic!("expected AttributeHistory::Revolve"),
+        }
+    }
+
+    #[test]
+    fn attribute_history_variants_are_distinct_via_partial_eq() {
+        let none = AttributeHistory::None;
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords::default());
+        let revolve = AttributeHistory::Revolve(SweepOpHistoryRecords::default());
+
+        assert_ne!(none, extrude);
+        assert_ne!(none, revolve);
+        // Same SweepOpHistoryRecords payload, different enum tag → !=.
+        assert_ne!(extrude, revolve);
+    }
+
+    #[test]
+    fn attribute_history_clone_round_trips() {
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords {
+            start_cap_face_indices: vec![1, 2],
+            end_cap_face_indices: vec![3],
+            ..SweepOpHistoryRecords::default()
+        });
+        let cloned = extrude.clone();
+        assert_eq!(extrude, cloned);
+    }
+
+    #[test]
+    fn attribute_history_debug_includes_variant_name() {
+        let dbg = format!("{:?}", AttributeHistory::None);
+        assert!(dbg.contains("None"), "expected None in {dbg}");
+        let dbg = format!(
+            "{:?}",
+            AttributeHistory::Extrude(SweepOpHistoryRecords::default())
+        );
+        assert!(dbg.contains("Extrude"), "expected Extrude in {dbg}");
+        let dbg = format!(
+            "{:?}",
+            AttributeHistory::Revolve(SweepOpHistoryRecords::default())
+        );
+        assert!(dbg.contains("Revolve"), "expected Revolve in {dbg}");
+    }
+
+    #[test]
+    fn geometry_kernel_execute_with_history_default_returns_none_history() {
+        // Verify that the default `execute_with_history` impl on `GeometryKernel`
+        // forwards to `execute(op)?` and pairs the resulting handle with
+        // `AttributeHistory::None`. Non-OCCT/non-overriding kernels and
+        // non-attributable ops must route through this default unchanged.
+        struct ExecuteOnlyKernel {
+            next_id: u64,
+        }
+
+        impl GeometryKernel for ExecuteOnlyKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                let id = self.next_id;
+                self.next_id += 1;
+                Ok(GeometryHandle {
+                    id: GeometryHandleId(id),
+                    repr: ReprKind::Solid,
+                })
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                unimplemented!("ExecuteOnlyKernel only supports execute")
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!()
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!()
+            }
+        }
+
+        let mut kernel = ExecuteOnlyKernel { next_id: 1 };
+
+        // Non-attributable op — expect None.
+        let op = GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        };
+        let (handle, history) = kernel
+            .execute_with_history(&op)
+            .expect("execute_with_history default must succeed when execute does");
+        assert_eq!(handle.id, GeometryHandleId(1));
+        assert_eq!(history, AttributeHistory::None);
+
+        // Attributable op (Extrude) — default impl still returns None because
+        // the kernel does not override execute_with_history. Overriding kernels
+        // (OcctKernelHandle, step-8/10) supply the Extrude/Revolve variant.
+        let op = GeometryOp::Extrude {
+            profile: GeometryHandleId(99),
+            distance: Value::Real(5.0),
+        };
+        let (handle, history) = kernel
+            .execute_with_history(&op)
+            .expect("default impl must succeed for any GeometryOp execute supports");
+        assert_eq!(handle.id, GeometryHandleId(2));
+        assert_eq!(history, AttributeHistory::None);
+
+        // Same for Revolve.
+        let op = GeometryOp::Revolve {
+            profile: GeometryHandleId(99),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::PI,
+        };
+        let (handle, history) = kernel.execute_with_history(&op).unwrap();
+        assert_eq!(handle.id, GeometryHandleId(3));
+        assert_eq!(history, AttributeHistory::None);
+    }
+
+    #[test]
+    fn geometry_kernel_execute_with_history_default_propagates_execute_error() {
+        struct AlwaysFailKernel;
+
+        impl GeometryKernel for AlwaysFailKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("simulated".into()))
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                unimplemented!()
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!()
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!()
+            }
+        }
+
+        let mut kernel = AlwaysFailKernel;
+        let op = GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        };
+        let err = kernel
+            .execute_with_history(&op)
+            .expect_err("execute_with_history must propagate execute errors");
+        match err {
+            GeometryError::OperationFailed(msg) => assert!(msg.contains("simulated")),
+            other => panic!("expected OperationFailed, got {:?}", other),
+        }
     }
 
     #[test]

@@ -75,6 +75,14 @@ pub mod ffi {
         /// the maps are gone too.
         type BooleanOpHistory;
 
+        /// Opaque container holding the BRepPrimAPI sweep history records
+        /// (Modified/Generated/Deleted for faces and edges) plus
+        /// FirstShape/LastShape cap-face indices, plus the swept result
+        /// shape. Single-parent variant of `BooleanOpHistory`. Records are
+        /// materialized eagerly at construction time for the same lifetime
+        /// reason as `BooleanOpHistory`.
+        type SweepOpHistory;
+
         // --- OcctShapeVec builder + reader ---
         fn new_shape_vec() -> UniquePtr<OcctShapeVec>;
         fn shape_vec_push(vec: Pin<&mut OcctShapeVec>, shape: &OcctShape);
@@ -122,6 +130,65 @@ pub mod ffi {
         fn boolean_op_history_edge_generated(history: &BooleanOpHistory) -> Vec<u32>;
         /// Deleted records for parent edges (flat groups of 2).
         fn boolean_op_history_edge_deleted(history: &BooleanOpHistory) -> Vec<u32>;
+
+        // --- BRepPrimAPI sweep history (v0.2 persistent-naming-v2, task 2573) ---
+
+        /// Run `BRepPrimAPI_MakePrism` on `profile` along the direction
+        /// `(dx, dy, dz)`, eagerly capturing the per-parent face/edge
+        /// Modified/Generated/Deleted records and the FirstShape/LastShape
+        /// cap-face indices alongside the swept result shape.
+        fn make_prism_with_history(
+            profile: &OcctShape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+        ) -> Result<UniquePtr<SweepOpHistory>>;
+
+        /// Run `BRepPrimAPI_MakeRevol` on `profile` about the axis at
+        /// origin `(ox, oy, oz)` with direction `(ax, ay, az)` for
+        /// `angle_rad` radians, eagerly capturing the per-parent face/edge
+        /// Modified/Generated/Deleted records and (for partial revolutions)
+        /// the FirstShape/LastShape cap-face indices alongside the swept
+        /// result shape. Under full revolution (FirstShape == LastShape)
+        /// both cap-index lists are empty.
+        fn make_revolve_with_history(
+            profile: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            angle_rad: f64,
+        ) -> Result<UniquePtr<SweepOpHistory>>;
+
+        /// Move the result shape out of the sweep-history wrapper for
+        /// registration in the kernel's shape table. Subsequent
+        /// `_take_result_shape` calls return an empty pointer.
+        fn sweep_op_history_take_result_shape(
+            history: Pin<&mut SweepOpHistory>,
+        ) -> UniquePtr<OcctShape>;
+
+        /// Modified records for parent faces (flat groups of 3 u32:
+        /// `parent_index, parent_subshape_index, result_subshape_index`).
+        /// `parent_index` is always 0 for sweep ops (single parent profile).
+        fn sweep_op_history_face_modified(history: &SweepOpHistory) -> Vec<u32>;
+        /// Generated records for parent faces (flat groups of 3).
+        fn sweep_op_history_face_generated(history: &SweepOpHistory) -> Vec<u32>;
+        /// Deleted records for parent faces (flat groups of 2).
+        fn sweep_op_history_face_deleted(history: &SweepOpHistory) -> Vec<u32>;
+        /// Modified records for parent edges (flat groups of 3).
+        fn sweep_op_history_edge_modified(history: &SweepOpHistory) -> Vec<u32>;
+        /// Generated records for parent edges (flat groups of 3).
+        fn sweep_op_history_edge_generated(history: &SweepOpHistory) -> Vec<u32>;
+        /// Deleted records for parent edges (flat groups of 2).
+        fn sweep_op_history_edge_deleted(history: &SweepOpHistory) -> Vec<u32>;
+        /// 0-based result face_map indices of the FirstShape() (start) cap
+        /// faces — exactly one for a single-face profile, possibly more for
+        /// a compound profile, empty for a full-2π revolve.
+        fn sweep_op_history_start_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
+        /// 0-based result face_map indices of the LastShape() (end) cap faces.
+        fn sweep_op_history_end_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
 
         /// Probe whether `a` and `b` are intersecting (non-positive minimum distance)
         /// via BRepExtrema_DistShapeShape. Returns true iff dist.Value() <= 0.0.

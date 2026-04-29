@@ -26,8 +26,8 @@
 //! 5-8, which will add per-op variants of this helper.
 
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, GeometryHandleId, HistoryRecord, QueryError,
-    TopologyAttributeTable,
+    BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
+    QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -183,6 +183,266 @@ fn propagate_one(
     Ok(())
 }
 
+/// Originate topology attributes for a `BRepPrimAPI_MakePrism` (extrude)
+/// result, given the per-op history records returned by
+/// `OcctKernel::extrude_with_history`.
+///
+/// Inputs:
+/// - `table`: the table to update in place. Result-face entries are
+///   written for each cap-face index and each `face_generated` record.
+/// - `feature_id`: the FeatureId attached to every entry written. Caller
+///   constructs this from a `RealizationNodeId` via the existing
+///   `From<&RealizationNodeId> for FeatureId` impl.
+/// - `profile_face_handles` / `profile_edge_handles`: the profile shape's
+///   faces / edges in canonical TopExp order. These are passed in for
+///   defense-in-depth `parent_subshape_index` range validation; the
+///   helper does not currently *read* the profile table (extrude
+///   originates fresh attributes — propagation of pre-existing profile
+///   attributes through `Modified` records is task 5b's loft / 6's
+///   primitives concern, not 5a's).
+/// - `result_face_handles` / `result_edge_handles`: the result shape's
+///   faces / edges in canonical TopExp order. Indexed by
+///   `start_cap_face_indices`, `end_cap_face_indices`, and the
+///   `result_subshape_index` of `face_generated` records.
+/// - `history`: the `SweepOpHistoryRecords` produced by the FFI.
+///
+/// Cap orientation contract (see `SweepOpHistoryRecords` doc):
+///   `start_cap_face_indices` → `Role::Cap(CapKind::Top)`
+///   `end_cap_face_indices` → `Role::Cap(CapKind::Bottom)`
+///
+/// The "Top from start" convention follows from the `make_prism(profile,
+/// 0, 0, +dist)` call shape: the profile-as-placed (FirstShape) is the
+/// face the user authored at the chosen Z origin and the swept-end
+/// (LastShape) is at +dist. For a positive-Z extrude the `start_cap` is
+/// the higher-Z face (`Top`) and the `end_cap` is the lower-Z face
+/// (`Bottom`); see `SweepOpHistoryRecords` doc for cross-reference.
+///
+/// Local-index assignment:
+///   - Caps are unique within their `(feature_id, role)` pair, so
+///     each cap face gets `local_index = 0`.
+///   - Side faces (`face_generated`) are assigned sequential 0-based
+///     `local_index` in the order they appear in `history.face_generated`.
+///     Per task-5a design decision, this 0-based ordering follows the
+///     kernel's TopExp parent-edge enumeration (each parent edge sponsors
+///     one side face; the records arrive in parent-edge order), so the
+///     index is invariant across parameter edits that preserve profile
+///     shape (the test in `engine_build_extrude_with_mock_history_*`
+///     verifies this stability).
+///
+/// Edge attributes (e.g. `Role::NewEdge` for cap-to-side seam edges) are
+/// **not** written by this helper. Edge-level attribution is deferred to
+/// task 5b / 6 once the cap-edge / seam-edge classification rules are
+/// finalised; the variant exists in `Role` for the type-system but is
+/// not yet emitted by extrude population.
+///
+/// Returns `Err(QueryError::QueryFailed)` if any record references an
+/// out-of-bounds result-face index, or if any cap-face index is out of
+/// bounds in `result_face_handles`. The FFI primitive guarantees
+/// in-range indices, so this is a defense-in-depth path pinned by the
+/// step-11 unit tests.
+pub fn populate_extrude_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &SweepOpHistoryRecords,
+) -> Result<(), QueryError> {
+    // Caps: start → Top, end → Bottom; each cap is unique → local_index = 0.
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Top),
+        "extrude start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::Bottom),
+        "extrude end cap",
+    )?;
+
+    // Sides: each face_generated record → Role::Side with sequential
+    // local_index in the order the records appear (mirrors parent-edge
+    // TopExp ordering, stable across parameter edits).
+    write_face_generated_attributes(
+        table,
+        feature_id,
+        profile_face_handles,
+        profile_edge_handles,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+        Role::Side,
+        "extrude side",
+    )?;
+
+    Ok(())
+}
+
+/// Originate topology attributes for a `BRepPrimAPI_MakeRevol` (revolve)
+/// result, given the per-op history records returned by
+/// `OcctKernel::revolve_with_history`.
+///
+/// Mirrors [`populate_extrude_attributes`] but emits revolve-specific
+/// roles:
+///   - `start_cap_face_indices` → `Role::Cap(CapKind::Start)` (partial
+///     revolutions only; empty for full-2π).
+///   - `end_cap_face_indices` → `Role::Cap(CapKind::End)` (partial
+///     revolutions only; empty for full-2π).
+///   - `face_generated` → `Role::RevolvedFace` (NOT `Role::Side` — this
+///     is the per-op distinguisher between extrude lateral faces and
+///     revolve lateral faces, per task-5a design decisions).
+///
+/// `Role::AxisFace` is **not** emitted by this helper. The variant is
+/// declared in `Role` for type-system completeness — selectors built
+/// against the v0.2 vocabulary v2 (PRD line 102) need it stable — but
+/// detection of "this face touches the revolve axis" requires geometric
+/// analysis (face surface contains axis, or near-zero surface area)
+/// that is deferred to a follow-up task per task-5a's documented scope.
+///
+/// Local-index assignment, parameter semantics, and out-of-range error
+/// behaviour are identical to [`populate_extrude_attributes`]; see
+/// that helper's doc-comment for the parameter contract.
+pub fn populate_revolve_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &SweepOpHistoryRecords,
+) -> Result<(), QueryError> {
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Start),
+        "revolve start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::End),
+        "revolve end cap",
+    )?;
+
+    write_face_generated_attributes(
+        table,
+        feature_id,
+        profile_face_handles,
+        profile_edge_handles,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+        Role::RevolvedFace,
+        "revolve revolved face",
+    )?;
+
+    Ok(())
+}
+
+/// Shared helper: write `(feature_id, role, local_index = 0)` to each
+/// cap face index in `cap_indices`, validating that each index is in
+/// range for `result_face_handles`.
+fn write_cap_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    result_face_handles: &[GeometryHandleId],
+    cap_indices: &[u32],
+    role: Role,
+    kind: &str,
+) -> Result<(), QueryError> {
+    for &idx in cap_indices {
+        let idx_usize = idx as usize;
+        if idx_usize >= result_face_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "{kind} face index {idx} is out of range \
+                 for result face handles of len {}",
+                result_face_handles.len()
+            )));
+        }
+        let handle = result_face_handles[idx_usize];
+        table.record(
+            handle,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role,
+                local_index: 0,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Shared helper: write `(feature_id, role, local_index = sequential)`
+/// to each `face_generated` record's `result_subshape_index`, validating
+/// that each `parent_subshape_index` is in range for the profile slices
+/// (defense-in-depth) and each `result_subshape_index` is in range for
+/// `result_face_handles`. `local_index` increments per record in the
+/// order they appear in `face_generated`.
+#[allow(clippy::too_many_arguments)] // sweep helpers fan out parent + result slices for both faces and edges
+fn write_face_generated_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    _result_edge_handles: &[GeometryHandleId],
+    face_generated: &[HistoryRecord],
+    role: Role,
+    kind: &str,
+) -> Result<(), QueryError> {
+    let _ = profile_face_handles; // reserved for future face-level Modified checks
+    for (sequential_idx, record) in face_generated.iter().enumerate() {
+        // Defense-in-depth: parent_subshape_index in range over profile edges.
+        // The kernel emits each side face from a parent profile edge sweep,
+        // so parent_subshape_index points into the profile edge map.
+        let parent_subshape_idx = record.parent_subshape_index as usize;
+        if parent_subshape_idx >= profile_edge_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "{kind} face_generated record has parent_subshape_index {} \
+                 but profile has only {} edges",
+                parent_subshape_idx,
+                profile_edge_handles.len()
+            )));
+        }
+
+        let result_subshape_idx = record.result_subshape_index as usize;
+        if result_subshape_idx >= result_face_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "{kind} face_generated record has result_subshape_index {} \
+                 but result has only {} faces",
+                result_subshape_idx,
+                result_face_handles.len()
+            )));
+        }
+
+        let handle = result_face_handles[result_subshape_idx];
+        table.record(
+            handle,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role,
+                local_index: sequential_idx as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests focused on the `Err(QueryError::QueryFailed(...))`
@@ -196,11 +456,14 @@ mod tests {
     //! kernel — we hand-build a malformed `BooleanOpHistoryRecords` and
     //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
-        BooleanOpHistoryRecords, BooleanOpParents, GeometryHandleId, HistoryRecord, QueryError,
-        TopologyAttributeTable,
+        BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
+        HistoryRecord, QueryError, Role, SweepOpHistoryRecords, TopologyAttributeTable,
     };
 
-    use super::propagate_attributes_via_brepalgoapi_history;
+    use super::{
+        populate_extrude_attributes, populate_revolve_attributes,
+        propagate_attributes_via_brepalgoapi_history,
+    };
 
     /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
     /// `face_modified` entry and every other vector empty.
@@ -433,5 +696,525 @@ mod tests {
         )
         .expect("empty history with Binary parents should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
+    }
+
+    // -- populate_extrude_attributes tests (task 5a, step-11) --
+    //
+    // The helper originates new attributes for an extrude result: cap faces
+    // get `Role::Cap(CapKind::Top|Bottom)` with local_index 0; lateral faces
+    // get `Role::Side` with sequential 0-based local_index in face_generated
+    // order. Profile face/edge slices are passed in for defense-in-depth
+    // index-range validation.
+
+    /// Profile + result handle vectors for a 1-parent extrude layout.
+    /// Owned so the test fn can borrow slices without temporary-lifetime
+    /// issues.
+    struct ExtrudeLayout {
+        profile_faces: Vec<GeometryHandleId>,
+        profile_edges: Vec<GeometryHandleId>,
+        result_faces: Vec<GeometryHandleId>,
+        result_edges: Vec<GeometryHandleId>,
+    }
+
+    /// Layout for a rect-face extrude: 1 profile face, 4 profile edges,
+    /// 9 result faces (indices 0..=8 → 5 = start cap, 6 = end cap, 7/8
+    /// = side faces), 12 result edges.
+    fn extrude_layout_for_step11() -> ExtrudeLayout {
+        ExtrudeLayout {
+            profile_faces: vec![GeometryHandleId(101)],
+            profile_edges: vec![
+                GeometryHandleId(201),
+                GeometryHandleId(202),
+                GeometryHandleId(203),
+                GeometryHandleId(204),
+            ],
+            result_faces: (0..9).map(|i| GeometryHandleId(1000 + i)).collect(),
+            result_edges: (0..12).map(|i| GeometryHandleId(2000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic SweepOpHistoryRecords matching the step-11 spec:
+    /// start_cap = [5], end_cap = [6], face_generated = [(0,0,7), (0,1,8)],
+    /// every other vector empty.
+    fn step11_extrude_history() -> SweepOpHistoryRecords {
+        SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 8,
+                },
+            ],
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_extrude_writes_cap_top_for_start_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[5])
+            .expect("start_cap_face_indices[0] = 5 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Top));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_extrude_writes_cap_bottom_for_end_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[6])
+            .expect("end_cap_face_indices[0] = 6 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Bottom));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_extrude_writes_side_with_sequential_local_index_for_face_generated() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        let side_a = table
+            .lookup(layout.result_faces[7])
+            .expect("face_generated[0].result_subshape_index = 7 should have an entry");
+        assert_eq!(side_a.role, Role::Side);
+        assert_eq!(side_a.local_index, 0);
+        assert_eq!(side_a.feature_id, feature_id);
+        assert!(side_a.mod_history.is_empty());
+        assert!(side_a.user_label.is_none());
+
+        let side_b = table
+            .lookup(layout.result_faces[8])
+            .expect("face_generated[1].result_subshape_index = 8 should have an entry");
+        assert_eq!(side_b.role, Role::Side);
+        assert_eq!(side_b.local_index, 1);
+        assert_eq!(side_b.feature_id, feature_id);
+        assert!(side_b.mod_history.is_empty());
+        assert!(side_b.user_label.is_none());
+    }
+
+    #[test]
+    fn populate_extrude_does_not_write_to_result_face_indices_not_in_records() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        // Only indices 5, 6, 7, 8 are referenced; 0..=4 must remain unkeyed.
+        for unkeyed_idx in [0_usize, 1, 2, 3, 4] {
+            assert!(
+                table.lookup(layout.result_faces[unkeyed_idx]).is_none(),
+                "result face index {unkeyed_idx} should have no attribute entry",
+            );
+        }
+        assert_eq!(
+            table.len(),
+            4,
+            "only the 2 cap faces and 2 side faces should be keyed",
+        );
+    }
+
+    #[test]
+    fn populate_extrude_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![99], // result has only 9 faces.
+            ..Default::default()
+        };
+
+        let err = populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("99"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_extrude_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 42, // > result faces (9).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("42"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_extrude_empty_history_is_a_noop() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = SweepOpHistoryRecords::default();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("empty history is a no-op");
+        assert!(table.is_empty());
+    }
+
+    // -- populate_revolve_attributes tests (task 5a, step-13) --
+    //
+    // Mirrors the extrude helper but with revolve-specific role
+    // assignments: `start_cap_face_indices` → `Cap(Start)`,
+    // `end_cap_face_indices` → `Cap(End)`, `face_generated` →
+    // `RevolvedFace` (NOT `Side`). Empty cap lists encode full-2π
+    // revolutions (no cap faces).
+
+    /// Layout for a half-rect-face revolve: 1 profile face, 4 profile
+    /// edges (axis-side + far-side + 2 perpendiculars), 8 result faces
+    /// (indices 0..=7), 16 result edges. Sized to fit step-13's
+    /// (a) PARTIAL fixture (start=2, end=3, face_generated=4..=7).
+    fn revolve_layout_for_step13() -> ExtrudeLayout {
+        ExtrudeLayout {
+            profile_faces: vec![GeometryHandleId(301)],
+            profile_edges: vec![
+                GeometryHandleId(401),
+                GeometryHandleId(402),
+                GeometryHandleId(403),
+                GeometryHandleId(404),
+            ],
+            result_faces: (0..8).map(|i| GeometryHandleId(3000 + i)).collect(),
+            result_edges: (0..16).map(|i| GeometryHandleId(4000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic SweepOpHistoryRecords matching the step-13 (a) PARTIAL
+    /// fixture: start_cap = [2], end_cap = [3], face_generated =
+    /// [(0,0,4), (0,1,5), (0,2,6), (0,3,7)].
+    fn step13_partial_revolve_history() -> SweepOpHistoryRecords {
+        SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 4,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 5,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 2,
+                    result_subshape_index: 6,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 3,
+                    result_subshape_index: 7,
+                },
+            ],
+            start_cap_face_indices: vec![2],
+            end_cap_face_indices: vec![3],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_partial_revolve_writes_cap_start_and_cap_end_for_cap_indices() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = step13_partial_revolve_history();
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-13 partial-revolve history is well-formed");
+
+        let start_cap = table
+            .lookup(layout.result_faces[2])
+            .expect("start_cap_face_indices[0] = 2 should have an entry");
+        assert_eq!(start_cap.role, Role::Cap(CapKind::Start));
+        assert_eq!(start_cap.local_index, 0);
+        assert_eq!(start_cap.feature_id, feature_id);
+        assert!(start_cap.user_label.is_none());
+        assert!(start_cap.mod_history.is_empty());
+
+        let end_cap = table
+            .lookup(layout.result_faces[3])
+            .expect("end_cap_face_indices[0] = 3 should have an entry");
+        assert_eq!(end_cap.role, Role::Cap(CapKind::End));
+        assert_eq!(end_cap.local_index, 0);
+        assert_eq!(end_cap.feature_id, feature_id);
+        assert!(end_cap.user_label.is_none());
+        assert!(end_cap.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_partial_revolve_writes_revolved_face_with_sequential_local_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = step13_partial_revolve_history();
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-13 partial-revolve history is well-formed");
+
+        for (sequential_idx, result_face_idx) in [4_usize, 5, 6, 7].iter().enumerate() {
+            let attr = table
+                .lookup(layout.result_faces[*result_face_idx])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "face_generated[{sequential_idx}].result_subshape_index = \
+                         {result_face_idx} should have an entry"
+                    )
+                });
+            assert_eq!(
+                attr.role,
+                Role::RevolvedFace,
+                "revolve face_generated must use Role::RevolvedFace not Role::Side",
+            );
+            assert_eq!(attr.local_index, sequential_idx as u32);
+            assert_eq!(attr.feature_id, feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+        }
+    }
+
+    #[test]
+    fn populate_full_revolve_writes_only_revolved_face_no_caps() {
+        // FULL-2π revolve fixture: empty cap lists, face_generated only.
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 0,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 1,
+                },
+            ],
+            start_cap_face_indices: vec![],
+            end_cap_face_indices: vec![],
+            ..Default::default()
+        };
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-13 full-revolve history is well-formed");
+
+        assert_eq!(
+            table.len(),
+            2,
+            "full-2π revolve has no caps; only the 2 revolved faces are keyed",
+        );
+
+        for (sequential_idx, result_face_idx) in [0_usize, 1].iter().enumerate() {
+            let attr = table
+                .lookup(layout.result_faces[*result_face_idx])
+                .expect("expected revolved face entry");
+            assert_eq!(attr.role, Role::RevolvedFace);
+            assert_eq!(attr.local_index, sequential_idx as u32);
+        }
+    }
+
+    #[test]
+    fn populate_revolve_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![123], // result has only 8 faces.
+            ..Default::default()
+        };
+
+        let err = populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("123"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_revolve_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 256, // > result faces (8).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("256"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
     }
 }

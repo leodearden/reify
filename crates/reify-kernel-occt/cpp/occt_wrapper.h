@@ -157,6 +157,106 @@ rust::Vec<uint32_t> boolean_op_history_edge_modified(const BooleanOpHistory& his
 rust::Vec<uint32_t> boolean_op_history_edge_generated(const BooleanOpHistory& history);
 rust::Vec<uint32_t> boolean_op_history_edge_deleted(const BooleanOpHistory& history);
 
+// --- BRepPrimAPI sweep history (v0.2 persistent-naming-v2, task 2573) ---
+
+/// Records the per-parent face/edge correspondence emitted by a single-parent
+/// sweep operation (BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol). Mirrors
+/// `BooleanOpHistory` but adds `start_cap_face_indices` / `end_cap_face_indices`
+/// — the FirstShape() / LastShape() result-face indices that aren't part of
+/// the standard Modified/Generated maps.
+///
+/// The `parent_index` field in each record (Modified/Generated/Deleted) is
+/// always `0` because sweep operations have a single parent profile; this
+/// field is preserved for cross-record uniformity with `BooleanOpHistory`.
+///
+/// As with `BooleanOpHistory`, we materialize records EAGERLY at construction
+/// time because the algorithm's tracking maps are tied to its lifetime —
+/// once it goes out of scope the maps are gone.
+///
+/// `result` owns the swept shape; `sweep_op_history_take_result_shape`
+/// hands it off to the kernel via `std::move`.
+struct SweepOpHistory {
+    std::unique_ptr<OcctShape> result;
+    std::vector<uint32_t> face_modified;
+    std::vector<uint32_t> face_generated;
+    std::vector<uint32_t> face_deleted;
+    std::vector<uint32_t> edge_modified;
+    std::vector<uint32_t> edge_generated;
+    std::vector<uint32_t> edge_deleted;
+    /// 0-based result `face_map` indices of the FirstShape() cap (start of
+    /// sweep). For prism this is the profile-as-placed; for partial revolve
+    /// this is the profile in its starting orientation. Empty for full-2π
+    /// revolutions where FirstShape == LastShape.
+    std::vector<uint32_t> start_cap_face_indices;
+    /// 0-based result `face_map` indices of the LastShape() cap (end of
+    /// sweep). For prism this is the swept-end face; for partial revolve
+    /// this is the profile rotated by `angle_rad`. Empty for full-2π revolutions.
+    std::vector<uint32_t> end_cap_face_indices;
+};
+
+/// Run `BRepPrimAPI_MakePrism` on `profile` along the direction vector
+/// `(dx, dy, dz)` (must be non-zero), materializing the result shape AND the
+/// Modified/Generated/Deleted records for the profile's face/edge sub-shapes
+/// into a single `SweepOpHistory`. Also populates the cap-face index lists
+/// from `FirstShape()` / `LastShape()` lookups in the result face_map.
+///
+/// Profile sub-shapes are walked in canonical TopExp `face_map()` /
+/// `edge_map()` order (1-based, deduplicated by `IsSame`); per-record
+/// indices are 0-based at the FFI boundary. Result-side indices come from
+/// the result shape's cached `face_map()` / `edge_map()`. Empty result-side
+/// lookups (a child reported by the algorithm but not appearing in the
+/// result `face_map`/`edge_map`) are silently skipped.
+std::unique_ptr<SweepOpHistory> make_prism_with_history(
+    const OcctShape& profile, double dx, double dy, double dz);
+
+/// Run `BRepPrimAPI_MakeRevol` on `profile` about the axis with origin
+/// `(ox, oy, oz)` and direction `(ax, ay, az)` for `angle_rad` radians,
+/// materializing the result shape AND the Modified/Generated/Deleted
+/// records for the profile's face/edge sub-shapes into a single
+/// `SweepOpHistory`. Also populates the cap-face index lists from
+/// `FirstShape()` / `LastShape()` lookups in the result face_map.
+///
+/// Cap behavior: under PARTIAL revolution (angle_rad mod 2π ∈ (0, 2π))
+/// `FirstShape()` and `LastShape()` reference distinct cap faces and
+/// both lists are populated. Under FULL revolution (angle_rad's modulo-2π
+/// residual is below `CPP_FULL_REVOLVE_TOL`) `FirstShape()` and
+/// `LastShape()` reference the same closed surface; both cap lists
+/// remain empty so consumers can encode the no-caps case naturally.
+///
+/// Honors the same Shell→Solid + `BRepLib::OrientClosedSolid`
+/// post-processing as `make_revolve` (the result shape may be a Solid
+/// constructed from the algorithm's Shell output).
+///
+/// Profile sub-shapes are walked in canonical TopExp order (1-based,
+/// deduplicated by `IsSame`); per-record indices are 0-based at the
+/// FFI boundary. Result-side indices come from the result shape's
+/// cached `face_map()` / `edge_map()`.
+std::unique_ptr<SweepOpHistory> make_revolve_with_history(
+    const OcctShape& profile,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    double angle_rad);
+
+/// Move the result shape out of the history wrapper. Returns the freshly
+/// constructed `OcctShape` for the kernel to register; subsequent calls
+/// observe an empty `unique_ptr`.
+std::unique_ptr<OcctShape> sweep_op_history_take_result_shape(SweepOpHistory& history);
+
+/// Eight accessors returning the flat record buffers as `rust::Vec<uint32_t>`
+/// (deep-copied at the FFI boundary). Modified/Generated buffers hold flat
+/// groups of 3 `uint32_t`s `(parent_index, parent_subshape_index,
+/// result_subshape_index)`; Deleted buffers hold groups of 2
+/// `(parent_index, parent_subshape_index)`. Cap-face buffers hold flat
+/// `uint32_t` indices into the result `face_map` (no grouping).
+rust::Vec<uint32_t> sweep_op_history_face_modified(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_face_generated(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_face_deleted(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_edge_modified(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_edge_generated(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_edge_deleted(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_start_cap_face_indices(const SweepOpHistory& history);
+rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& history);
+
 /// Probe whether `a` and `b` are intersecting (non-positive minimum distance).
 ///
 /// Uses BRepExtrema_DistShapeShape: returns true iff dist.Value() <= 0.0.

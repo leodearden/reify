@@ -183,7 +183,10 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // without taking a normal-dep on `reify-kernel-occt`. Re-exported here for
 // callers that already import from this crate; new call sites should prefer
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
-pub use reify_types::{BooleanOpHistoryRecords, DeletedRecord, HistoryRecord};
+pub use reify_types::{
+    AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord,
+    SweepOpHistoryRecords,
+};
 
 #[cfg(has_occt)]
 /// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,
@@ -480,6 +483,206 @@ impl OcctKernel {
                 edge_modified,
                 edge_generated,
                 edge_deleted,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
+    }
+
+    /// Extrude `profile` along the +Z direction by `distance` metres via
+    /// `BRepPrimAPI_MakePrism`, returning the swept-result handle alongside
+    /// the per-parent face/edge Modified/Generated/Deleted history records
+    /// AND the FirstShape/LastShape cap-face indices.
+    ///
+    /// Mirrors the call convention of the `GeometryOp::Extrude` arm of
+    /// [`OcctKernel::execute`]: profile is extruded along `(0, 0, distance)`,
+    /// validated to be finite and non-zero. Result handle is registered
+    /// with `ReprKind::Solid`.
+    ///
+    /// `parent_index` in every record is `0` (single parent profile).
+    /// `start_cap_face_indices` carries the FirstShape() face index (the
+    /// profile-as-placed); `end_cap_face_indices` carries the LastShape()
+    /// face index (the swept-end face).
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-8).
+    pub fn extrude_with_history(
+        &mut self,
+        profile_id: GeometryHandleId,
+        distance: f64,
+    ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
+        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Extrude validation in
+        // `execute` so direct callers (integration tests, future inherent
+        // dispatchers) get the same descriptive errors.
+        if !distance.is_finite() {
+            return Err(GeometryError::OperationFailed(
+                "extrude distance must be finite".into(),
+            ));
+        }
+        if distance == 0.0 {
+            return Err(GeometryError::OperationFailed(
+                "extrude distance must not be zero".into(),
+            ));
+        }
+        let (result_shape, records) = {
+            let profile_shape = self.get_shape(profile_id)?;
+            let mut history =
+                ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
+            let start_cap_face_indices =
+                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
+                .into_iter()
+                .collect();
+            // Take the result shape last, after all record buffers have
+            // been read off — `take_result_shape` leaves `history` with
+            // an empty result pointer, but the record buffers are still
+            // live (separate `std::vector`s in the wrapper).
+            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
+            let records = SweepOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+                start_cap_face_indices,
+                end_cap_face_indices,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
+    }
+
+    /// Revolve `profile` about the axis with origin `axis_origin` and
+    /// direction `axis_dir` by `angle_rad` radians via
+    /// `BRepPrimAPI_MakeRevol`, returning the swept-result handle alongside
+    /// the per-parent face/edge Modified/Generated/Deleted history records
+    /// AND (for partial revolutions) the FirstShape/LastShape cap-face
+    /// indices.
+    ///
+    /// Mirrors the call convention of the `GeometryOp::Revolve` arm of
+    /// [`OcctKernel::execute`]: same finite/non-zero/non-degenerate
+    /// validation thresholds (AXIS_MAG_SQ_MIN, ANGLE_ABS_MIN). Result
+    /// handle is registered with `ReprKind::Solid`.
+    ///
+    /// Cap behavior:
+    /// - PARTIAL revolution (angle_rad mod 2π ∈ (0, 2π)) →
+    ///   `start_cap_face_indices` carries the FirstShape() face index
+    ///   (profile-as-placed); `end_cap_face_indices` carries the
+    ///   LastShape() face index (profile rotated by angle_rad).
+    /// - FULL revolution (angle_rad's modulo-2π residual zero, or
+    ///   `FirstShape().IsSame(LastShape())`) → both lists empty.
+    ///
+    /// `parent_index` in every record is `0` (single parent profile).
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-10).
+    pub fn revolve_with_history(
+        &mut self,
+        profile_id: GeometryHandleId,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        angle_rad: f64,
+    ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
+        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Revolve validation in
+        // `execute` so direct callers (integration tests, future inherent
+        // dispatchers) get the same descriptive errors with stricter
+        // thresholds than the C++ FFI safety net.
+        if !axis_origin[0].is_finite()
+            || !axis_origin[1].is_finite()
+            || !axis_origin[2].is_finite()
+        {
+            return Err(GeometryError::OperationFailed(format!(
+                "revolve axis_origin must be finite: [{}, {}, {}]",
+                axis_origin[0], axis_origin[1], axis_origin[2]
+            )));
+        }
+        if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite() {
+            return Err(GeometryError::OperationFailed(format!(
+                "revolve axis_dir must be finite: [{}, {}, {}]",
+                axis_dir[0], axis_dir[1], axis_dir[2]
+            )));
+        }
+        if !angle_rad.is_finite() {
+            return Err(GeometryError::OperationFailed(format!(
+                "revolve angle must be finite: {}",
+                angle_rad
+            )));
+        }
+        if angle_rad.abs() < ANGLE_ABS_MIN {
+            return Err(GeometryError::OperationFailed(format!(
+                "revolve angle must not be zero, got {}",
+                angle_rad
+            )));
+        }
+        let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
+        if mag_sq < AXIS_MAG_SQ_MIN {
+            return Err(GeometryError::OperationFailed(format!(
+                "revolve axis_dir must not be zero-length: [{}, {}, {}]",
+                axis_dir[0], axis_dir[1], axis_dir[2]
+            )));
+        }
+        let (result_shape, records) = {
+            let profile_shape = self.get_shape(profile_id)?;
+            let mut history = ffi::ffi::make_revolve_with_history(
+                profile_shape,
+                axis_origin[0],
+                axis_origin[1],
+                axis_origin[2],
+                axis_dir[0],
+                axis_dir[1],
+                axis_dir[2],
+                angle_rad,
+            )
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
+            let start_cap_face_indices =
+                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
+                .into_iter()
+                .collect();
+            // Take the result shape last, after all record buffers have
+            // been read off — `take_result_shape` leaves `history` with
+            // an empty result pointer, but the record buffers are still
+            // live (separate `std::vector`s in the wrapper).
+            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
+            let records = SweepOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+                start_cap_face_indices,
+                end_cap_face_indices,
             };
             (result_shape, records)
         };
@@ -1569,6 +1772,53 @@ impl OcctKernel {
         let shape = ffi::ffi::make_circle_face(radius, z)
             .expect("make_circle_face should succeed in test fixture");
         let h = self.store(shape);
+        h.id
+    }
+
+    /// Create a `width × height` rectangular face centered at the origin in
+    /// the XY plane via the OCCT FFI and store it in the kernel, returning
+    /// its `GeometryHandleId` (registered with `ReprKind::Face`).
+    ///
+    /// Exposed for integration tests of sweep history primitives
+    /// (`extrude_with_history`, `revolve_with_history`) that need a planar
+    /// face profile. The production `GeometryOp` API has no standalone face
+    /// constructor — see `crates/reify-kernel-occt/src/lib.rs` `store_*_for_test`
+    /// section docstring for the rationale.
+    pub fn store_rect_face_for_test(&mut self, width: f64, height: f64) -> GeometryHandleId {
+        let shape = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed in test fixture");
+        let h = self.store_with_repr(shape, ReprKind::Face);
+        h.id
+    }
+
+    /// Create a `width × height` rectangular face in the XZ plane centered
+    /// at `(cx, cy, cz)`, store it in the kernel, and return its
+    /// `GeometryHandleId` (registered with `ReprKind::Face`).
+    ///
+    /// Variant of `store_rect_face_for_test` purpose-built for the
+    /// `revolve_with_history` integration test: the rect is placed in the
+    /// XZ plane (a plane containing the Z-axis), so revolving it about Z
+    /// produces a non-degenerate torus-like solid. Implementation mirrors
+    /// `make_rect_torus_profile` (the test-internal helper used by the
+    /// existing revolve volume tests at lines 4800-4817): create rect in
+    /// XY plane at origin → rotate 90° about X → translate to `(cx, cy, cz)`.
+    /// `width` becomes the radial dimension (along X), `height` the axial
+    /// dimension (along Z).
+    pub fn store_rect_face_at_for_test(
+        &mut self,
+        width: f64,
+        height: f64,
+        cx: f64,
+        cy: f64,
+        cz: f64,
+    ) -> GeometryHandleId {
+        let face = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed in test fixture");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed in test fixture");
+        let translated = ffi::ffi::translate_shape(&rotated, cx, cy, cz)
+            .expect("translate_shape should succeed in test fixture");
+        let h = self.store_with_repr(translated, ReprKind::Face);
         h.id
     }
 

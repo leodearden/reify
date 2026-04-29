@@ -3522,7 +3522,13 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
 #[test]
 fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
+    // The bracket source's single `box(...)` op gets `GeometryHandleId(1)`
+    // (MockGeometryKernel's first allocated id). Register empty extract_*
+    // fixtures so task-2574's primitive-attribute seeder doesn't emit a
+    // "no topology extraction fixture" warning into tessellation_diagnostics.
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![]);
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
