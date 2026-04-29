@@ -263,6 +263,10 @@ pub fn compute_diagnostics_with_state(
     // Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
     //   not actionable in an editor — LSP diagnostics are for states users can act on).
     // Pending → WARNING with code "computation-pending" (upstream dependency failed).
+    //   The message includes the chain-root cell name when known, e.g.
+    //   "computation pending: upstream dependency failed (because Bracket.volume failed)".
+    //   Falls back to the static string when pending_cause is None (bulk mark_pending
+    //   paths that intentionally omit a cause; see cache.rs:482-513).
     // Failed → ERROR with code "computation-failed" (this cell's computation broke).
     //
     // Constraint violations are intentionally NOT emitted here — they route through
@@ -290,6 +294,34 @@ pub fn compute_diagnostics_with_state(
                 }
                 Freshness::Pending { .. } => {
                     let range = convert::span_to_range(source, vc.span);
+                    // O(1) HashMap lookup on NodeCache::pending_cause. When the
+                    // cause is present we embed it in the message so the user sees
+                    // which upstream cell failed. Falls back to the historic static
+                    // string when None (bulk mark_pending path, cache.rs:482-513).
+                    let cause = state.engine.pending_cause(
+                        &reify_eval::cache::NodeId::Value(vc.id.clone()),
+                    );
+                    let message = match cause {
+                        Some(reify_eval::cache::NodeId::Value(ref v)) => format!(
+                            "computation pending: upstream dependency failed (because {} failed)",
+                            v
+                        ),
+                        Some(reify_eval::cache::NodeId::Constraint(ref c)) => format!(
+                            "computation pending: upstream dependency failed (because {} failed)",
+                            c
+                        ),
+                        Some(reify_eval::cache::NodeId::Realization(ref r)) => format!(
+                            "computation pending: upstream dependency failed (because {} failed)",
+                            r
+                        ),
+                        Some(reify_eval::cache::NodeId::Resolution(ref s)) => format!(
+                            "computation pending: upstream dependency failed (because {} failed)",
+                            s
+                        ),
+                        None => {
+                            "computation pending: upstream dependency failed".to_string()
+                        }
+                    };
                     diagnostics.push(lsp_types::Diagnostic {
                         range,
                         severity: Some(lsp_types::DiagnosticSeverity::WARNING),
@@ -297,7 +329,7 @@ pub fn compute_diagnostics_with_state(
                             "computation-pending".to_string(),
                         )),
                         source: Some("reify".to_string()),
-                        message: "computation pending: upstream dependency failed".to_string(),
+                        message,
                         ..Default::default()
                     });
                 }
