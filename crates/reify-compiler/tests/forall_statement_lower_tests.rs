@@ -357,24 +357,35 @@ structure S {
     );
 }
 
-/// `forall v in vents: ...` over a collection sub *without* a count
-/// constraint should emit zero CompiledConstraints and zero errors. Pins
-/// PRD criterion 7's "no decls when count is undef" half — at compile
-/// time we cannot statically resolve the count, so we defer to a future
-/// SchemaNode-style abstraction (out of scope for task 2364).
+/// `forall v in vents: ...` over a collection sub whose count cell exists
+/// but is not statically resolvable (count constraint references an
+/// undefaulted Int param) emits zero per-element CompiledConstraints AND
+/// populates a `CompiledForallTemplate` capturing the deferred body so the
+/// runtime re-elaboration phase can emit per-element constraints once the
+/// count becomes known. Pins PRD criterion 7's compile-time half.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, this
-/// test should be updated to assert that the constraints are emitted
-/// once the count becomes known at graph-build time. For now we only
-/// pin the silent-skip half of the criterion.
+/// The runtime re-elaboration *constraint-arm* is implemented in task 2629;
+/// see `crates/reify-eval/tests/forall_runtime_re_elaboration.rs::
+/// edit_param_count_undef_to_known_emits_per_element_forall_constraints`
+/// for the post-edit_param coverage. The runtime *connect-arm* is tracked
+/// in follow-up task **2690** (depends on 2629; needs
+/// `EvaluationGraph::connections` plumbing + connect-body re-emission).
 #[test]
 fn forall_constraint_over_undef_count_collection_sub_emits_no_decls_no_error() {
+    // Fixture pins the deferred (count-cell-exists-but-undef) path: `n`
+    // has no default, `constraint vents.count == n` synthesises the
+    // `__count_vents` count cell, which is initially Undef so the
+    // `Deferred` branch in `resolve_forall_elements` is taken (not the
+    // `Skip` branch — which fires only when the collection sub has no
+    // count cell at all).
     let source = r#"
 structure Vent {
     param mass : Scalar = 10kg
 }
 structure S {
     sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
     forall v in vents: constraint v.mass < 50kg
 }
 "#;
@@ -406,6 +417,18 @@ structure S {
         forall_constraints_count, 0,
         "expected zero forall@* constraints when count is undef, got {}",
         forall_constraints_count
+    );
+
+    // task 2629 step-18: pin that the deferred forall body IS captured into
+    // `template.forall_templates` even though zero `forall@*` CompiledConstraints
+    // are emitted at compile time. The runtime re-elaboration block in
+    // `engine_edit.rs` reads this Vec to drive per-element emissions on
+    // count-becomes-known transitions.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly one CompiledForallTemplate captured for the deferred forall, got {}",
+        template.forall_templates.len()
     );
 }
 
