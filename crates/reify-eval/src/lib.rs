@@ -34,6 +34,9 @@ pub use topology_attribute_propagation::{
     populate_extrude_attributes, populate_revolve_attributes,
     propagate_attributes_via_brepalgoapi_history,
 };
+pub use topology_attribute_resolver::{
+    AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
+};
 
 use std::collections::HashMap;
 use std::sync::Arc;

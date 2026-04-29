@@ -85,13 +85,31 @@ pub enum AttributeResolution {
 /// See the module docstring for the PRD line references and the user-label
 /// preference rule.
 pub fn resolve_unique_by_attribute(
-    _table: &TopologyAttributeTable,
-    _candidates: &[GeometryHandleId],
-    _query: &AttributeQuery,
+    table: &TopologyAttributeTable,
+    candidates: &[GeometryHandleId],
+    query: &AttributeQuery,
     _selector_span: SourceSpan,
     _diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
-    // RED stub — replaced in step-2 onward as branches are implemented.
+    // step-2 — user_label branch only. Later steps add role/idx, fallback
+    // detection, and diagnostic emission.
+    if let Some(label) = query.user_label.as_deref() {
+        let mut found: Option<GeometryHandleId> = None;
+        let mut n: usize = 0;
+        for &id in candidates {
+            if let Some(attr) = table.lookup(id) {
+                if attr.user_label.as_deref() == Some(label) {
+                    n += 1;
+                    if n == 1 {
+                        found = Some(id);
+                    }
+                }
+            }
+        }
+        if n == 1 {
+            return AttributeResolution::Resolved(found.unwrap());
+        }
+    }
     AttributeResolution::Unresolved
 }
 
