@@ -304,12 +304,12 @@ pub enum FeasibilityResult {
 ///
 /// # Preconditions
 ///
-/// Callers are expected to supply a **non-empty** `candidates` slice. Phase A's
+/// Callers MUST supply a **non-empty** `candidates` slice. Phase A's
 /// [`CandidateEnumeration::Found`] arm guarantees 1..=[`MAX_AUTO_TYPE_PARAM_CANDIDATES`]
-/// entries, so in normal usage this is always satisfied. Passing an empty slice
-/// is handled gracefully — the function returns `FeasibilityResult::Empty { rejected: [] }`
-/// immediately without invoking the checker — but this degenerate case has no
-/// semantic meaning for the selection phase and callers should avoid it.
+/// entries, so in normal usage this is always satisfied. `candidates.is_empty()`
+/// is a precondition violation guarded by a `debug_assert!` — an empty slice
+/// has no semantic meaning for the selection phase, and silently absorbing it
+/// would mask Phase A wiring bugs.
 ///
 /// # Determinism
 ///
@@ -337,11 +337,10 @@ pub fn filter_feasible_candidates(
 ) -> FeasibilityResult {
     use reify_types::{Satisfaction, ValueMap};
 
-    if candidates.is_empty() {
-        return FeasibilityResult::Empty {
-            rejected: Vec::new(),
-        };
-    }
+    debug_assert!(
+        !candidates.is_empty(),
+        "filter_feasible_candidates: candidates slice must be non-empty (Phase A's Found arm guarantees ≥1 candidate)"
+    );
 
     let empty_values = ValueMap::new();
 
