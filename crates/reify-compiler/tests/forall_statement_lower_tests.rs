@@ -69,6 +69,38 @@ fn find_forall_connect_span(
     panic!("no ForallConnect found in structure {}", structure_name);
 }
 
+/// Assert that `template` has zero connections and zero `forall@v[`-labelled
+/// constraints. Covers the "empty-collection / undef-count → zero emissions"
+/// invariant shared by Connect-form forall tests (PRD criteria 6 and 7 first-half).
+fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplate) {
+    assert_eq!(
+        template.connections.len(),
+        0,
+        "expected zero connections (empty/undef-count forall), got {}: {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+            .collect::<Vec<_>>()
+    );
+    let forall_label_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@v["))
+        })
+        .count();
+    assert_eq!(
+        forall_label_count,
+        0,
+        "expected zero forall@v[*] constraint labels (empty/undef-count forall), got {}",
+        forall_label_count
+    );
+}
+
 /// `forall v in [1, 2, 3]: constraint v > 0` should emit exactly 3
 /// CompiledConstraints, each comparing the substituted literal element
 /// against 0 (BinOp::Gt with Literal(Int) on the left), and each carrying a
@@ -955,23 +987,9 @@ structure def S {
             .collect::<Vec<_>>()
     );
 
-    // The chain guard must not fire — the early-return before the loop
-    // prevents reaching it.
-    let chain_diagnostic_count = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("chain statement requires at least two elements"))
-        .count();
-    assert_eq!(
-        chain_diagnostic_count, 0,
-        "expected no chain-too-short diagnostic for undef-count forall, got {}: {:?}",
-        chain_diagnostic_count,
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+    // The chain guard ("chain statement requires at least two elements") is
+    // Severity::Error, so its absence is already covered by
+    // errors_only(&module).is_empty() above.
 }
 
 /// `forall v in []: chain v.a -> v.b -> v.c` should emit zero connections and
@@ -1022,27 +1040,13 @@ structure def S {
             .collect::<Vec<_>>()
     );
 
-    // Critical pin: "chain statement requires at least two elements" must NOT
-    // appear. If the guard is ever hoisted outside the per-element loop it
-    // would fire here and break this assertion.
-    let chain_diagnostic_count = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("chain statement requires at least two elements"))
-        .count();
-    assert_eq!(
-        chain_diagnostic_count, 0,
-        "expected no chain-too-short diagnostic for empty-list forall, got {}: {:?}",
-        chain_diagnostic_count,
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+    // The chain guard ("chain statement requires at least two elements") is
+    // Severity::Error, so its absence is already covered by
+    // errors_only(&module).is_empty() above.
 
-    // Confirm source parses as ForallConnect.
-    let _forall_span = find_forall_connect_span(source, "S");
+    // Confirm source parses as ForallConnect (panics if parse demoted the body
+    // to a different MemberDecl variant, which would make the test vacuously green).
+    find_forall_connect_span(source, "S");
 }
 
 /// `forall v in vents: constraint v.mass < 50kg` over a collection sub whose
@@ -1148,33 +1152,7 @@ structure def S {
         .find(|t| t.name == "S")
         .expect("template S not found");
 
-    assert_eq!(
-        template.connections.len(),
-        0,
-        "expected zero connections when count is undef, got {}: {:?}",
-        template.connections.len(),
-        template
-            .connections
-            .iter()
-            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
-            .collect::<Vec<_>>()
-    );
-
-    // No forall@v[*] labels in constraints either.
-    let forall_label_count = template
-        .constraints
-        .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@v["))
-        })
-        .count();
-    assert_eq!(
-        forall_label_count, 0,
-        "expected zero forall@v[*] constraint labels from undef-count forall connect, got {}",
-        forall_label_count
-    );
+    assert_no_forall_connect_emissions(template);
 }
 
 /// `forall v in []: constraint MinThreshold(value: v)` should emit zero
@@ -1238,8 +1216,8 @@ structure S {
         inst_forall_count
     );
 
-    // Confirm the source parses as ForallConstraint.
-    let _forall_span = find_forall_constraint_span(source, "S");
+    // Confirm the source parses as ForallConstraint (panics if parse demoted the body).
+    find_forall_constraint_span(source, "S");
 }
 
 /// `forall v in []: connect v.inlet -> hub` should emit zero CompiledConnections
@@ -1274,38 +1252,11 @@ structure def S {
         .find(|t| t.name == "S")
         .expect("template S not found");
 
-    assert_eq!(
-        template.connections.len(),
-        0,
-        "expected zero connections from empty-list forall connect, got {}: {:?}",
-        template.connections.len(),
-        template
-            .connections
-            .iter()
-            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
-            .collect::<Vec<_>>()
-    );
+    assert_no_forall_connect_emissions(template);
 
-    // No forall@v[*] labels in constraints either (anti-cascade check).
-    let forall_label_count = template
-        .constraints
-        .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@v["))
-        })
-        .count();
-    assert_eq!(
-        forall_label_count, 0,
-        "expected zero forall@v[*] constraint labels from empty-list forall, got {}",
-        forall_label_count
-    );
-
-    // Confirm the source actually contains a ForallConnect (so a parse-shape
-    // regression that silently demotes to a different MemberDecl variant
-    // doesn't make this test vacuously green).
-    let _forall_span = find_forall_connect_span(source, "S");
+    // Confirm the source actually contains a ForallConnect (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_connect_span(source, "S");
 }
 
 /// Every per-element `CompiledConstraint` emitted by a statement-form forall

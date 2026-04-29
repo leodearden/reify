@@ -90,19 +90,14 @@ fn resolve_forall_elements(
                 .iter()
                 .find(|s| s.name == *name && s.is_collection)
             {
-                // Resolve the count cell to a literal integer.
-                // PRD criterion 7 first-half: when the count is not yet
-                // determined (cell missing, default not a literal Int, or
-                // multi-hop indirection beyond one level), return `None` to
-                // signal "defer silently — emit zero decls, no diagnostic".
-                // Re-elaboration on count change is future SchemaNode work
-                // (out of scope for task 2365).
-                let count_opt = sub
+                // PRD criterion 7 first-half: if count is not yet determined
+                // (cell missing, non-literal default, or multi-hop indirection),
+                // the `?` returns `None` — defer silently, emit zero decls, no
+                // diagnostic. Re-elaboration on count change is future SchemaNode work.
+                let count = sub
                     .count_cell
                     .as_ref()
-                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
-                // PRD criterion 7 first-half: count not yet determined — defer silently.
-                let count = count_opt?;
+                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id))?;
                 let coll_span = collection.span;
                 // PRD criterion 6 — count-cell-zero path: when `count == 0`,
                 // `(0..0).map(...).collect()` produces `Some(empty Vec)`.
@@ -330,8 +325,7 @@ pub(crate) fn elaborate_forall_constraint(
                 // the outer loop iterates zero times so `expand_constraint_inst`
                 // is never called and no `inst_idx` is allocated. A future
                 // refactor that pre-allocates `inst_idx` outside the loop would
-                // break the criterion-6 pin in
-                // `forall_constraint_inst_body_over_empty_list_literal_emits_no_decls_no_error`.
+                // break tests pinning PRD criterion 6; see tests for this module.
                 let substituted_args: Vec<(String, reify_syntax::Expr)> = ci
                     .args
                     .iter()
