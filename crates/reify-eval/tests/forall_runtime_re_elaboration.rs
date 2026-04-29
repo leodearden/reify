@@ -471,3 +471,72 @@ fn edit_param_unrelated_param_does_not_re_emit_forall_constraints() {
         "forall_emitted ledger must be unchanged across an unrelated param edit"
     );
 }
+
+/// task-2629 step-20: end-to-end lifecycle test that pins the full
+/// Undef → known → Undef-equivalent (count=0) → known cycle. Mirrors the
+/// task-958 `edit_param_count_int_undef_undef_int_transition` regression
+/// coverage in `collection_sub_eval.rs` for value cells, lifted to the
+/// per-element forall constraint emission ledger.
+///
+/// Sequence: Undef → 3 → 0 → 2. At each step the exact set of
+/// `forall@v[*]` labels must match:
+///   1. Undef ⇒ {}
+///   2. Int(3) ⇒ {forall@v[0], forall@v[1], forall@v[2]}
+///   3. Int(0) ⇒ {}
+///   4. Int(2) ⇒ {forall@v[0], forall@v[1]}
+///
+/// Confirms (a) Int(0) clears prior emissions just as Undef would; (b) a
+/// re-grow after a count-0 still works (forall_emitted ledger must be
+/// drained, then re-populated with the new fresh ids); (c) the
+/// idempotency of the drain-then-emit pair across a full lifecycle.
+#[test]
+fn full_lifecycle_undef_to_three_to_zero_to_two_per_element_constraints() {
+    let module = compile_source(FORALL_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval — count Undef.
+    let _ = engine.eval(&module);
+    let snap_initial = engine.snapshot().expect("initial snapshot");
+    assert!(
+        collect_forall_labels(snap_initial).is_empty(),
+        "expected zero forall@v[*] when count is Undef"
+    );
+
+    // (2) edit n=3 ⇒ 3 emissions.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param(n, 3) should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    assert_eq!(
+        collect_forall_labels(snap_3),
+        vec![
+            "forall@v[0]".to_string(),
+            "forall@v[1]".to_string(),
+            "forall@v[2]".to_string(),
+        ],
+        "expected forall@v[0..2] after edit_param to Int(3)"
+    );
+
+    // (3) edit n=0 ⇒ all emissions cleared.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(0))
+        .expect("edit_param(n, 0) should succeed");
+    let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
+    assert!(
+        collect_forall_labels(snap_0).is_empty(),
+        "expected zero forall@v[*] after edit_param to Int(0) (got {:?})",
+        collect_forall_labels(snap_0)
+    );
+
+    // (4) edit n=2 ⇒ exactly forall@v[0..1] re-emitted from the cleared state.
+    let _ = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param(n, 2) should succeed");
+    let snap_2 = engine.snapshot().expect("snapshot after edit n=2");
+    assert_eq!(
+        collect_forall_labels(snap_2),
+        vec!["forall@v[0]".to_string(), "forall@v[1]".to_string()],
+        "expected forall@v[0..1] after edit_param to Int(2) following Int(0)"
+    );
+}
