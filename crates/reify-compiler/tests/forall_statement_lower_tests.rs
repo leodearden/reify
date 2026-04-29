@@ -1515,3 +1515,83 @@ structure S {
         );
     }
 }
+
+/// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
+/// `bidi`-ported collection sub should emit exactly 3 `CompiledConnection`s,
+/// each with `operator == ConnectOp::Bidirectional`. Pins that `cd.operator`
+/// is threaded through `elaborate_forall_connect` into the per-element
+/// `compile_connection` call rather than being dropped or hardcoded to
+/// `Forward`. The existing `forall_connect_emits_per_element_connections`
+/// test only exercises `ConnectOp::Forward`; a regression that hardcoded
+/// `Forward` for forall connect would be invisible to it. Briefing item 3
+/// (connect-form lowering non-Forward operator) gap-fill.
+#[test]
+fn forall_connect_with_bidirectional_operator_emits_per_element_bidi_connections() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : bidi Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    port air_channel : bidi Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet <-> air_channel
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forall bidi connect over collection sub, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        3,
+        "expected exactly 3 CompiledConnections (one per forall element), got {}: \
+         left_ports = {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| c.left_port.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let forall_span = find_forall_connect_span(source, "S");
+
+    for (i, conn) in template.connections.iter().enumerate() {
+        let expected_left = format!("vents[{}].inlet", i);
+        assert_eq!(
+            conn.left_port, expected_left,
+            "expected left_port == {:?} for element {}, got {:?}",
+            expected_left, i, conn.left_port
+        );
+        assert_eq!(
+            conn.right_port, "air_channel",
+            "expected right_port == 'air_channel' for element {}, got {:?}",
+            i, conn.right_port
+        );
+        // The critical assertion: operator must be Bidirectional, not Forward.
+        assert_eq!(
+            conn.operator,
+            reify_syntax::ConnectOp::Bidirectional,
+            "expected ConnectOp::Bidirectional for element {}, got {:?}",
+            i, conn.operator
+        );
+        assert_eq!(
+            conn.span, forall_span,
+            "expected forall-emitted connection span to equal source forall span \
+             for element {}, got connection.span = {:?}, forall_span = {:?}",
+            i, conn.span, forall_span
+        );
+    }
+}
