@@ -36,8 +36,15 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // Value::Undef BEFORE constructing the binding Map):
             //   args.len() == 2          → arity guard
             //   is_joint_value(args[0])  → joint-arg guard
-            // The motion value (args[1]) is stored verbatim — downstream
-            // `transform_at` handles dimension-checking when consumed.
+            // The motion value (args[1]) is stored verbatim and
+            // accepted lazily — downstream `transform_at` is the
+            // single point of dimension/finite-value validation when
+            // the binding is consumed by `snapshot()`. This means a
+            // `bind(joint, Undef)` or a structurally-wrong motion
+            // value flows through `bind()` silently and surfaces as
+            // Undef at the snapshot/FK call site, NOT here.  Trade-
+            // off: less local diagnostics in exchange for a single
+            // canonical dimension-checking site.
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
@@ -269,6 +276,14 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // ids.  Any other shape (Real, List, String, …) is rejected
             // up-front; non-numeric density values inside a populated Map
             // collapse the whole call later (per-body loop below).
+            //
+            // Densities are intentionally dimensionless (point-mass
+            // approximation, v0.1 spec §13.3): a `Value::Scalar` density
+            // is read by its `si_value` regardless of `dimension`, so a
+            // user who passes a Length or Mass scalar by mistake gets
+            // the bare numeric value with no error.  A volumetric
+            // centroid with proper dimensional density would arrive
+            // with the OCCT FFI in task #2530.
             let densities_map: Option<&BTreeMap<Value, Value>> = if args.len() == 1 {
                 None
             } else {
@@ -509,14 +524,20 @@ fn make_snapshot_body_record(id: Value, solid: Value, pose: Value, world_transfo
 ///   - a joint along the chain has no resolvable motion value (no
 ///     binding entry and the midpoint fallback is not yet wired in
 ///     this step — added in step 12),
-///   - `transform_at` or `transform_compose` returns Undef,
-///   - the chain length exceeds `joint_parents.len() + 1` (cycle-
-///     safe, defence-in-depth — `mechanism::body()` already rejects
-///     cycle-creating edges).
+///   - `transform_at` or `transform_compose` returns Undef.
+///
+/// Cycle safety lives upstream in `mechanism::body()`, which rejects
+/// any edge that would close a chain — every `joint_parents` Map a
+/// well-formed mechanism produces is acyclic, so this recursion
+/// terminates without an explicit depth counter.
 ///
 /// Memoizes per-joint results in `cache` so a chain shared by many
 /// bodies is O(D + N) instead of O(D·N). Keys are joint Map values
 /// themselves — equal joints share a cache entry by `Value::Eq`.
+/// The constant factor on `cache.get`/`cache.insert` is the cost of
+/// a structural Ord comparison + clone of the joint Map — acceptable
+/// for v0.1's small chain depths; revisit with hash- or Rc-identity
+/// keys if profiling shows this hot.
 fn joint_world_transform(
     joint: &Value,
     joint_parents: &BTreeMap<Value, Value>,
