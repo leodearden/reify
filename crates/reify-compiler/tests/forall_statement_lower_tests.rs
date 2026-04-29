@@ -904,6 +904,76 @@ structure S {
     );
 }
 
+/// `forall v in vents: chain v.a -> v.b -> v.c` over a collection sub *without*
+/// a count constraint should emit zero connections and zero errors. Pins PRD
+/// criterion 7's "no decls when count is undef" half for the Chain form.
+/// Also pins that the "chain statement requires at least two elements" diagnostic
+/// is NOT emitted — the undef-count early-return in `resolve_forall_elements`
+/// stops execution before the outer loop is entered, so the chain guard never
+/// fires.
+///
+/// TODO(future): once SchemaNode-style re-elaboration is in place, update
+/// this test to assert that connections are emitted when the count becomes known.
+#[test]
+fn forall_connect_chain_body_over_undef_count_collection_sub_emits_no_connections_no_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 1mm }
+    port c : in T { param d : Length = 1mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    forall v in vents: chain v.a -> v.b -> v.c
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for undef-count forall chain, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        0,
+        "expected zero connections when count is undef for chain forall, got {}: {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    // The chain guard must not fire — the early-return before the loop
+    // prevents reaching it.
+    let chain_diagnostic_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("chain statement requires at least two elements"))
+        .count();
+    assert_eq!(
+        chain_diagnostic_count, 0,
+        "expected no chain-too-short diagnostic for undef-count forall, got {}: {:?}",
+        chain_diagnostic_count,
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// `forall v in []: chain v.a -> v.b -> v.c` should emit zero connections and
 /// zero errors. The critical pin: the chain-body branch checks
 /// `cd.elements.len() < 2` INSIDE the per-element outer loop, so an empty
