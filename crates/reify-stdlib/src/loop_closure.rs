@@ -689,6 +689,20 @@ mod tests {
         assert!(super::per_joint_jacobian_local(&Value::Real(0.5)).is_none());
     }
 
+    /// The "fixed" arm of `joint_jacobian_value` (joints.rs:336) must return a
+    /// zero-magnitude Map — i.e. `Some([0; 6])` — not `Undef` (which would
+    /// produce `None` here).  This pins the contract so a future change to that
+    /// arm (e.g. returning `Undef`) cannot silently break callers that rely on
+    /// `Some` with a zero twist column.
+    #[test]
+    fn per_joint_jacobian_local_fixed_returns_zero_column() {
+        let col = super::per_joint_jacobian_local(&fixed_joint())
+            .expect("per_joint_jacobian_local must return Some for a fixed joint");
+        for v in col.iter() {
+            assert!(v.abs() < 1e-12, "expected zero entry, got {v}");
+        }
+    }
+
     // ── chain_jacobian_fd tests ──────────────────────────────────────────
 
     fn assert_columns_close(
@@ -878,6 +892,12 @@ mod tests {
 
     /// A fixed joint in the chain but NOT in free_indices must not prevent
     /// chain_jacobian_fd from assembling the other (free) columns.
+    ///
+    /// Strengthened: we also assert that the resulting columns equal those of a
+    /// reference chain with the fixed joint removed entirely (free indices
+    /// re-indexed to [0, 1]).  This cross-chain comparison proves the fixed
+    /// joint contributes exactly identity to chain composition — not merely
+    /// that the output is finite.
     #[test]
     fn chain_jacobian_fd_with_fixed_joint_outside_free_indices() {
         // chain = [prismatic_x, fixed, revolute_z]
@@ -891,6 +911,16 @@ mod tests {
                 assert!(v.is_finite(), "expected all column entries to be finite, got {col:?}");
             }
         }
+        // Cross-chain reference: same joints without the fixed slot; free indices [0, 1].
+        let cols_no_fixed =
+            super::chain_jacobian_fd(&[prismatic_x(), revolute_z()], &[0.5, 0.0], &[0, 1], 1e-6)
+                .expect("chain_jacobian_fd reference (no fixed) must return Some");
+        assert_columns_close(
+            &cols,
+            &cols_no_fixed,
+            1e-7,
+            "fixed_joint_outside_free_indices_vs_reference",
+        );
     }
 
     /// A fixed joint listed in free_indices must produce a zero-twist column.
