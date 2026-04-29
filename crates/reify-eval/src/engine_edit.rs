@@ -1622,7 +1622,16 @@ impl Engine {
                             }
                         }
                         CompiledForallBody::Connect { .. } => {
-                            // step-13 handles the Connect arm.
+                            // Unreachable in 2629: the compile-time deferred
+                            // arm in `forall_elaborate.rs` no longer captures
+                            // Connect templates (it emits an info diagnostic
+                            // and skips). Runtime re-emission of forall-connect
+                            // is tracked by task 2690.
+                            debug_assert!(
+                                false,
+                                "forall Connect runtime re-emission is task 2690; \
+                                 deferred-Connect captures should not exist in 2629"
+                            );
                         }
                     }
                     new_snapshot.forall_emitted[t_idx] = fresh_ids;

@@ -46,10 +46,10 @@
 //! can re-elaborate when the count later becomes known.
 //!
 //! **Criterion 7 second-half — runtime re-elaboration:** wired in
-//! `engine_edit.rs` per the link above. The `Constraint` and `Connect` body
-//! shapes are supported there; `Instantiation` and `Chain` body shapes
-//! retain compile-time silent-skip semantics and emit an info diagnostic
-//! noting future scope.
+//! `engine_edit.rs` per the link above. Only the `Constraint` body shape
+//! is supported there. `Connect` (tracked by task 2690), `Instantiation`,
+//! and `Chain` body shapes retain compile-time silent-skip semantics and
+//! emit an info diagnostic noting the follow-up task.
 
 use super::*;
 use std::collections::HashMap;
@@ -516,7 +516,7 @@ pub(crate) fn elaborate_forall_connect(
     connections: &mut Vec<CompiledConnection>,
     sub_components: &mut Vec<SubComponentDecl>,
     connector_index: &mut u32,
-    forall_templates_out: &mut Vec<CompiledForallTemplate>,
+    _forall_templates_out: &mut Vec<CompiledForallTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_syntax::ForallConnectBody;
@@ -535,72 +535,19 @@ pub(crate) fn elaborate_forall_connect(
     );
     let elements = match outcome {
         ResolveForallOutcome::Resolved(elements) => elements,
-        ResolveForallOutcome::Deferred {
-            count_cell,
-            sub_name,
-        } => {
-            // task 2629: capture a runtime template for `Connect` body shapes;
-            // `Chain` body retains compile-time silent skip with an info
-            // diagnostic noting future scope.
+        ResolveForallOutcome::Deferred { .. } => {
+            // task 2629: runtime re-elaboration of forall-connect over
+            // deferred-count collections is out of scope here. Both `Connect`
+            // and `Chain` body shapes retain compile-time silent-skip
+            // semantics and emit an info diagnostic naming the follow-up.
+            // The `Connect` arm is tracked by task 2690; see the resolution
+            // of esc-2629-15 / esc-2629-22 for the scope decision.
             match &decl.body {
-                ForallConnectBody::Connect(cd) => {
-                    let coll_span = decl.collection.span;
-                    let placeholder = reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::IndexAccess {
-                            object: Box::new(reify_syntax::Expr {
-                                kind: reify_syntax::ExprKind::Ident(sub_name.clone()),
-                                span: coll_span,
-                            }),
-                            index: Box::new(reify_syntax::Expr {
-                                kind: reify_syntax::ExprKind::NumberLiteral(0.0),
-                                span: coll_span,
-                            }),
-                        },
-                        span: coll_span,
-                    };
-                    let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
-                    bindings.insert(decl.variable.clone(), placeholder);
-
-                    // Best-effort port-name templating: substitute then resolve
-                    // to a port-path string (e.g. "vents[0].in"). If the
-                    // resolution fails, fall back to "<unresolved>" and skip
-                    // capture — the compile-time error path is preserved.
-                    let left_substituted = substitute_expr(&cd.left.expr, &bindings);
-                    let right_substituted = substitute_expr(&cd.right.expr, &bindings);
-                    let left_port = match resolve_port_name(&left_substituted) {
-                        Some(s) => s,
-                        None => return,
-                    };
-                    let right_port = match resolve_port_name(&right_substituted) {
-                        Some(s) => s,
-                        None => return,
-                    };
-                    let params: Vec<(String, CompiledExpr)> = cd
-                        .params
-                        .iter()
-                        .map(|(n, e)| {
-                            let substituted = substitute_expr(e, &bindings);
-                            (
-                                n.clone(),
-                                compile_expr(&substituted, scope, enum_defs, functions, diagnostics),
-                            )
-                        })
-                        .collect();
-                    forall_templates_out.push(CompiledForallTemplate {
-                        variable: decl.variable.clone(),
-                        parent_entity: entity_name.to_string(),
-                        collection_sub_name: sub_name,
-                        count_cell,
-                        span: decl.span,
-                        body: CompiledForallBody::Connect {
-                            left_port_template: left_port,
-                            right_port_template: right_port,
-                            operator: cd.operator,
-                            connector_type: cd.connector_type.clone(),
-                            params,
-                            port_mappings: cd.port_mappings.clone(),
-                        },
-                    });
+                ForallConnectBody::Connect(_) => {
+                    diagnostics.push(Diagnostic::info(
+                        "forall connect over deferred-count collections will not re-elaborate \
+                         at runtime (task 2690 future scope)",
+                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall connect")));
                 }
                 ForallConnectBody::Chain(_) => {
                     diagnostics.push(Diagnostic::info(

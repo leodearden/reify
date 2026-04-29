@@ -343,11 +343,14 @@ pub struct CompiledForallTemplate {
 
 /// The body shape of a captured forall template (task 2629).
 ///
-/// Mirrors the two `ForallConstraintBody` / `ForallConnectBody` user-visible
-/// shapes that this task supports: `Constraint` and `Connect`. The
-/// `Instantiation` (constraint-inst) and `Chain` shapes retain the
-/// compile-time silent-skip semantics — see `forall_elaborate.rs` info
-/// diagnostics.
+/// In task 2629 only the `Constraint` body shape is actually captured at
+/// compile time and re-emitted at runtime. The `Connect` variant is reserved
+/// for follow-up task 2690, which will wire `EvaluationGraph::connections`
+/// and the runtime emission path; until then `forall_elaborate.rs`'s
+/// deferred-Connect arm emits an info diagnostic and skips capture, so no
+/// `CompiledForallBody::Connect` instances reach the runtime. The
+/// `Instantiation` and `Chain` source-level shapes retain compile-time
+/// silent-skip semantics — see `forall_elaborate.rs` info diagnostics.
 //
 // `large_enum_variant` allow: the `Constraint` variant carries a `CompiledExpr`
 // (~352 bytes) while `Connect` is far smaller (~121 bytes). Boxing `body_expr`
@@ -382,11 +385,12 @@ pub enum CompiledForallBody {
     },
     /// Per-element connection body: `forall v in coll: connect <l> <op> <r>`.
     ///
-    /// Compile-time substitution rewrites the bound variable inside left/right
-    /// port-name templates and inside each param's expression. Runtime
-    /// re-elaboration replaces the literal `[0]` slot in each port-name
-    /// template with `[i]` and calls `map_value_refs` on each param expression
-    /// to remap any per-element cell references.
+    /// **Reserved for task 2690.** Task 2629's deferred-Connect arm in
+    /// `forall_elaborate.rs` does not currently push this variant — it emits
+    /// an info diagnostic and returns early — because runtime re-emission
+    /// requires a `connections` field on `EvaluationGraph` that does not yet
+    /// exist. The variant and field shapes are kept here so 2690 only needs
+    /// to (a) re-enable the capture path and (b) implement the runtime arm.
     Connect {
         /// The substituted left port-name template (e.g. "coll[0].out").
         left_port_template: String,
