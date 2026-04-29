@@ -90,6 +90,12 @@ fn resolve_forall_elements(
                     None => return None, // PRD criterion 7 first-half: count not yet determined.
                 };
                 let coll_span = collection.span;
+                // PRD criterion 6 — count-cell-zero path: when `count == 0`,
+                // `(0..0).map(...).collect()` produces `Some(empty Vec)`.
+                // The caller then iterates zero times and emits no decls — the
+                // same no-op semantics as the `ListLiteral([])` path above.
+                // Both paths share this callsite's iteration, so the contract
+                // holds for both criterion-6 shapes in a single place.
                 return Some(
                     (0..count)
                         .map(|i| Expr {
