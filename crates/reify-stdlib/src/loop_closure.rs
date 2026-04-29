@@ -347,8 +347,7 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
 mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m,
-        planar_xy_joint,
+        angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, planar_xy_joint,
     };
     use reify_types::Value;
 
