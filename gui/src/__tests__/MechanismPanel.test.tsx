@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
 import { MechanismPanel } from '../panels/MechanismPanel';
+import { createMechanismStore } from '../stores/mechanismStore';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -364,6 +365,146 @@ describe('MechanismPanel', () => {
         }
       } finally {
         globalThis.requestAnimationFrame = originalRaf;
+      }
+    });
+  });
+
+  describe('(i) onScrubLocal receives SI values', () => {
+    it('(i.1) prismatic slider input of "400" mm invokes onScrubLocal with ~0.4 SI (m)', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onScrubLocal = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              dimension: 'length',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 1.0,
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={vi.fn()}
+            onScrubLocal={onScrubLocal}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        expect(onScrubLocal).toHaveBeenCalled();
+        // Third arg is valueSi: 400 mm → 0.4 m
+        const thirdArg: number = onScrubLocal.mock.calls[0][2];
+        expect(thirdArg).toBeCloseTo(0.4, 6);
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('(i.2) revolute slider input of "90" deg invokes onScrubLocal with ~π/2 SI (rad)', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onScrubLocal = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'revolute',
+              dimension: 'angle',
+              driving_param_cell_id: 'Kinematic.theta',
+              range_lower_si: 0,
+              range_upper_si: Math.PI,
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={vi.fn()}
+            onScrubLocal={onScrubLocal}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '90' } });
+
+        expect(onScrubLocal).toHaveBeenCalled();
+        // Third arg is valueSi: 90 deg → π/2 rad
+        const thirdArg: number = onScrubLocal.mock.calls[0][2];
+        expect(thirdArg).toBeCloseTo(Math.PI / 2, 6);
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('(i.3) optimistic override is cleared after refresh confirms matching SI value', async () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        // Build a real store with a mock bridge
+        let resolvedDescriptors: MechanismDescriptor[] = [];
+        const mockGetDescriptors = vi.fn().mockImplementation(async () => resolvedDescriptors);
+        const store = createMechanismStore({ getMechanismDescriptors: mockGetDescriptors });
+
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              dimension: 'length',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 1.0,
+              current_value_si: 0.1,
+            }),
+          ],
+        });
+
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={vi.fn()}
+            onScrubLocal={(cellId, jointIndex, valueSi) => {
+              if (cellId !== null) {
+                store.setOptimistic(cellId, jointIndex, valueSi);
+              }
+            }}
+          />
+        ));
+
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        // Fire slider input: 400 mm → should store optimistic 0.4 SI (not 400)
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        const key = 'Kinematic.m:0';
+        // After the fix, optimistic should contain 0.4 (SI), not 400 (display)
+        expect(store.state.optimistic[key]).toBeCloseTo(0.4, 6);
+
+        // Simulate backend confirming the new value at 0.4 SI
+        resolvedDescriptors = [{
+          ...desc,
+          joints: [{ ...desc.joints[0], current_value_si: 0.4 }],
+        }];
+
+        // After refresh, the equality check fires (0.4 === 0.4) and key is deleted
+        await store.refresh();
+        expect(store.state.optimistic[key]).toBeUndefined();
+      } finally {
+        rafSpy.mockRestore();
       }
     });
   });
