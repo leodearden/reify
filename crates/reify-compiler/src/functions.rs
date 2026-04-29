@@ -276,21 +276,30 @@ pub(crate) fn compile_field(
             // v0.2 (task 2341): walk the AST config entries and compile each value
             // expression. Runtime parsing of the resulting Values into a
             // `SampledField` is performed in `engine_eval::elaborate_field`; this
-            // arm validates the shape (allowed keys + no duplicates) and forwards
-            // the compiled expressions.
+            // arm validates the shape (required keys + allowed keys + no
+            // duplicates) and forwards the compiled expressions.
             //
             // Validation rules:
             //   - Accepted keys: `grid`, `interpolation`, `data`. All three are
-            //     required at v0.2 — the missing-key check is in step-8.
+            //     required — a missing required key produces one error per
+            //     missing key, attached to the field declaration's span.
             //   - Unknown keys produce a hard error; the entry is dropped.
             //   - Duplicate keys (e.g. two `grid = ...` entries) produce a hard
             //     error; only the first occurrence is kept in the compiled
             //     config so engine_eval sees a deterministic shape.
+            //
+            // Error ordering matches the typical compile-time-error pattern in
+            // this module: per-entry errors (unknown / duplicate) are emitted
+            // as the entries are walked, and then missing-key errors are
+            // emitted in a fixed order (grid, interpolation, data) after the
+            // walk so that diagnostics referencing the same source span are
+            // grouped together.
+            const REQUIRED_KEYS: [&str; 3] = ["grid", "interpolation", "data"];
             let mut compiled_config: Vec<(String, reify_types::CompiledExpr)> = Vec::new();
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for (key, expr) in config {
                 let key_str = key.as_str();
-                let is_known = matches!(key_str, "grid" | "interpolation" | "data");
+                let is_known = REQUIRED_KEYS.contains(&key_str);
                 if !is_known {
                     diagnostics.push(
                         Diagnostic::error(format!(
@@ -324,6 +333,23 @@ pub(crate) fn compile_field(
                 let compiled_expr =
                     compile_expr(expr, &scope, enum_defs, functions, diagnostics);
                 compiled_config.push((key.clone(), compiled_expr));
+            }
+            // Emit one error per missing required key, in declaration order
+            // (grid, interpolation, data). The label points at the field def
+            // span since there is no per-entry span for a missing entry.
+            for required in REQUIRED_KEYS {
+                if !seen.contains(required) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "sampled field source is missing required key: '{}'",
+                            required
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "missing required sampled config key",
+                        )),
+                    );
+                }
             }
             CompiledFieldSource::Sampled {
                 config: compiled_config,
