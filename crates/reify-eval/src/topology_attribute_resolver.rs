@@ -1101,4 +1101,66 @@ mod tests {
             diag.message
         );
     }
+
+    /// Pins the populator-bug case where `try_cluster_after_split` would be
+    /// too permissive: matching on the parent-key alone is insufficient to
+    /// justify routing to `AmbiguousAfterSplit`. If all matched attributes
+    /// ALSO share the same `mod_history` (no `split_index` distinguishes
+    /// them), the cluster is genuinely indistinguishable and can only arise
+    /// from a populator bug. The resolver must fall through to `Unresolved`
+    /// with the canonical "matched N sub-shapes" diagnostic rather than
+    /// producing an unselectable `AmbiguousAfterSplit { children }` whose
+    /// elements the future task-10 `split_by(...)` selector could never
+    /// disambiguate.
+    ///
+    /// Contrast with
+    /// `resolve_returns_ambiguous_after_split_when_role_idx_match_clusters_on_parent_key`
+    /// (positive case): DISTINCT `split_index` values → `AmbiguousAfterSplit`.
+    /// This test (negative case): IDENTICAL `mod_history` → `Unresolved`.
+    #[test]
+    fn resolve_keeps_unresolved_when_matches_share_parent_key_and_mod_history() {
+        let mut table = TopologyAttributeTable::default();
+        // Both entries share the parent-key (feat(), Side, 0, None) AND the
+        // same mod_history — the populator-bug signature (no split_index
+        // distinguishes them).
+        let mut a = attr(Role::Side, 0, None);
+        a.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 0,
+        }];
+        let mut b = attr(Role::Side, 0, None);
+        b.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 0, // same as a — populator bug: identical split_index
+        }];
+        table.record(h(60), a);
+        table.record(h(61), b);
+        let candidates = [h(60), h(61)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(
+            result,
+            AttributeResolution::Unresolved,
+            "identical mod_history → Unresolved, not AmbiguousAfterSplit (populator-bug case)"
+        );
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 2 sub-shapes"),
+            "message should contain 'matched 2 sub-shapes' (canonical sub-form), got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("split children"),
+            "populator-bug case must NOT use the split-children sub-form, got: {}",
+            diag.message
+        );
+    }
 }
