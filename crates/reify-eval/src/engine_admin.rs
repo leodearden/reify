@@ -144,7 +144,7 @@ impl Engine {
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
             journal: EventJournal::new(),
-            functions: Arc::from(Vec::<CompiledFunction>::new()),
+            functions: Vec::<CompiledFunction>::new().into(),
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
