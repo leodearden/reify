@@ -69,9 +69,13 @@ fn find_forall_connect_span(
     panic!("no ForallConnect found in structure {}", structure_name);
 }
 
-/// Assert that `template` has zero connections and zero `forall@v[`-labelled
-/// constraints. Covers the "empty-collection / undef-count → zero emissions"
-/// invariant shared by Connect-form forall tests (PRD criteria 6 and 7 first-half).
+/// Assert that `template` has zero connections and zero `forall@`-prefixed
+/// constraint labels. Covers the "empty-collection / undef-count → zero
+/// emissions" invariant shared by Connect-form forall tests (PRD criteria 6
+/// and 7 first-half). The prefix `forall@` (without the bound-variable name)
+/// future-proofs the helper against callers that use bound variable names
+/// other than `v`, while remaining a strict superset of the previous
+/// `forall@v[` filter for all current callers.
 fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplate) {
     assert_eq!(
         template.connections.len(),
@@ -90,13 +94,13 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
         .filter(|c| {
             c.label
                 .as_deref()
-                .is_some_and(|s| s.starts_with("forall@v["))
+                .is_some_and(|s| s.starts_with("forall@"))
         })
         .count();
     assert_eq!(
         forall_label_count,
         0,
-        "expected zero forall@v[*] constraint labels (empty/undef-count forall), got {}",
+        "expected zero forall@* constraint labels (empty/undef-count forall), got {}",
         forall_label_count
     );
 }
