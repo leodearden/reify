@@ -413,6 +413,14 @@ where
 /// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
 /// queries each free joint's `joint_range_midpoint` from `chain_b`.
 ///
+/// **`InvalidInput` contract** — the following are detected before the Newton
+/// solve begins and return [`NewtonOutcome::InvalidInput`] regardless of
+/// strategy:
+/// - any `free_b` index ≥ `chain_b.len()` (index addresses a non-existent joint);
+/// - any `free_b` index ≥ `vals_b_initial.len()` (index addresses a
+///   non-existent initial value);
+/// - [`StartStrategy::WarmStart`] vector length ≠ `free_b.len()`.
+///
 /// Internally builds a residual+jacobian closure that calls
 /// [`reify_stdlib::loop_closure::loop_residual_twist`] and
 /// [`reify_stdlib::loop_closure::chain_jacobian_fd`], then dispatches to
@@ -500,6 +508,10 @@ pub fn solve_loop_closure(
         }
         // Substitute x into the free entries of vals_b_scratch.
         for (k, &i) in free_b_vec.iter().enumerate() {
+            // Defence-in-depth: `solve_loop_closure` validates every free_b
+            // index against vals_b_initial.len() before building this closure,
+            // so this branch should not be reachable from normal callers.  It
+            // remains here to keep the closure safe for any direct use.
             if i >= vals_b_scratch.len() {
                 return None;
             }
@@ -1223,9 +1235,12 @@ mod tests {
         );
         match outcome {
             NewtonOutcome::InvalidInput { reason } => {
+                // Must pin the *chain_b* guard specifically — both new validation
+                // messages contain "out of range", so asserting "chain_b" ensures
+                // this test exercises the right bound.
                 assert!(
-                    reason.contains("out of range"),
-                    "expected reason to mention out-of-range index, got {reason:?}"
+                    reason.contains("chain_b"),
+                    "expected reason to mention chain_b, got {reason:?}"
                 );
             }
             other => panic!("expected InvalidInput, got {other:?}"),
