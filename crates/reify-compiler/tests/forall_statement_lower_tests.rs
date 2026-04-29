@@ -462,6 +462,121 @@ structure S {
     }
 }
 
+/// `forall v in [1, 2, 3]: constraint MinThreshold(value: v)` over a
+/// single-predicate `constraint def` should emit exactly 3
+/// CompiledConstraints, one per element. Each label combines the
+/// existing constraint-inst provenance (`<inst_name>#<inst_idx>[<pred_idx>]`)
+/// with the forall element-index suffix (`:forall@<var>[<i>]`), so a
+/// per-element diagnostic can cite both the originating constraint def
+/// and the element that triggered the failure. The substituted `value`
+/// arg is the per-element literal — verified by walking the predicate's
+/// CompiledExpr.
+#[test]
+fn forall_constraint_inst_body_emits_per_element_inst_predicates() {
+    let source = r#"
+constraint def MinThreshold {
+    param value : Scalar
+    value > 0
+}
+structure S {
+    forall v in [1, 2, 3]: constraint MinThreshold(value: v)
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forall + constraint-inst body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // Pick out the forall-emitted inst constraints. Per design decision
+    // (plan §design_decisions[1]), the label format combines
+    // `<name>#<inst_idx>[<pred_idx>]` with `:forall@<var>[<i>]`.
+    let forall_inst: Vec<_> = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.contains(":forall@v["))
+        })
+        .collect();
+
+    assert_eq!(
+        forall_inst.len(),
+        3,
+        "expected exactly 3 MinThreshold#*:forall@v[*] constraints, got {}: {:?}",
+        forall_inst.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+
+    // Label format pin: each label must match
+    // `MinThreshold#<i>[0]:forall@v[<i>]`. The single predicate of the
+    // def gives pred_idx == 0; the per-element fresh instantiation gives
+    // an inst_idx that increments per element (0, 1, 2).
+    for (i, c) in forall_inst.iter().enumerate() {
+        let expected = format!("MinThreshold#{}[0]:forall@v[{}]", i, i);
+        assert_eq!(
+            c.label.as_deref(),
+            Some(expected.as_str()),
+            "label mismatch for element {}: got {:?}",
+            i,
+            c.label
+        );
+    }
+
+    // Body verification: each emitted constraint substitutes `value` with
+    // the per-element literal. So `value > 0` becomes `<i+1> > 0` — a
+    // BinOp::Gt whose left is Literal(Int(<i+1>)) and right is Literal(Int(0)).
+    for (i, c) in forall_inst.iter().enumerate() {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                assert_eq!(
+                    *op,
+                    BinOp::Gt,
+                    "expected BinOp::Gt for element {}, got {:?}",
+                    i,
+                    op
+                );
+                let expected = (i as i64) + 1;
+                match &left.kind {
+                    CompiledExprKind::Literal(Value::Int(n)) => assert_eq!(
+                        *n, expected,
+                        "expected substituted literal {} on left of element {}, got {}",
+                        expected, i, n
+                    ),
+                    other => panic!(
+                        "expected Literal(Int({})) on left of element {}, got {:?}",
+                        expected, i, other
+                    ),
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => {}
+                    other => panic!(
+                        "expected Literal(Int(0)) on right of element {}, got {:?}",
+                        i, other
+                    ),
+                }
+            }
+            other => panic!(
+                "expected BinOp(Gt) for element {}, got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
 /// `forall v in []: constraint v > 0` should emit zero CompiledConstraints
 /// and zero errors. Pins PRD criterion 6 (empty collection produces no
 /// decls, no diagnostic). The empty literal is a degenerate but legal
