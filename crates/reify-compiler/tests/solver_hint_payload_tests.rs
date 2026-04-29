@@ -55,7 +55,6 @@ fn solver_hint_discrete_set_standard_bolt_lengths_end_to_end() {
         reify_compiler::SolverHintKind::DiscreteSet
     );
     assert_eq!(cell.solver_hints[0].collection, "standard_bolt_lengths");
-
 }
 
 // ── Test 2: positive prefer_stock + standard_sheet_thicknesses ───────────────
@@ -103,7 +102,6 @@ fn solver_hint_prefer_stock_standard_sheet_thicknesses_end_to_end() {
         cell.solver_hints[0].collection,
         "standard_sheet_thicknesses"
     );
-
 }
 
 // ── Test 3: negative — unresolved identifier produces an error ───────────────
