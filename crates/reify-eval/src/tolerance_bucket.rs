@@ -54,15 +54,26 @@ impl<V> ToleranceBucket<V> {
         self.entries.is_empty()
     }
 
-    /// Inserts `(tol, val)` into the bucket and returns `true`.
+    /// Inserts `(tol, val)` into the bucket and returns `true`, or returns `false`
+    /// without modifying the bucket if any existing entry already satisfies `tol`.
     ///
-    /// This skeletal version always pushes the entry; partial-order rejection
-    /// (idempotency under satisfaction) is introduced in step-6.
+    /// # "Tighter satisfies looser" rule (PRD: per-purpose-tolerance.md)
+    ///
+    /// An existing entry with `cached_tol <= tol` already satisfies any request at
+    /// tolerance `tol`.  Inserting a new, looser entry would be redundant — any
+    /// downstream consumer that could use the new entry can also use the existing
+    /// tighter one.  This function is therefore *idempotent under partial-order
+    /// satisfaction*: inserting a tolerance that is already dominated by an existing
+    /// entry is a no-op.
     ///
     /// # Panics (debug only)
     ///
     /// Panics in debug builds when `tol` is not finite or is negative.
     pub fn insert(&mut self, tol: f64, val: V) -> bool {
+        // Reject if any existing entry already satisfies this tolerance.
+        if self.entries.iter().any(|(cached_tol, _)| *cached_tol <= tol) {
+            return false;
+        }
         self.entries.push((tol, val));
         true
     }
