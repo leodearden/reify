@@ -3541,5 +3541,12 @@ mod tests {
             let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
             assert_agree!(store, &trace, sr, g, "one-Failed");
         }
+
+        // Row 4: still_refining=true (exercises the Pending-when-still-refining branch)
+        {
+            let store = make_store(Freshness::Final, Freshness::Final);
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, true, g, "all-Final-still-refining");
+        }
     }
 }
