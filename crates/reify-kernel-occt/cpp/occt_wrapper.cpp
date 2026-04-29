@@ -281,6 +281,14 @@ namespace {
 /// Templated only over `parent_map` / `result_map` types so the same
 /// helper handles faces and edges; the type is `TopTools_IndexedMapOfShape`
 /// in both calls (shape kind is determined by which map was built).
+///
+/// `out_drop_count` is intentionally a **shared accumulator** passed through
+/// all four call sites in `boolean_fuse_with_history` (left faces, right
+/// faces, left edges, right edges). The resulting `silent_drop_count` on
+/// `BooleanOpHistory` is therefore a single bulk total with no per-kind or
+/// per-operand breakdown. Callers that need finer granularity should split
+/// this parameter into separate face/edge or left/right counters before
+/// adding new consumers.
 void emit_history_for_parent(
     BRepAlgoAPI_Fuse& fuse,
     const TopTools_IndexedMapOfShape& parent_map,

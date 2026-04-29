@@ -120,6 +120,14 @@ struct BooleanOpHistory {
     /// that could not be found in the result face_map/edge_map. Should be
     /// zero for a well-formed boolean; non-zero indicates a kernel
     /// correspondence loss or map-type mismatch.
+    ///
+    /// Single bulk accumulator: `boolean_fuse_with_history` passes this field
+    /// as `out_drop_count` to all four `emit_history_for_parent` calls (left
+    /// faces, right faces, left edges, right edges), so it aggregates drops
+    /// across shape kinds and operands without per-kind/per-operand breakdown.
+    /// If a future consumer needs finer-grained diagnostics, split this field
+    /// into separate face/edge or left/right counters and update
+    /// `emit_history_for_parent`'s signature before adding new call sites.
     uint32_t silent_drop_count = 0;
     std::vector<uint32_t> face_modified;
     std::vector<uint32_t> face_generated;
