@@ -1105,6 +1105,11 @@ impl Engine {
         // snapshot discards all purpose-injected constraints/objectives.
         self.active_purposes.clear();
         self.active_objective_map.clear();
+        // Discard stale tolerance-scope state (task 2647) — the fresh
+        // snapshot has no active purposes, so no entity carries an inherited
+        // tolerance until activate_purpose is called again.
+        self.active_purpose_bindings.clear();
+        self.active_tolerance_scope.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
         self.meta_map = build_meta_map(module);

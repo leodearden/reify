@@ -162,6 +162,14 @@ impl Engine {
             self.active_objective_map
                 .insert(purpose_name.to_string(), objective.clone());
         }
+
+        // Record the per-purpose entity binding then rebuild the tolerance
+        // scope (task 2647). The binding insert MUST run before the recompute
+        // so this purpose's RepresentationWithin contribution is included in
+        // the resulting scope. See `crates/reify-eval/src/tolerance_scope.rs`.
+        self.active_purpose_bindings
+            .insert(purpose_name.to_string(), entity_ref.to_string());
+        self.recompute_tolerance_scope();
     }
 
     /// Deactivate a purpose by name.
@@ -206,6 +214,13 @@ impl Engine {
 
         // Remove the objective if one was injected
         self.active_objective_map.remove(purpose_name);
+
+        // Drop the per-purpose entity binding then rebuild the tolerance
+        // scope (task 2647). The binding remove MUST run before the recompute
+        // so this purpose's contribution is excluded from the resulting
+        // scope. See `crates/reify-eval/src/tolerance_scope.rs`.
+        self.active_purpose_bindings.remove(purpose_name);
+        self.recompute_tolerance_scope();
     }
 
     /// Check whether a purpose is currently active.
@@ -216,6 +231,65 @@ impl Engine {
     /// Returns the currently active optimization objectives (injected by purposes).
     pub fn active_objectives(&self) -> Vec<&OptimizationObjective> {
         self.active_objective_map.values().collect()
+    }
+
+    /// Look up the active tolerance (SI metres) for `entity_ref`, computed
+    /// from the currently active purposes whose subject prefix-scan covers
+    /// `entity_ref`. Returns `None` if no active purpose contributes a
+    /// tolerance for this entity. Per PRD
+    /// `docs/prds/v0_2/per-purpose-tolerance.md` (task 2647).
+    pub fn active_tolerance_for(&self, entity_ref: &str) -> Option<f64> {
+        self.active_tolerance_scope.get(entity_ref).copied()
+    }
+
+    /// Rebuild `active_tolerance_scope` from scratch by walking every
+    /// currently-active purpose binding, extracting its tolerance bindings
+    /// (RepresentationWithin shape recognition), propagating each subject
+    /// to its dotted descendants in the value-cell graph, and combining
+    /// contributions across purposes via `min` (tighter satisfies looser).
+    ///
+    /// Called at the end of both `activate_purpose` and `deactivate_purpose`
+    /// after `active_purpose_bindings` has been mutated. Full recompute is
+    /// the chosen posture per the design decision in `.task/plan.json` —
+    /// active purposes are typically 1-3 and value_cell iteration is already
+    /// used by other Engine paths (see `engine_purposes.rs:147-159`).
+    fn recompute_tolerance_scope(&mut self) {
+        self.active_tolerance_scope.clear();
+
+        // No eval state ⇒ no value_cells to scan ⇒ nothing to populate.
+        // Early-return preserves the empty-scope invariant for engines
+        // constructed without `eval()` (or after a fresh `eval()` clears
+        // the prior snapshot).
+        let value_cells = match self.eval_state.as_ref() {
+            Some(state) => &state.snapshot.graph.value_cells,
+            None => return,
+        };
+
+        for (purpose_name, entity_ref) in &self.active_purpose_bindings {
+            let purpose = match self
+                .compiled_purposes
+                .iter()
+                .find(|p| &p.name == purpose_name)
+            {
+                Some(p) => p,
+                None => continue, // Compiled purpose disappeared (e.g. across re-eval) — skip.
+            };
+            let bindings =
+                crate::tolerance_scope::extract_tolerance_bindings(purpose, entity_ref);
+            for binding in bindings {
+                let descendants = crate::tolerance_scope::propagate_subject_to_descendants(
+                    &binding.subject_entity,
+                    value_cells,
+                );
+                let additions = descendants
+                    .into_iter()
+                    .map(|entity| (entity, binding.si_tolerance));
+                crate::tolerance_scope::merge_with_min(
+                    &mut self.active_tolerance_scope,
+                    additions,
+                );
+            }
+        }
     }
 }
 
