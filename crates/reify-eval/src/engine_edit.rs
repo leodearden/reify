@@ -79,17 +79,30 @@ pub(crate) fn deactivate_if_not_auto(
 ///
 /// The captured templates come from `connect.rs::resolve_port_name`, which
 /// returns a flat string with at most one bracketed index per side and bails
-/// on nested `IndexAccess`. The placeholder substitution is therefore expected
-/// to occur exactly once on each side. We use `replacen(.., 1)` rather than
-/// `replace(..)` so that pathological-but-legal port names — for example a
-/// user-written explicit `vents[0]` reference appearing alongside the
-/// `[0]` placeholder, or a name that incidentally repeats `<sub_name>[0]` —
-/// do NOT have additional occurrences silently rewritten. This tightens the
-/// contract to "rewrite the placeholder once" and prevents surprises where
-/// the bound variable was substituted into both sides of a literal-bearing
-/// port name.
+/// on nested `IndexAccess`. We use `replacen(.., 1)` rather than `replace(..)`
+/// to bound the rewrite to exactly one occurrence, so that unrelated incidental
+/// repetitions of `<sub_name>[0]` elsewhere in the same template string are
+/// not silently rewritten.
 ///
 /// # Substring-rewrite divergence
+///
+/// `resolve_port_name` flattens user-written `Ident[NumberLiteral].member`
+/// shapes into a plain dotted-bracket string before the template is captured.
+/// This means that a port expression such as `vents[0].foo` on the LEFT side
+/// of a forall-Connect body
+///
+/// ```text
+/// forall v in vents: connect vents[0].foo -> v.bar
+/// ```
+///
+/// produces the captured template `"vents[0].foo"`, where the `[0]` is a
+/// *user-written* literal — not the placeholder substituted at runtime.
+/// For `i > 0`, `replacen(.., 1)` rewrites that literal to `vents[i].foo`,
+/// diverging from the resolved (non-deferred) Connect path, where
+/// `compile_connection` runs independently per element and the LEFT-side
+/// literal stays `vents[0].foo` for every `i`. This is a known, vanishingly
+/// rare edge case; it is documented here rather than guarded against at
+/// runtime.
 ///
 /// The compile-time placeholder element shape is `<sub>[0]` for the deferred
 /// capture path, mirroring the Constraint-arm's
