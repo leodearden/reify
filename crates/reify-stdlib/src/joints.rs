@@ -3050,6 +3050,72 @@ mod tests {
         );
     }
 
+    // ── transform_at on planar: pure-DOF tests (step-7) ──────────────────────
+
+    #[test]
+    fn transform_at_planar_pure_x_translation() {
+        // axis_x=[1,0,0], axis_y=[0,1,0], motion=[0.5m, 0m, 0rad]
+        // → translation=[0.5, 0, 0], identity rotation
+        let joint = planar_xy_joint();
+        let motion = Value::List(vec![
+            Value::length(0.5),
+            Value::length(0.0),
+            Value::angle(0.0),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.5, 0.0, 0.0],
+            1e-12,
+            "planar pure-X translation 0.5m",
+        );
+    }
+
+    #[test]
+    fn transform_at_planar_pure_y_translation() {
+        // axis_x=[1,0,0], axis_y=[0,1,0], motion=[0m, 0.3m, 0rad]
+        // → translation=[0, 0.3, 0], identity rotation
+        let joint = planar_xy_joint();
+        let motion = Value::List(vec![
+            Value::length(0.0),
+            Value::length(0.3),
+            Value::angle(0.0),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.3, 0.0],
+            1e-12,
+            "planar pure-Y translation 0.3m",
+        );
+    }
+
+    #[test]
+    fn transform_at_planar_pure_rotation() {
+        // axis_x=[1,0,0], axis_y=[0,1,0], motion=[0m, 0m, π/2 rad]
+        // normal = +X × +Y = +Z
+        // → translation=[0,0,0], rotation = quat(+Z, π/2) = (cos(π/4), 0, 0, sin(π/4))
+        let joint = planar_xy_joint();
+        let pi = std::f64::consts::PI;
+        let motion = Value::List(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::angle(pi / 2.0),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "planar pure-rotation π/2 about +Z",
+        );
+    }
+
     // ── planar constructor: validation surface (step-3) ───────────────────────
 
     #[test]
