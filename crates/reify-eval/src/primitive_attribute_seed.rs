@@ -93,19 +93,11 @@ pub fn seed_primitive_attributes(
     // edge arms (step-8) consume `edge_handles`.
     let _ = edge_handles;
     match op {
-        GeometryOp::Box { .. } => {
-            for (idx, &face_id) in face_handles.iter().enumerate() {
-                table.record(
-                    face_id,
-                    TopologyAttribute {
-                        feature_id: feature_id.clone(),
-                        role: Role::Side,
-                        local_index: idx as u32,
-                        user_label: None,
-                        mod_history: Vec::new(),
-                    },
-                );
-            }
+        // Box and Sphere have byte-identical face-seeding semantics — every
+        // face gets Role::Side with construction-order local_index. The
+        // shared helper avoids per-arm drift if the invariant changes.
+        GeometryOp::Box { .. } | GeometryOp::Sphere { .. } => {
+            record_all_faces_as_side(table, face_handles, feature_id);
             Ok(())
         }
         GeometryOp::Cylinder { .. } => {
@@ -135,6 +127,34 @@ pub fn seed_primitive_attributes(
         // seeding (step-8). Sweep / local-feature / boolean variants land
         // in tasks 5, 7, 8 of the PRD.
         _ => Ok(()),
+    }
+}
+
+/// Record every supplied face handle as `Role::Side` with construction-
+/// order `local_index` and the task-1 default metadata
+/// (`user_label = None`, `mod_history = Vec::new()`).
+///
+/// Shared by the Box and Sphere arms — neither primitive has a meaningful
+/// "Cap" classification (Box's 6 faces are all axis-aligned sides; Sphere
+/// has no caps), so all faces are uniformly `Role::Side`. PRD line 66
+/// permits construction-order tiebreak (TopExp order) for genuine
+/// geometric ties.
+fn record_all_faces_as_side(
+    table: &mut TopologyAttributeTable,
+    face_handles: &[GeometryHandleId],
+    feature_id: &FeatureId,
+) {
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        table.record(
+            face_id,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role: Role::Side,
+                local_index: idx as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
     }
 }
 
