@@ -5,77 +5,12 @@
 //!   2. Positive `prefer_stock` + `standard_sheet_thicknesses`
 //!   3. Negative: unresolved identifier produces an error
 
-use reify_compiler::stdlib_loader;
-use reify_types::{DimensionVector, ModulePath, Type, Value, ValueMap};
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Thin wrapper around `reify_test_support::compile_source_with_stdlib` for
 /// readability at call sites in this file.
 fn compile_payload_module(source: &str) -> reify_compiler::CompiledModule {
     reify_test_support::compile_source_with_stdlib(source)
-}
-
-/// Load the `std.stock` module from the cached stdlib, evaluate the named
-/// `pub fn () -> List<Length>` via `eval_expr`, and return the SI-metres
-/// values as a `Vec<f64>`.
-///
-/// Mirrors the `assert_length_constant` pattern in `standard_stock_tests.rs`
-/// so a future refactor that introduces `let` bindings inside either stock
-/// function does not silently drop bindings or yield `Undef`.
-fn lookup_stock_collection(name: &str) -> Vec<f64> {
-    let modules = stdlib_loader::load_stdlib();
-    let module = modules
-        .iter()
-        .find(|m| m.path == ModulePath::from_dotted("std.stock").unwrap())
-        .expect("std.stock module not found in stdlib");
-
-    let func = module
-        .functions
-        .iter()
-        .find(|f| f.name == name)
-        .unwrap_or_else(|| panic!("{} not found in std.stock", name));
-
-    assert!(func.is_pub, "{} should be pub", name);
-    assert!(
-        func.params.is_empty(),
-        "{} should take no params, got: {:?}",
-        name,
-        func.params
-    );
-
-    let call_expr = reify_types::CompiledExpr::user_function_call(
-        name.to_string(),
-        vec![],
-        Type::List(Box::new(Type::length())),
-    );
-    let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
-    let result = reify_expr::eval_expr(&call_expr, &ctx);
-
-    match result {
-        Value::List(elems) => elems
-            .iter()
-            .enumerate()
-            .map(|(i, elem)| match elem {
-                Value::Scalar { si_value, dimension } => {
-                    assert_eq!(
-                        *dimension,
-                        DimensionVector::LENGTH,
-                        "{} element {} should have LENGTH dimension",
-                        name,
-                        i
-                    );
-                    *si_value
-                }
-                other => panic!(
-                    "{} element {} should be Value::Scalar, got {:?}",
-                    name, i, other
-                ),
-            })
-            .collect(),
-        other => panic!("{} should return Value::List, got {:?}", name, other),
-    }
 }
 
 // ── Test 1: positive discrete_set + standard_bolt_lengths ────────────────────
