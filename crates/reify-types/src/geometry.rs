@@ -1893,6 +1893,110 @@ mod tests {
         assert_eq!(a, a_clone);
     }
 
+    // --- task 5a (#2573): SweepOpHistoryRecords (single-parent sweep ops) ---
+
+    #[test]
+    fn sweep_op_history_records_default_is_empty() {
+        let records = SweepOpHistoryRecords::default();
+        assert!(records.face_modified.is_empty());
+        assert!(records.face_generated.is_empty());
+        assert!(records.face_deleted.is_empty());
+        assert!(records.edge_modified.is_empty());
+        assert!(records.edge_generated.is_empty());
+        assert!(records.edge_deleted.is_empty());
+        assert!(records.start_cap_face_indices.is_empty());
+        assert!(records.end_cap_face_indices.is_empty());
+    }
+
+    #[test]
+    fn sweep_op_history_records_construct_with_all_vec_fields() {
+        // Smoke-test that every field is a populated `Vec<...>` of the expected
+        // record type. Mirrors the BooleanOpHistoryRecords field shape but with
+        // explicit cap-index lists for caps (Modified/Generated alone do not
+        // identify which faces are caps; the cap lists come from
+        // BRepBuilderAPI_Sweep::FirstShape()/LastShape()).
+        let records = SweepOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 1,
+                result_subshape_index: 2,
+            }],
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 7,
+            }],
+            face_deleted: vec![DeletedRecord {
+                parent_index: 0,
+                parent_subshape_index: 9,
+            }],
+            edge_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 3,
+                result_subshape_index: 4,
+            }],
+            edge_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 5,
+                result_subshape_index: 6,
+            }],
+            edge_deleted: vec![DeletedRecord {
+                parent_index: 0,
+                parent_subshape_index: 8,
+            }],
+            start_cap_face_indices: vec![5, 6],
+            end_cap_face_indices: vec![7],
+        };
+        assert_eq!(records.face_modified.len(), 1);
+        assert_eq!(records.face_generated.len(), 1);
+        assert_eq!(records.face_deleted.len(), 1);
+        assert_eq!(records.edge_modified.len(), 1);
+        assert_eq!(records.edge_generated.len(), 1);
+        assert_eq!(records.edge_deleted.len(), 1);
+        assert_eq!(records.start_cap_face_indices, vec![5_u32, 6]);
+        assert_eq!(records.end_cap_face_indices, vec![7_u32]);
+    }
+
+    #[test]
+    fn sweep_op_history_records_clone_preserves_value() {
+        let records = SweepOpHistoryRecords {
+            face_modified: Vec::new(),
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 7,
+            }],
+            face_deleted: Vec::new(),
+            edge_modified: Vec::new(),
+            edge_generated: Vec::new(),
+            edge_deleted: Vec::new(),
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+        };
+        let cloned = records.clone();
+        assert_eq!(records, cloned);
+        assert_eq!(cloned.start_cap_face_indices, vec![5_u32]);
+        assert_eq!(cloned.end_cap_face_indices, vec![6_u32]);
+    }
+
+    #[test]
+    fn sweep_op_history_records_full_revolution_has_empty_cap_lists() {
+        // For a full-2π revolve, FirstShape() and LastShape() reference the
+        // same closed surface; the FFI layer leaves both cap lists empty in
+        // that case. The record type allows expressing this directly.
+        let records = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 0,
+            }],
+            ..SweepOpHistoryRecords::default()
+        };
+        assert!(records.start_cap_face_indices.is_empty());
+        assert!(records.end_cap_face_indices.is_empty());
+        assert_eq!(records.face_generated.len(), 1);
+    }
+
     #[test]
     fn mod_entry_constructs_with_feature_id_and_split_index() {
         let entry = ModEntry {
