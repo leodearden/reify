@@ -140,6 +140,39 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         ])),
                     }
                 }
+                // 3-DOF planar joint: motion_vars is a Value::List of 3 elements
+                // [x_length, y_length, theta_angle]. Return identity for now;
+                // the actual composition is added in step-8 after the pure-DOF
+                // tests are RED in step-7.
+                "planar" => {
+                    let items = match &args[1] {
+                        Value::List(v) if v.len() == 3 => v.clone(),
+                        _ => return Some(Value::Undef),
+                    };
+                    // Validate motion-variable dimensions via helpers.
+                    match length_input(&items[0]) {
+                        Some(_) => {},
+                        None => return Some(Value::Undef),
+                    };
+                    match length_input(&items[1]) {
+                        Some(_) => {},
+                        None => return Some(Value::Undef),
+                    };
+                    match trig_input(&items[2]) {
+                        Some(_) => {},
+                        None => return Some(Value::Undef),
+                    };
+                    // Stub: return identity transform regardless of motion values.
+                    // The actual composition (T_x · T_y · T_theta) is added in step-8.
+                    Value::Transform {
+                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(0.0),
+                            Value::length(0.0),
+                            Value::length(0.0),
+                        ])),
+                    }
+                }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
