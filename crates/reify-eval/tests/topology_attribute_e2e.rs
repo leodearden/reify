@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use reify_eval::propagate_attributes_via_brepalgoapi_history;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpParents, CapKind, FeatureId, GeometryHandleId, GeometryOp, ModEntry,
+    BooleanOpParents, FeatureId, GeometryHandleId, GeometryOp,
     RealizationNodeId, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
@@ -85,10 +85,8 @@ fn seed_face_attributes(
 /// (3) Call `kernel.boolean_fuse_with_history(left, right)` →
 ///     `(result_handle, history)`.
 /// (4) Pre-condition: assert every seeded attribute round-trips via
-///     `lookup`; both `Role` variants and `FeatureId::From` impls work;
-///     `Vec::new()` mod_history is accepted; CapKind+ModEntry constructors
-///     work (touched here for the type-system smoke test even though
-///     the propagation path doesn't populate them in task 1).
+///     `lookup`; `Role::Side` and `FeatureId::From` impls work;
+///     `Vec::new()` mod_history is accepted.
 /// (5) Run `propagate_attributes_via_brepalgoapi_history(...)`.
 /// (6) Post-condition assertions exercising propagation:
 ///     (a) `table.len()` increased.
@@ -220,22 +218,6 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
         assert!(attr.mod_history.is_empty());
     }
 
-    // Both Role variants and CapKind+ModEntry constructors are
-    // touched here so the integration test pins the public API of the
-    // task-1 data-model surface even though the propagation path itself
-    // doesn't populate `Cap` or `mod_history` in task 1.
-    let _cap_top = Role::Cap(CapKind::Top);
-    let _cap_bottom = Role::Cap(CapKind::Bottom);
-    let _new_edge = Role::NewEdge;
-    let _mod_entry = ModEntry {
-        splitting_feature_id: FeatureId::new("SomeFeature#realization[0]"),
-        split_index: 0,
-    };
-    assert_ne!(
-        Role::Cap(CapKind::Top),
-        Role::Cap(CapKind::Bottom),
-        "CapKind variants must be distinguishable",
-    );
 
     // ─── (3) Run boolean_fuse_with_history ───────────────────────────
     let (result_handle, history) = kernel
