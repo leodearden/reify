@@ -428,11 +428,12 @@ pub struct Engine {
     /// production builds carry no field, no allocation, no clone, and no
     /// drop overhead. This deliberately deviates from the `last_*` precedent
     /// (which keeps fields always-present for identical struct layout); here
-    /// the only write sites are already equivalently-gated accessors
-    /// (`set_panic_on_eval` / `remove_panic_on_eval` / `clear_panic_on_eval`
-    /// in `engine_admin.rs`) so gating the field itself is safe and the
-    /// hygiene benefit (no test-only state in production binaries) outweighs
-    /// the trivial cfg overhead. See task #2555 rationale.
+    /// the only write sites are the (equivalently-gated) constructor init in
+    /// `Engine::with_prelude` and the accessors `set_panic_on_eval` /
+    /// `remove_panic_on_eval` / `clear_panic_on_eval` in `engine_admin.rs`,
+    /// so gating the field itself is safe and the hygiene benefit (no
+    /// test-only state in production binaries) outweighs the trivial cfg
+    /// overhead. See task #2555 rationale.
     ///
     /// The read site (`let force_panic = …` + `if force_panic { panic!(…) }`)
     /// in `evaluate_let_bindings` (`engine_eval.rs`) is gated with the same
