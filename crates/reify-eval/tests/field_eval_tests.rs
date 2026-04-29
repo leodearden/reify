@@ -1247,3 +1247,92 @@ fn eval_sampled_field_elaborates_to_sampled_field_value() {
         );
     }
 }
+
+// ── Task 2341 step-11: 1D sample dispatch on a Sampled field ───────────────
+//
+// Pins the v0.2 contract for `sample(f, x)` when `f.lambda` is
+// `Value::SampledField`: the runtime sampled-field helper extracts the
+// scalar query coord, calls `interp::interpolate_1d` with Linear method,
+// and wraps the result in `Value::Real` for a dimensionless codomain.
+//
+// The grid is [0.0m, 1.0m, 2.0m] with data [0.0, 1.0, 2.0]. Linear
+// interpolation midway between nodes returns the linear midpoint;
+// querying exactly on a node returns the node value.
+
+/// Linear midpoint between data nodes. `f` over `[0.0m, 2.0m]` spacing
+/// `1.0m` data `[0.0, 1.0, 2.0]` Linear: `sample(f, 0.5m)` ≈ 0.5.
+#[test]
+fn sample_sampled_field_1d_linear_interpolation_returns_expected_value() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 0.5).abs() < 1e-12,
+            "sample(f, 0.5m) expected 0.5 (linear midpoint), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.5).abs() < 1e-12,
+            "sample(f, 0.5m) expected 0.5 (linear midpoint), got {si_value}"
+        ),
+        other => panic!("expected Value::Real(0.5), got: {:?}", other),
+    }
+}
+
+/// Exact-on-node sample. `sample(f, 1.0m)` should return the data value
+/// at the midpoint node, i.e. `1.0`.
+#[test]
+fn sample_sampled_field_1d_at_grid_node_returns_exact_sample() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 1.0m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 1.0).abs() < 1e-12,
+            "sample(f, 1.0m) expected 1.0 (exact node), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 1.0).abs() < 1e-12,
+            "sample(f, 1.0m) expected 1.0 (exact node), got {si_value}"
+        ),
+        other => panic!("expected Value::Real(1.0), got: {:?}", other),
+    }
+}
