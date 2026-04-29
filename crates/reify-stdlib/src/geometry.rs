@@ -3146,6 +3146,76 @@ mod tests {
         );
     }
 
+    /// 1e-24 gate boundary (just above): r_norm_sq ≈ 1.001e-24 must be accepted.
+    ///
+    /// Pins the tight upper side of the 1e-24 gate. A quaternion with
+    /// r_norm_sq = 1.001e-24 (0.1% above the threshold) must succeed — not
+    /// return Undef — for transform_log, transform_inverse, and transform_compose.
+    /// Together with `degenerate_quat_norm_just_below_1e24_gate_returns_undef`,
+    /// any off-by-a-percentage-point refactor of the gate will fail at least
+    /// one of these two tests (the 1e-20 test above would not catch that).
+    #[test]
+    fn degenerate_quat_norm_just_above_1e24_gate_accepted() {
+        // w = sqrt(1.001e-24) ⟹ r_norm_sq = w² ≈ 1.001e-24 (just above gate).
+        let w = (1.001e-24_f64).sqrt();
+        let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
+        let t = Value::Transform {
+            rotation: Box::new(small_quat),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        assert!(
+            !eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            "transform_log must accept r_norm_sq≈1.001e-24 (just above 1e-24 gate)"
+        );
+        assert!(
+            !eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
+            "transform_inverse must accept r_norm_sq≈1.001e-24 (just above 1e-24 gate)"
+        );
+        assert!(
+            !eval_builtin("transform_compose", &[t.clone(), t]).is_undef(),
+            "transform_compose must accept r_norm_sq≈1.001e-24 (just above 1e-24 gate) on both operands"
+        );
+    }
+
+    /// 1e-24 gate boundary (just below): r_norm_sq ≈ 0.999e-24 must return Undef.
+    ///
+    /// Pins the tight lower side of the 1e-24 gate. A quaternion with
+    /// r_norm_sq = 0.999e-24 (0.1% below the threshold) must return Undef
+    /// for transform_log, transform_inverse, and transform_compose.
+    /// Complements `degenerate_quat_norm_just_above_1e24_gate_accepted` so
+    /// together the pair catches any off-by-a-percentage-point refactor of
+    /// the gate that the 1e-20 / zero tests above would miss.
+    #[test]
+    fn degenerate_quat_norm_just_below_1e24_gate_returns_undef() {
+        // w = sqrt(0.999e-24) ⟹ r_norm_sq = w² ≈ 0.999e-24 (just below gate).
+        let w = (0.999e-24_f64).sqrt();
+        let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
+        let t = Value::Transform {
+            rotation: Box::new(small_quat),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        assert!(
+            eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            "transform_log must reject r_norm_sq≈0.999e-24 (just below 1e-24 gate)"
+        );
+        assert!(
+            eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
+            "transform_inverse must reject r_norm_sq≈0.999e-24 (just below 1e-24 gate)"
+        );
+        assert!(
+            eval_builtin("transform_compose", &[t.clone(), t]).is_undef(),
+            "transform_compose must reject r_norm_sq≈0.999e-24 (just below 1e-24 gate) on both operands"
+        );
+    }
+
     /// transform_log with ANGLE-dimension translation → Undef (matches transform_exp gate).
     ///
     /// transform_exp rejects twist.linear with ANGLE dimension (see
