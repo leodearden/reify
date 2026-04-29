@@ -348,6 +348,15 @@ pub struct CompiledForallTemplate {
 /// `Instantiation` (constraint-inst) and `Chain` shapes retain the
 /// compile-time silent-skip semantics — see `forall_elaborate.rs` info
 /// diagnostics.
+//
+// `large_enum_variant` allow: the `Constraint` variant carries a `CompiledExpr`
+// (~352 bytes) while `Connect` is far smaller (~121 bytes). Boxing `body_expr`
+// to satisfy the lint would impose a heap indirection on every per-element
+// runtime re-emission, which is the hot path. The enum is held in a
+// `Vec<CompiledForallTemplate>` whose count is bounded by the number of
+// `forall` decls in the source (typically O(1) per structure), so the
+// per-instance memory cost is dwarfed by per-element constraint emission.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum CompiledForallBody {
     /// Per-element constraint body: `forall v in coll: constraint <expr> [where <cond>]`.

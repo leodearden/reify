@@ -197,7 +197,7 @@ fn edit_param_count_decrease_removes_stale_forall_constraints_and_changes_finger
     let _ = engine.eval(&module);
     let initial_snap = engine.snapshot().expect("snapshot after initial eval");
     assert!(
-        collect_forall_labels(&initial_snap).is_empty(),
+        collect_forall_labels(initial_snap).is_empty(),
         "expected zero forall@* constraints when count is Undef"
     );
 
@@ -208,7 +208,7 @@ fn edit_param_count_decrease_removes_stale_forall_constraints_and_changes_finger
     let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
     let fingerprint_3 = snap_3.topology_fingerprint;
     assert_eq!(
-        collect_forall_labels(&snap_3),
+        collect_forall_labels(snap_3),
         vec![
             "forall@v[0]".to_string(),
             "forall@v[1]".to_string(),
@@ -222,7 +222,7 @@ fn edit_param_count_decrease_removes_stale_forall_constraints_and_changes_finger
         .edit_param(n_id.clone(), Value::Int(1))
         .expect("edit_param to 1 should succeed");
     let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
-    let labels_1 = collect_forall_labels(&snap_1);
+    let labels_1 = collect_forall_labels(snap_1);
     assert_eq!(
         labels_1,
         vec!["forall@v[0]".to_string()],
@@ -259,7 +259,7 @@ fn edit_param_count_decrease_removes_stale_forall_constraints_and_changes_finger
         .edit_param(n_id, Value::Int(0))
         .expect("edit_param to 0 should succeed");
     let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
-    let labels_0 = collect_forall_labels(&snap_0);
+    let labels_0 = collect_forall_labels(snap_0);
     assert!(
         labels_0.is_empty(),
         "expected zero forall@* constraints after edit_param to Int(0) (got {:?})",

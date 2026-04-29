@@ -1392,6 +1392,13 @@ impl Engine {
         // ── Collection count re-elaboration phase ─────────────────────
         // If any structure_controlling cell is a collection count cell and
         // its value changed, add/remove instances to match the new count.
+        //
+        // Task 2629 hooks forall statement-form runtime re-elaboration into
+        // this same loop body (see the inner `task 2629: forall runtime
+        // re-elaboration` block below). The compile-time deferral contract
+        // for forall over deferred-count collections is anchored in
+        // `reify-compiler/src/forall_elaborate.rs`'s module docstring; that
+        // contract names this engine_edit hook point explicitly.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             for col_sub in &collection_subs {

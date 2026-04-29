@@ -516,10 +516,10 @@ impl CompiledExpr {
                 captures,
             } => {
                 let new_param_ids: Vec<ValueCellId> =
-                    param_ids.into_iter().map(|id| f(id)).collect();
+                    param_ids.into_iter().map(&mut *f).collect();
                 let new_body = body.map_value_refs(f);
                 let new_captures: Vec<ValueCellId> =
-                    captures.into_iter().map(|id| f(id)).collect();
+                    captures.into_iter().map(&mut *f).collect();
                 CompiledExpr::lambda(params, new_param_ids, new_body, new_captures, result_type)
             }
             CompiledExprKind::ListLiteral(elements) => {
