@@ -251,6 +251,19 @@ pub enum DiagnosticCode {
     /// Emitted when a field declaration uses the `imported { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
     FieldImportedV02,
+    /// Origin: `crates/reify-expr/src/sampled.rs::sample_at_point`.
+    /// Emitted as a `Severity::Warning` once per Sampled field per session
+    /// when a `sample(field, point)` query falls outside the configured
+    /// `BoundingBox` bounds; the result is `Value::Undef`.
+    ///
+    /// Canonical message form:
+    /// `"sampled field '<name>' query is out of bounds; returning Undef"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FIELD_OUT_OF_BOUNDS`.
+    /// Once-per-field-per-session emission is enforced by an `AtomicBool`
+    /// `oob_emitted` flag on the runtime `SampledField` value
+    /// (see `crates/reify-types/src/value.rs::SampledField`).
+    FieldOutOfBounds,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
