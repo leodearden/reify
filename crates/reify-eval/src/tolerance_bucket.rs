@@ -81,4 +81,17 @@ mod tests {
         assert!(bucket.is_empty());
         assert!(bucket.lookup(0.01).is_none());
     }
+
+    #[test]
+    fn single_insert_partial_order_satisfies_at_or_above_cached_tol() {
+        let mut bucket = ToleranceBucket::<&str>::new();
+        bucket.insert(0.01, "A");
+        // equal cached_tol satisfies (rule is <=)
+        assert_eq!(bucket.lookup(0.01), Some(&"A"));
+        // looser request hits tighter cached entry
+        assert_eq!(bucket.lookup(0.1), Some(&"A"));
+        // tighter request than cached entry — no satisfaction
+        assert!(bucket.lookup(0.001).is_none());
+        assert_eq!(bucket.len(), 1);
+    }
 }
