@@ -1482,4 +1482,22 @@ mod tests {
             "dim must return Undef for a planar driving joint"
         );
     }
+
+    /// `sweep(mechanism, planar_joint, range, steps)` returns Undef.
+    ///
+    /// Pins the user-facing contract that sweeping a mechanism with a planar
+    /// driver returns Undef cleanly (not a partially-built snapshot list).
+    /// The Undef originates from driving_joint_kind short-circuiting at the
+    /// joint-kind guard before any snapshot work is attempted.
+    #[test]
+    fn sweep_with_planar_returns_undef() {
+        let mech = eval_builtin("mechanism", &[]);
+        let planar = planar_xy_joint();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(5);
+        assert!(
+            eval_builtin("sweep", &[mech, planar, r, n]).is_undef(),
+            "sweep must return Undef for a planar driving joint"
+        );
+    }
 }
