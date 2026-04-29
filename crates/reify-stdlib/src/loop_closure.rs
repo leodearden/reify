@@ -26,12 +26,14 @@
 //! this single canonical ordering.
 //!
 //! Jacobian strategy (v0.2 task 2 MVP): chain Jacobians use central-difference
-//! finite difference ([`chain_jacobian_fd`]).  This is correct for ALL joint
-//! kinds — including future spherical/cylindrical/planar — and immediately
-//! satisfies the PRD's "FD fallback" requirement.  The analytic per-joint
-//! twist column is exposed via [`per_joint_jacobian_local`] for future
-//! adjoint-transport composition; that optimisation is out of scope for this
-//! task and tracked as a follow-up design note.
+//! finite difference ([`chain_jacobian_fd`]).  This is correct for all joint
+//! kinds that [`value_for_joint`] handles (currently prismatic, revolute,
+//! coupling, fixed); planar, spherical, and cylindrical are deferred to PRD
+//! v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback for multi-DOF
+//! kinds") because their f64-per-joint scalar representation is insufficient.
+//! The analytic per-joint twist column is exposed via [`per_joint_jacobian_local`]
+//! for future adjoint-transport composition; that optimisation is out of scope
+//! for this task and tracked as a follow-up design note.
 //!
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
 //! design rationale and convergence-tolerance defaults (1 µm position, 1 µrad
@@ -228,8 +230,11 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// `chain_transform` at both perturbed values, and computes
 /// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
 /// the central-difference column.  This is symmetric-error O(ε²) and works
-/// for ALL joint kinds the chain contains (the analytic per-joint accessor
-/// is plumbed separately in [`per_joint_jacobian_local`]).
+/// for all joint kinds that [`value_for_joint`] handles (currently prismatic,
+/// revolute, coupling, fixed); chains containing planar/spherical/cylindrical
+/// return `None` because `value_for_joint` has no arm for those multi-DOF
+/// kinds yet (deferred to PRD task 2 / taskmaster #2670). The analytic
+/// per-joint accessor is plumbed separately in [`per_joint_jacobian_local`].
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
