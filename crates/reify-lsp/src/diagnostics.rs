@@ -947,6 +947,94 @@ structure S {
         }
     }
 
+    // --- forall per-element constraint violation regression lock ---
+
+    /// Regression-lock test: a `forall` constraint that fails for every element of its
+    /// iteration set must surface exactly one ERROR diagnostic per element, with the
+    /// element index encoded in the diagnostic message as `forall@<var>[<idx>]`.
+    ///
+    /// This pins the end-to-end contract for PRD criterion 10
+    /// (docs/prds/forall-statement-form.md:45): the compiler emits one
+    /// `CompiledConstraint` per element with label `forall@v[<idx>]`
+    /// (`crates/reify-compiler/src/forall_elaborate.rs:244,312`), and the LSP
+    /// surfaces that label verbatim via `format!("constraint violated: {}", label)`
+    /// in `compute_diagnostics_with_state`.
+    ///
+    /// The compiler-layer counterpart is `forall_constraint_label_encodes_element_index`
+    /// (`crates/reify-compiler/tests/forall_statement_lower_tests.rs:273-318`).
+    /// Together the two tests pin the contract end-to-end.
+    #[test]
+    fn forall_per_element_constraint_violation_surfaces_element_index() {
+        let source = "structure S {\n    forall v in [1, 2, 3]: constraint v > 100\n}";
+        let mut state = EvalState::new();
+        let uri = test_uri();
+
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        // Collect ERROR diagnostics whose message encodes the forall element index.
+        let forall_violation_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.starts_with("constraint violated: forall@v[")
+            })
+            .collect();
+
+        // All three elements (indices 0, 1, 2) must appear — one diagnostic each.
+        assert_eq!(
+            forall_violation_diags.len(),
+            3,
+            "expected exactly 3 forall per-element violation diagnostics (one per index 0..=2); \
+             got {}: {:#?}",
+            forall_violation_diags.len(),
+            forall_violation_diags
+        );
+
+        // Each index must be present exactly once.
+        for idx in 0..3usize {
+            let substr = format!("forall@v[{}]", idx);
+            let count = forall_violation_diags
+                .iter()
+                .filter(|d| d.message.contains(&substr))
+                .count();
+            assert_eq!(
+                count, 1,
+                "expected exactly one diagnostic containing \"{}\"; got {}; diagnostics: {:#?}",
+                substr, count, forall_violation_diags
+            );
+        }
+
+        // Each per-element diagnostic must carry source == "reify".
+        for diag in &forall_violation_diags {
+            assert_eq!(
+                diag.source,
+                Some("reify".to_string()),
+                "per-element forall violation diagnostic must have source == \"reify\"; got: {:#?}",
+                diag
+            );
+        }
+
+        // Sanity: constraint violations must NOT route through the freshness channel
+        // (arch §9.3); no `computation-failed` diagnostic may be present.
+        let computation_failed_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code
+                    == Some(lsp_types::NumberOrString::String(
+                        "computation-failed".to_string(),
+                    ))
+            })
+            .collect();
+        assert!(
+            computation_failed_diags.is_empty(),
+            "forall constraint violations must NEVER produce 'computation-failed' diagnostics \
+             (arch §9.3 separation); got: {:#?}",
+            computation_failed_diags
+        );
+    }
+
     // --- step-5 regression lock: eval diagnostics never use constraint-violation format ---
 
     /// Regression lock — circular let-binding emitter: `eval()` must never emit diagnostics
