@@ -1,4 +1,6 @@
-//! Phase A of the `auto` type-parameter resolution algorithm.
+//! Phases A and B of the `auto` type-parameter resolution algorithm.
+//!
+//! # Phase A — Candidate Enumeration
 //!
 //! Implements the **candidate enumeration** step described in
 //! `docs/prds/auto-type-param-resolution.md` and `docs/reify-language-spec.md`
@@ -9,21 +11,45 @@
 //! [`reify_types::DiagnosticCode::AutoTypeParamPoolOverflow`] error is emitted
 //! and the (alphabetically-first) capped list is returned to the caller.
 //!
-//! # Scope
+//! # Phase B — Per-Candidate Feasibility Filter
 //!
-//! Phase A is delivered as a **pure utility module**: the parser does not yet
-//! accept `auto: TraitName` syntax inside `type_arg_list`
+//! Filters the candidates produced by Phase A down to those that do not
+//! provably falsify any of the parameterized template's **top-level
+//! (unguarded) constraints**. Public surface:
+//!
+//! - [`filter_feasible_candidates`] — core filter function.
+//! - [`FeasibilityResult`] — two-arm result enum (`Empty` / `Feasible`).
+//! - [`RejectedCandidate`] — candidate name + the violated constraint ids.
+//!
+//! Feasibility predicate (architecture §2.5 monotonic-feasible):
+//! `feasible(c) ≡ satisfaction != Violated`. Both `Satisfied` and
+//! `Indeterminate` count as feasible; only `Violated` causes rejection.
+//!
+//! Explicit scope cuts for Phase B:
+//! 1. **Top-level constraints only.** `template.constraints` is checked;
+//!    guarded-group constraints are NOT collected here (that lives in
+//!    `reify-eval`; guard-aware filtering is a follow-up task).
+//! 2. **No type-substitution mechanics.** With an empty `ValueMap`, the
+//!    candidate name does not yet vary constraint outcomes. A future task
+//!    will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
+//!    and supply per-candidate resolved defaults.
+//! 3. **Monotonic `Indeterminate = feasible`.** Per architecture §2.5,
+//!    `Undef` cells produce `Indeterminate` — this is NOT a rejection signal.
+//!    Adding values can only flip `Indeterminate → Satisfied/Violated`, never
+//!    the reverse, preserving the architecture's monotonicity guarantee.
+//!
+//! # Common Scope
+//!
+//! Both phases are delivered as **pure utility modules**: the parser does not
+//! yet accept `auto: TraitName` syntax inside `type_arg_list`
 //! (`tree-sitter-reify/grammar.js:601-605` only permits `$.type_expr`), so
 //! end-to-end source-level resolution is impossible until a follow-up parser
-//! task lands the new syntax. This module's [`enumerate_candidates`] function
-//! and [`CandidateEnumeration`] result enum are unit-tested against
-//! compiler-built `template_registry`/`trait_registry` registries; a future
-//! task will wire them into the compile pipeline once the parser/AST learn
-//! `auto:` in type-arg position.
+//! task lands the new syntax. Functions in this module are unit-tested against
+//! compiler-built registries; a future task will wire them into the compile
+//! pipeline once the parser/AST learn `auto:` in type-arg position.
 //!
-//! Phases B (per-candidate feasibility filter), C (selection logic /
-//! strict-vs-free), and D (topology trigger) are explicitly deferred to
-//! follow-up tasks.
+//! Phases C (selection logic / strict-vs-free) and D (topology trigger) are
+//! explicitly deferred to follow-up tasks.
 
 use std::collections::HashMap;
 
