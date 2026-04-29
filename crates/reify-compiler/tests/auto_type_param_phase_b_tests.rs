@@ -141,3 +141,42 @@ fn filter_accepts_candidate_when_all_constraints_satisfied() {
     );
     let _ = cnid; // Used to document which constraint is in the template.
 }
+
+// ─── step-7: any-Violated → rejected with violated ids ────────────────────
+
+/// When any constraint returns `Violated`, the candidate is rejected and
+/// the violated constraint node id is recorded in
+/// `RejectedCandidate::violated_constraints`.
+///
+/// Pins BOTH the rejection arm AND the specific content of the
+/// `violated_constraints` field. A regression that (a) accepted a Violated
+/// candidate or (b) recorded the wrong constraint id would fail loudly.
+#[test]
+fn filter_rejects_candidate_when_any_constraint_violated() {
+    let cnid = ConstraintNodeId::new("Bearing", 0);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("Bearing")
+        .constraint("Bearing", 0, None, expr)
+        .build();
+    // Default Violated: constraint 0 will be Violated.
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(
+        &["ORingSeal".to_string()],
+        &template,
+        &checker,
+        functions,
+    );
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Empty {
+            rejected: vec![RejectedCandidate {
+                name: "ORingSeal".to_string(),
+                violated_constraints: vec![cnid],
+            }],
+        },
+        "Violated constraint → candidate rejected with the violated constraint id recorded"
+    );
+}
