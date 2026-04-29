@@ -160,7 +160,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn insert_panics_on_infinite_tolerance() {
         let mut bucket = ToleranceBucket::<u32>::new();
         bucket.insert(f64::INFINITY, 0u32);
@@ -191,7 +191,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn insert_panics_on_nan_tolerance() {
         let mut bucket = ToleranceBucket::<u32>::new();
         bucket.insert(f64::NAN, 0u32);
@@ -199,7 +199,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn insert_panics_on_negative_tolerance() {
         let mut bucket = ToleranceBucket::<u32>::new();
         bucket.insert(-1.0e-3, 0u32);
@@ -207,7 +207,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn lookup_panics_on_nan_tolerance() {
         let mut bucket = ToleranceBucket::<u32>::new();
         bucket.insert(0.01, 42u32);
