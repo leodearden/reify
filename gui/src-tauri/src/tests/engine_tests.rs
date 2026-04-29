@@ -1,9 +1,10 @@
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_violating,
-    bracket_source_with_width, warn_source_with_unknown_port_type,
+    CountingSubscriberBuilder, FailingMockGeometryKernel, MockGeometryKernel, bracket_source,
+    bracket_source_violating, bracket_source_with_width, warn_source_with_unknown_port_type,
     warn_source_with_unknown_port_type_with_width,
 };
 use reify_compiler::find_template;
@@ -777,6 +778,56 @@ fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
         j2_desc.is_some(),
         "j2 should be driven by p2; joint descriptors: {:?}",
         m2_desc.joints
+    );
+}
+
+// ---- snapshot/bind telemetry tests (steps 4-5, 6-7) --------------------------
+
+/// Source for step-4/5: snapshot with an empty bind list.
+/// `snapshot(m1, [])` is a textual snapshot() match but contributes zero bind
+/// pairs — the no-pairs debug event should fire once.
+const EMPTY_BIND_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j1)
+    let snap = snapshot(m1, [])
+}
+"#;
+
+#[test]
+fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
+    // Step 4 RED: snapshot(m1, []) is a textual match for snapshot() but the
+    // bind list is empty, so zero pairs are contributed.  After step-5's impl,
+    // collect_snapshot_bind_pairs must emit exactly one DEBUG event (the
+    // "zero bind pairs" telemetry hook).  Currently emits none → RED.
+    let mut session = make_session();
+    session
+        .load_from_source(EMPTY_BIND_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load empty-bind-list source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event for the zero-pair snapshot; got {}",
+        debug_count
+    );
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events; got {}",
+        warn_count
     );
 }
 
