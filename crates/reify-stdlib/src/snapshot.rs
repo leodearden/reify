@@ -159,4 +159,31 @@ mod tests {
         let world = eval_builtin("world", &[]);
         assert!(eval_builtin("bind", &[world, v]).is_undef());
     }
+
+    // ── snapshot() empty case: pin canonical Snapshot Map shape ───────────
+
+    /// `snapshot(empty_mechanism, [])` returns the canonical empty
+    /// Snapshot: a `Value::Map` with `kind="snapshot"` and `bodies` =
+    /// empty `Value::List`. Pins the shape so subsequent FK + accessor
+    /// steps can rely on these fields existing.
+    #[test]
+    fn snapshot_on_empty_mechanism_returns_empty_snapshot_map() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let result = eval_builtin("snapshot", &[m0, Value::List(vec![])]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("snapshot".to_string())),
+            "kind field should be 'snapshot'"
+        );
+        assert_eq!(
+            map.get(&Value::String("bodies".to_string())),
+            Some(&Value::List(vec![])),
+            "bodies field should be an empty List"
+        );
+    }
 }
