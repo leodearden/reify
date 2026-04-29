@@ -550,4 +550,93 @@ mod tests {
         );
         assert_eq!(jp.len(), 2, "joint_parents should have exactly two entries");
     }
+
+    // ── body() 5-arg form (explicit pose) ────────────────────────────────
+
+    /// Build a non-identity pose: zero rotation, +1mm x-translation. Used
+    /// to verify the 5-arg form's pose argument is threaded verbatim.
+    fn pose_translate_1mm_x() -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.001),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        }
+    }
+
+    /// `body(m, solid, at, parent, pose)` with the 5-arg form threads
+    /// the explicit pose through to the body record.
+    #[test]
+    fn body_five_args_records_explicit_pose() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+        let world = eval_builtin("world", &[]);
+        let custom = pose_translate_1mm_x();
+
+        let m1 = eval_builtin(
+            "body",
+            &[m0, solid.clone(), j.clone(), world, custom.clone()],
+        );
+
+        let map = match m1 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        let bodies = match map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {:?}", other),
+        };
+        let body = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("expected body record Map, got {:?}", other),
+        };
+        assert_eq!(
+            body.get(&Value::String("pose".to_string())),
+            Some(&custom),
+            "5-arg body() threads the supplied pose through to the body record"
+        );
+    }
+
+    /// 5-arg body() with a non-Transform pose argument returns Undef.
+    #[test]
+    fn body_five_args_non_transform_pose_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+        let world = eval_builtin("world", &[]);
+
+        // Real, Int, String, List, Map all reject as poses.
+        for bad_pose in [
+            Value::Real(0.0),
+            Value::Int(1),
+            Value::String("not a transform".to_string()),
+            Value::List(vec![]),
+            Value::Map(BTreeMap::new()),
+        ] {
+            let result = eval_builtin(
+                "body",
+                &[
+                    m0.clone(),
+                    solid.clone(),
+                    j.clone(),
+                    world.clone(),
+                    bad_pose.clone(),
+                ],
+            );
+            assert!(
+                result.is_undef(),
+                "pose={:?} should produce Undef, got {:?}",
+                bad_pose,
+                result
+            );
+        }
+    }
 }
