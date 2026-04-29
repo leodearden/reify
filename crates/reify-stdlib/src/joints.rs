@@ -402,6 +402,102 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             make_coupling(args[0].clone(), Value::Real(ratio_f64), offset)
         }
+        // ── Coupling specialisations (PRD task 8) ──────────────────────────────
+        //
+        // `screw`, `gear`, and `rack_and_pinion` are thin parameterised wrappers
+        // around `couple()`.  Each computes a dimensionless f64 ratio from its
+        // domain parameters and delegates to `couple(parent, Value::Real(ratio))`.
+        // Parent-kind validation (must be prismatic/revolute, no nested coupling,
+        // etc.) is intentionally delegated to `couple()` — if `couple` returns
+        // `Value::Undef`, the wrapper propagates that Undef unchanged.
+        // See design decisions in the task-2676 plan.json.
+        //
+        // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
+
+        /// `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
+        ///
+        /// `lead` (metres per 2π coupling-input units) is converted to a
+        /// dimensionless ratio via `lead_si / (2π)` and delegated to `couple()`.
+        /// Parent validation (must be prismatic/revolute, no nested coupling) is
+        /// owned by `couple()`.  PRD task 8: `Coupling(rotation, translation, ratio = lead / 2π)`.
+        "screw" => {
+            // Arity: exactly 2 args (parent, lead).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Parse lead as a LENGTH value (SI metres).
+            let lead_si = match length_input(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Compute the dimensionless ratio: lead / (2π).
+            let ratio = lead_si / (2.0 * std::f64::consts::PI);
+            // Defense-in-depth: length_input already rejects non-finite inputs,
+            // so this guard should never trigger, but we include it for safety.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
+        /// `gear(parent, teeth_a, teeth_b)` — wrap a revolute driving joint as a gear pair.
+        ///
+        /// Both tooth counts must be `Value::Int` with strictly positive values.
+        /// `ratio = -(teeth_b as f64) / (teeth_a as f64)` (negative for external mesh).
+        /// Parent validation is owned by `couple()`.
+        /// PRD task 8: `Coupling(rotation_a, rotation_b, ratio = -teeth_b / teeth_a)`.
+        "gear" => {
+            // Arity: exactly 3 args (parent, teeth_a, teeth_b).
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Require teeth_a: strictly positive Int (prevents division by zero).
+            let teeth_a = match &args[1] {
+                Value::Int(i) if *i > 0 => *i,
+                _ => return Some(Value::Undef),
+            };
+            // Require teeth_b: strictly positive Int (symmetry + non-physical 0-tooth rejected).
+            let teeth_b = match &args[2] {
+                Value::Int(i) if *i > 0 => *i,
+                _ => return Some(Value::Undef),
+            };
+            // Compute ratio: negative for external mesh (reverses direction).
+            let ratio = -(teeth_b as f64) / (teeth_a as f64);
+            // Both teeth counts are strictly positive finite integers, so ratio is always finite.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
+        /// `rack_and_pinion(parent, pitch_radius)` — wrap a revolute driving joint as a rack-and-pinion.
+        ///
+        /// `pitch_radius` (metres) becomes the dimensionless coupling ratio directly.
+        /// Parent validation is owned by `couple()`.
+        /// PRD task 8: `Coupling(rotation, translation, ratio = pitch_radius)`.
+        /// Identifier uses underscores because Reify identifiers do not allow hyphens.
+        "rack_and_pinion" => {
+            // Arity: exactly 2 args (parent, pitch_radius).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Parse pitch_radius as a LENGTH value (SI metres).
+            let pitch_radius_si = match length_input(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // ratio = pitch_radius (dimensionless scaling factor for the coupling).
+            let ratio = pitch_radius_si;
+            // Defense-in-depth: length_input already rejects non-finite inputs.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
         "joint_axis" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
