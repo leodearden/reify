@@ -641,6 +641,8 @@ mod tests {
     use super::*;
 
     const BRACKET_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+    const BRACKET_COMPILE_ERROR_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_compile_error.ri");
 
     /// Obviously-nonsense Reify source: a single top-level `{` with no matching
     /// close brace.  No token in the Reify grammar begins a top-level declaration
@@ -1102,6 +1104,61 @@ mod tests {
             ctx.engine_construction_count(),
             0,
             "fresh_ctx must return a context whose engine has not been constructed yet"
+        );
+    }
+
+    /// Regression guard: `get_diagnostics` must emit severity strings in
+    /// PascalCase wire format (`"Error"`, `"Warning"`, `"Info"`) via
+    /// `Severity::as_wire_str()`, not the lowercase `Display` form
+    /// (`"error"`, `"warning"`, `"info"`) intended for human-readable CLI output.
+    ///
+    /// This test mirrors the GUI-side pin at
+    /// `gui/src-tauri/src/tests/engine_tests.rs::get_diagnostics_severity_strings_match_as_wire_str`.
+    /// By tying both transport tests to the same `Severity::as_wire_str()`
+    /// source-of-truth, identical wire output is guaranteed transitively.
+    ///
+    /// `bracket_compile_error.ri` parses cleanly so `load_file` succeeds; it
+    /// contains an unresolved-name reference (`unknown_name`) that produces a
+    /// compile-time Error diagnostic — confirmed by `check_compile_error_exits_failure`
+    /// in `crates/reify-cli/tests/cli_check.rs`.
+    #[test]
+    fn get_diagnostics_severity_is_pascal_case_wire_format() {
+        use reify_types::Severity;
+
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("load_file should succeed for bracket_compile_error.ri (parse-clean fixture)");
+
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed");
+
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri must produce at least one diagnostic; \
+             fixture or grammar may have changed"
+        );
+
+        let valid = [
+            Severity::Error.as_wire_str(),
+            Severity::Warning.as_wire_str(),
+            Severity::Info.as_wire_str(),
+        ];
+        for d in &diags {
+            assert!(
+                valid.contains(&d.severity.as_str()),
+                "get_diagnostics must emit PascalCase wire format (\"Error\"/\"Warning\"/\"Info\") \
+                 but got {:?} — do not use Display (which returns lowercase) for MCP wire output",
+                d.severity,
+            );
+        }
+
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == Severity::Error.as_wire_str()),
+            "at least one diagnostic must have severity == \"Error\" (PascalCase wire format); \
+             bracket_compile_error.ri is known to produce a compile-time Error",
         );
     }
 }
