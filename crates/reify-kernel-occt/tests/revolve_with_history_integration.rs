@@ -398,6 +398,18 @@ fn full_revolve_with_history_reports_no_caps() {
             rec
         );
     }
+
+    // (f) Diagnostic counter: for a well-formed rect profile every profile
+    //     edge must produce a face_generated record — no unmatched radial
+    //     edges expected.
+    assert_eq!(
+        history.unmatched_radial_edge_count,
+        0,
+        "full revolve of rect profile must report 0 unmatched radial edges, \
+         got {} (face_generated = {:?})",
+        history.unmatched_radial_edge_count,
+        history.face_generated
+    );
 }
 
 /// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
@@ -570,6 +582,18 @@ fn full_revolve_triangle_profile_synthesis_regression() {
             rec
         );
     }
+
+    // (vii) Diagnostic counter: for a well-formed triangle profile every
+    //       profile edge must produce a face_generated record — no unmatched
+    //       radial edges expected.
+    assert_eq!(
+        history.unmatched_radial_edge_count,
+        0,
+        "full revolve of triangle profile must report 0 unmatched radial edges, \
+         got {} (face_generated = {:?})",
+        history.unmatched_radial_edge_count,
+        history.face_generated
+    );
 }
 
 /// Selector-stability: the stable-sort in `make_revolve_with_history` guarantees
