@@ -28,11 +28,13 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{CompiledForallBody, CompiledFunction, CompiledModule};
+use reify_compiler::{
+    CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule,
+};
 use reify_types::{
-    AutoParam, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic, PersistentMap,
-    RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
+    AutoParam, CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic,
+    PersistentMap, RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance,
+    SolveResult, Type, Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -1575,17 +1577,32 @@ impl Engine {
                     }
 
                     // (1) Drain prior emissions for this template.
+                    //
+                    // The drain block is shared between the Constraint and
+                    // Connect arms (the latter added in task 2690): the
+                    // recorded `ConstraintNodeId`s are uniformly the
+                    // synthetic compatibility-constraint id, which serves
+                    // dually as (a) the key to remove from `graph.constraints`,
+                    // (b) the key to retain-out from `graph.connections` (a
+                    // no-op for Constraint-arm ids since they were never
+                    // pushed into `connections`), and (c) the cache-invalidation
+                    // key. Mirrors task 2184's per-instance cache invalidation
+                    // (line 1449 above): a subsequent re-emission must
+                    // evaluate freshly rather than return a stale entry.
+                    // Pinned for the Constraint arm by
+                    // `forall_runtime_re_elaboration::
+                    // edit_param_count_change_invalidates_prior_forall_constraint_cache`
+                    // (task 2629 step-14); the Connect-arm parallel is
+                    // `edit_param_count_change_invalidates_prior_forall_connect_constraint_cache`
+                    // (task 2690 step-13). The connections-retain is also
+                    // implicitly pinned by the count-decrease test in step-11.
                     let prior = std::mem::take(&mut new_snapshot.forall_emitted[t_idx]);
                     for old_id in &prior {
                         new_snapshot.graph.constraints.remove(old_id);
-                        // Mirrors task 2184's per-instance cache invalidation
-                        // (line 1449 above): a subsequent re-emission must
-                        // evaluate freshly rather than return a stale entry.
-                        // Pinned by `forall_runtime_re_elaboration::
-                        // edit_param_count_change_invalidates_prior_forall_constraint_cache`
-                        // (task 2629 step-14): a synthetic NodeCache entry
-                        // injected for a soon-to-be-removed forall constraint
-                        // id is observed cleared after the count decrease.
+                        new_snapshot
+                            .graph
+                            .connections
+                            .retain(|c| c.compatibility_constraint != *old_id);
                         self.cache.invalidate(&NodeId::Constraint(old_id.clone()));
                     }
 
@@ -1594,22 +1611,107 @@ impl Engine {
                     //     loop body runs zero times — prior emissions are
                     //     still cleared above.
                     let mut fresh_ids: Vec<ConstraintNodeId> = Vec::new();
-                    // The match is exhaustive on the live variants. Task 2690
-                    // added the `Connect` arm; the stub here will be replaced
-                    // with the full Connect re-emission in step-10.
-                    // Adding a new `CompiledForallBody` variant will cause
-                    // this match to fail to compile, forcing an explicit
-                    // decision rather than a silent drop.
+                    // The match is exhaustive on the live variants. Adding a
+                    // new `CompiledForallBody` variant will cause this match
+                    // to fail to compile, forcing an explicit decision
+                    // rather than a silent drop. Both arms record their
+                    // synthetic compatibility-constraint id into
+                    // `forall_emitted[t_idx]` for symmetric drain-on-decrease.
                     match &t.body {
-                        CompiledForallBody::Connect { .. } => {
-                            // TODO(task 2690 step-10): drain prior emissions
-                            // and emit fresh per-element connections by
-                            // rewriting `<sub>[0]` placeholder port-name
-                            // tokens to `<sub>[i]`, allocating a synthetic
-                            // compatibility-constraint id per element, and
-                            // pushing into `graph.constraints` and
-                            // `graph.connections`. Stub emits zero entries;
-                            // tests guard against silent skip.
+                        CompiledForallBody::Connect {
+                            left_port_template,
+                            operator,
+                            right_port_template,
+                            connector_type: _,
+                            params: _,
+                            port_mappings,
+                        } => {
+                            // task 2690: per-element forall-Connect runtime
+                            // re-emission. Mirrors the Constraint-arm shape:
+                            //   * `cnid_entity` includes `t_idx` so two
+                            //     foralls sharing the same triple produce
+                            //     distinct ConstraintNodeIds (same defence
+                            //     pinned by 2629 step-25, here applied to
+                            //     the Connect arm).
+                            //   * Distinct `forall_connect:` prefix keeps
+                            //     the namespace of synthetic
+                            //     compatibility-constraint ids separate
+                            //     from the Constraint arm's `forall:`
+                            //     prefix, so existing label-filtering tests
+                            //     don't mix arms.
+                            //   * Port-name `<sub>[0]` → `<sub>[i]` rewrite
+                            //     is a substring substitution: the captured
+                            //     templates are flat strings (per
+                            //     `connect.rs::resolve_port_name`), so
+                            //     there's no AST to walk. The substring is
+                            //     anchored on `coll_sub_name` to reduce the
+                            //     risk of accidentally rewriting a literal
+                            //     `[0]` elsewhere in the port name. The
+                            //     resolved (non-deferred) Connect path
+                            //     compiles each element directly through
+                            //     `compile_connection`; this runtime path
+                            //     trades that fidelity for not re-running
+                            //     `compile_connection` on every count edit
+                            //     — the same trade the Constraint arm makes
+                            //     for `compile_expr`.
+                            //   * Synthetic compatibility constraint emits
+                            //     `Bool::True` literal — direction-check
+                            //     and `connector_sub`/`frame_constraint`
+                            //     auto-creation are out of scope for this
+                            //     task (per the task's "Out of scope" list).
+                            let placeholder_token =
+                                format!("{}[0]", t.collection_sub_name);
+                            let cnid_entity = format!(
+                                "forall_connect:{}@{}.{}#{}",
+                                t.variable,
+                                t.parent_entity,
+                                t.collection_sub_name,
+                                t_idx,
+                            );
+
+                            for i in 0..new_count {
+                                let target_token = format!(
+                                    "{}[{}]",
+                                    t.collection_sub_name, i
+                                );
+                                let rewritten_left = left_port_template
+                                    .replace(&placeholder_token, &target_token);
+                                let rewritten_right = right_port_template
+                                    .replace(&placeholder_token, &target_token);
+
+                                let cnid =
+                                    ConstraintNodeId::new(&cnid_entity, i as u32);
+                                let id_hash =
+                                    ContentHash::of_str(&format!("{}", cnid));
+                                let label =
+                                    format!("forall_connect@{}[{}]", t.variable, i);
+                                let compat_expr = CompiledExpr::literal(
+                                    Value::Bool(true),
+                                    Type::Bool,
+                                );
+                                let node = ConstraintNodeData {
+                                    id: cnid.clone(),
+                                    label: Some(label),
+                                    expr: compat_expr.clone(),
+                                    content_hash: id_hash.combine(compat_expr.content_hash),
+                                    optimized_target: None,
+                                };
+                                new_snapshot
+                                    .graph
+                                    .constraints
+                                    .insert(cnid.clone(), node);
+                                new_snapshot.graph.connections.push(CompiledConnection {
+                                    left_port: rewritten_left,
+                                    operator: *operator,
+                                    right_port: rewritten_right,
+                                    connector_sub: None,
+                                    compatibility_constraint: cnid.clone(),
+                                    port_mappings: port_mappings.clone(),
+                                    frame_constraint: None,
+                                    span: t.span,
+                                });
+                                fresh_ids.push(cnid);
+                            }
                         }
                         CompiledForallBody::Constraint { body_expr } => {
                             let placeholder_entity =
