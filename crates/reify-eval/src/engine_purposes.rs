@@ -271,6 +271,16 @@ impl Engine {
     /// the chosen posture per the design decision in `.task/plan.json` —
     /// active purposes are typically 1-3 and value_cell iteration is already
     /// used by other Engine paths (see `engine_purposes.rs:147-159`).
+    ///
+    /// TODO(perf): each `propagate_subject_to_descendants` call is an
+    /// O(n_value_cells) linear prefix scan, and we run it once per
+    /// (purpose × tolerance binding). For the documented 1-3 active
+    /// purposes this is fine, but if the dispatcher (sibling tasks 2649/
+    /// 2650) ends up calling `active_tolerance_for` on a hot path while
+    /// purposes flip, replace the linear scan with a prefix-trie (or
+    /// incremental-update strategy keyed on entity_ref) inside this
+    /// helper. Keep the recompute entry point so callers don't have to
+    /// know the strategy changed.
     fn recompute_tolerance_scope(&mut self) {
         self.active_tolerance_scope.clear();
 
