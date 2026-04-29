@@ -38,6 +38,9 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///                     → Map { angular=[0,0,0], linear=[1,0,0] }
 ///   `rev_jac`        = `joint_jacobian(revolute([0,0,1], 0rad..pi))`
 ///                     → Map { angular=[0,0,1], linear=[0,0,0] }
+///   `fixed_joint`    = `fixed()` — 0-DOF group-only joint, Map { kind="fixed" }
+///   `fixed_xform`    = `transform_at(fixed_joint, 0)` → identity Transform
+///   `fixed_jac`      = `joint_jacobian(fixed_joint)` → zero-twist Map
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
     let r_id       = orient_identity()
@@ -58,6 +61,10 @@ structure def Kinematic {
     let rev        = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad)
     let prism_jac  = joint_jacobian(prism)
     let rev_jac    = joint_jacobian(rev)
+
+    let fixed_joint = fixed()
+    let fixed_xform = transform_at(fixed_joint, 0)
+    let fixed_jac   = joint_jacobian(fixed_joint)
 }
 "#;
 
@@ -336,5 +343,43 @@ fn kinematic_stdlib_smoke_e2e() {
         [0.0, 0.0, 0.0],
         1e-12,
         "rev_jac.linear",
+    );
+
+    // ── fixed joint (0-DOF sub-assembly grouping) ─────────────────────
+    // fixed_joint = fixed() → Map { kind: "fixed" } (single key, no axis/range)
+    let fixed_joint = get_value(v, "fixed_joint");
+    let fj_map = match fixed_joint {
+        Value::Map(m) => m,
+        other => panic!("fixed_joint: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        fj_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("fixed".to_string())),
+        "fixed_joint: kind field should be 'fixed'"
+    );
+    assert_eq!(fj_map.len(), 1, "fixed_joint: Map should have exactly 1 key");
+
+    // fixed_xform = transform_at(fixed_joint, 0) → identity Transform
+    let fixed_xform = get_value(v, "fixed_xform");
+    let (fx_rot, fx_trans) = match fixed_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("fixed_xform: expected Transform, got {other:?}"),
+    };
+    assert_orientation_close(fx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "fixed_xform rotation");
+    assert_vec3_close(fx_trans, [0.0, 0.0, 0.0], 1e-12, "fixed_xform translation");
+
+    // fixed_jac = joint_jacobian(fixed_joint) → zero-twist Map
+    let fixed_jac = get_value(v, "fixed_jac");
+    assert_vec3_close(
+        map_vec3(fixed_jac, "angular", "fixed_jac.angular"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "fixed_jac.angular",
+    );
+    assert_vec3_close(
+        map_vec3(fixed_jac, "linear", "fixed_jac.linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "fixed_jac.linear",
     );
 }
