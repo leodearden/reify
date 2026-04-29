@@ -237,8 +237,108 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             }
             Value::Undef
         }
+        "bounding_box" => {
+            // Validation surface (each guard short-circuits to Undef):
+            //   args.len() == 1                       → arity guard
+            //   args[0] is Map with kind="snapshot"   → snapshot guard
+            // v0.1 semantic: AABB of per-body world-frame ORIGINS
+            // (translation of each body's `world_transform`). This is
+            // a point-mass approximation — the real volumetric AABB
+            // requires OCCT (`BRepBndLib::Add`), scope of FFI task
+            // #2530. Empty Snapshot → Undef (no points to envelope).
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let snap_bodies = match snapshot_bodies(&args[0]) {
+                Some(b) => b,
+                None => return Some(Value::Undef),
+            };
+            if snap_bodies.is_empty() {
+                return Some(Value::Undef);
+            }
+
+            let mut min_xyz = [f64::INFINITY; 3];
+            let mut max_xyz = [f64::NEG_INFINITY; 3];
+            for body in snap_bodies {
+                let body_map = match body {
+                    Value::Map(b) => b,
+                    _ => return Some(Value::Undef),
+                };
+                let wt = match body_map.get(&Value::String("world_transform".to_string())) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+                let xyz = match world_transform_translation(wt) {
+                    Some(t) => t,
+                    None => return Some(Value::Undef),
+                };
+                for i in 0..3 {
+                    if xyz[i] < min_xyz[i] {
+                        min_xyz[i] = xyz[i];
+                    }
+                    if xyz[i] > max_xyz[i] {
+                        max_xyz[i] = xyz[i];
+                    }
+                }
+            }
+
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("max".to_string()),
+                make_length_point3(max_xyz),
+            );
+            m.insert(
+                Value::String("min".to_string()),
+                make_length_point3(min_xyz),
+            );
+            Value::Map(m)
+        }
         _ => return None,
     })
+}
+
+/// Extract the three SI-unit translation components from a `Value::Transform`.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `t` is not a `Value::Transform`,
+/// - `translation` is not a `Value::Vector` of exactly three components, or
+/// - any component is non-numeric (e.g., a String) or non-finite.
+///
+/// The components' carried dimensions are NOT validated here — the FK
+/// walk produces world transforms via `transform_compose`, which
+/// preserves the LENGTH dimension on the translation vector.  This
+/// helper is local to snapshot.rs because `geometry.rs::decompose_transform`
+/// is private to that module; duplicating the destructure-and-validate
+/// pattern keeps the FK accessors decoupled from geometry's internals.
+fn world_transform_translation(t: &Value) -> Option<[f64; 3]> {
+    let translation = match t {
+        Value::Transform { translation, .. } => translation.as_ref(),
+        _ => return None,
+    };
+    let comps = match translation {
+        Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let read = |v: &Value| -> Option<f64> {
+        let f = match v {
+            Value::Real(r) => *r,
+            Value::Scalar { si_value, .. } => *si_value,
+            _ => return None,
+        };
+        if f.is_finite() { Some(f) } else { None }
+    };
+    Some([read(&comps[0])?, read(&comps[1])?, read(&comps[2])?])
+}
+
+/// Build a `Value::Point` of three LENGTH-dimensioned scalars from
+/// raw f64 SI components (metres).  Mirrors the Point3<Length>
+/// shape produced by `Value::length` / `point3(...)`.
+fn make_length_point3(xyz: [f64; 3]) -> Value {
+    Value::Point(vec![
+        Value::length(xyz[0]),
+        Value::length(xyz[1]),
+        Value::length(xyz[2]),
+    ])
 }
 
 /// Extract the `bodies` list from a Snapshot Map, validating the
