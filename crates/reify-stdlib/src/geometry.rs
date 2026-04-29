@@ -382,11 +382,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let (rw, rx, ry, rz) = r_q;
             // Normalize quaternion first.
             let r_norm_sq = rw * rw + rx * rx + ry * ry + rz * rz;
-            // Use 1e-24 (= (1e-12)²) to align with the file-wide EPS scale of
-            // 1e-12 used in the Taylor branches (lines ~317, ~403). f64::EPSILON
-            // (~2.22e-16) was inconsistent and would admit norms in (1e-12, 1.5e-8)
-            // that the rest of the file treats as zero. Only reject genuinely-zero
-            // quaternions before the divide-by-norm path.
+            // Lower the gate to 1e-24 (= (1e-12)²) so raw input quaternions with
+            // norm down to ~1e-12 are accepted and normalized; only genuinely-zero
+            // or denormal-risking inputs are rejected. The previous f64::EPSILON
+            // gate rejected anything with norm < ~1.5e-8, which was needlessly
+            // strict given that division by a 1e-12 norm still yields finite,
+            // well-scaled unit components.
             if r_norm_sq < 1e-24 {
                 return Some(Value::Undef);
             }
