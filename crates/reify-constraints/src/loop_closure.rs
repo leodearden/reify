@@ -533,6 +533,98 @@ pub fn solve_loop_closure(
     newton_solve(x0, closure, config)
 }
 
+/// Extract loop-closure chain pairs from a v0.2 Mechanism Map.
+///
+/// Returns `None` if `mech_map` is not a `Value::Map` with
+/// `kind = "mechanism"` — i.e. the caller passed something that is not a
+/// Mechanism.
+///
+/// Returns `Some(vec![])` for a valid open-chain Mechanism (no loop closures).
+/// A missing `loop_closures` field is treated as an empty list for
+/// forward-compat with Mechanism Maps that predate the v0.2 field addition.
+///
+/// For each loop-closure record in the `loop_closures` list, extracts
+/// `path_a` and `path_b`, strips the world sentinel from the front of each
+/// path, and collects the `(chain_a, chain_b)` pair.  The world sentinel is
+/// identified by `kind = "world"`.
+///
+/// Returns `None` on any shape error:
+/// - a `loop_closures` entry is not a `Value::Map`
+/// - `path_a` or `path_b` fields are missing or not a `Value::List`
+/// - either path is empty (no world sentinel to strip)
+/// - the first element of a path does not have `kind = "world"`
+///
+/// Downstream contract: chains terminate at the closing joint (the last
+/// element equals `loop_closure.closing_joint`), world sentinel stripped.
+/// These are ready to feed into `chain_transform` / `solve_loop_closure`.
+pub fn mechanism_loop_closure_chains(
+    mech_map: &reify_types::Value,
+) -> Option<Vec<(Vec<reify_types::Value>, Vec<reify_types::Value>)>> {
+    use reify_types::Value;
+
+    // Validate kind="mechanism".
+    let map = match mech_map {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if map.get(&Value::String("kind".to_string()))
+        != Some(&Value::String("mechanism".to_string()))
+    {
+        return None;
+    }
+
+    // Read loop_closures list; treat missing field as empty (forward-compat).
+    let loop_closures: &[Value] = match map.get(&Value::String("loop_closures".to_string())) {
+        Some(Value::List(lc)) => lc,
+        None => &[],
+        _ => return None, // present but wrong type
+    };
+
+    let mut pairs = Vec::new();
+    for entry in loop_closures {
+        let lc_map = match entry {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+
+        let path_a = match lc_map.get(&Value::String("path_a".to_string())) {
+            Some(Value::List(p)) => p,
+            _ => return None,
+        };
+        let path_b = match lc_map.get(&Value::String("path_b".to_string())) {
+            Some(Value::List(p)) => p,
+            _ => return None,
+        };
+
+        let chain_a = strip_world_sentinel(path_a)?;
+        let chain_b = strip_world_sentinel(path_b)?;
+        pairs.push((chain_a, chain_b));
+    }
+
+    Some(pairs)
+}
+
+/// Strip the world sentinel from the front of a path, returning the tail.
+///
+/// Returns `None` if the path is empty or the first element is not the world
+/// sentinel (`kind = "world"`).
+fn strip_world_sentinel(path: &[reify_types::Value]) -> Option<Vec<reify_types::Value>> {
+    use reify_types::Value;
+
+    let first = path.first()?;
+    let is_world = match first {
+        Value::Map(m) => {
+            m.get(&Value::String("kind".to_string()))
+                == Some(&Value::String("world".to_string()))
+        }
+        _ => false,
+    };
+    if !is_world {
+        return None;
+    }
+    Some(path[1..].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1449,6 +1541,107 @@ mod tests {
         let mut b: Vec<f64> = vec![];
         let result = super::solve_normal_equations(&mut a, &mut b, 0, 1e-12);
         assert!(result, "expected solve to succeed on n=0 (trivial case)");
+    }
+
+    // ── mechanism_loop_closure_chains tests (step-7) ─────────────────────
+
+    /// `mechanism_loop_closure_chains` on a closed-chain mechanism returns
+    /// `Some(vec![(chain_a, chain_b)])` with the world sentinel stripped from
+    /// each path and the chains terminating at the closing joint.
+    ///
+    /// Scenario: parent-conflict via `body(m0, solid_a, j_x, j_a)` then
+    /// `body(m1, solid_b, j_x, j_b)`. The expected paths are:
+    ///   path_a = [world, j_a, j_x]  (recorded by body() for parent j_a)
+    ///   path_b = [world, j_b, j_x]  (recorded by body() for parent j_b)
+    /// After world-sentinel stripping:
+    ///   chain_a = [j_a, j_x]
+    ///   chain_b = [j_b, j_x]
+    #[test]
+    fn mechanism_loop_closure_chains_extracts_pairs() {
+        use reify_stdlib::eval_builtin;
+
+        // Build joints (from existing test helpers in this file).
+        let j_a = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
+        let j_b = eval_builtin("prismatic", &[
+            Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]),
+            length_range(0.0, 1.0),
+        ]);
+        let j_x = revolute_z_0_to_pi();
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a.clone()]);
+        let m2 = eval_builtin("body", &[m1, solid_b, j_x.clone(), j_b.clone()]);
+
+        let chains = super::mechanism_loop_closure_chains(&m2);
+        assert!(
+            chains.is_some(),
+            "mechanism_loop_closure_chains must return Some for a valid mechanism"
+        );
+        let pairs = chains.unwrap();
+        assert_eq!(pairs.len(), 1, "one loop-closure pair expected");
+
+        let (chain_a, chain_b) = &pairs[0];
+        // chain_a = [j_a, j_x] (world sentinel stripped from [world, j_a, j_x])
+        assert_eq!(chain_a.len(), 2, "chain_a should have 2 elements");
+        assert_eq!(&chain_a[0], &j_a, "chain_a[0] should be j_a");
+        assert_eq!(&chain_a[1], &j_x, "chain_a[1] should be j_x (closing joint)");
+        // chain_b = [j_b, j_x] (world sentinel stripped from [world, j_b, j_x])
+        assert_eq!(chain_b.len(), 2, "chain_b should have 2 elements");
+        assert_eq!(&chain_b[0], &j_b, "chain_b[0] should be j_b");
+        assert_eq!(&chain_b[1], &j_x, "chain_b[1] should be j_x (closing joint)");
+    }
+
+    /// `mechanism_loop_closure_chains` on an open-chain mechanism (no loop
+    /// closures) returns `Some(vec![])` — an empty list of pairs.
+    #[test]
+    fn mechanism_loop_closure_chains_open_chain_returns_empty_vec() {
+        use reify_stdlib::eval_builtin;
+
+        let j_a = prismatic_x_0_to_1();
+        let solid_a = Value::String("solidA".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_a]);
+
+        let chains = super::mechanism_loop_closure_chains(&m1);
+        assert_eq!(
+            chains,
+            Some(vec![]),
+            "open-chain mechanism must return Some(empty vec)"
+        );
+    }
+
+    /// `mechanism_loop_closure_chains` on a non-Mechanism value returns `None`.
+    #[test]
+    fn mechanism_loop_closure_chains_non_mechanism_returns_none() {
+        // Non-Map.
+        assert_eq!(
+            super::mechanism_loop_closure_chains(&Value::Int(42)),
+            None,
+            "Int input must return None"
+        );
+
+        // Map with wrong kind.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("joint".to_string()),
+        );
+        assert_eq!(
+            super::mechanism_loop_closure_chains(&Value::Map(m)),
+            None,
+            "Map with kind='joint' (not 'mechanism') must return None"
+        );
+
+        // World sentinel.
+        let world = reify_stdlib::eval_builtin("world", &[]);
+        assert_eq!(
+            super::mechanism_loop_closure_chains(&world),
+            None,
+            "world sentinel must return None"
+        );
     }
 
     #[test]
