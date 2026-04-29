@@ -734,6 +734,90 @@ mod tests {
         assert!(eval_builtin("body", &[m0, solid, j, Value::Real(1.0)]).is_undef());
     }
 
+    // ── closed-chain detection: parent conflict ──────────────────────────
+
+    /// Build a third joint distinct from j_a and j_b for the conflict
+    /// scenarios. Use a different axis so the joint Maps differ
+    /// structurally (they would otherwise be Value::Eq).
+    fn axis_y_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    /// `body()` calls that try to give the same joint two different
+    /// parents (`j_x` → `j_a` from call 1, `j_x` → `j_b` from call 2)
+    /// produce an errored Mechanism Map with `error="closed_chain"`,
+    /// non-empty `error_message`, and `error_path1` / `error_path2`
+    /// both terminating at `j_x` (path1 walks `world → ... → j_a → j_x`,
+    /// path2 walks `world → ... → j_b → j_x`).
+    #[test]
+    fn closed_chain_via_parent_conflict_emits_error_with_both_paths() {
+        // j_a, j_b distinct; j_x distinct again.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        // Call 1: body(m0, solid_a, j_x, j_a) records j_x → j_a.
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a.clone()]);
+        // Call 2: body(m1, solid_b, j_x, j_b) tries j_x → j_b → conflict.
+        let m2 = eval_builtin("body", &[m1, solid_b, j_x.clone(), j_b.clone()]);
+
+        let map = match m2 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("closed_chain".to_string())),
+            "error field should be 'closed_chain'"
+        );
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(s)) => {
+                assert!(!s.is_empty(), "error_message should be non-empty");
+            }
+            other => panic!("expected error_message String, got {:?}", other),
+        }
+
+        // Both paths terminate at j_x.
+        let path1 = match map.get(&Value::String("error_path1".to_string())) {
+            Some(Value::List(p)) => p,
+            other => panic!("expected error_path1 List, got {:?}", other),
+        };
+        let path2 = match map.get(&Value::String("error_path2".to_string())) {
+            Some(Value::List(p)) => p,
+            other => panic!("expected error_path2 List, got {:?}", other),
+        };
+        let world = eval_builtin("world", &[]);
+        assert!(!path1.is_empty(), "error_path1 should be non-empty");
+        assert!(!path2.is_empty(), "error_path2 should be non-empty");
+        assert_eq!(
+            path1.last(),
+            Some(&j_x),
+            "error_path1 should terminate at j_x"
+        );
+        assert_eq!(
+            path2.last(),
+            Some(&j_x),
+            "error_path2 should terminate at j_x"
+        );
+        // path1: world → ... → j_a → j_x. j_a was never recorded as an
+        // `at` value, so its walk-to-world is just [j_a]; path1 is
+        // [world, j_a, j_x].
+        assert_eq!(
+            path1,
+            &vec![world.clone(), j_a, j_x.clone()],
+            "path1 should walk world → j_a → j_x"
+        );
+        assert_eq!(
+            path2,
+            &vec![world, j_b, j_x],
+            "path2 should walk world → j_b → j_x"
+        );
+    }
+
     // ── body_id_of() lookup ──────────────────────────────────────────────
 
     /// `body_id_of(m, solid)` returns `Int(body.id)` for the first body
