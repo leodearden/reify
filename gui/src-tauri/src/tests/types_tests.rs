@@ -793,3 +793,90 @@ fn format_freshness_returns_lowercase_strings() {
         "failed"
     );
 }
+
+// ---- MechanismDescriptor / JointDescriptor IPC contract (step-1) ----------
+
+#[test]
+fn mechanism_descriptor_ipc_contract() {
+    use crate::types::{JointDescriptor, MechanismDescriptor};
+    use super::assert_ipc_contract;
+    assert_ipc_contract::<MechanismDescriptor>();
+    assert_ipc_contract::<JointDescriptor>();
+}
+
+#[test]
+fn mechanism_descriptor_round_trips_through_serde_json_with_snake_case_keys() {
+    use crate::types::{JointDescriptor, MechanismDescriptor};
+
+    let joint = JointDescriptor {
+        joint_index: 0,
+        kind: "prismatic".to_string(),
+        dimension: "length".to_string(),
+        range_lower_si: Some(0.0),
+        range_upper_si: Some(1.0),
+        axis: Some([1.0, 0.0, 0.0]),
+        driving_param_cell_id: Some("Kinematic.y_pos".to_string()),
+        current_value_si: Some(0.5),
+    };
+
+    let descriptor = MechanismDescriptor {
+        cell_id: "Kinematic.m".to_string(),
+        entity_path: "Kinematic".to_string(),
+        name: "m".to_string(),
+        bodies_count: 2,
+        joints: vec![joint],
+    };
+
+    let v = serde_json::to_value(&descriptor).expect("serialize");
+
+    // Snake-case keys must be present
+    assert!(v.get("cell_id").is_some(), "expected 'cell_id' key");
+    assert!(v.get("entity_path").is_some(), "expected 'entity_path' key");
+    assert!(v.get("bodies_count").is_some(), "expected 'bodies_count' key");
+    assert!(v.get("joints").is_some(), "expected 'joints' key");
+
+    let joints_arr = v["joints"].as_array().expect("joints is array");
+    assert_eq!(joints_arr.len(), 1);
+    let j = &joints_arr[0];
+    assert!(j.get("joint_index").is_some(), "expected 'joint_index' key");
+    assert!(j.get("range_lower_si").is_some(), "expected 'range_lower_si' key");
+    assert!(j.get("range_upper_si").is_some(), "expected 'range_upper_si' key");
+    assert!(j.get("driving_param_cell_id").is_some(), "expected 'driving_param_cell_id' key");
+    assert!(j.get("current_value_si").is_some(), "expected 'current_value_si' key");
+
+    // Round-trip
+    let back: MechanismDescriptor = serde_json::from_value(v).expect("deserialize");
+    assert_eq!(back.cell_id, "Kinematic.m");
+    assert_eq!(back.bodies_count, 2);
+    assert_eq!(back.joints.len(), 1);
+    assert_eq!(back.joints[0].kind, "prismatic");
+    assert_eq!(back.joints[0].range_lower_si, Some(0.0));
+    assert_eq!(back.joints[0].range_upper_si, Some(1.0));
+    assert_eq!(
+        back.joints[0].driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string())
+    );
+}
+
+#[test]
+fn joint_descriptor_optional_fields_serialize_as_null() {
+    use crate::types::JointDescriptor;
+
+    let joint = JointDescriptor {
+        joint_index: 2,
+        kind: "fixed".to_string(),
+        dimension: "dimensionless".to_string(),
+        range_lower_si: None,
+        range_upper_si: None,
+        axis: None,
+        driving_param_cell_id: None,
+        current_value_si: None,
+    };
+
+    let v = serde_json::to_value(&joint).expect("serialize");
+    assert!(v["range_lower_si"].is_null(), "range_lower_si should be null when None");
+    assert!(v["range_upper_si"].is_null(), "range_upper_si should be null when None");
+    assert!(v["axis"].is_null(), "axis should be null when None");
+    assert!(v["driving_param_cell_id"].is_null(), "driving_param_cell_id should be null when None");
+    assert!(v["current_value_si"].is_null(), "current_value_si should be null when None");
+}
