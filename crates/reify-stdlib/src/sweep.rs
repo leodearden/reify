@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use reify_types::Value;
+use reify_types::{DimensionVector, Value};
 
 /// Evaluate a sweep stdlib function by name.
 ///
@@ -25,14 +25,91 @@ use reify_types::Value;
 pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "dim" => {
-            // Minimal happy-path impl. Validation guards (arity, joint
-            // kind, range/dimension/steps shape) are layered on in
-            // step-4; for now the SweepDim Map is constructed
-            // unconditionally from the three positional args.
+            // Validation surface (each guard short-circuits to
+            // Value::Undef BEFORE constructing the SweepDim Map):
+            //   args.len() == 3                        → arity guard
+            //   is_driving_joint(args[0])              → joint kind
+            //                                            (coupling/fixed/
+            //                                            world/non-Map all
+            //                                            rejected per §13.4)
+            //   args[1] is Value::Range with both
+            //     lower/upper bounds present, both
+            //     SI-finite, and dimension == joint
+            //     kind's expected (LENGTH for
+            //     prismatic, ANGLE for revolute)        → range guard
+            //   args[2] is Value::Int(n) with n >= 0   → steps guard
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            let expected_dim = match driving_joint_kind(&args[0]) {
+                Some(d) => d,
+                None => return Some(Value::Undef),
+            };
+            if validate_range_with_dimension(&args[1], expected_dim).is_none() {
+                return Some(Value::Undef);
+            }
+            match &args[2] {
+                Value::Int(n) if *n >= 0 => {}
+                _ => return Some(Value::Undef),
+            }
             make_sweep_dim(args[0].clone(), args[1].clone(), args[2].clone())
         }
         _ => return None,
     })
+}
+
+/// Map a driving joint Value to its expected motion-variable dimension.
+///
+/// Returns:
+/// - `Some(LENGTH)` for prismatic joints
+/// - `Some(ANGLE)`  for revolute  joints
+/// - `None` for any other shape: coupling joints, fixed joints, the
+///   world sentinel, non-joint Maps, and non-Map values.
+///
+/// Couplings are rejected per §13.4 ("Couplings cannot appear in sweep
+/// dims — their motion is derived from the driving joint that is
+/// already being swept").  Fixed joints (0-DOF) have no motion variable
+/// to sweep over.  The combined predicate-plus-dimension is the
+/// uniform driving-joint test for both `dim` and `sweep`.
+fn driving_joint_kind(v: &Value) -> Option<DimensionVector> {
+    let map = match v {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => match s.as_str() {
+            "prismatic" => Some(DimensionVector::LENGTH),
+            "revolute" => Some(DimensionVector::ANGLE),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Validate a range value: must be `Value::Range` with both bounds
+/// present, both sharing `expected_dim`, both SI-finite. Mirrors
+/// `validate_range` in joints.rs (which checks dimension only); this
+/// variant additionally enforces finite SI values, since sweep
+/// interpolation relies on `as_f64()` returning finite numbers.
+fn validate_range_with_dimension(value: &Value, expected_dim: DimensionVector) -> Option<()> {
+    match value {
+        Value::Range {
+            lower: Some(lo),
+            upper: Some(up),
+            ..
+        } => {
+            if lo.dimension() != expected_dim || up.dimension() != expected_dim {
+                return None;
+            }
+            let lo_si = lo.as_f64()?;
+            let up_si = up.as_f64()?;
+            if !lo_si.is_finite() || !up_si.is_finite() {
+                return None;
+            }
+            Some(())
+        }
+        _ => None,
+    }
 }
 
 /// Build a SweepDim `Value::Map` with the standard four-key layout:
