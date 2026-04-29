@@ -1441,4 +1441,36 @@ mod tests {
             "sweep_grid() on errored mechanism must yield Undef"
         );
     }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    fn planar_xy_joint() -> Value {
+        eval_builtin(
+            "planar",
+            &[
+                axis_x_unit(),
+                axis_y_unit(),
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        )
+    }
+
+    /// `dim(planar_joint, range, steps)` returns Undef.
+    ///
+    /// Pins the contract that `dim` rejects planar drivers: planar is a
+    /// 3-DOF joint (two prismatic axes + one revolute about the plane normal)
+    /// with no single sweep dimension. Deferred to PRD v0.2 kinematic task 2
+    /// (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+    #[test]
+    fn dim_with_planar_returns_undef() {
+        let planar = planar_xy_joint();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
+        assert!(
+            eval_builtin("dim", &[planar, r, n]).is_undef(),
+            "dim must return Undef for a planar driving joint"
+        );
+    }
 }
