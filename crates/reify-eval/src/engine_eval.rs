@@ -675,6 +675,22 @@ fn lookup_config<'a>(
 /// compile-time validator already emits a hard error for any missing
 /// required key, so reaching this branch indicates an upstream bug rather
 /// than a user-visible config error.
+///
+/// Once all five values parse, three runtime-invariant checks gate
+/// `Some(SampledField{…})` construction.  Each violation emits a
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning and returns `None`,
+/// short-circuiting before any `interp::interpolate_Nd` call could
+/// trip its assertions:
+///
+/// 1. **Spacing is positive and finite per axis.**  Rejects
+///    `0.0`, negative, `NaN`, and `±∞` spacings up front so
+///    `linspace_inclusive`'s defensive 1-node fallback never fires.
+/// 2. **Each axis grid has ≥ 2 nodes.**  Pre-empts
+///    `interp::interpolate_Nd`'s `assert!(grid.len() >= 2)` on
+///    degenerate axes (e.g. zero-length bounds span).
+/// 3. **`data.len() == product(axis_grids[i].len())`.**  Pre-empts
+///    `interp::interpolate_Nd`'s grid-vs-values length-equality
+///    `assert!` on flatten/shape mismatches.
 fn build_sampled_field(
     name: &str,
     config: &[(String, reify_types::CompiledExpr)],
@@ -761,9 +777,81 @@ fn build_sampled_field(
         }
     };
 
+    // Runtime-invariant checks (step-24): three pre-flight guards that
+    // prevent `interp::interpolate_Nd`'s `assert!`s from panicking the
+    // eval loop on a malformed config that parsed clean but violates
+    // the interpolation primitives' contracts.  Each guard emits a
+    // `W_FIELD_SAMPLED_INVALID_CONFIG` warning naming the offending
+    // axis / slot and returns `None` so the field's lambda becomes
+    // `Value::Undef`.  Tests in
+    // `crates/reify-eval/tests/field_eval_tests.rs` (step-23) pin
+    // each of the three failure modes.
+
+    // (1) Spacing must be positive and finite per axis.  The
+    //     `linspace_inclusive` helper has a defensive
+    //     `spacing <= 0.0 || !spacing.is_finite()` branch that
+    //     collapses bad spacings to a 1-node grid; downstream
+    //     `interp::interpolate_Nd` would then trip
+    //     `assert!(grid.len() >= 2)`.  Reject up front so the user
+    //     gets a precise message naming the offending axis.
+    for (i, s) in spacing.iter().enumerate() {
+        if !(*s > 0.0 && s.is_finite()) {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': invalid spacing: axis {i} spacing must be positive and finite, got {s}"
+                ),
+            );
+            return None;
+        }
+    }
+
     let axis_grids: Vec<Vec<f64>> = (0..bounds_min.len())
         .map(|i| linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]))
         .collect();
+
+    // (2) Each axis grid must have ≥ 2 nodes.  A degenerate axis
+    //     (e.g. zero-length bounds span, or `bounds_min > bounds_max`
+    //     hitting `linspace_inclusive`'s `span < 0.0` branch) collapses
+    //     to a single node and would later trip
+    //     `assert!(grid.len() >= 2)` inside `interp::interpolate_Nd`.
+    for (i, axis) in axis_grids.iter().enumerate() {
+        if axis.len() < 2 {
+            push_invalid_config(
+                ctx,
+                format!(
+                    "sampled field '{name}': axis {i} grid has only {} node(s); need at least 2 (check bounds and spacing — bounds_min={} bounds_max={} spacing={})",
+                    axis.len(),
+                    bounds_min[i],
+                    bounds_max[i],
+                    spacing[i]
+                ),
+            );
+            return None;
+        }
+    }
+
+    // (3) `data.len()` must equal the product of per-axis grid sizes
+    //     (row-major flattening).  A mismatch would later trip the
+    //     length-equality `assert!` inside
+    //     `interp::interpolate_Nd`.  The shape rendering uses ‘×’ so
+    //     a 3-D grid prints as e.g. `4×5×6`.
+    let expected: usize = axis_grids.iter().map(|g| g.len()).product();
+    if data.len() != expected {
+        let shape = axis_grids
+            .iter()
+            .map(|g| g.len().to_string())
+            .collect::<Vec<_>>()
+            .join("×");
+        push_invalid_config(
+            ctx,
+            format!(
+                "sampled field '{name}': data length {} does not match grid shape ({shape}); expected {expected} elements (row-major, axis-0 outermost)",
+                data.len()
+            ),
+        );
+        return None;
+    }
 
     Some(SampledField {
         name: name.to_string(),

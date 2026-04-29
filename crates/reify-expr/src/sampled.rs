@@ -103,12 +103,21 @@ pub fn sample_at_point(
     }
 
     // 1D / 2D / 3D dispatch: the per-axis flat-data layout follows
-    // `interp.rs`'s row-major convention (axis-0 outermost). For
-    // `Regular2D` and `Regular3D` the elaborator (`engine_eval::build_sampled_field`)
-    // requires `data.len() == prod(axis_grids[i].len())` and `spacing`
-    // to be a `Value::List` of N Length scalars; failure to match either
-    // contract poisons the field to `Value::Undef` at elaboration time
-    // before any sample call reaches this dispatch.
+    // `interp.rs`'s row-major convention (axis-0 outermost). The elaborator
+    // (`engine_eval::build_sampled_field`) enforces three runtime invariants
+    // before constructing the `SampledField` reached by this dispatch:
+    //
+    // 1. each axis spacing is strictly positive and finite,
+    // 2. each axis grid has at least 2 nodes (i.e.
+    //    `axis_grids[i].len() >= 2`),
+    // 3. `data.len() == product(axis_grids[i].len())` — row-major flatten,
+    //    axis-0 outermost.
+    //
+    // Any violation poisons the field to `Value::Undef` at elaboration time
+    // and emits a `DiagnosticCode::FieldSampledInvalidConfig` warning, so by
+    // the time control reaches this dispatch the `interp::interpolate_Nd`
+    // primitives' internal `assert!`s on grid length, axis-grid length, and
+    // data length cannot fire from sampled-field input.
     let method: InterpolationMethod = field.interpolation.into();
     let result: InterpolationResult = match field.kind {
         SampledGridKind::Regular1D => {
