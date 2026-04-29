@@ -140,7 +140,8 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
 /// own input coordinate (metres for prismatic, radians for revolute).
 ///
 /// Returns `None` for joints whose range is missing, unbounded on either
-/// side, or for non-Map / unknown-kind inputs.
+/// side, for fixed (0-DOF) joints whose free-variable space is empty, or
+/// for non-Map / unknown-kind inputs.
 ///
 /// **Coupling note**: returns the *parent's* range midpoint (not scaled by
 /// `ratio`).  The free-variable space of a coupling joint is the parent's
@@ -178,6 +179,7 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
+        "fixed" => None, // 0-DOF joint: empty free-variable space, no midpoint to compute.
         _ => None,
     }
 }
