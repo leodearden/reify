@@ -2680,4 +2680,37 @@ mod tests {
         }
     }
 
+    // ── fixed constructor ────────────────────────────────────────────────────
+
+    /// `fixed()` with zero args returns a single-key Map `{ "kind" → "fixed" }`.
+    /// No axis or range field — fixed joints have no motion variable.
+    #[test]
+    fn fixed_returns_map_with_correct_fields() {
+        let result = eval_builtin("fixed", &[]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("fixed(): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("fixed".to_string())),
+            "kind field should be 'fixed'"
+        );
+        assert_eq!(map.len(), 1, "fixed joint Map should have exactly 1 key (only 'kind')");
+    }
+
+    /// `fixed` rejects any non-empty argument list — a 0-DOF joint has no
+    /// parameters to accept.
+    #[test]
+    fn fixed_with_nonzero_args_returns_undef() {
+        assert!(
+            eval_builtin("fixed", &[Value::Real(0.0)]).is_undef(),
+            "fixed(Real(0.0)) should return Undef (too many args)"
+        );
+        assert!(
+            eval_builtin("fixed", &[Value::Real(0.0), Value::Real(1.0)]).is_undef(),
+            "fixed(a, b) should return Undef (too many args)"
+        );
+    }
+
 }
