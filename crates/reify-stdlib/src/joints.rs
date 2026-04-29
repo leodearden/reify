@@ -2648,4 +2648,57 @@ mod tests {
             );
         }
     }
+
+    /// Verify that `joint_kind_minimal_fixture("coupling")` yields one variant
+    /// per parent kind so both code paths in `transform_at` and
+    /// `joint_jacobian_value` are exercised:
+    ///
+    /// - `parent_kind == "prismatic"` → `length_input` branch in `transform_at`,
+    ///   direct jacobian in `joint_jacobian_value`.
+    /// - `parent_kind == "revolute"` → `trig_input` branch in `transform_at`,
+    ///   recursive axis-lookup in `joint_jacobian_value`.
+    ///
+    /// Also pins the non-Undef contract: if `couple` itself regresses the
+    /// self-diagnosing assert inside the fixture will localize the blame there
+    /// rather than in the dispatch tests.
+    #[test]
+    fn coupling_fixture_covers_both_parent_kinds() {
+        use std::collections::BTreeSet;
+
+        let mut parent_kinds = BTreeSet::new();
+        for (joint, _value_arg) in joint_kind_minimal_fixture("coupling") {
+            assert!(
+                !joint.is_undef(),
+                "joint_kind_minimal_fixture(\"coupling\") yielded an Undef joint — \
+                 couple itself may have regressed"
+            );
+            // Extract parent kind from the coupling Map.
+            let kind_str = match &joint {
+                Value::Map(m) => match m.get(&Value::String("parent".to_string())) {
+                    Some(Value::Map(parent_m)) => {
+                        match parent_m.get(&Value::String("kind".to_string())) {
+                            Some(Value::String(k)) => k.clone(),
+                            other => panic!(
+                                "coupling parent 'kind' is not a String: {other:?}"
+                            ),
+                        }
+                    }
+                    other => panic!("coupling 'parent' is not a Map: {other:?}"),
+                },
+                other => panic!("coupling fixture joint is not a Map: {other:?}"),
+            };
+            parent_kinds.insert(kind_str);
+        }
+        assert!(
+            parent_kinds.contains("prismatic"),
+            "coupling fixture must include a prismatic-parent variant to exercise \
+             the length_input branch in transform_at"
+        );
+        assert!(
+            parent_kinds.contains("revolute"),
+            "coupling fixture must include a revolute-parent variant to exercise \
+             the trig_input branch in transform_at and the axis-recursion in \
+             joint_jacobian_value"
+        );
+    }
 }
