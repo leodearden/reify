@@ -114,4 +114,49 @@ mod tests {
             "value field should be the input motion value verbatim"
         );
     }
+
+    // ── bind() input validation: full surface returns Undef ───────────────
+    //
+    // Validation allow-list (matches `eval_snapshot::bind` arm):
+    //   args.len() == 2          → arity guard
+    //   is_joint_value(args[0])  → joint-arg guard
+    // Motion value (args[1]) is stored verbatim — downstream
+    // `transform_at` is the single point of dimension/finite-value
+    // validation. These tests pin every other input shape as Undef.
+
+    /// `bind()` with an arity outside {2} returns Undef.
+    #[test]
+    fn bind_wrong_arity_returns_undef() {
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let v = Value::length(0.002);
+
+        // 0, 1, 3 args
+        assert!(eval_builtin("bind", &[]).is_undef());
+        assert!(eval_builtin("bind", std::slice::from_ref(&j)).is_undef());
+        assert!(eval_builtin("bind", &[j, v.clone(), v]).is_undef());
+    }
+
+    /// `bind(non_joint, value)` returns Undef when args[0] is not a
+    /// joint value. Covers `Value::Real`, `Value::String`, and the
+    /// world sentinel — all three are non-joint Map/non-Map shapes
+    /// that must be rejected before binding-Map construction.
+    #[test]
+    fn bind_non_joint_arg_returns_undef() {
+        let v = Value::length(0.002);
+
+        // Real (not a Map at all)
+        assert!(eval_builtin("bind", &[Value::Real(1.0), v.clone()]).is_undef());
+
+        // String (not a Map at all)
+        assert!(eval_builtin(
+            "bind",
+            &[Value::String("not a joint".to_string()), v.clone()]
+        )
+        .is_undef());
+
+        // World sentinel — a Map with kind="world", but NOT one of the
+        // joint kinds in JOINT_KINDS, so it must be rejected.
+        let world = eval_builtin("world", &[]);
+        assert!(eval_builtin("bind", &[world, v]).is_undef());
+    }
 }
