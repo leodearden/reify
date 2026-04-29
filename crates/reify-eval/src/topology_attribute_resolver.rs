@@ -291,4 +291,43 @@ mod tests {
         );
         assert!(diagnostics.is_empty());
     }
+
+    /// step-7 — imported-geometry fallback (PRD line 68).
+    ///
+    /// Sub-case (a): the table is fully empty. Any non-empty query returns
+    /// `FallbackToComputed` (no candidate carries an entry).
+    ///
+    /// Sub-case (b): the table HAS entries but for handles NOT in
+    /// `candidates`. Still `FallbackToComputed` because none of the SUPPLIED
+    /// candidates carry an entry; entries for unrelated handles are
+    /// irrelevant.
+    #[test]
+    fn fallback_to_computed_when_no_candidate_has_attribute_entry() {
+        // (a) Empty table.
+        let table = TopologyAttributeTable::default();
+        let candidates = [h(40), h(41)];
+        let query = AttributeQuery {
+            user_label: Some("anything".to_string()),
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(result, AttributeResolution::FallbackToComputed);
+        assert!(
+            diagnostics.is_empty(),
+            "fallback emits no diagnostic — it is an expected path for imported geometry"
+        );
+
+        // (b) Table populated for OTHER handles.
+        let mut table_b = TopologyAttributeTable::default();
+        table_b.record(h(99), attr(Role::Side, 0, None));
+        // Candidates 40/41 still have no entries.
+        let mut diagnostics = Vec::new();
+        let result_b =
+            resolve_unique_by_attribute(&table_b, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(result_b, AttributeResolution::FallbackToComputed);
+        assert!(diagnostics.is_empty());
+    }
 }
