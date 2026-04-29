@@ -1008,6 +1008,17 @@ structure def S {
                 "expected captured param name 'grade', got {:?}",
                 params[0].0
             );
+            match &params[0].1.kind {
+                CompiledExprKind::Literal(Value::Real(v)) => assert!(
+                    (v - 10.9).abs() < 1e-9,
+                    "expected captured grade param compiled to Literal(Real(10.9)), got Real({})",
+                    v
+                ),
+                other => panic!(
+                    "expected Literal(Real(10.9)) for captured grade param, got {:?}",
+                    other
+                ),
+            }
         }
         other => panic!(
             "expected CompiledForallBody::Connect for rich-form capture, got {:?}",
