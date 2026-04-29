@@ -162,4 +162,126 @@ mod tests {
         let _: NewtonOutcome = o.clone();
         let _ = format!("{o:?}");
     }
+
+    // ── newton_solve tests (step-13) ────────────────────────────────────
+
+    /// Build a residual+jacobian closure for a 1-D linear residual r(x) = x - target.
+    /// J column shape: [0,0,0, 1,0,0] (linear in x).
+    fn linear_1d_closure(
+        target: f64,
+    ) -> impl FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        move |x: &[f64]| {
+            assert_eq!(x.len(), 1);
+            // Linear residual on first linear component.
+            let r = vec![0.0, 0.0, 0.0, x[0] - target, 0.0, 0.0];
+            // Single column: dr/dx0 = [0,0,0, 1,0,0].
+            let j = vec![vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0]];
+            Some((r, j))
+        }
+    }
+
+    #[test]
+    fn newton_solve_1d_linear_converges() {
+        let cfg = NewtonConfig::default();
+        let outcome = newton_solve(vec![0.5], linear_1d_closure(0.3), &cfg);
+        match outcome {
+            NewtonOutcome::Converged {
+                x,
+                iters,
+                residual_norm,
+            } => {
+                assert!((x[0] - 0.3).abs() < 1e-9, "expected x≈0.3, got {}", x[0]);
+                assert!(iters >= 1, "expected at least 1 iter");
+                assert!(
+                    residual_norm < cfg.tol_pos_m * 2.0,
+                    "expected residual_norm < tol, got {residual_norm}"
+                );
+            }
+            other => panic!("expected Converged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newton_solve_max_iters_zero_returns_not_converged() {
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 0,
+        };
+        let outcome = newton_solve(vec![0.5], linear_1d_closure(0.3), &cfg);
+        match outcome {
+            NewtonOutcome::NotConverged { x, residual_norm } => {
+                assert!((x[0] - 0.5).abs() < 1e-12);
+                assert!(
+                    (residual_norm - 0.2).abs() < 1e-9,
+                    "expected residual_norm ≈ 0.2, got {residual_norm}"
+                );
+            }
+            other => panic!("expected NotConverged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newton_solve_2d_diagonal_converges() {
+        let cfg = NewtonConfig::default();
+        let closure = |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            assert_eq!(x.len(), 2);
+            // Two stacked 6-vector residuals, one per "loop".
+            let mut r = vec![0.0; 12];
+            r[3] = x[0] - 1.0; // residual loop 0, linear x
+            r[9] = x[1] - 2.0; // residual loop 1, linear x
+            // Two columns, each 12-element.
+            let mut c0 = vec![0.0; 12];
+            c0[3] = 1.0;
+            let mut c1 = vec![0.0; 12];
+            c1[9] = 1.0;
+            Some((r, vec![c0, c1]))
+        };
+        let outcome = newton_solve(vec![0.0, 0.0], closure, &cfg);
+        match outcome {
+            NewtonOutcome::Converged { x, iters, .. } => {
+                assert!((x[0] - 1.0).abs() < 1e-9);
+                assert!((x[1] - 2.0).abs() < 1e-9);
+                assert!(iters >= 1);
+            }
+            other => panic!("expected Converged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newton_solve_rank_deficient_jacobian_returns_singular() {
+        let cfg = NewtonConfig::default();
+        // 2 free vars, but both columns are scaled copies of each other →
+        // J^T J is singular (rank 1).
+        let closure = |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            assert_eq!(x.len(), 2);
+            let r = vec![0.0, 0.0, 0.0, x[0] + 2.0 * x[1] - 1.0, 0.0, 0.0];
+            // c0 = [0,0,0, 1,0,0]; c1 = [0,0,0, 2,0,0] = 2*c0
+            let c0 = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+            let c1 = vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0];
+            Some((r, vec![c0, c1]))
+        };
+        let outcome = newton_solve(vec![0.0, 0.0], closure, &cfg);
+        match outcome {
+            NewtonOutcome::Singular { x, .. } => {
+                // x is whatever we had on the iteration that detected singularity
+                assert_eq!(x.len(), 2);
+            }
+            other => panic!("expected Singular, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newton_solve_closure_returning_none_returns_not_converged() {
+        let cfg = NewtonConfig::default();
+        let closure = |_x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> { None };
+        let outcome = newton_solve(vec![0.5], closure, &cfg);
+        match outcome {
+            NewtonOutcome::NotConverged { x, residual_norm } => {
+                assert_eq!(x, vec![0.5]);
+                assert!(residual_norm.is_infinite() || residual_norm.is_nan());
+            }
+            other => panic!("expected NotConverged, got {other:?}"),
+        }
+    }
 }
