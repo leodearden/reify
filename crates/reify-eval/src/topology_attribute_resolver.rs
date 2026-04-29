@@ -82,8 +82,31 @@ pub enum AttributeResolution {
 /// Resolve a `query` against a slice of candidate handles, consulting the
 /// attribute `table` and emitting at most one diagnostic into `diagnostics`.
 ///
-/// See the module docstring for the PRD line references and the user-label
-/// preference rule.
+/// # User-label preference rule (PRD line 62)
+///
+/// When BOTH `query.user_label` and `query.role_and_index` are `Some`:
+///
+/// - **Unique user_label match** → return [`AttributeResolution::Resolved`]
+///   immediately; the role/idx branch is not consulted.
+/// - **Zero user_label matches** → fall through to the role/idx branch.
+///   This makes a query that names a label that never existed gracefully
+///   try the role-based interpretation instead of failing — mirrors how
+///   `@face("top")` might mean "the role-named top cap" when no
+///   user-labeled "top" exists.
+/// - **Multi-match user_label** (≥ 2 candidates carry the same label) →
+///   do NOT fall through. A multi-match is itself an ambiguity signal —
+///   converting it to a role/idx match would silently paper over a name
+///   collision the user authored intentionally. Falls into the
+///   [`AttributeResolution::Unresolved`] arm; step-12's diagnostic emission
+///   refines this with a `TopologyAttributeStale` warning.
+///
+/// # Imported-geometry fallback (PRD line 68)
+///
+/// Step-8 will add a pre-pass that returns
+/// [`AttributeResolution::FallbackToComputed`] when NONE of `candidates`
+/// carry a `TopologyAttributeTable` entry. That outcome is the
+/// imported-geometry signal; upstream callers route through computed
+/// selectors on it.
 pub fn resolve_unique_by_attribute(
     table: &TopologyAttributeTable,
     candidates: &[GeometryHandleId],
@@ -91,19 +114,28 @@ pub fn resolve_unique_by_attribute(
     _selector_span: SourceSpan,
     _diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
-    // step-2 — user_label branch.
+    // user_label branch (step-2). Per PRD line 62, this branch fires first
+    // when query.user_label is Some.
     if let Some(label) = query.user_label.as_deref() {
         let (found, n) = count_unique_matches(table, candidates, |attr| {
             attr.user_label.as_deref() == Some(label)
         });
-        if n == 1 {
-            return AttributeResolution::Resolved(found.unwrap());
+        match n {
+            1 => return AttributeResolution::Resolved(found.unwrap()),
+            // Zero matches: fall through to role/idx branch.
+            0 => {}
+            // Multi-match: explicitly do NOT fall through. The role/idx
+            // branch is skipped so an authored label collision is not
+            // silently converted to a role-based match. Step-12 emits a
+            // diagnostic; for now we drop into the Unresolved tail.
+            _ => return AttributeResolution::Unresolved,
         }
     }
-    // step-4 — role + local_index branch.
+    // role + local_index branch (step-4).
     if let Some((role, idx)) = query.role_and_index {
-        let (found, n) =
-            count_unique_matches(table, candidates, |attr| attr.role == role && attr.local_index == idx);
+        let (found, n) = count_unique_matches(table, candidates, |attr| {
+            attr.role == role && attr.local_index == idx
+        });
         if n == 1 {
             return AttributeResolution::Resolved(found.unwrap());
         }
