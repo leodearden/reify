@@ -78,12 +78,12 @@ pub(crate) fn elaborate_forall_constraint(
     scope: &mut CompilationScope,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
-    _constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
+    constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     value_cells: &[ValueCellDecl],
     sub_components: &[SubComponentDecl],
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
-    _constraint_inst_counts: &mut HashMap<String, usize>,
+    constraint_inst_counts: &mut HashMap<String, usize>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut std::collections::HashSet<ValueCellId>,
     guard_index: &mut u32,
@@ -136,61 +136,105 @@ pub(crate) fn elaborate_forall_constraint(
         _ => return,
     };
 
-    let body_constraint = match &decl.body {
-        ForallConstraintBody::Constraint(c) => c,
-        // Step-14: Instantiation body. For now, silently skip.
-        ForallConstraintBody::Instantiation(_) => return,
-    };
-
     for (i, element) in elements.iter().enumerate() {
         let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
         bindings.insert(decl.variable.clone(), element.clone());
 
-        let substituted_expr = substitute_expr(&body_constraint.expr, &bindings);
-        let compiled_expr =
-            compile_expr(&substituted_expr, scope, enum_defs, functions, diagnostics);
+        match &decl.body {
+            ForallConstraintBody::Constraint(body_constraint) => {
+                let substituted_expr = substitute_expr(&body_constraint.expr, &bindings);
+                let compiled_expr =
+                    compile_expr(&substituted_expr, scope, enum_defs, functions, diagnostics);
 
-        let id = ConstraintNodeId::new(entity_name, *constraint_index);
-        let cc = CompiledConstraint {
-            id,
-            label: Some(format!("forall@{}[{}]", decl.variable, i)),
-            expr: compiled_expr,
-            span: decl.span,
-            domain: None,
-            optimized_target: None,
-        };
-        *constraint_index += 1;
+                let id = ConstraintNodeId::new(entity_name, *constraint_index);
+                let cc = CompiledConstraint {
+                    id,
+                    label: Some(format!("forall@{}[{}]", decl.variable, i)),
+                    expr: compiled_expr,
+                    span: decl.span,
+                    domain: None,
+                    optimized_target: None,
+                };
+                *constraint_index += 1;
 
-        // PRD criterion 9: when the body has a `where` clause, route the
-        // per-element constraint through `compile_per_decl_constraint_guard`
-        // so it lives inside its own single-constraint guarded group with
-        // the (per-element substituted) condition as the guard. Mirrors the
-        // shape used for plain `MemberDecl::Constraint(c)` with a where
-        // clause at entity.rs:951-963.
-        if let Some(wc) = &body_constraint.where_clause {
-            // Substitute the bound variable inside the where condition. The
-            // condition often does not reference the bound var (e.g. a
-            // structure-level Bool flag), in which case substitution is a
-            // no-op — but in general the spec allows the condition to
-            // reference the per-element value, so we always substitute.
-            let substituted_wc = reify_syntax::WhereClause {
-                condition: substitute_expr(&wc.condition, &bindings),
-                span: wc.span,
-            };
-            compile_per_decl_constraint_guard(
-                entity_name,
-                &substituted_wc,
-                cc,
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                guarded_groups,
-                structure_controlling,
-                guard_index,
-            );
-        } else {
-            constraints.push(cc);
+                // PRD criterion 9: when the body has a `where` clause, route the
+                // per-element constraint through `compile_per_decl_constraint_guard`
+                // so it lives inside its own single-constraint guarded group with
+                // the (per-element substituted) condition as the guard. Mirrors the
+                // shape used for plain `MemberDecl::Constraint(c)` with a where
+                // clause at entity.rs:951-963.
+                if let Some(wc) = &body_constraint.where_clause {
+                    // Substitute the bound variable inside the where condition. The
+                    // condition often does not reference the bound var (e.g. a
+                    // structure-level Bool flag), in which case substitution is a
+                    // no-op — but in general the spec allows the condition to
+                    // reference the per-element value, so we always substitute.
+                    let substituted_wc = reify_syntax::WhereClause {
+                        condition: substitute_expr(&wc.condition, &bindings),
+                        span: wc.span,
+                    };
+                    compile_per_decl_constraint_guard(
+                        entity_name,
+                        &substituted_wc,
+                        cc,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        guarded_groups,
+                        structure_controlling,
+                        guard_index,
+                    );
+                } else {
+                    constraints.push(cc);
+                }
+            }
+            ForallConstraintBody::Instantiation(ci) => {
+                // Per-element substituted clone of the inst decl: each named
+                // arg expr (and the where-clause condition if present) is
+                // run through `substitute_expr` with `decl.variable → element`.
+                // The shared `expand_constraint_inst` helper then handles def
+                // lookup, arg validation, inst_idx allocation, per-predicate
+                // emission, and where-clause routing exactly as for plain
+                // `MemberDecl::ConstraintInst` arms — with the optional
+                // `forall@<var>[<i>]` label suffix appended so per-element
+                // diagnostics retain both the inst-idx provenance and the
+                // forall element index.
+                let substituted_args: Vec<(String, reify_syntax::Expr)> = ci
+                    .args
+                    .iter()
+                    .map(|(n, e)| (n.clone(), substitute_expr(e, &bindings)))
+                    .collect();
+                let substituted_wc =
+                    ci.where_clause.as_ref().map(|wc| reify_syntax::WhereClause {
+                        condition: substitute_expr(&wc.condition, &bindings),
+                        span: wc.span,
+                    });
+                let substituted_ci = reify_syntax::ConstraintInstDecl {
+                    name: ci.name.clone(),
+                    args: substituted_args,
+                    where_clause: substituted_wc,
+                    span: ci.span,
+                    content_hash: ci.content_hash,
+                };
+                let suffix = format!("forall@{}[{}]", decl.variable, i);
+                expand_constraint_inst(
+                    &substituted_ci,
+                    entity_name,
+                    constraint_def_registry,
+                    scope,
+                    enum_defs,
+                    functions,
+                    constraints,
+                    constraint_index,
+                    constraint_inst_counts,
+                    guarded_groups,
+                    structure_controlling,
+                    guard_index,
+                    diagnostics,
+                    Some(&suffix),
+                );
+            }
         }
     }
 }

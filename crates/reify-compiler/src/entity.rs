@@ -1345,121 +1345,29 @@ pub(crate) fn compile_entity(
                 // Meta blocks are collected in the first pass; skip in second pass.
             }
             reify_syntax::MemberDecl::ConstraintInst(ci) => {
-                // Look up the constraint definition.
-                let def = match constraint_def_registry.get(&ci.name) {
-                    Some(d) => *d,
-                    None => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unknown constraint definition: {}",
-                                ci.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                ci.span,
-                                format!("no constraint def named '{}'", ci.name),
-                            )),
-                        );
-                        continue;
-                    }
-                };
-
-                // Build name → Expr bindings map from the named args.
-                let arg_map: HashMap<String, reify_syntax::Expr> = ci
-                    .args
-                    .iter()
-                    .map(|(name, expr)| (name.clone(), expr.clone()))
-                    .collect();
-
-                // Validate: check for unknown argument names.
-                let param_names: std::collections::HashSet<&str> =
-                    def.params.iter().map(|p| p.name.as_str()).collect();
-                for (arg_name, _) in &ci.args {
-                    if !param_names.contains(arg_name.as_str()) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unknown argument '{}' in constraint instantiation of '{}'",
-                                arg_name, ci.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                ci.span,
-                                format!("'{}' is not a parameter of '{}'", arg_name, ci.name),
-                            )),
-                        );
-                    }
-                }
-
-                // Validate: check for missing required arguments.
-                let mut has_validation_error = false;
-                for param in &def.params {
-                    if !arg_map.contains_key(&param.name) && param.default.is_none() {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "missing argument '{}' in constraint instantiation of '{}'",
-                                param.name, ci.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                ci.span,
-                                format!("argument '{}' is required", param.name),
-                            )),
-                        );
-                        has_validation_error = true;
-                    }
-                }
-                if has_validation_error {
-                    continue;
-                }
-
-                // Allocate this instantiation's inst_idx before the per-predicate
-                // loop so all predicates from one `constraint MinWall(...)` share
-                // the same inst_idx — predicates differ only by pred_idx.
-                // Uses a get_mut/insert split to avoid cloning `ci.name` on the
-                // common case where the entry already exists.
-                let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
-                    let idx = *entry;
-                    *entry += 1;
-                    idx
-                } else {
-                    constraint_inst_counts.insert(ci.name.clone(), 1);
-                    0
-                };
-
-                // For each predicate in the constraint def, substitute params with args
-                // and compile the resulting expression in the calling entity's scope.
-                // `annotations_optimized_target` was cached at def-compile time; clone it
-                // directly per predicate rather than creating an extra intermediate clone.
-                for (pred_idx, predicate) in def.predicates.iter().enumerate() {
-                    let substituted = substitute_expr(predicate, &arg_map);
-                    let compiled_expr =
-                        compile_expr(&substituted, &scope, enum_defs, functions, diagnostics);
-
-                    let id = ConstraintNodeId::new(entity_name, constraint_index);
-                    let cc = CompiledConstraint {
-                        id,
-                        label: Some(format!("{}#{}[{}]", ci.name, inst_idx, pred_idx)),
-                        expr: compiled_expr,
-                        span: ci.span,
-                        domain: None,
-                        optimized_target: def.annotations_optimized_target.clone(),
-                    };
-                    constraint_index += 1;
-
-                    if let Some(wc) = &ci.where_clause {
-                        compile_per_decl_constraint_guard(
-                            entity_name,
-                            wc,
-                            cc,
-                            &mut scope,
-                            enum_defs,
-                            functions,
-                            diagnostics,
-                            &mut guarded_groups,
-                            &mut structure_controlling,
-                            &mut guard_index,
-                        );
-                    } else {
-                        constraints.push(cc);
-                    }
-                }
+                // Delegate to the shared expansion helper. The helper owns
+                // every step (def lookup, arg validation, inst_idx allocation,
+                // per-predicate substitution + emission, where-clause routing).
+                // `label_suffix = None` preserves the original
+                // `<name>#<inst_idx>[<pred_idx>]` label format for plain
+                // instantiations; the forall instantiation branch in
+                // `forall_elaborate.rs` passes `Some("forall@<var>[<i>]")`.
+                expand_constraint_inst(
+                    ci,
+                    entity_name,
+                    constraint_def_registry,
+                    &mut scope,
+                    enum_defs,
+                    functions,
+                    &mut constraints,
+                    &mut constraint_index,
+                    &mut constraint_inst_counts,
+                    &mut guarded_groups,
+                    &mut structure_controlling,
+                    &mut guard_index,
+                    diagnostics,
+                    None,
+                );
             }
             reify_syntax::MemberDecl::ForallConnect(f) => {
                 // Defer to the post-loop forall elaboration sub-pass — see the
@@ -2782,5 +2690,170 @@ pub(crate) fn fixup_option_none_for_let(
         && matches!(&resolved, Type::Option(_))
     {
         *compiled_expr = CompiledExpr::option_none(resolved);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constraint-instantiation expansion (shared by `MemberDecl::ConstraintInst`
+// and the `forall` `ConstraintBody::Instantiation` branch in
+// `forall_elaborate.rs`)
+// ---------------------------------------------------------------------------
+
+/// Expand a `constraint Foo(arg: x, ...)` instantiation into one or more
+/// `CompiledConstraint`s — one per predicate in the matching constraint def.
+///
+/// Behaviour mirrors the original inline implementation that lived in
+/// `compile_structure_inner`'s `MemberDecl::ConstraintInst` arm:
+///   * Look up the constraint def in `constraint_def_registry`. Missing →
+///     emit a single error diagnostic and return.
+///   * Validate named-argument set against the def's params (unknown args,
+///     missing required args). Validation errors short-circuit emission.
+///   * Allocate one shared `inst_idx` for this instantiation by bumping the
+///     `constraint_inst_counts` entry for `ci.name`, so all predicates from
+///     this call share the same inst_idx and differ only by `pred_idx`.
+///   * Per predicate: substitute params with the named args, compile the
+///     resulting expression, build a `CompiledConstraint` whose label
+///     follows the format `<name>#<inst_idx>[<pred_idx>]`, and either push
+///     it onto `constraints` directly or route it through
+///     `compile_per_decl_constraint_guard` if `ci.where_clause.is_some()`.
+///
+/// `label_suffix` (added for task 2364) optionally appends `:<suffix>` to
+/// each emitted constraint's label. The forall instantiation branch passes
+/// `Some("forall@<var>[<i>]")` so per-element diagnostics retain both the
+/// inst-idx provenance and the forall element index. Non-forall callers
+/// pass `None` to preserve the original `<name>#<inst_idx>[<pred_idx>]`
+/// label format unchanged.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn expand_constraint_inst(
+    ci: &reify_syntax::ConstraintInstDecl,
+    entity_name: &str,
+    constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    constraint_inst_counts: &mut HashMap<String, usize>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+    diagnostics: &mut Vec<Diagnostic>,
+    label_suffix: Option<&str>,
+) {
+    // Look up the constraint definition.
+    let def = match constraint_def_registry.get(&ci.name) {
+        Some(d) => *d,
+        None => {
+            diagnostics.push(
+                Diagnostic::error(format!("unknown constraint definition: {}", ci.name))
+                    .with_label(DiagnosticLabel::new(
+                        ci.span,
+                        format!("no constraint def named '{}'", ci.name),
+                    )),
+            );
+            return;
+        }
+    };
+
+    // Build name → Expr bindings map from the named args.
+    let arg_map: HashMap<String, reify_syntax::Expr> = ci
+        .args
+        .iter()
+        .map(|(name, expr)| (name.clone(), expr.clone()))
+        .collect();
+
+    // Validate: check for unknown argument names.
+    let param_names: HashSet<&str> = def.params.iter().map(|p| p.name.as_str()).collect();
+    for (arg_name, _) in &ci.args {
+        if !param_names.contains(arg_name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown argument '{}' in constraint instantiation of '{}'",
+                    arg_name, ci.name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    ci.span,
+                    format!("'{}' is not a parameter of '{}'", arg_name, ci.name),
+                )),
+            );
+        }
+    }
+
+    // Validate: check for missing required arguments.
+    let mut has_validation_error = false;
+    for param in &def.params {
+        if !arg_map.contains_key(&param.name) && param.default.is_none() {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "missing argument '{}' in constraint instantiation of '{}'",
+                    param.name, ci.name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    ci.span,
+                    format!("argument '{}' is required", param.name),
+                )),
+            );
+            has_validation_error = true;
+        }
+    }
+    if has_validation_error {
+        return;
+    }
+
+    // Allocate this instantiation's inst_idx before the per-predicate loop
+    // so all predicates from one `constraint MinWall(...)` share the same
+    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
+    // split to avoid cloning `ci.name` on the common case where the entry
+    // already exists.
+    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
+        let idx = *entry;
+        *entry += 1;
+        idx
+    } else {
+        constraint_inst_counts.insert(ci.name.clone(), 1);
+        0
+    };
+
+    // For each predicate in the constraint def, substitute params with args
+    // and compile the resulting expression in the calling entity's scope.
+    // `annotations_optimized_target` was cached at def-compile time; clone it
+    // directly per predicate rather than creating an extra intermediate clone.
+    for (pred_idx, predicate) in def.predicates.iter().enumerate() {
+        let substituted = substitute_expr(predicate, &arg_map);
+        let compiled_expr =
+            compile_expr(&substituted, scope, enum_defs, functions, diagnostics);
+
+        let id = ConstraintNodeId::new(entity_name, *constraint_index);
+        let base_label = format!("{}#{}[{}]", ci.name, inst_idx, pred_idx);
+        let label = match label_suffix {
+            Some(suffix) => format!("{}:{}", base_label, suffix),
+            None => base_label,
+        };
+        let cc = CompiledConstraint {
+            id,
+            label: Some(label),
+            expr: compiled_expr,
+            span: ci.span,
+            domain: None,
+            optimized_target: def.annotations_optimized_target.clone(),
+        };
+        *constraint_index += 1;
+
+        if let Some(wc) = &ci.where_clause {
+            compile_per_decl_constraint_guard(
+                entity_name,
+                wc,
+                cc,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                guarded_groups,
+                structure_controlling,
+                guard_index,
+            );
+        } else {
+            constraints.push(cc);
+        }
     }
 }
