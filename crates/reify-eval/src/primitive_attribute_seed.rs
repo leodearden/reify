@@ -44,9 +44,17 @@
 //! - `mod_history` is always empty. Splits/labels arrive in tasks 3-4.
 
 use reify_types::{
-    FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, QueryError, Role, TopologyAttribute,
-    TopologyAttributeTable,
+    CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError,
+    Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
+
+/// Tolerance for cylinder cap-vs-side classification by face-normal
+/// z-component. A face whose normal satisfies `nz > 1.0 - eps` is the
+/// top cap; `nz < -1.0 + eps` is the bottom cap; otherwise the face
+/// is a side. Picked to match the project's general geometric-tolerance
+/// convention (1e-6) used in `OcctKernel`'s assertions and in the
+/// `topology_selectors` filters.
+const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 
 /// Seed per-face/per-edge `TopologyAttribute` records for a primitive
 /// constructor's result handle.
@@ -81,9 +89,8 @@ pub fn seed_primitive_attributes(
     feature_id: &FeatureId,
     op: &GeometryOp,
 ) -> Result<(), QueryError> {
-    // Suppress unused-variable warnings while only the Box arm is wired —
-    // the Cylinder arm (step-4) and edge arms (step-8) consume them.
-    let _ = kernel;
+    // Suppress unused-variable warning while only face arms are wired —
+    // edge arms (step-8) consume `edge_handles`.
     let _ = edge_handles;
     match op {
         GeometryOp::Box { .. } => {
@@ -101,10 +108,102 @@ pub fn seed_primitive_attributes(
             }
             Ok(())
         }
+        GeometryOp::Cylinder { .. } => {
+            // A cylinder emits 3 faces in OCCT's TopExp order: side, top
+            // cap, bottom cap (order varies by OCCT version). Classify
+            // each via `GeometryQuery::FaceNormal`'s z-component. Each
+            // role appears exactly once, so local_index is always 0.
+            for &face_id in face_handles.iter() {
+                let normal_value = kernel.query(&GeometryQuery::FaceNormal(face_id))?;
+                let nz = parse_normal_z(&normal_value)?;
+                let role = classify_cylinder_face_role(nz);
+                table.record(
+                    face_id,
+                    TopologyAttribute {
+                        feature_id: feature_id.clone(),
+                        role,
+                        local_index: 0,
+                        user_label: None,
+                        mod_history: Vec::new(),
+                    },
+                );
+            }
+            Ok(())
+        }
         // All other variants are intentional no-ops at this step. Subsequent
-        // steps widen the dispatch to cover Cylinder (step-4), Sphere
-        // (step-6), and edge seeding (step-8). Sweep / local-feature /
-        // boolean variants land in tasks 5, 7, 8 of the PRD.
+        // steps widen the dispatch to cover Sphere (step-6), and edge
+        // seeding (step-8). Sweep / local-feature / boolean variants land
+        // in tasks 5, 7, 8 of the PRD.
         _ => Ok(()),
     }
+}
+
+/// Classify a cylinder face by its normal's z-component.
+///
+/// `|nz - 1| < eps` → top cap. `|nz + 1| < eps` → bottom cap. Otherwise
+/// the face is a side. The constant comes from `NORMAL_Z_EPSILON`.
+fn classify_cylinder_face_role(nz: f64) -> Role {
+    if nz > 1.0 - NORMAL_Z_EPSILON {
+        Role::Cap(CapKind::Top)
+    } else if nz < -1.0 + NORMAL_Z_EPSILON {
+        Role::Cap(CapKind::Bottom)
+    } else {
+        Role::Side
+    }
+}
+
+/// Extract the z-component of the JSON-encoded `{"x":..,"y":..,"z":..}`
+/// payload that `GeometryQuery::FaceNormal` returns.
+///
+/// Mirrors the parsing convention used by `topology_selectors::parse_xyz_value`
+/// — kept inline here to avoid widening that helper's visibility for a
+/// single-component read.
+fn parse_normal_z(value: &Value) -> Result<f64, QueryError> {
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "FaceNormal returned non-string value: {other:?}"
+            )));
+        }
+    };
+    // Strip outer braces and split on commas — the kernel emits a flat
+    // `{"x":NUM,"y":NUM,"z":NUM}` shape with no nested objects.
+    let inner = s
+        .trim()
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .ok_or_else(|| {
+            QueryError::QueryFailed(format!("FaceNormal returned malformed JSON Point3: {s:?}"))
+        })?;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv
+            .next()
+            .ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "FaceNormal returned malformed JSON Point3 (missing key): {s:?}"
+                ))
+            })?
+            .trim()
+            .trim_matches('"');
+        let val = kv
+            .next()
+            .ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "FaceNormal returned malformed JSON Point3 (missing value): {s:?}"
+                ))
+            })?
+            .trim();
+        if key == "z" {
+            return val.parse::<f64>().map_err(|_| {
+                QueryError::QueryFailed(format!(
+                    "FaceNormal z-component is not a valid f64: {val:?} (full payload {s:?})"
+                ))
+            });
+        }
+    }
+    Err(QueryError::QueryFailed(format!(
+        "FaceNormal payload missing z-component: {s:?}"
+    )))
 }
