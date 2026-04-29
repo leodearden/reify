@@ -322,6 +322,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
             };
             make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0])
         }
+        // 0-DOF fixed joint: zero twist column — design decision.
+        // Strictly a 0-DOF joint has a 6×0 Jacobian (zero columns), but the v0.1
+        // single-DOF convention returns one Map per joint. Returning a zero-magnitude
+        // column preserves the uniform `{ angular, linear }` shape across all kinds,
+        // is semantically valid (no motion variable contributes any twist), and keeps
+        // the existing drift-guard tests simple.
+        "fixed" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
