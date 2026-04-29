@@ -26,7 +26,8 @@
 //! 5-8, which will add per-op variants of this helper.
 
 use reify_types::{
-    BooleanOpHistoryRecords, GeometryHandleId, HistoryRecord, QueryError, TopologyAttributeTable,
+    BooleanOpHistoryRecords, BooleanOpParents, GeometryHandleId, HistoryRecord, QueryError,
+    TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -37,12 +38,13 @@ use reify_types::{
 /// - `table`: the `TopologyAttributeTable` to update in place. Parent
 ///   entries are read; new entries are written for each Modified/Generated
 ///   result sub-shape whose corresponding parent had an attribute.
-/// - `parent_face_handles`: per-parent face-handle slices in canonical
-///   TopExp order. Conventionally `&[&left_faces, &right_faces]` for
-///   binary booleans, but the slice-of-slices shape lets callers extend
-///   to N-ary algorithms (e.g. multi-input fuses) without changing the
-///   signature.
-/// - `parent_edge_handles`: as above, but for edges.
+/// - `parents`: typed wrapper carrying the per-parent face/edge handle
+///   slices in canonical TopExp order. Use [`BooleanOpParents::Binary`]
+///   for binary booleans (fuse / cut / common), where `parent_index` 0 is
+///   the left operand and 1 is the right operand (matching
+///   [`HistoryRecord::parent_index`] semantics). Use
+///   [`BooleanOpParents::NAry`] for multi-input fuse
+///   (`BRepAlgoAPI_BuilderAlgo`).
 /// - `result_face_handles`: the result shape's faces in canonical
 ///   TopExp order. Indexed by `record.result_subshape_index`. The
 ///   propagation writes entries to these handle ids.
@@ -82,12 +84,14 @@ use reify_types::{
 /// of decomposition-plan task 1 (lines 89-103).
 pub fn propagate_attributes_via_brepalgoapi_history(
     table: &mut TopologyAttributeTable,
-    parent_face_handles: &[&[GeometryHandleId]],
-    parent_edge_handles: &[&[GeometryHandleId]],
+    parents: &BooleanOpParents<'_>,
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &BooleanOpHistoryRecords,
 ) -> Result<(), QueryError> {
+    let parent_face_handles = parents.face_slices();
+    let parent_edge_handles = parents.edge_slices();
+
     // Faces: Modified ∪ Generated.
     for record in history
         .face_modified
@@ -192,7 +196,7 @@ mod tests {
     //! kernel — we hand-build a malformed `BooleanOpHistoryRecords` and
     //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
-        BooleanOpHistoryRecords, GeometryHandleId, HistoryRecord, QueryError,
+        BooleanOpHistoryRecords, BooleanOpParents, GeometryHandleId, HistoryRecord, QueryError,
         TopologyAttributeTable,
     };
 
@@ -242,10 +246,10 @@ mod tests {
     fn propagate_returns_query_failed_when_face_record_has_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_faces[0], &layout.parent_faces[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_edges[0], &layout.parent_edges[1]];
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
 
         // 5 >= 2 parents tracked.
         let history = history_with_single_face_modified(HistoryRecord {
@@ -256,8 +260,7 @@ mod tests {
 
         let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
-            &parent_face_handles,
-            &parent_edge_handles,
+            &parents,
             &layout.result_faces,
             &layout.result_edges,
             &history,
@@ -282,10 +285,10 @@ mod tests {
     fn propagate_returns_query_failed_when_face_record_has_parent_subshape_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_faces[0], &layout.parent_faces[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_edges[0], &layout.parent_edges[1]];
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
 
         // Parent 0 has only 1 face, so subshape 99 is out of range.
         let history = history_with_single_face_modified(HistoryRecord {
@@ -296,8 +299,7 @@ mod tests {
 
         let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
-            &parent_face_handles,
-            &parent_edge_handles,
+            &parents,
             &layout.result_faces,
             &layout.result_edges,
             &history,
@@ -318,10 +320,10 @@ mod tests {
     fn propagate_returns_query_failed_when_face_record_has_result_subshape_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_faces[0], &layout.parent_faces[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_edges[0], &layout.parent_edges[1]];
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
 
         // Result has only 1 face, so subshape 7 is out of range.
         let history = history_with_single_face_modified(HistoryRecord {
@@ -332,8 +334,7 @@ mod tests {
 
         let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
-            &parent_face_handles,
-            &parent_edge_handles,
+            &parents,
             &layout.result_faces,
             &layout.result_edges,
             &history,
@@ -354,10 +355,10 @@ mod tests {
     fn propagate_returns_query_failed_when_edge_record_has_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_faces[0], &layout.parent_faces[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] =
-            [&layout.parent_edges[0], &layout.parent_edges[1]];
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
 
         // Edge equivalent of the parent_index check — confirms the kind
         // arg is threaded into the error message.
@@ -369,8 +370,7 @@ mod tests {
 
         let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
-            &parent_face_handles,
-            &parent_edge_handles,
+            &parents,
             &layout.result_faces,
             &layout.result_edges,
             &history,
@@ -396,14 +396,16 @@ mod tests {
         // No records — propagation is a no-op and must not error even
         // when parent/result handle slices are empty.
         let mut table = TopologyAttributeTable::default();
-        let no_handles: [&[GeometryHandleId]; 0] = [];
+        let parents = BooleanOpParents::NAry {
+            faces: &[],
+            edges: &[],
+        };
         let result_handles: Vec<GeometryHandleId> = Vec::new();
         let history = BooleanOpHistoryRecords::default();
 
         propagate_attributes_via_brepalgoapi_history(
             &mut table,
-            &no_handles,
-            &no_handles,
+            &parents,
             &result_handles,
             &result_handles,
             &history,
