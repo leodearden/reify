@@ -396,10 +396,7 @@ mod tests {
         // No records — propagation is a no-op and must not error even
         // when parent/result handle slices are empty.
         let mut table = TopologyAttributeTable::default();
-        let parents = BooleanOpParents::NAry {
-            faces: &[],
-            edges: &[],
-        };
+        let parents = BooleanOpParents::nary(&[], &[]);
         let result_handles: Vec<GeometryHandleId> = Vec::new();
         let history = BooleanOpHistoryRecords::default();
 
