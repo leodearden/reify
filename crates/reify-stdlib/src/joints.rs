@@ -487,6 +487,34 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
     }
 }
 
+/// Canonical set of joint kinds recognized by the joints module.
+///
+/// Single source of truth for "what is a joint kind". Consumers:
+/// - `is_joint_value` (the value-level discriminator below) — checks
+///   membership of a Map's `kind` field against this slice.
+/// - `eval_joints` arms `transform_at` / `joint_jacobian_value` —
+///   per-kind dispatch; their `match` arms must stay in sync with
+///   the entries here.
+/// - `mechanism::body()` — joint-validity guard, via `is_joint_value`.
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling"];
+
+/// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
+/// the strings in [`JOINT_KINDS`] (`"prismatic"`, `"revolute"`,
+/// `"coupling"`). Used by `mechanism::body()` for `at`-arg validation
+/// and (combined with the world-sentinel check) for parent-arg validation.
+///
+/// Tied to `JOINT_KINDS` via `contains` so a future kind addition only
+/// needs to be made in the constant — the predicate follows automatically.
+pub(crate) fn is_joint_value(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => matches!(
+            m.get(&Value::String("kind".to_string())),
+            Some(Value::String(s)) if JOINT_KINDS.contains(&s.as_str())
+        ),
+        _ => false,
+    }
+}
+
 /// Build a coupling `Value::Map` with the four-key layout:
 /// `"kind"`, `"offset"`, `"parent"`, `"ratio"`.
 ///
