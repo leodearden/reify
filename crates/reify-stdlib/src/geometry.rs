@@ -382,7 +382,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let (rw, rx, ry, rz) = r_q;
             // Normalize quaternion first.
             let r_norm_sq = rw * rw + rx * rx + ry * ry + rz * rz;
-            if r_norm_sq < f64::EPSILON {
+            // Use 1e-24 (= (1e-12)²) to align with the file-wide EPS scale of
+            // 1e-12 used in the Taylor branches (lines ~317, ~403). f64::EPSILON
+            // (~2.22e-16) was inconsistent and would admit norms in (1e-12, 1.5e-8)
+            // that the rest of the file treats as zero. Only reject genuinely-zero
+            // quaternions before the divide-by-norm path.
+            if r_norm_sq < 1e-24 {
                 return Some(Value::Undef);
             }
             let r_norm = r_norm_sq.sqrt();
@@ -471,7 +476,8 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             };
             // Normalize R first to be safe with non-unit input quaternions.
             let r_norm_sq = r_q.0 * r_q.0 + r_q.1 * r_q.1 + r_q.2 * r_q.2 + r_q.3 * r_q.3;
-            if r_norm_sq < f64::EPSILON {
+            // 1e-24 = (1e-12)² — see transform_log for the rationale.
+            if r_norm_sq < 1e-24 {
                 return Some(Value::Undef);
             }
             let r_norm = r_norm_sq.sqrt();
@@ -523,7 +529,8 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // Normalize R1 (matches operator-level semantics in reify-expr).
             let r1_norm_sq =
                 r1_q.0 * r1_q.0 + r1_q.1 * r1_q.1 + r1_q.2 * r1_q.2 + r1_q.3 * r1_q.3;
-            if r1_norm_sq < f64::EPSILON {
+            // 1e-24 = (1e-12)² — see transform_log for the rationale.
+            if r1_norm_sq < 1e-24 {
                 return Some(Value::Undef);
             }
             let r1_norm = r1_norm_sq.sqrt();
