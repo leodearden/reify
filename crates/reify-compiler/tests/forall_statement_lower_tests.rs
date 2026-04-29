@@ -990,6 +990,10 @@ structure def S {
     // The chain guard ("chain statement requires at least two elements") is
     // Severity::Error, so its absence is already covered by
     // errors_only(&module).is_empty() above.
+
+    // Confirm the source actually contains a ForallConnect (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_connect_span(source, "S");
 }
 
 /// `forall v in []: chain v.a -> v.b -> v.c` should emit zero connections and
@@ -1153,6 +1157,10 @@ structure def S {
         .expect("template S not found");
 
     assert_no_forall_connect_emissions(template);
+
+    // Confirm the source actually contains a ForallConnect (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_connect_span(source, "S");
 }
 
 /// `forall v in []: constraint MinThreshold(value: v)` should emit zero
