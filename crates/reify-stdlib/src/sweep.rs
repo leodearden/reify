@@ -66,8 +66,13 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             //   args[2] is Value::Range matching the joint's   → range guard
             //     dimension and SI-finite
             //   args[3] is Value::Int(n) with n >= 0           → steps guard
-            // Errored-mechanism short-circuit and >=2-step interpolation
-            // arms are layered on in subsequent steps.
+            //
+            // After validation, `sweep` is just the 1-D specialisation of
+            // `sweep_grid`: build a single-element `metas` vector and
+            // delegate to `build_snapshot_list`, which centralises the
+            // steps==0 → empty / steps==1 → lower / steps>=2 → linear-
+            // interpolation cascade and the eval_builtin error
+            // propagation.
             if args.len() != 4 {
                 return Some(Value::Undef);
             }
@@ -99,9 +104,6 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                 Value::Int(n) if *n >= 0 => *n,
                 _ => return Some(Value::Undef),
             };
-            if steps == 0 {
-                return Some(Value::List(vec![]));
-            }
             // Range bounds in SI units; validation above guarantees
             // both are present and finite.
             let (lo_si, up_si) = match &args[2] {
@@ -115,55 +117,13 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                 },
                 _ => return Some(Value::Undef),
             };
-            // steps == 1: avoid the divide-by-zero in the i/(steps-1)
-            // formula by short-circuiting to a single snapshot at
-            // range.lower (design decision pinned by step-13).
-            if steps == 1 {
-                let wrapped = match wrap_value_for_driving_joint(&args[1], lo_si) {
-                    Some(v) => v,
-                    None => return Some(Value::Undef),
-                };
-                let binding = eval_builtin("bind", &[args[1].clone(), wrapped]);
-                if binding.is_undef() {
-                    return Some(Value::Undef);
-                }
-                let snap = eval_builtin(
-                    "snapshot",
-                    &[args[0].clone(), Value::List(vec![binding])],
-                );
-                if snap.is_undef() {
-                    return Some(Value::Undef);
-                }
-                return Some(Value::List(vec![snap]));
-            }
-            // steps >= 2: linearly-interpolated motion values, evenly
-            // spaced from range.lower (i=0) to range.upper (i=steps-1).
-            // Each interpolated f64 is wrapped back into a dimensioned
-            // Value::length / Value::angle per joint kind, then bound
-            // and passed to snapshot() — keeping the FK walk and
-            // unbound-joint midpoint fallback in one place.
-            let mut snapshots = Vec::with_capacity(steps as usize);
-            for i in 0..steps {
-                let t = (i as f64) / ((steps - 1) as f64);
-                let v_si = lo_si + t * (up_si - lo_si);
-                let wrapped = match wrap_value_for_driving_joint(&args[1], v_si) {
-                    Some(v) => v,
-                    None => return Some(Value::Undef),
-                };
-                let binding = eval_builtin("bind", &[args[1].clone(), wrapped]);
-                if binding.is_undef() {
-                    return Some(Value::Undef);
-                }
-                let snap = eval_builtin(
-                    "snapshot",
-                    &[args[0].clone(), Value::List(vec![binding])],
-                );
-                if snap.is_undef() {
-                    return Some(Value::Undef);
-                }
-                snapshots.push(snap);
-            }
-            Value::List(snapshots)
+            let metas = vec![DimMeta {
+                joint: args[1].clone(),
+                lo_si,
+                up_si,
+                steps,
+            }];
+            build_snapshot_list(&args[0], &metas)
         }
         "sweep_grid" => {
             // Validation surface (each guard short-circuits to
@@ -174,8 +134,8 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             //   args[1] is Value::List                         → dims-list shape
             //   each entry is Value::Map with kind="sweep_dim"
             //     and present `joint`/`range`/`steps` fields    → per-entry shape
-            // Multi-dim cross-product iteration is layered on in step-18;
-            // for now this arm only handles the empty-dims case.
+            // After validation, cross-product iteration is delegated to
+            // `build_snapshot_list` (shared with `sweep` arm).
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
@@ -255,51 +215,7 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                     steps,
                 });
             }
-            // Total snapshot count = product of all step counts.
-            // Empty `metas` (no dims) → empty product = 1, yielding a
-            // single all-midpoints snapshot via the empty-bindings path
-            // in snapshot(). Any dim with steps=0 collapses total to 0
-            // → empty List.
-            let total: i64 = metas.iter().map(|m| m.steps).product();
-            if total == 0 {
-                return Some(Value::List(vec![]));
-            }
-            // Per-dim strides for lexicographic-order index decomposition
-            // — last dim varies fastest. For dims = [d0, d1, ..., dk]:
-            //   stride[k]   = 1
-            //   stride[k-1] = steps[k]
-            //   stride[k-2] = steps[k-1] * steps[k]
-            //   ...
-            // Then per-tuple indices[d] = (idx / stride[d]) % steps[d].
-            let n = metas.len();
-            let mut strides: Vec<i64> = vec![1; n];
-            for d in (0..n.saturating_sub(1)).rev() {
-                strides[d] = strides[d + 1] * metas[d + 1].steps;
-            }
-            let mut snapshots: Vec<Value> = Vec::with_capacity(total as usize);
-            for idx in 0..total {
-                let mut bindings: Vec<Value> = Vec::with_capacity(n);
-                for d in 0..n {
-                    let i_d = (idx / strides[d]) % metas[d].steps;
-                    let v_si = interpolate_dim(&metas[d], i_d);
-                    let wrapped = match wrap_value_for_driving_joint(&metas[d].joint, v_si) {
-                        Some(v) => v,
-                        None => return Some(Value::Undef),
-                    };
-                    let binding = eval_builtin("bind", &[metas[d].joint.clone(), wrapped]);
-                    if binding.is_undef() {
-                        return Some(Value::Undef);
-                    }
-                    bindings.push(binding);
-                }
-                let snap =
-                    eval_builtin("snapshot", &[args[0].clone(), Value::List(bindings)]);
-                if snap.is_undef() {
-                    return Some(Value::Undef);
-                }
-                snapshots.push(snap);
-            }
-            Value::List(snapshots)
+            build_snapshot_list(&args[0], &metas)
         }
         _ => return None,
     })
@@ -401,6 +317,85 @@ struct DimMeta {
     lo_si: f64,
     up_si: f64,
     steps: i64,
+}
+
+/// Cross-product builder shared by `sweep` and `sweep_grid`.
+///
+/// Given a pre-validated list of `DimMeta`s, produce the lexicographic
+/// (last-dim-varies-fastest) list of snapshots by iterating over every
+/// tuple of per-dim indices, interpolating each dim's motion value via
+/// [`interpolate_dim`], wrapping it back into a dimensioned binding, and
+/// delegating to `eval_builtin("snapshot", ...)` once per tuple.
+///
+/// Centralises:
+/// - **Total-count overflow guard** — `try_fold(checked_mul)` returns
+///   `Value::Undef` if the product of step counts overflows `i64`,
+///   preventing a wrapped-positive `total` from triggering an
+///   unbounded `Vec::with_capacity` allocation.
+/// - **Empty-result short-circuit** — `total == 0` (any dim with
+///   steps=0 collapses total to 0) yields `Value::List(vec![])`.
+/// - **Empty-grid all-midpoints path** — empty `metas` (the empty
+///   product = 1) yields one snapshot built from an empty bindings
+///   list, so every joint falls back to its range midpoint via
+///   `snapshot()`'s existing fallback chain.
+/// - **steps==1 single-sample / steps>=2 linear-interpolation
+///   cascade** — both delegated to `interpolate_dim`, so the design
+///   decision pinned by step-13 (n=1 → lower endpoint) lives in one
+///   place.
+/// - **eval_builtin error propagation** — any `Undef` from `bind` /
+///   `snapshot` short-circuits the whole call to `Undef`, mirroring
+///   `snapshot()`'s semantics from snapshot.rs.
+fn build_snapshot_list(mechanism: &Value, metas: &[DimMeta]) -> Value {
+    // Total snapshot count = product of all step counts. Use
+    // `checked_mul` so an over-large grid (e.g. many dims, or
+    // pathologically large `steps` per dim) falls back to Undef
+    // rather than wrapping silently and then allocating wrong-sized
+    // buffers from `Vec::with_capacity(total as usize)`.
+    let total: i64 = match metas
+        .iter()
+        .try_fold(1i64, |acc, m| acc.checked_mul(m.steps))
+    {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    if total == 0 {
+        return Value::List(vec![]);
+    }
+    // Per-dim strides for lexicographic-order index decomposition
+    // — last dim varies fastest. For dims = [d0, d1, ..., dk]:
+    //   stride[k]   = 1
+    //   stride[k-1] = steps[k]
+    //   stride[k-2] = steps[k-1] * steps[k]
+    //   ...
+    // Then per-tuple indices[d] = (idx / stride[d]) % steps[d].
+    let n = metas.len();
+    let mut strides: Vec<i64> = vec![1; n];
+    for d in (0..n.saturating_sub(1)).rev() {
+        strides[d] = strides[d + 1] * metas[d + 1].steps;
+    }
+    let mut snapshots: Vec<Value> = Vec::with_capacity(total as usize);
+    for idx in 0..total {
+        let mut bindings: Vec<Value> = Vec::with_capacity(n);
+        for d in 0..n {
+            let i_d = (idx / strides[d]) % metas[d].steps;
+            let v_si = interpolate_dim(&metas[d], i_d);
+            let wrapped = match wrap_value_for_driving_joint(&metas[d].joint, v_si) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let binding = eval_builtin("bind", &[metas[d].joint.clone(), wrapped]);
+            if binding.is_undef() {
+                return Value::Undef;
+            }
+            bindings.push(binding);
+        }
+        let snap = eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings)]);
+        if snap.is_undef() {
+            return Value::Undef;
+        }
+        snapshots.push(snap);
+    }
+    Value::List(snapshots)
 }
 
 /// Interpolate the `i`-th motion-variable value (in SI units) for a
