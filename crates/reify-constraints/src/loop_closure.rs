@@ -23,6 +23,79 @@
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
 //! design rationale.
 
+/// Convergence and iteration knobs for [`newton_solve`] / [`solve_loop_closure`].
+///
+/// PRD defaults — `tol_pos_m = 1e-6` (1 µm position), `tol_rot_rad = 1e-6`
+/// (1 µrad rotation), `max_iters = 50`.  See
+/// `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver".
+#[derive(Debug, Clone)]
+pub struct NewtonConfig {
+    /// Linear-residual tolerance for convergence (metres).
+    pub tol_pos_m: f64,
+    /// Angular-residual tolerance for convergence (radians).
+    pub tol_rot_rad: f64,
+    /// Maximum Newton iterations before giving up.
+    pub max_iters: usize,
+}
+
+impl Default for NewtonConfig {
+    fn default() -> Self {
+        Self {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 50,
+        }
+    }
+}
+
+/// Strategy for picking the initial free-variable values for a loop-closure
+/// snapshot solve.
+///
+/// `WarmStart(v)` uses the supplied vector directly (typical: previous
+/// snapshot's converged values).  `Midpoint` queries each free joint's range
+/// midpoint via [`reify_stdlib::loop_closure::joint_range_midpoint`].
+#[derive(Debug, Clone)]
+pub enum StartStrategy {
+    /// Re-use a prior solution.  Vector length must match the free-variable count.
+    WarmStart(Vec<f64>),
+    /// Initialise from each free joint's range midpoint.
+    Midpoint,
+}
+
+/// Result of a Newton solve.
+///
+/// `Converged` — both linear and angular residual sub-norms below their
+/// configured tolerances.  `NotConverged` — `max_iters` exhausted without
+/// hitting tolerance.  `Singular` — the Gauss-Newton normal-equations matrix
+/// hit the min-pivot threshold (rank-deficient Jacobian); reported separately
+/// so callers can emit the PRD's `W_KINEMATIC_SINGULARITY` warning class.
+#[derive(Debug, Clone)]
+pub enum NewtonOutcome {
+    /// Solver reached tolerance.
+    Converged {
+        /// Free-variable values at convergence.
+        x: Vec<f64>,
+        /// Number of Newton iterations taken.
+        iters: usize,
+        /// Combined residual norm (sqrt(linear² + angular²)) at convergence.
+        residual_norm: f64,
+    },
+    /// Solver hit `max_iters` without reaching tolerance.
+    NotConverged {
+        /// Free-variable values at the last iteration.
+        x: Vec<f64>,
+        /// Combined residual norm at the last iteration.
+        residual_norm: f64,
+    },
+    /// Solver detected a rank-deficient Jacobian (min-pivot < 1e-12).
+    Singular {
+        /// Free-variable values at the iteration where singularity was detected.
+        x: Vec<f64>,
+        /// Number of completed iterations before singularity.
+        iters: usize,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
