@@ -1026,6 +1026,18 @@ pub struct BooleanOpHistoryRecords {
     /// shape reported by BRepAlgoAPI was absent from the result's TopExp map).
     /// For vanilla boolean operations this should be zero; a non-zero value
     /// indicates a kernel correspondence loss or map-type mismatch.
+    ///
+    /// **Diagnostic note:** the increment path inside `emit_history_for_parent`
+    /// (C++ wrapper) is only tested indirectly through the zero-count assertion
+    /// in the canonical happy-path integration test. A dedicated test exercising
+    /// the non-zero path (e.g. a stub result map missing one child) is deferred
+    /// to a follow-up task.
+    ///
+    /// **TODO:** wire this counter into error reporting so that a non-zero count
+    /// surfaces as a warning log or `QueryError::QueryFailed` from
+    /// `propagate_attributes_via_brepalgoapi_history`, rather than being silently
+    /// recorded. Until that follow-up lands, callers must inspect this field
+    /// manually if they need to detect kernel correspondence loss.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,

@@ -218,7 +218,6 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
         assert!(attr.mod_history.is_empty());
     }
 
-
     // ─── (3) Run boolean_fuse_with_history ───────────────────────────
     let (result_handle, history) = kernel
         .boolean_fuse_with_history(left, right)

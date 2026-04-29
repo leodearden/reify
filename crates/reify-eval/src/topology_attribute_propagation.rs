@@ -571,6 +571,10 @@ mod tests {
         match err {
             QueryError::QueryFailed(msg) => {
                 assert!(
+                    msg.contains("face"),
+                    "face-record error message should identify face kind, got {msg:?}",
+                );
+                assert!(
                     msg.contains("parent_subshape_index 99"),
                     "error message should mention the offending parent_subshape_index, got {msg:?}",
                 );
@@ -605,6 +609,10 @@ mod tests {
         .expect_err("expected QueryFailed for result_subshape_index out of range");
         match err {
             QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("face"),
+                    "face-record error message should identify face kind, got {msg:?}",
+                );
                 assert!(
                     msg.contains("result_subshape_index 7"),
                     "error message should mention the offending result_subshape_index, got {msg:?}",
