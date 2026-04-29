@@ -358,6 +358,16 @@ pub(crate) fn compile_entity(
     // geometry-let classification is order-sensitive (incremental accumulation).
     // Pinned by `let_scope_tests::cyclic_ident_alias_does_not_crash`.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+    // Tracks cluster logical names already registered in this pre-pass so that a
+    // second MatchArmDeclGroup with the same logical name is skipped wholesale.
+    // Mirrors the dup-cluster check in compile_match_arm_decl_group (entity.rs:2038)
+    // which keeps the first registration and rejects later same-name clusters.
+    // Without this guard the second cluster's pre-pass would overwrite
+    // scope.sub_component_types / scope.sub_structure_traits / scope.sub_member_types
+    // with the rejected cluster's child-template members — causing spurious
+    // "unknown member" diagnostics on qualified access to the first cluster's sub.
+    // (task 2613)
+    let mut seen_match_arm_cluster_names: HashSet<String> = HashSet::new();
     for member in structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -470,9 +480,25 @@ pub(crate) fn compile_entity(
                 // Pre-pass: register per-arm member names so that the main pass
                 // and any forward references can resolve them.
                 // Sub-component type entries (used for `self.sub.member` qualified
-                // access) are registered per-arm; the last arm wins for name
-                // clashes — task 2375 will tighten this once the cluster is the
-                // canonical entry point for such lookups.
+                // access) are registered per-arm. Clusters with duplicate logical
+                // names are skipped wholesale — the duplicate-cluster diagnostic is
+                // emitted by compile_match_arm_decl_group (entity.rs:2038) in
+                // pass 2; skipping the pre-pass prevents scope.sub_component_types,
+                // scope.sub_structure_traits, and scope.sub_member_types from being
+                // overwritten by the rejected cluster's child-template members.
+                // "First cluster wins" in the pre-pass is symmetric with "first
+                // cluster wins" in pass 2. (task 2613)
+                if let Some(first_arm) = m.arms.first() {
+                    if let Some(name) = arm_member_name(&first_arm.member) {
+                        if !seen_match_arm_cluster_names.insert(name.to_string()) {
+                            // Duplicate cluster name — skip pre-pass registration.
+                            // Pass 2 will emit the diagnostic.
+                            continue;
+                        }
+                    }
+                    // No arm_member_name (e.g. unsupported arm kind): do not insert
+                    // into seen_match_arm_cluster_names; let pass 2 emit its diagnostic.
+                }
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_syntax::MemberDecl::Sub(sub) => {
