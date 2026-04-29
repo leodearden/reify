@@ -54,7 +54,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 pub fn parse_with_prelude_enums(
     source: &str,
     module_path: ModulePath,
-    prelude_enum_names: &[&str],
+    prelude_enum_names: &[&'static str],
 ) -> ParsedModule {
     let mut ts_parser = tree_sitter::Parser::new();
     ts_parser
@@ -85,7 +85,7 @@ struct Lowering<'a> {
     /// Interior mutability so that `&self` expression-lowering methods can emit diagnostics.
     errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
-    known_enums: HashSet<String>,
+    known_enums: HashSet<&'a str>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
 }
@@ -104,10 +104,10 @@ impl<'a> Lowering<'a> {
     /// `lower_source_file` then unions the current source's own enum names
     /// into the same set.  `HashSet::insert` deduplicates any overlap
     /// silently — see `parse_with_prelude_enums` for the full contract.
-    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&str]) -> Self {
-        let mut known_enums: HashSet<String> = HashSet::new();
-        for name in prelude_enum_names {
-            known_enums.insert((*name).to_string());
+    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&'static str]) -> Self {
+        let mut known_enums: HashSet<&'a str> = HashSet::new();
+        for &name in prelude_enum_names {
+            known_enums.insert(name);
         }
         Self {
             source,
@@ -205,7 +205,7 @@ impl<'a> Lowering<'a> {
                 && let Some(name_node) = child.child_by_field_name("name")
             {
                 self.known_enums
-                    .insert(self.node_text(name_node).to_string());
+                    .insert(self.node_text(name_node));
             }
         }
 

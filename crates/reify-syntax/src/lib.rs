@@ -992,7 +992,7 @@ pub fn parse(source: &str, module_path: reify_types::ModulePath) -> ParsedModule
 pub fn parse_with_prelude_enums(
     source: &str,
     module_path: reify_types::ModulePath,
-    prelude_enum_names: &[&str],
+    prelude_enum_names: &[&'static str],
 ) -> ParsedModule {
     ts_parser::parse_with_prelude_enums(source, module_path, prelude_enum_names)
 }
