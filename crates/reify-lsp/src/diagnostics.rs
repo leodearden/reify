@@ -1587,8 +1587,9 @@ structure S {
     ///   (ii)  its `message` starts with the static prefix
     ///         `"computation pending: upstream dependency failed"` (backward-
     ///         compatible prefix that editor integrations may match on).
-    ///   (iii) its `message` contains `"S.base"` — the name of the upstream
-    ///         cell that failed.
+    ///   (iii) its `message` contains the parenthesized suffix
+    ///         `"(because S.base failed)"` — pinning the exact user-visible
+    ///         wording the enrichment introduces.
     ///
     /// Step-3 test: will fail with today's static message until step-4 enriches
     /// the Pending arm to call `Engine::pending_cause`.
@@ -1651,11 +1652,12 @@ structure S {
                 d.message
             );
 
-            // (iii) The upstream cell name must appear in the message.
+            // (iii) The parenthesized "(because S.base failed)" suffix must appear
+            //       in the message — pins the exact wording the enrichment introduces.
             assert!(
-                d.message.contains("S.base"),
-                "computation-pending message must contain the upstream cell name \
-                 \"S.base\" (the failed dependency); got: {:?}",
+                d.message.contains("(because S.base failed)"),
+                "computation-pending message must contain \"(because S.base failed)\" \
+                 (parenthesized upstream cell name); got: {:?}",
                 d.message
             );
         }
