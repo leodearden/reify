@@ -87,6 +87,31 @@ pub fn extract_tolerance_bindings(
     bindings
 }
 
+/// Collect every distinct entity-ref reachable from `subject` in the
+/// post-elaboration value-cell graph: the subject itself, plus every entity
+/// whose ref begins with `subject + "."` (the dot-separated descendant
+/// encoding established by `unfold.rs`).
+///
+/// Iteration order is determinised via `BTreeSet` (ascending lexical) —
+/// `PersistentMap` does not guarantee stable iteration across runs, so we
+/// sort. This mirrors the convention in `engine_purposes.rs::expand_purpose
+/// _reflective_placeholders` fallback scan.
+pub fn propagate_subject_to_descendants(
+    subject: &str,
+    value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
+) -> Vec<String> {
+    // Compute the dot-boundary prefix once; without it, `"AB"` would match
+    // `starts_with("A")` and silently leak in as a descendant of `"A"`.
+    let prefix = format!("{}.", subject);
+    let mut entities: BTreeSet<String> = BTreeSet::new();
+    for (id, _) in value_cells.iter() {
+        if id.entity == subject || id.entity.starts_with(&prefix) {
+            entities.insert(id.entity.clone());
+        }
+    }
+    entities.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
