@@ -302,6 +302,10 @@ impl Engine {
                 Some(p) => p,
                 None => continue, // Compiled purpose disappeared (e.g. across re-eval) — skip.
             };
+            // NOTE: single-binding contract — `entity_ref` is substituted for every matched
+            // constraint's subject unambiguously because today's API binds at most one
+            // entity-ref per purpose. See `extract_tolerance_bindings` § "Single-binding
+            // contract" for what a future multi-param producer must change at this call site.
             let bindings =
                 crate::tolerance_scope::extract_tolerance_bindings(purpose, entity_ref);
             for binding in bindings {
