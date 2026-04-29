@@ -4,6 +4,7 @@
 //! OcctKernelHandle, but all operations return errors. This allows
 //! downstream crates to compile and fail gracefully at runtime.
 
+use crate::BooleanOpHistoryRecords;
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
@@ -166,6 +167,18 @@ impl OcctKernelHandle {
         _tolerance: f64,
     ) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub `boolean_fuse_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::boolean_fuse_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 2590, step-14).
+    pub fn boolean_fuse_with_history(
+        &self,
+        _left: GeometryHandleId,
+        _right: GeometryHandleId,
+    ) -> Result<(GeometryHandleId, BooleanOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
     /// No-op shutdown (no thread to join).

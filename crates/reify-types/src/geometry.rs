@@ -727,6 +727,205 @@ impl FeatureTagTable {
     }
 }
 
+// ----------------------------------------------------------------------
+// v0.2 persistent-naming-v2 (task 2590)
+//
+// New attribute-based topology naming primitives. Coexist with the v0.1
+// `FeatureTag`/`FeatureTagTable` machinery above; the v0.1 path stays in
+// place until selector resolution swaps over (task 2 / #2570) and per-op
+// auto-population lands across tasks 5-8. See
+// `docs/prds/v0_2/persistent-naming-v2.md` lines 46-87 for the design
+// reference.
+// ----------------------------------------------------------------------
+
+/// Path-based feature identifier for v0.2 persistent naming.
+///
+/// Wraps a §6.5 path string (e.g. `Bracket#realization[0]`). Constructed
+/// directly from any node-identity type via `From` impls; tasks 5-8 will
+/// add more From-impls as additional feature-producing node kinds appear.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FeatureId(String);
+
+impl FeatureId {
+    /// Construct a `FeatureId` from any string-like value.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self(path.into())
+    }
+}
+
+impl fmt::Display for FeatureId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&crate::identity::RealizationNodeId> for FeatureId {
+    fn from(id: &crate::identity::RealizationNodeId) -> Self {
+        Self(id.to_string())
+    }
+}
+
+/// Cap orientation for the `Role::Cap` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CapKind {
+    Top,
+    Bottom,
+}
+
+/// One entry in a topology entity's mod-history postfix.
+///
+/// Recorded each time a feature splits a parent topology entity into
+/// children — `splitting_feature_id` is the FeatureId whose op caused
+/// the split, and `split_index` distinguishes the resulting children
+/// (PRD lines 60, 64).
+///
+/// Task 1 keeps `mod_history` empty on propagation; task 3 (#2571)
+/// populates this on splits.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModEntry {
+    pub splitting_feature_id: FeatureId,
+    pub split_index: u32,
+}
+
+/// Role of a topology entity within its originating feature.
+///
+/// The minimal initial set per PRD line 56. Tasks 5-8 (sweeps, primitives,
+/// local features, booleans) will add per-op variants here as a closed
+/// extension — there is intentionally no `Other(String)` escape hatch so
+/// that selector-resolution exhaustive matching remains auditable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Role {
+    /// A cap face (`top` / `bottom`) of the feature, e.g. extrude end caps.
+    Cap(CapKind),
+    /// A side (lateral) face of the feature.
+    Side,
+    /// An edge created by the feature's construction (e.g. cap-to-side
+    /// boundary edges of an extrude).
+    NewEdge,
+}
+
+/// Per-topology-entity attribute record for v0.2 persistent naming.
+///
+/// One of these is associated with each face/edge produced by a feature,
+/// keyed by `GeometryHandleId` in the runtime `TopologyAttributeTable`.
+///
+/// Fields per PRD lines 52-61:
+///   - `feature_id` — the feature that produced (or last touched) this entity.
+///   - `role` — what part of the feature this entity is.
+///   - `local_index` — 0-based index within `(feature_id, role)`. Tasks 5-8
+///     populate this from per-op routing.
+///   - `user_label` — optional user-supplied name (absorbs v0.1 `name = "..."`
+///     syntax, PRD line 50). `None` is the common default.
+///   - `mod_history` — lineage postfix populated on splits by task 3 (#2571).
+///
+/// Note: deliberately not `Hash` — `Vec<ModEntry>` would force a Hash bound
+/// chain, and TopologyAttribute is never used as a HashMap key (the table
+/// is keyed by GeometryHandleId).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyAttribute {
+    pub feature_id: FeatureId,
+    pub role: Role,
+    pub local_index: u32,
+    pub user_label: Option<String>,
+    pub mod_history: Vec<ModEntry>,
+}
+
+/// Runtime table mapping geometry handle ids to `TopologyAttribute`s.
+///
+/// The v0.2 attribute-based replacement-in-progress for `FeatureTagTable`.
+/// Tasks 5-8 wire per-op auto-population; task 2 (#2570) wires
+/// selector lookup against this table. Mirrors the `FeatureTagTable`
+/// shape (HashMap keyed by `GeometryHandleId`, four-method API) so the
+/// existing call sites can adopt it incrementally.
+#[derive(Debug, Default)]
+pub struct TopologyAttributeTable {
+    entries: HashMap<GeometryHandleId, TopologyAttribute>,
+}
+
+impl TopologyAttributeTable {
+    /// Record that geometry handle `id` carries `attr`.
+    ///
+    /// Overwrites any prior entry for the same id (last-write-wins,
+    /// mirroring `FeatureTagTable::record`). Tasks 3 (#2571) and 4 (#2572)
+    /// will add diagnostics around accidental rebinds.
+    pub fn record(&mut self, id: GeometryHandleId, attr: TopologyAttribute) {
+        self.entries.insert(id, attr);
+    }
+
+    /// Look up the attribute for a given geometry handle, if any.
+    pub fn lookup(&self, id: GeometryHandleId) -> Option<&TopologyAttribute> {
+        self.entries.get(&id)
+    }
+
+    /// Number of entries currently in the table.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns `true` if the table has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+// --- BRepAlgoAPI history records (v0.2 persistent-naming-v2, task 2590) ---
+//
+// These records describe the parent-to-child mapping produced by a constructive
+// boolean operation (currently `BRepAlgoAPI_Fuse`; Cut/Common in task 8). The
+// records are pure data — they do not depend on any kernel-specific type — and
+// live in `reify-types` rather than `reify-kernel-occt` so that consumers
+// (notably `reify_eval::propagate_attributes_via_brepalgoapi_history`) can
+// reference them without taking a normal-dep on `reify-kernel-occt`. Pulling
+// `reify-kernel-occt` into `reify-eval`'s normal compile graph would
+// transitively drag it into every workspace member that dev-depends on
+// `reify-test-support` (via its `eval-helpers` feature), defeating the OCCT
+// gating defined in `scripts/occt-touching-crates.txt`.
+
+/// One BRepAlgoAPI Modified or Generated record: a parent sub-shape (face
+/// or edge) at index `parent_subshape_index` of parent `parent_index`
+/// gives rise to a result sub-shape at index `result_subshape_index` in
+/// the fused result. All indices are 0-based and follow the canonical
+/// `TopExp::MapShapes(.., TopAbs_FACE | TopAbs_EDGE, ..)` order
+/// (deduplicated by `IsSame`).
+///
+/// `parent_index` is `0` for the left operand, `1` for the right operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryRecord {
+    pub parent_index: u8,
+    pub parent_subshape_index: u32,
+    pub result_subshape_index: u32,
+}
+
+/// One BRepAlgoAPI Deleted record: a parent sub-shape at
+/// `parent_subshape_index` of parent `parent_index` was consumed by the
+/// boolean operation and has no analogue in the result.
+///
+/// `parent_index` is `0` for the left operand, `1` for the right operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletedRecord {
+    pub parent_index: u8,
+    pub parent_subshape_index: u32,
+}
+
+/// All BRepAlgoAPI history records for a single boolean operation,
+/// split by sub-shape kind (face / edge) and by record kind
+/// (Modified / Generated / Deleted).
+///
+/// Returned by `OcctKernel::boolean_fuse_with_history` and
+/// `OcctKernelHandle::boolean_fuse_with_history`. Consumed by
+/// `reify_eval::propagate_attributes_via_brepalgoapi_history` to copy
+/// parent topology attributes onto the result handles after a
+/// constructive boolean.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BooleanOpHistoryRecords {
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1309,5 +1508,278 @@ mod tests {
         ];
         let reply = vec![Value::Real(0.0), Value::Real(0.0)];
         debug_assert_query_many_invariant(&queries, &reply);
+    }
+
+    // ------------------------------------------------------------------
+    // v0.2 persistent-naming-v2 — task 1 (#2590) tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn feature_id_constructs_and_displays_round_trip() {
+        let fid = FeatureId::new("Bracket#realization[0]");
+        assert_eq!(format!("{}", fid), "Bracket#realization[0]");
+    }
+
+    #[test]
+    fn feature_id_from_realization_node_id_matches_display() {
+        use crate::identity::RealizationNodeId;
+        let node = RealizationNodeId::new("Bracket", 0);
+        let fid = FeatureId::from(&node);
+        assert_eq!(format!("{}", fid), format!("{}", node));
+    }
+
+    #[test]
+    fn feature_id_equality_and_hash_are_path_based() {
+        use std::collections::HashMap;
+        let a = FeatureId::new("Foo#realization[1]");
+        let b = FeatureId::new("Foo#realization[1]");
+        let c = FeatureId::new("Foo#realization[2]");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        let mut map: HashMap<FeatureId, u32> = HashMap::new();
+        map.insert(a.clone(), 7);
+        // `b` has equal path => should hit the same bucket.
+        assert_eq!(map.get(&b), Some(&7));
+        assert_eq!(map.get(&c), None);
+    }
+
+    #[test]
+    fn feature_id_clone_preserves_value() {
+        let a = FeatureId::new("Bracket#realization[0]");
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_eq!(format!("{}", a), format!("{}", b));
+    }
+
+    #[test]
+    fn role_cap_top_and_bottom_are_distinct() {
+        assert_ne!(Role::Cap(CapKind::Top), Role::Cap(CapKind::Bottom));
+    }
+
+    #[test]
+    fn role_side_and_new_edge_are_distinct() {
+        assert_ne!(Role::Side, Role::NewEdge);
+    }
+
+    #[test]
+    fn role_cap_top_differs_from_side() {
+        assert_ne!(Role::Cap(CapKind::Top), Role::Side);
+    }
+
+    #[test]
+    fn role_debug_includes_variant_name() {
+        let dbg_top = format!("{:?}", Role::Cap(CapKind::Top));
+        let dbg_side = format!("{:?}", Role::Side);
+        let dbg_new_edge = format!("{:?}", Role::NewEdge);
+        assert!(dbg_top.contains("Cap"), "expected Cap in {dbg_top}");
+        assert!(dbg_top.contains("Top"), "expected Top in {dbg_top}");
+        assert!(dbg_side.contains("Side"), "expected Side in {dbg_side}");
+        assert!(
+            dbg_new_edge.contains("NewEdge"),
+            "expected NewEdge in {dbg_new_edge}"
+        );
+    }
+
+    #[test]
+    fn role_clone_preserves_identity() {
+        let r = Role::Cap(CapKind::Bottom);
+        let s = r;
+        assert_eq!(r, s);
+        let copy = r.clone();
+        assert_eq!(r, copy);
+    }
+
+    #[test]
+    fn mod_entry_constructs_with_feature_id_and_split_index() {
+        let entry = ModEntry {
+            splitting_feature_id: FeatureId::new("Boss#realization[0]"),
+            split_index: 3,
+        };
+        assert_eq!(
+            entry.splitting_feature_id,
+            FeatureId::new("Boss#realization[0]")
+        );
+        assert_eq!(entry.split_index, 3);
+    }
+
+    #[test]
+    fn mod_entry_split_index_distinguishes_entries() {
+        let a = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 0,
+        };
+        let b = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 1,
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mod_entry_feature_id_distinguishes_entries() {
+        let a = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 0,
+        };
+        let b = ModEntry {
+            splitting_feature_id: FeatureId::new("b"),
+            split_index: 0,
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mod_entry_clone_preserves_value() {
+        let a = ModEntry {
+            splitting_feature_id: FeatureId::new("a"),
+            split_index: 7,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn topology_attribute_full_construction_pattern_match() {
+        let attr = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Cap(CapKind::Top),
+            local_index: 4,
+            user_label: Some("top_face".to_string()),
+            mod_history: vec![ModEntry {
+                splitting_feature_id: FeatureId::new("Slot#realization[0]"),
+                split_index: 1,
+            }],
+        };
+        let TopologyAttribute {
+            feature_id,
+            role,
+            local_index,
+            user_label,
+            mod_history,
+        } = &attr;
+        assert_eq!(*feature_id, FeatureId::new("Boss#realization[0]"));
+        assert_eq!(*role, Role::Cap(CapKind::Top));
+        assert_eq!(*local_index, 4);
+        assert_eq!(user_label.as_deref(), Some("top_face"));
+        assert_eq!(mod_history.len(), 1);
+    }
+
+    #[test]
+    fn topology_attribute_default_no_label_no_history() {
+        let attr = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn topology_attribute_equality_field_by_field() {
+        let baseline = TopologyAttribute {
+            feature_id: FeatureId::new("X#realization[0]"),
+            role: Role::Side,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let same = baseline.clone();
+        assert_eq!(baseline, same);
+
+        let mut diff_feature = baseline.clone();
+        diff_feature.feature_id = FeatureId::new("Y#realization[0]");
+        assert_ne!(baseline, diff_feature);
+
+        let mut diff_role = baseline.clone();
+        diff_role.role = Role::NewEdge;
+        assert_ne!(baseline, diff_role);
+
+        let mut diff_idx = baseline.clone();
+        diff_idx.local_index = 2;
+        assert_ne!(baseline, diff_idx);
+
+        let mut diff_label = baseline.clone();
+        diff_label.user_label = Some("foo".into());
+        assert_ne!(baseline, diff_label);
+
+        let mut diff_history = baseline.clone();
+        diff_history.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("S#realization[0]"),
+            split_index: 0,
+        }];
+        assert_ne!(baseline, diff_history);
+    }
+
+    #[test]
+    fn topology_attribute_clone_preserves_label_and_history() {
+        let attr = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Cap(CapKind::Bottom),
+            local_index: 2,
+            user_label: Some("bottom".to_string()),
+            mod_history: vec![
+                ModEntry {
+                    splitting_feature_id: FeatureId::new("S1#realization[0]"),
+                    split_index: 0,
+                },
+                ModEntry {
+                    splitting_feature_id: FeatureId::new("S2#realization[0]"),
+                    split_index: 1,
+                },
+            ],
+        };
+        let cloned = attr.clone();
+        assert_eq!(attr, cloned);
+        assert_eq!(cloned.user_label.as_deref(), Some("bottom"));
+        assert_eq!(cloned.mod_history.len(), 2);
+    }
+
+    fn make_attr(feature: &str, idx: u32) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::new(feature),
+            role: Role::Side,
+            local_index: idx,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn topology_attribute_table_default_is_empty() {
+        let table = TopologyAttributeTable::default();
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn topology_attribute_table_record_then_lookup() {
+        let mut table = TopologyAttributeTable::default();
+        let attr = make_attr("F#realization[0]", 0);
+        table.record(GeometryHandleId(1), attr.clone());
+        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&attr));
+        assert_eq!(table.len(), 1);
+        assert!(!table.is_empty());
+    }
+
+    #[test]
+    fn topology_attribute_table_lookup_unknown_returns_none() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(GeometryHandleId(1), make_attr("F#realization[0]", 0));
+        assert_eq!(table.lookup(GeometryHandleId(99)), None);
+    }
+
+    #[test]
+    fn topology_attribute_table_record_overwrites_last_write_wins() {
+        let mut table = TopologyAttributeTable::default();
+        let first = make_attr("F#realization[0]", 0);
+        let second = make_attr("G#realization[0]", 7);
+        table.record(GeometryHandleId(1), first);
+        table.record(GeometryHandleId(1), second.clone());
+        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&second));
+        assert_eq!(table.len(), 1);
     }
 }

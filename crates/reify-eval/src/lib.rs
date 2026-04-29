@@ -21,10 +21,12 @@ pub mod graph;
 pub mod journal;
 pub mod snapshot;
 pub mod test_runner;
+pub mod topology_attribute_propagation;
 pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
 pub use test_runner::{TestResult, TestStatus, run_tests};
+pub use topology_attribute_propagation::propagate_attributes_via_brepalgoapi_history;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +35,7 @@ use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
     Diagnostic, FeatureTagTable, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl,
-    Satisfaction, ValueCellId, ValueMap,
+    Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -399,6 +401,17 @@ pub struct Engine {
     /// Exposed via `Engine::feature_tag_table()` so topology selectors and
     /// GUI consumers can correlate geometry handles back to source locations.
     feature_tag_table: FeatureTagTable,
+    /// v0.2 persistent-naming-v2 attribute store, keyed by
+    /// `GeometryHandleId`. Mirrors the `feature_tag_table` shape but holds
+    /// `TopologyAttribute` records (per-feature `feature_id`, `role`,
+    /// `local_index`, optional `user_label`, `mod_history`).
+    ///
+    /// Currently always empty — task 2590 added the field + accessor as the
+    /// foundation; tasks 5-8 wire per-op auto-population during
+    /// `execute_realization_ops`, and task 2 (#2570) wires selector lookup
+    /// against this table. Tasks 9-10 retire `feature_tag_table` once the
+    /// attribute path covers all selector vocabulary.
+    topology_attribute_table: TopologyAttributeTable,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     /// Populated only via `Engine::set_panic_on_eval` (cfg-gated to test /
