@@ -180,7 +180,13 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
-        "fixed" => None, // 0-DOF joint: empty free-variable space, no midpoint to compute.
+        // 0-DOF joint: empty free-variable space — no midpoint to compute.
+        // Note: callers seeding free-variable start values (e.g. for a
+        // solver initial guess) should skip fixed joints rather than
+        // propagating this None. value_for_joint returns Some(Real(0.0))
+        // for "fixed", so chain_transform/chain_jacobian_fd handle fixed
+        // joints in the chain without special-casing at the call site.
+        "fixed" => None,
         _ => None,
     }
 }
@@ -302,7 +308,10 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
         // 0-DOF joint: no free variable; transform_at("fixed", _) ignores the
         // second argument (any non-Undef Value → identity). Real(0.0) is the
         // conventional sentinel, mirroring `transform_at(fixed_joint, 0)` in
-        // the kinematic_stdlib_smoke test.
+        // the kinematic_stdlib_smoke test. Note: joint_range_midpoint returns
+        // None for "fixed" (no free-variable space to seed). Callers building
+        // an initial-guess vector from joint_range_midpoint should skip fixed
+        // joints; chain_transform/chain_jacobian_fd handle them transparently.
         "fixed" => Some(Value::Real(0.0)),
         _ => None,
     }
@@ -848,12 +857,14 @@ mod tests {
 
     /// A fixed joint mid-chain contributes identity: the net translation must
     /// equal the sum of the two prismatic joints on either side of it.
+    /// The garbage scalar (1234.5) for the fixed slot proves value_for_joint
+    /// discards the input — the result is the same as passing 0.0.
     #[test]
     fn chain_transform_fixed_joint_in_middle_acts_as_identity_contribution() {
-        // [prismatic_x @ 0.3m, fixed, prismatic_x @ 0.5m]
-        // Expected: total translation_x ≈ 0.8m, no rotation.
+        // [prismatic_x @ 0.3m, fixed @ 1234.5 (ignored), prismatic_x @ 0.5m]
+        // Expected: total translation_x ≈ 0.8m regardless of the fixed slot's value.
         let chain = vec![prismatic_x(), fixed_joint(), prismatic_x()];
-        let result = super::chain_transform(&chain, &[0.3, 0.0, 0.5])
+        let result = super::chain_transform(&chain, &[0.3, 1234.5, 0.5])
             .expect("chain_transform must return Some with fixed joint in the middle");
         let trans = translation_xyz(&result);
         assert!(
@@ -882,9 +893,11 @@ mod tests {
         }
     }
 
-    /// A fixed joint listed in free_indices must produce a zero-twist column —
-    /// perturbing its (inert) motion variable never reaches transform_at and
-    /// T_plus == T_minus == identity, so the central-difference quotient is 0.
+    /// A fixed joint listed in free_indices must produce a zero-twist column.
+    /// `value_for_joint` drops the perturbed scalar and returns `Real(0.0)` for
+    /// both the +eps and −eps evaluations, so `transform_at` receives identical
+    /// inputs both times — `T_plus == T_minus == identity` — and the
+    /// central-difference quotient is exactly 0.
     #[test]
     fn chain_jacobian_fd_with_fixed_joint_in_free_indices_yields_zero_column() {
         let chain = vec![fixed_joint()];
