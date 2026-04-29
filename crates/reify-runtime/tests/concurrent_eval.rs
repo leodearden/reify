@@ -3684,15 +3684,19 @@ mod execute_with_config_tests {
             result.changed.contains(&node_b),
             "node_b should be in changed (OnlyRunOnFinalInputs with all-Final cache inputs → runs normally)"
         );
-        assert!(
-            !result.skipped.contains(&node_b),
-            "node_b should NOT be in skipped (inputs are Final, gating does not block)"
-        );
 
         // node_a should also be evaluated (default CommitIfSlow, absent from cache)
         assert!(
             result.changed.contains(&node_a),
             "node_a should be in changed (default CommitIfSlow)"
+        );
+
+        // Both nodes changed, none silently dropped (proves skip predicate did not fire
+        // and both reached the spawn loop).
+        assert_eq!(
+            result.changed.len(),
+            2,
+            "both node_a and node_b should be in changed — no node silently dropped"
         );
     }
 

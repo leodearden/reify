@@ -235,6 +235,15 @@ impl ConcurrentScheduler {
                 .is_some_and(|cs| gating::has_non_final_inputs(cs, node))
         };
 
+        // Per-dirty-node metadata bundle. Fields are named so every downstream
+        // loop reads `dn.id`, `dn.override_`, or `dn.has_non_final` rather than
+        // positional `(_, _, _)` destructuring.
+        struct DirtyNode {
+            id: NodeId,
+            override_: NodeCommitmentOverride,
+            has_non_final: bool,
+        }
+
         let node_set: HashSet<NodeId> = eval_set.into_iter().collect();
         let levels = reify_eval::dirty::compute_levels(&node_set, traces);
         let mut changed = HashSet::new();
@@ -252,7 +261,7 @@ impl ConcurrentScheduler {
             // result of `has_non_final(&node)` so both are looked up exactly once (here)
             // and threaded through to downstream loops — preventing silent divergence
             // and eliminating the redundant second call in the spawn loop.
-            let mut dirty_nodes: Vec<(NodeId, NodeCommitmentOverride, bool)> = Vec::new();
+            let mut dirty_nodes: Vec<DirtyNode> = Vec::new();
             for node in level {
                 let is_dirty = if let Some(trace) = traces.get(&node) {
                     if trace.reads.is_empty() {
@@ -269,8 +278,8 @@ impl ConcurrentScheduler {
 
                 if is_dirty {
                     // Compute override and has_non_final flag once per dirty node.
-                    // Both are threaded through the tuple so every downstream loop
-                    // reads the precomputed values — no second closure invocation.
+                    // Both are stored in DirtyNode so every downstream loop reads
+                    // named fields — no second closure invocation.
                     let override_ = config.node_overrides.resolve(&node);
                     let has_non_final_flag = has_non_final(&node);
                     // Check OnlyRunOnFinalInputs override before adding to dirty
@@ -279,7 +288,11 @@ impl ConcurrentScheduler {
                     {
                         skipped.insert(node);
                     } else {
-                        dirty_nodes.push((node, override_, has_non_final_flag));
+                        dirty_nodes.push(DirtyNode {
+                            id: node,
+                            override_,
+                            has_non_final: has_non_final_flag,
+                        });
                     }
                 } else {
                     skipped.insert(node);
@@ -288,13 +301,13 @@ impl ConcurrentScheduler {
 
             // Register dirty nodes in priority promoter and sort by priority
             if let Some(ref promoter) = config.priority_promoter {
-                for (node, _, _) in &dirty_nodes {
+                for dn in &dirty_nodes {
                     let priority = config
                         .node_priorities
-                        .get(node)
+                        .get(&dn.id)
                         .copied()
                         .unwrap_or(Priority::P3Speculative);
-                    promoter.register(node.clone(), priority);
+                    promoter.register(dn.id.clone(), priority);
                 }
                 // Sort by config priority: ascending (P0 < P3 in Ord).
                 // At this point, nodes were just registered (lines above) with
@@ -302,10 +315,10 @@ impl ConcurrentScheduler {
                 // occurred yet, so effective_priority == config priority.
                 // Sorting directly from config avoids O(N log N) mutex
                 // acquisitions through SharedPriorityPromoter.
-                dirty_nodes.sort_by_key(|(node, _, _)| {
+                dirty_nodes.sort_by_key(|dn| {
                     config
                         .node_priorities
-                        .get(node)
+                        .get(&dn.id)
                         .copied()
                         .unwrap_or(Priority::P3Speculative)
                 });
@@ -315,8 +328,8 @@ impl ConcurrentScheduler {
             // using the pre-computed override from the dirty/skip block above.
             if let Some(ref tracker) = config.commitment_tracker {
                 let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
-                for (node, override_, _) in &dirty_nodes {
-                    guard.register_task(node.clone(), *override_);
+                for dn in &dirty_nodes {
+                    guard.register_task(dn.id.clone(), dn.override_);
                 }
             }
 
@@ -326,12 +339,12 @@ impl ConcurrentScheduler {
             // paths for clarity.
             // Returns (NodeId, Option<EvalOutcome>) where None = commitment-cancelled
             let mut join_set = tokio::task::JoinSet::new();
-            for (node, _, has_non_final_flag) in &dirty_nodes {
+            for dn in &dirty_nodes {
                 let eval = Arc::clone(&evaluator);
-                let n = node.clone();
+                let n = dn.id.clone();
                 let cancel_clone = cancel.clone();
                 let tracker_clone = config.commitment_tracker.clone();
-                let has_intermediate = *has_non_final_flag;
+                let has_intermediate = dn.has_non_final;
                 join_set.spawn(async move {
                     let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
@@ -358,15 +371,15 @@ impl ConcurrentScheduler {
 
             // Cleanup closure: remove all dirty nodes from tracker and promoter.
             // Called on both normal completion and error paths to prevent stale entries.
-            let cleanup_level = |dirty: &[(NodeId, NodeCommitmentOverride, bool)]| {
+            let cleanup_level = |dirty: &[DirtyNode]| {
                 if let Some(ref tracker) = config.commitment_tracker {
                     let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
-                    for (node, _, _) in dirty {
-                        guard.remove_task(node);
+                    for dn in dirty {
+                        guard.remove_task(&dn.id);
                     }
                 }
                 if let Some(ref promoter) = config.priority_promoter {
-                    let node_ids: Vec<NodeId> = dirty.iter().map(|(n, _, _)| n.clone()).collect();
+                    let node_ids: Vec<NodeId> = dirty.iter().map(|dn| dn.id.clone()).collect();
                     promoter.batch_remove(&node_ids);
                 }
             };
