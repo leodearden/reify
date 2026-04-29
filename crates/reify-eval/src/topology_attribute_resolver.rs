@@ -668,6 +668,57 @@ mod tests {
         );
     }
 
+    /// step-11 (task #2653) — user_label multi-match where ALL matched
+    /// candidates share the parent-key routes to AmbiguousAfterSplit.
+    ///
+    /// Pins that the user_label branch participates in clustering detection
+    /// symmetrically with the role/idx branch — i.e. a labelled face that
+    /// gets split surfaces as AmbiguousAfterSplit (with the children list
+    /// for caller disambiguation), NOT a silent first-match Resolved or a
+    /// generic Unresolved miss.
+    #[test]
+    fn resolve_returns_ambiguous_after_split_when_user_label_match_clusters_on_parent_key() {
+        let mut table = TopologyAttributeTable::default();
+        // Both entries share the parent-key (feat(), Side, 0, Some("seam"))
+        // and differ only in mod_history — the post-split signature.
+        let mut a = attr(Role::Side, 0, Some("seam"));
+        a.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 0,
+        }];
+        let mut b = attr(Role::Side, 0, Some("seam"));
+        b.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 1,
+        }];
+        table.record(h(70), a);
+        table.record(h(71), b);
+        let candidates = [h(70), h(71)];
+        let query = AttributeQuery {
+            user_label: Some("seam".to_string()),
+            role_and_index: None,
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(
+            result,
+            AttributeResolution::AmbiguousAfterSplit {
+                children: vec![h(70), h(71)],
+            },
+            "labelled face that gets split → AmbiguousAfterSplit with both children"
+        );
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("split children"),
+            "message should mention 'split children', got: {}",
+            diag.message
+        );
+    }
+
     /// step-9 — zero-match unresolved diagnostic emission.
     ///
     /// At least one candidate has an attribute entry (so we are NOT in the
