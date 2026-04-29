@@ -384,6 +384,16 @@ pub(crate) fn elaborate_forall_connect(
     // `resolve_forall_elements` for the four-case semantics: ListLiteral,
     // Ident-as-collection-sub, deferred (silently skip), and non-iterable
     // (emit diagnostic).
+    //
+    // `None` means one of two things:
+    //   * PRD criterion 7 first-half: collection count not yet determined —
+    //     emit zero connections (no diagnostic). Re-elaboration on count
+    //     change is future SchemaNode work.
+    //   * Non-iterable collection expression: a diagnostic was already emitted
+    //     by `resolve_forall_elements`; skip connection emission to avoid
+    //     cascading errors.
+    // Both cases return early here; the per-element loop below only runs when
+    // a concrete, statically-known set of elements was resolved.
     let Some(elements) = resolve_forall_elements(
         &decl.collection,
         sub_components,
@@ -393,7 +403,7 @@ pub(crate) fn elaborate_forall_connect(
         functions,
         diagnostics,
     ) else {
-        return;
+        return; // PRD criterion 7 first-half: defer silently, or non-iterable (diagnostic already emitted).
     };
 
     // Build the read-only `ConnectContext` once. The accumulator is rebuilt
