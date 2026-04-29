@@ -2997,6 +2997,26 @@ mod tests {
         );
     }
 
+    // ── transform_at on planar: zero motion (step-5) ─────────────────────────
+
+    #[test]
+    fn transform_at_planar_zero_motion_returns_identity() {
+        let joint = planar_xy_joint();
+        let motion = Value::List(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::angle(0.0),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "planar zero motion → identity",
+        );
+    }
+
     // ── planar constructor: validation surface (step-3) ───────────────────────
 
     #[test]
