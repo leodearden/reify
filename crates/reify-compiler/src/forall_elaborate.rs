@@ -27,6 +27,39 @@
 use super::*;
 use std::collections::HashMap;
 
+/// Resolve a collection sub's count cell to a literal `i64` count.
+///
+/// Mirrors the Literal-or-ValueRef-to-Literal chain at
+/// `crates/reify-eval/src/graph.rs:171-209`. Returns `Some(n)` only when:
+///   * The count cell exists in `value_cells`,
+///   * Its `default_expr` is `Some(Literal(Int(n)))` directly, OR
+///   * Its `default_expr` is `Some(ValueRef(other))` whose target cell's
+///     `default_expr` is `Some(Literal(Int(n)))` (one indirection hop).
+///
+/// Returns `None` for missing cells, missing defaults, non-literal expressions,
+/// non-Int literals, multi-hop indirection, or any other shape. Callers treat
+/// `None` as "skip — emit zero decls, no diagnostic" per PRD criterion 7.
+fn resolve_count_cell_literal(
+    value_cells: &[ValueCellDecl],
+    count_id: &ValueCellId,
+) -> Option<i64> {
+    let cell = value_cells.iter().find(|vc| vc.id == *count_id)?;
+    let expr = cell.default_expr.as_ref()?;
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Int(n)) => Some(*n),
+        CompiledExprKind::ValueRef(ref_id) => {
+            let referenced = value_cells.iter().find(|vc| vc.id == *ref_id)?;
+            let referenced_expr = referenced.default_expr.as_ref()?;
+            if let CompiledExprKind::Literal(Value::Int(n)) = &referenced_expr.kind {
+                Some(*n)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Drive per-element constraint emission for a `forall ... : constraint ...`
 /// or `forall ... : constraint Inst(...)` declaration.
 ///
@@ -46,8 +79,8 @@ pub(crate) fn elaborate_forall_constraint(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     _constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
-    _value_cells: &[ValueCellDecl],
-    _sub_components: &[SubComponentDecl],
+    value_cells: &[ValueCellDecl],
+    sub_components: &[SubComponentDecl],
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     _constraint_inst_counts: &mut HashMap<String, usize>,
@@ -56,15 +89,50 @@ pub(crate) fn elaborate_forall_constraint(
     _guard_index: &mut u32,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use reify_syntax::{ExprKind, ForallConstraintBody};
+    use reify_syntax::{Expr, ExprKind, ForallConstraintBody};
 
-    // Step-2 scope: only ListLiteral collections × ConstraintBody::Constraint.
-    // Other shapes (Ident-as-collection-sub, Instantiation body, where clauses)
-    // are deferred to subsequent steps.
+    // Resolve the collection expression to a Vec of per-element replacements.
+    //   * `ListLiteral(items)` → element AST = `items[i]`.
+    //   * `Ident(name)` referencing a collection sub with a literally-resolved
+    //     count cell → element AST = `IndexAccess { object: Ident(name), index: NumberLiteral(i) }`.
+    //   * Anything else → emit zero decls. PRD criterion 7's "no decls when
+    //     count is undef" half. Non-iterable diagnostic is added in step-20;
+    //     re-elaboration on count change is out of scope (future SchemaNode work).
     let elements: Vec<reify_syntax::Expr> = match &decl.collection.kind {
         ExprKind::ListLiteral(items) => items.clone(),
-        // Step-6+: Ident-as-collection-sub resolution. Step-20: non-iterable diagnostic.
-        // For now, silently skip unsupported collection shapes.
+        ExprKind::Ident(name) => {
+            // Look up the matching collection sub and resolve its count.
+            let sub = sub_components
+                .iter()
+                .find(|s| s.name == *name && s.is_collection);
+            let count = sub
+                .and_then(|s| s.count_cell.as_ref())
+                .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
+            let Some(count) = count else {
+                // Cannot statically resolve count — emit zero decls silently.
+                // (Step-20 adds the non-iterable diagnostic for genuinely
+                // mistyped collection expressions; here we defer to support
+                // future re-elaboration on count change.)
+                return;
+            };
+            let coll_span = decl.collection.span;
+            (0..count)
+                .map(|i| Expr {
+                    kind: ExprKind::IndexAccess {
+                        object: Box::new(Expr {
+                            kind: ExprKind::Ident(name.clone()),
+                            span: coll_span,
+                        }),
+                        index: Box::new(Expr {
+                            kind: ExprKind::NumberLiteral(i as f64),
+                            span: coll_span,
+                        }),
+                    },
+                    span: coll_span,
+                })
+                .collect()
+        }
+        // Step-20: non-iterable diagnostic. For now, silently skip.
         _ => return,
     };
 
