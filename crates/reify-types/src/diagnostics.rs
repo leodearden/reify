@@ -366,6 +366,25 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_POOL_OVERFLOW`
     /// (see `docs/prds/auto-type-param-resolution.md` §"Phase A").
     AutoTypeParamPoolOverflow,
+    /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
+    ///
+    /// Canonical message form:
+    /// `"let bindings in purpose bodies are not yet supported: '<name>'"`.
+    ///
+    /// Emitted as `Severity::Error` when `compile_purpose` encounters a
+    /// `MemberDecl::Let` inside a purpose body. This is an *unsupported-feature*
+    /// error — `CompiledPurpose` has no storage for let expressions, and
+    /// `activate_purpose` only injects constraints. Any constraint referencing a
+    /// let-bound name would produce a `ValueCellId` with no backing node in the
+    /// eval graph. This is therefore not a `DuplicateDecl` error.
+    ///
+    /// A single label accompanies the error at the offending `let` declaration's
+    /// span: `"unsupported in purpose"`.
+    ///
+    /// Design rationale for coexistence with `Shadowing`: when a purpose-body `let`
+    /// also shadows a purpose param, both diagnostics fire at the same span — see
+    /// `shadowing_warning_tests.rs::purpose_body_let_shadow_coexists_with_unsupported_let_error_intentional`.
+    PurposeLetUnsupported,
 }
 
 /// A diagnostic message with location and optional labels.
