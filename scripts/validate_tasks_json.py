@@ -45,6 +45,21 @@ import collections
 _DOTTED_DEP_RE = re.compile(r"(\d+)\.(\d+)")
 
 
+def _dotted_dep_resolves(
+    dep: str, known_ids: set, subtasks_by_parent: dict
+) -> bool:
+    """Return True iff ``dep`` is a dotted ``<parent>.<subtask>`` id whose
+    parent half is a known top-level task id and whose subtask half is one of
+    that parent's known subtask ids.  Shared by ``_validate_tasks`` and
+    ``_validate_subtasks`` so the acceptance rule is defined exactly once.
+    """
+    m = _DOTTED_DEP_RE.fullmatch(dep)
+    if not m:
+        return False
+    parent, sub = m.group(1), m.group(2)
+    return parent in known_ids and sub in subtasks_by_parent.get(parent, set())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Validate tasks.json structural invariants."
@@ -213,8 +228,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> tuple[set[str], 
                 continue
             if dep in known_ids:
                 continue
-            m = _DOTTED_DEP_RE.fullmatch(dep)
-            if m and m.group(1) in known_ids and m.group(2) in subtasks_by_parent.get(m.group(1), set()):
+            if _dotted_dep_resolves(dep, known_ids, subtasks_by_parent):
                 continue
             errors.append(
                 f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is orphan (no matching task id)"
@@ -290,20 +304,14 @@ def _validate_subtasks(
                 )
             elif dep in allowed_ids:
                 pass  # valid plain dep
+            elif subtasks_by_parent is not None and _dotted_dep_resolves(
+                dep, parent_task_ids, subtasks_by_parent
+            ):
+                pass  # valid dotted cross-task subtask ref
             else:
-                # Also accept dotted <parent>.<subtask> form.
-                m = _DOTTED_DEP_RE.fullmatch(dep)
-                if (
-                    m
-                    and subtasks_by_parent is not None
-                    and m.group(1) in parent_task_ids
-                    and m.group(2) in subtasks_by_parent.get(m.group(1), set())
-                ):
-                    pass  # valid dotted cross-task subtask ref
-                else:
-                    errors.append(
-                        f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
-                    )
+                errors.append(
+                    f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is orphan (no matching subtask or task id)"
+                )
 
 
 if __name__ == "__main__":

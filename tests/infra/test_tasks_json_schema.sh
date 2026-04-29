@@ -145,6 +145,21 @@ assert "dotted dep with missing subtask fails validator" \
 assert "dotted dep with missing subtask error mentions '200.99' or 'orphan'" \
     bash -c "python3 '$VALIDATOR' '$DOTTED_DEP_BAD_SUBTASK' 2>&1 | grep -qE '200\\.99|orphan'"
 
+# (d) Malformed dotted dep with extra dot ("100.1.2") → must FAIL as orphan.
+#     Locks the re.fullmatch boundary in _dotted_dep_resolves: the dotted-dep
+#     regex must reject multi-dot forms so they fall through to the orphan
+#     branch instead of being silently accepted as a parent.subtask reference.
+DOTTED_DEP_MALFORMED="$TMPDIR_FIXTURES/dotted_dep_malformed.json"
+cat >"$DOTTED_DEP_MALFORMED" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":["100.1.2"],"subtasks":[{"id":"1","dependencies":[]}]}]}}
+EOF
+
+assert "malformed dotted dep '100.1.2' fails validator (fullmatch boundary)" \
+    bash -c "! python3 '$VALIDATOR' '$DOTTED_DEP_MALFORMED'"
+
+assert "malformed dotted dep error mentions '100.1.2' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' '$DOTTED_DEP_MALFORMED' 2>&1 | grep -qE '100\\.1\\.2|orphan'"
+
 # -- Invariant 3: no duplicate ids -------------------------------------------
 echo ""
 echo "--- Test: invariant 3 (duplicate ids) ---"

@@ -698,6 +698,54 @@ fn let_bound_box_at_bounded_param_emits_no_diagnostic() {
     );
 }
 
+// ─── E2E: chained-let rejection ─────────────────────────────────────────────
+
+/// Regression lock: chained-let `let h = union(box, box); let g = h` at a
+/// `Connected` param emits exactly one `TypeNotConformingToTrait` diagnostic
+/// — symmetric to the inline and direct-let baselines above.
+///
+/// Pins the load-bearing claim that `compile_geometry_call` handles chaining
+/// at the AST level (geometry.rs:249-272: Ident arm recurses through
+/// `geometry_lets`) so the realization for `g` reuses `h`'s ops. A future
+/// refactor of that arm — or of `is_geometry_let`'s Ident arm — would silently
+/// regress chained-let conformance without tripping the inline / direct-let
+/// E2E tests or the unit-level `lookup_chained_noncyclic_let_propagates_terminal_traits`
+/// env test (conformance/mod.rs:4027); this test closes that integration gap.
+///
+/// Trait math: `combine_union(all, all) = bounded_only` (Connected dropped),
+/// so `g`'s inferred traits lack `Connected` and the conformance walker emits
+/// exactly one `TypeNotConformingToTrait` for the 'g' slot.
+#[test]
+fn chained_let_bound_union_at_connected_param_emits_one_diagnostic() {
+    let source = r#"
+        structure def Foo {
+            param g : Connected
+        }
+        structure def Top {
+            let h = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+            let g = h
+            sub x = Foo(g: g)
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+
+    let conformance_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .filter(|d| d.message.contains("'g'") || d.message.contains("Connected"))
+        .collect();
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly one TypeNotConformingToTrait for chained-let \
+         union(box,box) at a Connected slot — parity with inline and direct-let \
+         forms; regression lock for compile_geometry_call's AST-level chaining. \
+         Got: {:?}",
+        conformance_errors
+    );
+}
+
 // ─── GEOMETRY_FUNCTION_NAMES ↔ infer_traits_for_function_call coverage ──────
 
 // ─── infer_traits_for_op — op-array walker unit tests ───────────────────────
