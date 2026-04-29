@@ -1015,6 +1015,28 @@ impl<'a> BooleanOpParents<'a> {
         }
     }
 
+    /// Panicking constructor for the [`NAry`][Self::NAry] variant.
+    ///
+    /// Equivalent to `Self::try_nary(faces, edges).unwrap_or_else(|e| panic!("{e}"))`.
+    /// Use this at call sites where a length mismatch is a programmer bug;
+    /// use [`try_nary`][Self::try_nary] where a mismatch is a recoverable error.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a message containing `"faces.len()"` when
+    /// `faces.len() != edges.len()`.
+    pub fn nary(
+        faces: &'a [&'a [GeometryHandleId]],
+        edges: &'a [&'a [GeometryHandleId]],
+    ) -> Self {
+        Self::try_nary(faces, edges).unwrap_or_else(|BooleanOpParentsError::LengthMismatch { faces, edges }| {
+            panic!(
+                "BooleanOpParents::NAry: faces.len() ({faces}) != edges.len() ({edges}); \
+                 each parent must have an entry in both slices"
+            )
+        })
+    }
+
     /// Returns the per-parent face-handle slices as a flat slice of slices,
     /// regardless of variant. Index `i` gives the face handles for parent `i`.
     pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
