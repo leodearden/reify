@@ -2849,4 +2849,72 @@ mod tests {
         }
     }
 
+    // ── planar constructor helpers ────────────────────────────────────────────
+
+    fn axis_y_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    // ── planar constructor: happy path (step-1) ───────────────────────────────
+
+    #[test]
+    fn planar_returns_map_with_correct_fields() {
+        let axis_x = axis_x_unit();
+        let axis_y = axis_y_unit();
+        let range_x = length_range_0_to_1m();
+        let range_y = length_range_0_to_1m();
+        let range_theta = angle_range_0_to_pi();
+        let result = eval_builtin("planar", &[
+            axis_x.clone(),
+            axis_y.clone(),
+            range_x.clone(),
+            range_y.clone(),
+            range_theta.clone(),
+        ]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("planar".to_string())),
+            "kind field should be 'planar'"
+        );
+        assert_eq!(
+            map.get(&Value::String("axis_x".to_string())),
+            Some(&axis_x),
+            "axis_x field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("axis_y".to_string())),
+            Some(&axis_y),
+            "axis_y field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("range_x".to_string())),
+            Some(&range_x),
+            "range_x field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("range_y".to_string())),
+            Some(&range_y),
+            "range_y field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("range_theta".to_string())),
+            Some(&range_theta),
+            "range_theta field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            6,
+            "planar joint Map should have exactly 6 keys \
+             (kind, axis_x, axis_y, range_x, range_y, range_theta), \
+             got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+    }
+
 }
