@@ -1060,3 +1060,120 @@ fn edit_param_count_decrease_removes_stale_forall_connections_and_changes_finger
         "topology_fingerprint must change across count transition 1 -> 0 (Connect arm)"
     );
 }
+
+/// Helper: collect the `ConstraintNodeId`s of forall-Connect compatibility
+/// constraints (label `forall_connect@<var>[<i>]`), sorted by `i`. Mirrors
+/// `collect_forall_ids` but for the Connect arm's distinct label namespace.
+fn collect_forall_connect_ids(snap: &Snapshot, variable: &str) -> Vec<ConstraintNodeId> {
+    let prefix = format!("forall_connect@{}[", variable);
+    let mut entries: Vec<(usize, ConstraintNodeId)> = snap
+        .graph
+        .constraints
+        .iter()
+        .filter_map(|(id, n)| {
+            let label = n.label.as_deref()?;
+            let rest = label.strip_prefix(&prefix)?;
+            let idx_str = rest.strip_suffix(']')?;
+            let i: usize = idx_str.parse().ok()?;
+            Some((i, id.clone()))
+        })
+        .collect();
+    entries.sort_by_key(|(i, _)| *i);
+    entries.into_iter().map(|(_, id)| id).collect()
+}
+
+/// task-2690 step-13: pins the cache-invalidation contract for the
+/// forall-Connect runtime re-emission path. Sibling of the Constraint-arm
+/// `edit_param_count_change_invalidates_prior_forall_constraint_cache`
+/// (task 2629 step-14).
+///
+/// The drain block at the top of the per-template re-emission loop is
+/// shared between both arms (see `engine_edit.rs:~1599-1607`): every
+/// drained id is removed from `graph.constraints`, retained-out from
+/// `graph.connections`, AND has its cache entry invalidated via
+/// `self.cache.invalidate(&NodeId::Constraint(id))`. This test pins that
+/// contract concretely for the Connect arm by injecting a synthetic cache
+/// entry on each id that will be removed and asserting it's gone after the
+/// next edit.
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` (count=Undef).
+/// 2. `edit_param(S.n, Int(3))` — record the 3 emitted forall-Connect
+///    compatibility-constraint ids.
+/// 3. Inject synthetic `NodeCache` entries for the 2 ids that will be
+///    removed on the next edit (forall_connect@v[1], forall_connect@v[2]).
+/// 4. `edit_param(S.n, Int(1))` — assert the cache entries for the 2
+///    removed ids are gone.
+#[test]
+fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
+    use reify_eval::cache::{CachedResult, NodeCache};
+    use reify_eval::deps::DependencyTrace;
+    use reify_types::{DeterminacyState, Freshness, VersionId};
+
+    let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval.
+    let _ = engine.eval(&module);
+
+    // (2) Edit n=3 — capture the 3 emitted Connect-arm compatibility ids.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param to 3 should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    let ids_3 = collect_forall_connect_ids(snap_3, "v");
+    assert_eq!(
+        ids_3.len(),
+        3,
+        "expected 3 forall_connect@v[*] compatibility-constraint ids after n=3 (got {})",
+        ids_3.len()
+    );
+
+    // (3) Inject synthetic cache entries for the 2 ids that will be removed
+    //     on the next count-decrease (forall_connect@v[1], forall_connect@v[2]).
+    let removed_ids = vec![ids_3[1].clone(), ids_3[2].clone()];
+    for id in &removed_ids {
+        let entry = NodeCache::new(
+            CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace { reads: Vec::new() },
+            VersionId(0),
+        );
+        engine
+            .cache_store_mut()
+            .put(NodeId::Constraint(id.clone()), entry);
+    }
+    for id in &removed_ids {
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Constraint(id.clone()))
+                .is_some(),
+            "synthetic cache entry for forall-Connect compat id {} should be present \
+             before edit_param to 1",
+            id
+        );
+    }
+
+    // (4) Edit n=1: forall_connect@v[1] and forall_connect@v[2] are removed
+    //     from the graph; their cache entries must be cleared by the shared
+    //     drain block.
+    let _ = engine
+        .edit_param(n_id, Value::Int(1))
+        .expect("edit_param to 1 should succeed");
+
+    for (i_in_3, id) in removed_ids.iter().enumerate() {
+        let label_idx = i_in_3 + 1;
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Constraint(id.clone()))
+                .is_none(),
+            "expected cache entry for forall_connect@v[{}] (id={}) to be invalidated \
+             after count decrease (Connect arm), but it was still present",
+            label_idx,
+            id
+        );
+    }
+}
