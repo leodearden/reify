@@ -556,6 +556,21 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // `if unit_axes_xy_from_planar_map(map).is_none() { return Value::Undef; }`
         // if you need stricter defence-in-depth for malformed fixtures.
         "planar" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 3-DOF spherical joint: zero-twist placeholder column — deferred design
+        // decision matching the planar/fixed pattern. A spherical joint has a
+        // 6×3 Jacobian (three angular columns spanning so(3); zero linear), but
+        // the v0.1 single-column convention returns one Map per joint. The
+        // analytic 3-column form is deferred per PRD task 2 / #2670 ("FD fallback
+        // for multi-DOF kinds"). Note: chain_jacobian_fd also returns None for
+        // chains containing a spherical joint because value_for_joint has no
+        // spherical arm yet (the f64-per-joint chain machinery cannot represent
+        // a quaternion motion variable); this zero placeholder is NOT equivalent
+        // to "FD chain Jacobians work for spherical" — they do not yet.
+        //
+        // Field validation is deliberately skipped (matching the planar/fixed
+        // arms): the result is zero regardless of the stored range_angle, so a
+        // hand-built Map with a missing field returns the same correct placeholder.
+        "spherical" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
