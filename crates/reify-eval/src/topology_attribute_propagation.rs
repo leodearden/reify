@@ -216,28 +216,36 @@ mod tests {
         }
     }
 
-    /// One face per parent + one result face — the minimum shape needed
-    /// to exercise out-of-range index error paths without tripping
-    /// earlier guards.
-    fn minimal_parent_result_layout() -> (
-        [Vec<GeometryHandleId>; 2],
-        [Vec<GeometryHandleId>; 2],
-        Vec<GeometryHandleId>,
-        Vec<GeometryHandleId>,
-    ) {
-        let parent_faces = [vec![GeometryHandleId(1)], vec![GeometryHandleId(2)]];
-        let parent_edges = [vec![GeometryHandleId(3)], vec![GeometryHandleId(4)]];
-        let result_faces = vec![GeometryHandleId(11)];
-        let result_edges = vec![GeometryHandleId(12)];
-        (parent_faces, parent_edges, result_faces, result_edges)
+    /// Parent + result handle vectors for a 2-parent, 1-result layout
+    /// — owned so the test fn can borrow slices into them without
+    /// running afoul of intermediate-temporary lifetime issues.
+    struct MinimalLayout {
+        parent_faces: [Vec<GeometryHandleId>; 2],
+        parent_edges: [Vec<GeometryHandleId>; 2],
+        result_faces: Vec<GeometryHandleId>,
+        result_edges: Vec<GeometryHandleId>,
+    }
+
+    /// One face/edge per parent + one result face/edge — the minimum
+    /// shape needed to exercise out-of-range index error paths without
+    /// tripping earlier guards.
+    fn minimal_parent_result_layout() -> MinimalLayout {
+        MinimalLayout {
+            parent_faces: [vec![GeometryHandleId(1)], vec![GeometryHandleId(2)]],
+            parent_edges: [vec![GeometryHandleId(3)], vec![GeometryHandleId(4)]],
+            result_faces: vec![GeometryHandleId(11)],
+            result_edges: vec![GeometryHandleId(12)],
+        }
     }
 
     #[test]
     fn propagate_returns_query_failed_when_face_record_has_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
-        let (pf, pe, rf, re) = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
+        let layout = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_faces[0], &layout.parent_faces[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_edges[0], &layout.parent_edges[1]];
 
         // 5 >= 2 parents tracked.
         let history = history_with_single_face_modified(HistoryRecord {
@@ -250,8 +258,8 @@ mod tests {
             &mut table,
             &parent_face_handles,
             &parent_edge_handles,
-            &rf,
-            &re,
+            &layout.result_faces,
+            &layout.result_edges,
             &history,
         )
         .expect_err("expected QueryFailed for parent_index out of range");
@@ -273,9 +281,11 @@ mod tests {
     #[test]
     fn propagate_returns_query_failed_when_face_record_has_parent_subshape_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
-        let (pf, pe, rf, re) = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
+        let layout = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_faces[0], &layout.parent_faces[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_edges[0], &layout.parent_edges[1]];
 
         // Parent 0 has only 1 face, so subshape 99 is out of range.
         let history = history_with_single_face_modified(HistoryRecord {
@@ -288,8 +298,8 @@ mod tests {
             &mut table,
             &parent_face_handles,
             &parent_edge_handles,
-            &rf,
-            &re,
+            &layout.result_faces,
+            &layout.result_edges,
             &history,
         )
         .expect_err("expected QueryFailed for parent_subshape_index out of range");
@@ -307,9 +317,11 @@ mod tests {
     #[test]
     fn propagate_returns_query_failed_when_face_record_has_result_subshape_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
-        let (pf, pe, rf, re) = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
+        let layout = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_faces[0], &layout.parent_faces[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_edges[0], &layout.parent_edges[1]];
 
         // Result has only 1 face, so subshape 7 is out of range.
         let history = history_with_single_face_modified(HistoryRecord {
@@ -322,8 +334,8 @@ mod tests {
             &mut table,
             &parent_face_handles,
             &parent_edge_handles,
-            &rf,
-            &re,
+            &layout.result_faces,
+            &layout.result_edges,
             &history,
         )
         .expect_err("expected QueryFailed for result_subshape_index out of range");
@@ -341,9 +353,11 @@ mod tests {
     #[test]
     fn propagate_returns_query_failed_when_edge_record_has_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
-        let (pf, pe, rf, re) = minimal_parent_result_layout();
-        let parent_face_handles: [&[GeometryHandleId]; 2] = [&pf[0], &pf[1]];
-        let parent_edge_handles: [&[GeometryHandleId]; 2] = [&pe[0], &pe[1]];
+        let layout = minimal_parent_result_layout();
+        let parent_face_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_faces[0], &layout.parent_faces[1]];
+        let parent_edge_handles: [&[GeometryHandleId]; 2] =
+            [&layout.parent_edges[0], &layout.parent_edges[1]];
 
         // Edge equivalent of the parent_index check — confirms the kind
         // arg is threaded into the error message.
@@ -357,8 +371,8 @@ mod tests {
             &mut table,
             &parent_face_handles,
             &parent_edge_handles,
-            &rf,
-            &re,
+            &layout.result_faces,
+            &layout.result_edges,
             &history,
         )
         .expect_err("expected QueryFailed for edge parent_index out of range");

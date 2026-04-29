@@ -34,8 +34,8 @@ use std::collections::{HashMap, HashSet};
 use reify_eval::propagate_attributes_via_brepalgoapi_history;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, ModEntry,
-    RealizationNodeId, Role, TopologyAttribute, TopologyAttributeTable, Value,
+    CapKind, FeatureId, GeometryHandleId, GeometryOp, ModEntry, RealizationNodeId, Role,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -112,7 +112,9 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     }
 
     // ─── (1) Build two overlapping cubes via OcctKernelHandle ────────
-    let mut kernel = OcctKernelHandle::spawn();
+    // `OcctKernelHandle`'s methods take `&self` (the kernel-thread
+    // channel handles all the mutation), so no `mut` needed.
+    let kernel = OcctKernelHandle::spawn();
 
     let left = kernel
         .execute(&ten_mm_box_op())
