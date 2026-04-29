@@ -60,7 +60,7 @@ fn filter_returns_empty_for_empty_candidates_input() {
     let result = filter_feasible_candidates(&[], &template, &checker, functions);
 
     assert!(
-        matches!(result, FeasibilityResult::Empty { rejected } if rejected.is_empty()),
+        matches!(result, FeasibilityResult::Empty { ref rejected } if rejected.is_empty()),
         "expected FeasibilityResult::Empty {{ rejected: [] }} for empty candidates input, got: {:?}",
         result
     );
