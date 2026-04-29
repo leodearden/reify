@@ -1,3 +1,9 @@
+// See `reify-types::value::SampledField` for the rationale behind this allow:
+// `Value::SampledField` carries an `AtomicBool` for once-per-session OOB-warning
+// suppression, which is excluded from `PartialEq`/`Ord`/`Hash`/`content_hash`
+// but still triggers the `mutable_key_type` lint on every `BTreeMap<Value, _>`.
+#![allow(clippy::mutable_key_type)]
+
 use reify_types::Value;
 
 mod helpers;

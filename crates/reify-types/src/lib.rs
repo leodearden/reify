@@ -1,3 +1,10 @@
+// `Value` carries a `SampledField` whose `oob_emitted: AtomicBool` introduces
+// interior mutability that does NOT participate in `PartialEq`/`Ord`/`Hash`/
+// `content_hash`. `BTreeMap<Value, _>` (notably `Value::Map`) therefore preserves
+// its ordering invariants, but `clippy::mutable_key_type` still fires. See
+// `value.rs::SampledField` for the full rationale.
+#![allow(clippy::mutable_key_type)]
+
 pub mod annotation;
 pub mod constraint;
 pub mod diagnostics;
