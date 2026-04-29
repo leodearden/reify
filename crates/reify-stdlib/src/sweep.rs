@@ -54,6 +54,48 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_sweep_dim(args[0].clone(), args[1].clone(), args[2].clone())
         }
+        "sweep" => {
+            // Validation surface (each guard short-circuits to
+            // Value::Undef BEFORE any `eval_builtin("snapshot", ...)`
+            // delegation; mirrors snapshot.rs's snapshot arm validation):
+            //   args.len() == 4                                → arity guard
+            //   args[0] is Map with kind="mechanism"           → mechanism guard
+            //   is_driving_joint(args[1])                      → joint kind guard
+            //   args[2] is Value::Range matching the joint's   → range guard
+            //     dimension and SI-finite
+            //   args[3] is Value::Int(n) with n >= 0           → steps guard
+            // Errored-mechanism short-circuit and >=2-step interpolation
+            // arms are layered on in subsequent steps.
+            if args.len() != 4 {
+                return Some(Value::Undef);
+            }
+            let mech_map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            if mech_map.get(&Value::String("kind".to_string()))
+                != Some(&Value::String("mechanism".to_string()))
+            {
+                return Some(Value::Undef);
+            }
+            let expected_dim = match driving_joint_kind(&args[1]) {
+                Some(d) => d,
+                None => return Some(Value::Undef),
+            };
+            if validate_range_with_dimension(&args[2], expected_dim).is_none() {
+                return Some(Value::Undef);
+            }
+            let steps = match &args[3] {
+                Value::Int(n) if *n >= 0 => *n,
+                _ => return Some(Value::Undef),
+            };
+            if steps == 0 {
+                return Some(Value::List(vec![]));
+            }
+            // steps >= 1 cases are wired in later steps (1 → step-14,
+            // >=2 → step-8). For now anything >0 yields Undef.
+            Value::Undef
+        }
         _ => return None,
     })
 }
