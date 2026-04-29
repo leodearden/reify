@@ -1213,220 +1213,48 @@ structure S {
     /// O(1) (a refcount bump), not an O(N) deep clone of the entire function table.
     #[test]
     fn eval_resolution_problem_shares_functions_arc_with_engine() {
-        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
-        use reify_test_support::{
-            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
-        };
-        use reify_types::{ModulePath, Type, ValueCellId};
-        use std::collections::HashMap;
-        use std::sync::Arc;
-
-        let thickness_id = ValueCellId::new("S", "thickness");
-        let mut solved_values = HashMap::new();
-        solved_values.insert(thickness_id, mm(5.0));
-
-        let spy = SpyConstraintSolver::new_solved(solved_values);
-        let captured = spy.captured_problem();
-
-        let template = TopologyTemplateBuilder::new("S")
-            .auto_param("S", "thickness", Type::length())
-            .constraint(
-                "S",
-                0,
-                None,
-                gt(value_ref("S", "thickness"), literal(mm(2.0))),
-            )
-            .build();
-
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-
-        engine.eval(&module);
-
-        let guard = captured.lock().unwrap();
-        let problem = guard
-            .as_ref()
-            .expect("solver should have been called during eval");
-
-        assert!(
-            Arc::ptr_eq(&engine.functions, &problem.functions),
-            "ResolutionProblem.functions must share the same Arc allocation as \
-            Engine.functions — proves the per-call clone is O(1) Arc::clone, not a \
-            deep clone of the function table (task #2286)"
-        );
-        assert!(
-            Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
-            Arc::strong_count(&engine.functions)
-        );
+        // The helper's own engine.eval(&module) call already fires the solver,
+        // so the eval-path problem is captured before drive is invoked.
+        assert_problem_shares_functions_arc("eval", |_engine, _limit_id| {});
     }
 
     /// Arc-sharing invariant: after `edit_param()`, the `ResolutionProblem.functions`
     /// passed to the solver must share the *same* Arc allocation as
     /// `Engine.functions`. This covers the inline construction site in
     /// `engine_edit.rs` (task #2286).
-    ///
-    /// The test builds a module with an auto-param `thickness` constrained to be
-    /// greater than a regular param `limit`. Calling `edit_param(limit, new_val)`
-    /// dirties the constraint and triggers re-resolution, so the spy captures the
-    /// new `ResolutionProblem` from the `edit_param` code path.
     #[test]
     fn edit_param_resolution_problem_shares_functions_arc_with_engine() {
-        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
-        use reify_test_support::{
-            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
-        };
-        use reify_types::{ModulePath, Type, ValueCellId};
-        use std::collections::HashMap;
-        use std::sync::Arc;
-
-        let thickness_id = ValueCellId::new("S", "thickness");
-        let limit_id = ValueCellId::new("S", "limit");
-
-        // Solver returns thickness = 5mm each time it's called.
-        let mut solved_values = HashMap::new();
-        solved_values.insert(thickness_id.clone(), mm(5.0));
-
-        let spy = SpyConstraintSolver::new_solved(solved_values);
-        let captured = spy.captured_problem();
-
-        // Template: auto thickness, regular param limit (default 2mm),
-        // constraint: thickness > limit.
-        let template = TopologyTemplateBuilder::new("S")
-            .auto_param("S", "thickness", Type::length())
-            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-            .constraint(
-                "S",
-                0,
-                None,
-                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
-            )
-            .build();
-
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-
-        // Initial eval — solver fires once.
-        engine.eval(&module);
-
-        // Editing `limit` dirties the constraint and triggers re-resolution via
-        // the engine_edit.rs path.
-        engine.edit_param(limit_id, mm(3.0)).unwrap();
-
-        // The spy now holds the problem from the most recent solver call
-        // (the edit_param re-resolution).
-        let guard = captured.lock().unwrap();
-        let problem = guard
-            .as_ref()
-            .expect("solver should have been called during edit_param");
-
-        assert!(
-            Arc::ptr_eq(&engine.functions, &problem.functions),
-            "ResolutionProblem.functions must share the same Arc allocation as \
-            Engine.functions in the edit_param path — proves the construction is \
-            O(1) Arc::clone, not a deep clone (task #2286)"
-        );
-        assert!(
-            Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
-            Arc::strong_count(&engine.functions)
-        );
+        use reify_test_support::mm;
+        assert_problem_shares_functions_arc("edit_param", |engine, limit_id| {
+            engine.edit_param(limit_id, mm(3.0)).unwrap();
+        });
     }
 
     /// Arc-sharing invariant: after `resolve_concurrent_edit()`, the
     /// `ResolutionProblem.functions` passed to the solver must share the *same*
     /// Arc allocation as `Engine.functions`. This covers the inline construction
     /// site in `concurrent.rs` (task #2286).
-    ///
-    /// Changing `limit` (a regular param that appears in the constraint) creates
-    /// a dirty cone on the constraint, causing `resolve_concurrent_edit` to fire
-    /// the solver. The spy captures the `ResolutionProblem` from that call.
     #[test]
     fn resolve_concurrent_edit_resolution_problem_shares_functions_arc_with_engine() {
-        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
-        use reify_test_support::{
-            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
-        };
-        use reify_types::{ModulePath, Type, ValueCellId};
+        use reify_test_support::mm;
         use std::collections::{HashMap, HashSet};
-        use std::sync::Arc;
-
-        let thickness_id = ValueCellId::new("S", "thickness");
-        let limit_id = ValueCellId::new("S", "limit");
-
-        // Solver returns thickness = 5mm each time it's called.
-        let mut solved_values = HashMap::new();
-        solved_values.insert(thickness_id.clone(), mm(5.0));
-
-        let spy = SpyConstraintSolver::new_solved(solved_values);
-        let captured = spy.captured_problem();
-
-        // Template: auto thickness, regular param limit (default 2mm),
-        // constraint: thickness > limit.
-        let template = TopologyTemplateBuilder::new("S")
-            .auto_param("S", "thickness", Type::length())
-            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-            .constraint(
-                "S",
-                0,
-                None,
-                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
-            )
-            .build();
-
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-
-        // Initial eval — solver fires once.
-        engine.eval(&module);
-
-        // Prepare a concurrent edit: change limit to 3mm (dirties the constraint).
-        let setup = engine
-            .prepare_concurrent_edit(limit_id, mm(3.0))
-            .expect("prepare_concurrent_edit must succeed after eval");
-
-        // Build a minimal ConcurrentEditResult using the setup's snapshot values.
-        let mut result = ConcurrentEditResult {
-            values: setup.values.clone(),
-            snapshot_values: setup.snapshot_values.clone(),
-            node_results: Vec::new(),
-            actual_eval_set: Vec::new(),
-            skipped: HashSet::new(),
-            resolved_params: HashMap::new(),
-            diagnostics: Vec::new(),
-        };
-
-        // resolve_concurrent_edit detects the dirty constraint and calls the solver.
-        engine.resolve_concurrent_edit(&setup, &mut result);
-
-        // The spy now holds the problem from the resolve_concurrent_edit call.
-        let guard = captured.lock().unwrap();
-        let problem = guard
-            .as_ref()
-            .expect("solver should have been called during resolve_concurrent_edit");
-
-        assert!(
-            Arc::ptr_eq(&engine.functions, &problem.functions),
-            "ResolutionProblem.functions must share the same Arc allocation as \
-            Engine.functions in the resolve_concurrent_edit path — proves the \
-            construction is O(1) Arc::clone, not a deep clone (task #2286)"
-        );
-        assert!(
-            Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
-            Arc::strong_count(&engine.functions)
+        assert_problem_shares_functions_arc(
+            "resolve_concurrent_edit",
+            |engine, limit_id| {
+                let setup = engine
+                    .prepare_concurrent_edit(limit_id, mm(3.0))
+                    .expect("prepare_concurrent_edit must succeed after eval");
+                let mut result = ConcurrentEditResult {
+                    values: setup.values.clone(),
+                    snapshot_values: setup.snapshot_values.clone(),
+                    node_results: Vec::new(),
+                    actual_eval_set: Vec::new(),
+                    skipped: HashSet::new(),
+                    resolved_params: HashMap::new(),
+                    diagnostics: Vec::new(),
+                };
+                engine.resolve_concurrent_edit(&setup, &mut result);
+            },
         );
     }
 
