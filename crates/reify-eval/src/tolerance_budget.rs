@@ -52,6 +52,16 @@ mod tests {
         assert_eq!(per_stage_tolerance(0.001, 1), 0.001 * 0.8);
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "n_stages must be")]
+    fn n_stages_zero_panics_in_debug() {
+        // n_stages=0 is a programmer error (1/0 = inf, tol^inf is nonsense).
+        // The debug_assert in step-7 will fire; until then this test fails the
+        // should_panic harness because no panic occurs.
+        per_stage_tolerance(0.001, 0);
+    }
+
     #[test]
     fn composition_within_budget() {
         // Safety invariant: composing N stages each at per_stage(tol, N) yields
