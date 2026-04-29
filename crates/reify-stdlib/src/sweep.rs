@@ -595,4 +595,51 @@ mod tests {
             "last sweep element should equal snapshot(m, [bind(j, length(1))])"
         );
     }
+
+    // ── Errored-mechanism short-circuit ───────────────────────────────────
+
+    fn axis_y_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    /// `sweep()` on an errored Mechanism returns `Value::Undef` — not a
+    /// partial List of pre-error snapshots. Mirrors
+    /// `snapshot_on_errored_mechanism_returns_undef` in snapshot.rs:
+    /// chained sweeps must reckon with the upstream error before
+    /// getting a plausible-looking List back.
+    #[test]
+    fn sweep_on_errored_mechanism_returns_undef() {
+        // Build an errored mechanism via parent-conflict — same recipe as
+        // snapshot.rs::snapshot_on_errored_mechanism_returns_undef.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_b, j_x.clone(), j_b]);
+        // Sanity: the setup actually produced an errored mechanism.
+        match &errored {
+            Value::Map(m) => assert_eq!(
+                m.get(&Value::String("error".to_string())),
+                Some(&Value::String("closed_chain".to_string())),
+                "setup precondition: errored mechanism has error='closed_chain'"
+            ),
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        }
+
+        // sweep() on the errored mechanism must yield Undef even
+        // though the pre-error bodies list contains a fully-formed
+        // body record.
+        assert!(
+            eval_builtin(
+                "sweep",
+                &[errored, j_x, angle_range_0_to_pi(), Value::Int(11)]
+            )
+            .is_undef(),
+            "sweep() on errored mechanism must yield Undef"
+        );
+    }
 }
