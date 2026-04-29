@@ -673,3 +673,85 @@ fn full_revolve_synthesis_keeps_per_edge_record_ordering_stable_across_dimension
         "per-edge record ordering must be identical across dimension changes"
     );
 }
+
+/// Misclassified-radial-edge counter test: a triangle profile where the
+/// bottom edge has a tiny axial component (Δz ≈ 2nm over 10mm run) that
+/// makes `|dot(edge_dir, +Z)| ≈ 2e-6` — just over `DIR_TOL = 1e-6`.
+///
+/// Profile vertices:
+///   p1 = (15mm, 0, 0)      — origin of bottom edge
+///   p2 = (25mm, 0, 2e-8m)  — bottom edge end; Δz = 2e-8, Δx = 10mm
+///   p3 = (20mm, 0, 10mm)   — apex
+///
+/// The bottom edge p1→p2 has `dot(edge_dir, +Z) ≈ 2e-6 / 0.01 = 2e-6`
+/// — just above `DIR_TOL = 1e-6`, so the synthesis post-pass classifies
+/// it as "slanted" (path 5) and won't synthesise a record.
+///
+/// Assertion: `unmatched_radial_edge_count == 3 - face_generated.len()`
+/// (every profile edge without a synthesised record must bump the counter).
+/// This is OCCT-version-agnostic: if OCCT covers the edge via Generated()
+/// both sides are 0; if it doesn't, both sides equal the gap. Either way
+/// the constraint holds once the increment logic is in place (step-4).
+///
+/// Before step-4, counter stays 0; if OCCT doesn't cover the edge the
+/// assertion fires (`0 != 1`), confirming the failing state. After step-4
+/// the assertion is fully meaningful.
+#[test]
+fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+
+    // Bottom edge: p1=(15mm,0,0) → p2=(25mm,0,2e-8). Δx=10mm, Δz=2e-8m.
+    // |dot(edge_dir, +Z)| ≈ 2e-8 / 0.01 = 2e-6 (just over DIR_TOL=1e-6).
+    let profile_id = kernel
+        .make_triangle_profile_at_for_test(
+            0.015, 0.0,    // p1: x=15mm, z=0mm
+            0.025, 2e-8,   // p2: x=25mm, z=2nm
+            0.020, 0.010,  // p3: x=20mm, z=10mm
+            0.0,           // cy=0 (XZ plane)
+        )
+        .expect("slightly-slanted triangle profile should build");
+
+    let (_result_handle, history) = kernel
+        .revolve_with_history(
+            profile_id,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            2.0 * std::f64::consts::PI,
+        )
+        .expect("revolve_with_history should succeed for slightly-slanted triangle");
+
+    eprintln!(
+        "misclassified-radial-edge test: unmatched_radial_edge_count={}, \
+         face_generated.len()={}, face_generated={:?}",
+        history.unmatched_radial_edge_count,
+        history.face_generated.len(),
+        history.face_generated
+    );
+
+    // Sanity: profile has 3 edges, result can have at most 3 face_generated records.
+    assert!(
+        history.face_generated.len() <= 3,
+        "triangle profile has 3 edges, cannot produce more than 3 face_generated records, \
+         got {}",
+        history.face_generated.len()
+    );
+
+    // Self-consistency: every edge without a synthesised record must have
+    // bumped the counter. This is OCCT-version-agnostic:
+    //   - OCCT covers the slightly-slanted edge → face_generated.len()==3,
+    //     counter==0, both sides 0.
+    //   - OCCT does NOT cover it → face_generated.len()==2, counter==1,
+    //     both sides 1.
+    assert_eq!(
+        history.unmatched_radial_edge_count as usize,
+        3 - history.face_generated.len(),
+        "every profile edge without a synthesised face_generated record must \
+         increment unmatched_radial_edge_count; counter={}, face_generated.len()={}",
+        history.unmatched_radial_edge_count,
+        history.face_generated.len()
+    );
+}
