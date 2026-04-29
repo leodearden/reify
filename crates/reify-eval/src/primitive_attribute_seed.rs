@@ -435,4 +435,153 @@ mod tests {
             right: GeometryHandleId(8),
         });
     }
+
+    // ─── step-10 — closed-extension contract pins per variant kind ───────────
+    //
+    // Per the design decision noted on the dispatch's `_ => Ok(())` arm:
+    // non-primitive variants are intentional no-ops. Per-op auto-population
+    // for them lands in PRD tasks 5 (sweeps), 7 (local features), and
+    // 8 (booleans). These pins exercise one representative variant per kind
+    // so an accidental dispatch widening (e.g. a future generic "shape with
+    // radius field" handler) is caught at the unit-test layer rather than
+    // surfacing as a downstream selector mis-resolution.
+
+    #[test]
+    fn seed_returns_ok_for_sweep_kind_extrude() {
+        // Extrude is the canonical sweep — task 5's scope. Per-op routing
+        // for sweeps will record cap (start/end) faces and side faces with
+        // distinct `Role` values; until then the seeder must leave the
+        // table untouched.
+        assert_seeds_nothing(&GeometryOp::Extrude {
+            profile: fake_target(),
+            distance: Value::Real(1.0),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_sweep_kind_pipe() {
+        assert_seeds_nothing(&GeometryOp::Pipe {
+            path: fake_target(),
+            radius: Value::Real(1.0),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_boolean_kind_difference() {
+        // Sibling pin to the Union test above — Difference and Intersection
+        // share the boolean-op no-op contract until task 8.
+        assert_seeds_nothing(&GeometryOp::Difference {
+            left: fake_target(),
+            right: GeometryHandleId(8),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_boolean_kind_intersection() {
+        assert_seeds_nothing(&GeometryOp::Intersection {
+            left: fake_target(),
+            right: GeometryHandleId(8),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_modify_kind_fillet() {
+        // Fillet is the canonical local feature — task 7's scope.
+        assert_seeds_nothing(&GeometryOp::Fillet {
+            target: fake_target(),
+            radius: Value::Real(0.001),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_modify_kind_chamfer() {
+        assert_seeds_nothing(&GeometryOp::Chamfer {
+            target: fake_target(),
+            distance: Value::Real(0.001),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_transform_kind_rotate() {
+        // Transforms are pure rigid-body; the v0.2 attribute model treats
+        // them as identity for face/edge identity. Task 7's propagation
+        // path will copy attributes through; the seeder is a no-op here.
+        assert_seeds_nothing(&GeometryOp::Rotate {
+            target: fake_target(),
+            axis: [0.0, 0.0, 1.0],
+            angle_rad: 0.5,
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_transform_kind_scale() {
+        assert_seeds_nothing(&GeometryOp::Scale {
+            target: fake_target(),
+            factor: 2.0,
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_pattern_kind_linear_pattern() {
+        // Patterns synthesize multiple copies; per-copy attribute attachment
+        // is task 7's scope (each instance becomes its own feature subtree).
+        assert_seeds_nothing(&GeometryOp::LinearPattern {
+            target: fake_target(),
+            direction: [1.0, 0.0, 0.0],
+            count: 3,
+            spacing: Value::Real(0.01),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_pattern_kind_circular_pattern() {
+        assert_seeds_nothing(&GeometryOp::CircularPattern {
+            target: fake_target(),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 4,
+            angle: Value::Real(std::f64::consts::FRAC_PI_2),
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_curve_kind_line_segment() {
+        // Curve constructors produce wires whose attributes are the source
+        // for sweep ops — but the wire itself doesn't carry face/edge
+        // attributes in the v0.2 model. The seeder is therefore a no-op.
+        assert_seeds_nothing(&GeometryOp::LineSegment {
+            x1: 0.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 1.0,
+            y2: 0.0,
+            z2: 0.0,
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_curve_kind_arc() {
+        assert_seeds_nothing(&GeometryOp::Arc {
+            center: [0.0, 0.0, 0.0],
+            radius: 1.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::PI,
+            axis: [0.0, 0.0, 1.0],
+        });
+    }
+
+    #[test]
+    fn seed_returns_ok_for_tube_kind() {
+        // Tube is composed via boolean_cut at the kernel layer; its
+        // attribute attachment depends on task 8's boolean propagation
+        // (or a Tube-specific compound classifier). Defer to task 8.
+        // This pin guarantees Tube is not accidentally swept into the
+        // primitive seeding arm just because it shares fields like
+        // `outer_r` / `inner_r` with the cylinder family.
+        assert_seeds_nothing(&GeometryOp::Tube {
+            outer_r: Value::Real(0.005),
+            inner_r: Value::Real(0.003),
+            height: Value::Real(0.010),
+        });
+    }
 }
