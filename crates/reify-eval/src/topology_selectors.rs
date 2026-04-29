@@ -1585,6 +1585,61 @@ mod tests {
         );
     }
 
+    /// Error-propagation contract: an `Err` returned from the predicate closure
+    /// surfaces verbatim from `filter_by_value` — the helper does not swallow or
+    /// transform closure errors.
+    ///
+    /// Stages one id with a non-`Value::Real` response so `expect_real` returns
+    /// `Err(QueryError::QueryFailed(...))`.  Asserts:
+    ///   (i)  the returned error message contains `"non-real value"` and the id,
+    ///   (ii) `kernel.query_many_calls() == 1` (the batched call fired before the
+    ///        predicate loop, so the error is a predicate error, not a kernel error),
+    ///   (iii) `kernel.query_calls() == 0` (no per-element fallback).
+    #[test]
+    fn filter_by_value_propagates_predicate_error() {
+        let id = GeometryHandleId(1010);
+        let kernel = CountingKernel::new()
+            .with_response(id, Value::String("not real".into()));
+
+        let err = filter_by_value(
+            &kernel,
+            &[id],
+            "test_label",
+            GeometryQuery::EdgeLength,
+            |id, value| {
+                let _ = expect_real("EdgeLength", id, value)?;
+                Ok(true)
+            },
+        )
+        .expect_err("filter_by_value must propagate predicate Err");
+
+        match err {
+            QueryError::QueryFailed(ref msg) => {
+                assert!(
+                    msg.contains("non-real value"),
+                    "error must mention 'non-real value', got: {:?}",
+                    msg
+                );
+                assert!(
+                    msg.contains("1010"),
+                    "error must name the id (1010), got: {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "query_many must have fired (predicate error happens after batched query)"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "per-element query must not be called"
+        );
+    }
+
     /// Regression: dedup must apply to the full candidate set, not only matching
     /// ids.  Interleaves a matching id with a non-matching id (both duplicated)
     /// to verify that the dedup gate (`seen.insert`) is evaluated unconditionally
