@@ -118,6 +118,95 @@ fn compile_field_sampled_with_well_formed_config_compiles_clean() {
     }
 }
 
+// ── Task 2341 step-7: sampled field config validation negative paths ─────────
+
+#[test]
+fn compile_field_sampled_rejects_missing_data_key() {
+    // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when one of the
+    // three required keys is absent, exactly one error per missing key is
+    // emitted. This source provides `grid` and `interpolation` but omits the
+    // required `data` key — so we expect exactly one error whose message
+    // mentions `data`.
+    let module = compile_source(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" interpolation = "Linear" } }"#,
+    );
+
+    // Only count errors that reference the missing `data` key — there should
+    // be exactly one such diagnostic. We deliberately match on the message
+    // substring rather than a dedicated DiagnosticCode because the missing-key
+    // condition is a generic shape-validation error, not a user-facing
+    // diagnostic-code variant.
+    let data_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("'data'") || d.message.contains("`data`"))
+        .collect();
+    assert_eq!(
+        data_errs.len(),
+        1,
+        "expected exactly one error mentioning the missing `data` key, got {}: {:?}",
+        data_errs.len(),
+        data_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        data_errs[0].message.contains("missing")
+            || data_errs[0].message.contains("required"),
+        "expected the error message to indicate `data` is missing/required, got: {}",
+        data_errs[0].message
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_unknown_key() {
+    // Pins the v0.2 behavior: keys outside the closed set
+    // {grid, interpolation, data} produce an error mentioning both `unknown`
+    // and the offending key name. The other three required keys are still
+    // present in the source so the missing-key check from step-8 doesn't fire
+    // and confuse the diagnostic count.
+    let module = compile_source(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" interpolation = "Linear" data = [0.0, 1.0, 2.0] resolution = 100 } }"#,
+    );
+
+    let unknown_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("unknown") && d.message.contains("resolution"))
+        .collect();
+    assert_eq!(
+        unknown_errs.len(),
+        1,
+        "expected exactly one 'unknown' error mentioning `resolution`, got {}: {:?}",
+        unknown_errs.len(),
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_duplicate_grid_key() {
+    // Pins the v0.2 behavior: duplicate keys (e.g. two `grid = ...` lines)
+    // produce a duplicate-key error referencing the offending key. The other
+    // two required keys are present so missing-key errors do not fire.
+    let module = compile_source(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" grid = "RegularGrid1" interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    let dup_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("duplicate") && d.message.contains("grid"))
+        .collect();
+    assert_eq!(
+        dup_errs.len(),
+        1,
+        "expected exactly one 'duplicate' error mentioning `grid`, got {}: {:?}",
+        dup_errs.len(),
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ── Step 17: compose type check valid ───────────────────────────────
 
 #[test]
