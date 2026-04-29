@@ -397,6 +397,36 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
     );
 }
 
+#[test]
+fn get_mechanism_descriptors_filters_intermediate_body_chain_cells() {
+    // Step 1 RED: HAPPY_MECHANISM_SOURCE has m0/m1/m2 where m0 is consumed by
+    // body(m0,...) → m1, and m1 is consumed by body(m1,...) → m2.  Only the
+    // terminal mechanism (m2) should appear in the returned descriptors.
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "only the terminal mechanism should be returned; got {:?}",
+        descriptors.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        descriptors[0].name, "m2",
+        "the terminal mechanism should be m2; got {:?}",
+        descriptors[0].name
+    );
+    assert_eq!(
+        descriptors[0].bodies_count, 2,
+        "m2 should have bodies_count=2; got {}",
+        descriptors[0].bodies_count
+    );
+}
+
 /// Source for step-11: 1-body mechanism where y_axis is bound to param y_pos.
 /// `snapshot(m1, [bind(y_axis, y_pos)])` — y_pos is a param → driving param
 /// resolution should yield driving_param_cell_id = Some("Kinematic.y_pos").
