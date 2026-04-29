@@ -168,6 +168,20 @@ structure Kinematic {
 }
 "#;
 
+/// A closed-chain mechanism: j_x is used as the "at" joint for both solid_a
+/// and solid_b, creating a parent-conflict that stamps `error="closed_chain"`
+/// on the resulting mechanism Map (step 9).
+const CLOSED_CHAIN_SOURCE: &str = r#"
+structure Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_x, j_a)
+    let m2  = body(m1, "solid_b", j_x, j_b)
+}
+"#;
+
 /// Helper: create a fresh empty EngineSession.
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -272,6 +286,33 @@ fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
     assert!(
         descriptors.is_empty(),
         "bracket has no mechanisms; expected empty list, got {:?}",
+        descriptors
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_filters_errored_mechanisms() {
+    // Step-9 RED / Step-10 GREEN: load a closed-chain mechanism (j_x used as
+    // "at" for both solid_a and solid_b).  When `body(m1, "solid_b", j_x, j_b)`
+    // is evaluated, j_x is already registered as the "at" joint of solid_a in
+    // m1, so the mechanism stdlib stamps `error="closed_chain"` on m2 (the
+    // 2-body result).  m0 (0 bodies) and m1 (1 body) are valid intermediate
+    // mechanism Maps without an error key and may legitimately appear.
+    //
+    // What MUST be true: no descriptor with `bodies_count == 2` appears in the
+    // list — the errored mechanism Map must be filtered out by the `error` key
+    // check (engine.rs, `get_mechanism_descriptors`).
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(CLOSED_CHAIN_SOURCE, "kinematic")
+        .expect("load_from_source should not fail for closed-chain (error is at eval, not compile)");
+
+    let descriptors = session.get_mechanism_descriptors();
+    assert!(
+        !descriptors.iter().any(|d| d.bodies_count == 2),
+        "errored (closed-chain) mechanism (bodies_count=2) must be filtered out; got {:?}",
         descriptors
     );
 }
