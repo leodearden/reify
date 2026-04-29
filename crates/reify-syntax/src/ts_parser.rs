@@ -3626,10 +3626,10 @@ mod tests {
         for decl in &module2.declarations {
             if let Declaration::Structure(s) = decl {
                 for member in &s.members {
-                    if let MemberDecl::Let(l) = member {
-                        if let ExprKind::EnumAccess { type_name, variant } = &l.value.kind {
-                            accesses.push((type_name.clone(), variant.clone()));
-                        }
+                    if let MemberDecl::Let(l) = member
+                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
+                    {
+                        accesses.push((type_name.clone(), variant.clone()));
                     }
                 }
             }

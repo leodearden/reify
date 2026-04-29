@@ -529,6 +529,7 @@ mod tests {
 
     /// Build a residual+jacobian closure for a 1-D linear residual r(x) = x - target.
     /// J column shape: [0,0,0, 1,0,0] (linear in x).
+    #[allow(clippy::type_complexity)] // test helper; unwrapping into a type alias would reduce clarity
     fn linear_1d_closure(
         target: f64,
     ) -> impl FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {

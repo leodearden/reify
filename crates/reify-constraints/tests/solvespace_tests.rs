@@ -1,7 +1,5 @@
 //! Tests for SolveSpaceSolver — geometric constraint solving via libslvs FFI.
 
-use std::sync::Arc;
-
 use reify_constraints::SolveSpaceSolver;
 use reify_test_support::*;
 use reify_types::{

@@ -220,7 +220,7 @@ mod tests {
             "cluster registration must NOT insert into the regular names map"
         );
         assert!(
-            scope.names.get("head").is_none(),
+            !scope.names.contains_key("head"),
             "names map must remain empty after cluster registration"
         );
     }

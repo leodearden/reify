@@ -51,7 +51,7 @@ fn boolean_fuse_with_history_reports_per_parent_face_and_edge_records() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
 
     // Box A: 10mm cube centered at origin.
     let left = kernel

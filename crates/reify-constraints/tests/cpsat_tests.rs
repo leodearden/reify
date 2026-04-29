@@ -1,7 +1,5 @@
 //! Tests for the CpSatSolver — discrete/logical constraint solver.
 
-use std::sync::Arc;
-
 use reify_constraints::CpSatSolver;
 use reify_test_support::builders::*;
 use reify_test_support::values::*;

@@ -283,7 +283,7 @@ fn engine_build_records_topology_attributes_for_multi_realization_module() {
     // 6 box faces + 12 box edges + ≥1 sphere face = ≥19 entries.
     // Sphere edge counts are version-dependent (0+).
     assert!(
-        table_len >= 6 + 12 + 1,
+        table_len > 6 + 12,
         "topology_attribute_table must accumulate entries across both realizations; \
          expected ≥19 (6 box faces + 12 box edges + ≥1 sphere face), got {table_len} — \
          the table was likely reset between realizations within a single build"

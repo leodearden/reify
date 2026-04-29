@@ -1,7 +1,5 @@
 //! Tests for SolverRegistry — multi-domain constraint dispatch.
 
-use std::sync::Arc;
-
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{

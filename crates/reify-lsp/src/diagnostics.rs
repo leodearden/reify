@@ -1376,7 +1376,7 @@ structure S {
     /// discard the freshness state we just set up).
     ///
     /// `test-instrumentation` feature is enabled in dev-deps (Cargo.toml line 29).
-    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[cfg(any(test, feature = "test-support"))]
     fn build_eval_state_with_failed_cell(cell_id: ValueCellId) -> EvalState {
         let source = reify_test_support::bracket_source();
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
@@ -1407,7 +1407,7 @@ structure S {
     ///
     /// This test is intentionally RED before step-18 adds the freshness-diagnostic
     /// emission block to `compute_diagnostics_with_state`.
-    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[cfg(any(test, feature = "test-support"))]
     #[test]
     fn compute_diagnostics_with_state_emits_failed_diagnostic_for_failed_cell() {
         // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
@@ -1484,7 +1484,7 @@ structure S {
     /// let-binding evaluation loop) — not `param` cells.  Hence we use a
     /// dedicated let-chain source rather than bracket_source (where `width` is
     /// a param and would not be affected by `set_panic_on_eval`).
-    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[cfg(any(test, feature = "test-support"))]
     #[test]
     fn compute_diagnostics_with_state_emits_pending_diagnostic_for_pending_cell() {
         // Source with a let-chain: S.derived depends on S.base.

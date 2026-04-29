@@ -3,8 +3,6 @@
 //! Tests the solver through the ConstraintSolver trait object interface,
 //! using reify-test-support helpers for expression construction.
 
-use std::sync::Arc;
-
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
 use reify_types::{

@@ -111,7 +111,7 @@ fn find_named_member_span_descends_into_match_arm_decl_group() {
     // RED until walk_members_depth is taught about the new variant (step-8).
     let members = vec![MemberDecl::MatchArmDeclGroup(two_arm_head_group())];
     // Both arms declare sub named "head"; the walker should find the first one.
-    let result = find_named_member_span(&members, "head");
+    let _result = find_named_member_span(&members, "head");
     // Note: find_named_member_span finds Param and Let by name; Sub is not
     // directly matched by name. The test verifies traversal happens at all —
     // that no panic occurs and that future Sub-name lookup extensions work.

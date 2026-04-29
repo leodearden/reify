@@ -1877,6 +1877,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)] // intentional: exercises Clone impl on a Copy type
     fn role_clone_preserves_identity() {
         let r = Role::Cap(CapKind::Bottom);
         let s = r;
@@ -1912,6 +1913,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)] // intentional: exercises Clone impl on a Copy type
     fn cap_kind_start_and_end_clone_round_trips() {
         let s = CapKind::Start;
         let s_copy = s;
@@ -1974,6 +1976,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)] // intentional: exercises Clone impl on a Copy type
     fn role_revolved_face_and_axis_face_clone_round_trips() {
         let r = Role::RevolvedFace;
         let r_copy = r;

@@ -33,12 +33,12 @@ fn find_forall_constraint_span(
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
-            if s.name == structure_name {
-                for m in &s.members {
-                    if let reify_syntax::MemberDecl::ForallConstraint(f) = m {
-                        return f.span;
-                    }
+        if let reify_syntax::Declaration::Structure(s) = decl
+            && s.name == structure_name
+        {
+            for m in &s.members {
+                if let reify_syntax::MemberDecl::ForallConstraint(f) = m {
+                    return f.span;
                 }
             }
         }
@@ -56,12 +56,12 @@ fn find_forall_connect_span(
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
-            if s.name == structure_name {
-                for m in &s.members {
-                    if let reify_syntax::MemberDecl::ForallConnect(f) = m {
-                        return f.span;
-                    }
+        if let reify_syntax::Declaration::Structure(s) = decl
+            && s.name == structure_name
+        {
+            for m in &s.members {
+                if let reify_syntax::MemberDecl::ForallConnect(f) = m {
+                    return f.span;
                 }
             }
         }
