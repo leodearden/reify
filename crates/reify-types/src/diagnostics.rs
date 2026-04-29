@@ -312,7 +312,7 @@ pub enum DiagnosticCode {
     /// yet wired; today the warning is the only observable effect).
     ///
     /// Detection is name-based against the canonical seven (case-sensitive) — see
-    /// [`crates/reify-compiler/src/geometry_traits_inference.rs`]'s
+    /// [`crates/reify-compiler/src/geometry_traits.rs`]'s
     /// `is_geometry_marker_trait` helper and the design decision in task 2321.
     ///
     /// The PRD-prose mnemonic for this code is `W_TRAIT_USER_ASSERTED`
