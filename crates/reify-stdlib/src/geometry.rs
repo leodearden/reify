@@ -3174,7 +3174,6 @@ mod tests {
     /// Using a w-only quaternion makes r_norm_sq = w² trivially predictable,
     /// avoiding multi-component cancellation that could perturb the actual
     /// norm computed by the implementation.
-    #[cfg(test)]
     fn assert_quat_norm_sq_outcome(r_norm_sq: f64, expect_undef: bool) {
         let w = r_norm_sq.sqrt();
         let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
