@@ -7,6 +7,7 @@ mod connect;
 mod constants;
 mod entity;
 mod expr;
+mod forall_elaborate;
 mod functions;
 mod geometry;
 mod geometry_boolean;
@@ -43,6 +44,8 @@ pub(crate) use conformance::*;
 pub(crate) use connect::*;
 pub(crate) use entity::*;
 pub(crate) use expr::*;
+#[allow(unused_imports)]
+pub(crate) use forall_elaborate::*;
 #[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
