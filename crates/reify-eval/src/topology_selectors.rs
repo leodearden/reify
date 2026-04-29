@@ -1513,6 +1513,61 @@ mod tests {
         );
     }
 
+    // ─── filter_by_value tests ───────────────────────────────────────────────
+
+    /// Happy-path: `filter_by_value` returns only the ids whose predicate
+    /// returns `true`, issues exactly one `query_many` call, and never calls
+    /// the per-element `query` path.
+    ///
+    /// Three edges staged with Real values 0.001 / 0.002 / 0.003.
+    /// The predicate selects the middle id (0.0015 ≤ v ≤ 0.0025).
+    ///
+    /// This test will fail to compile until `filter_by_value` is added
+    /// (step-2 impl), satisfying the TDD "red" requirement.  It also pins
+    /// that the predicate closure receives `&Value` — matching the `expect_real`
+    /// signature change in step-2.
+    #[test]
+    fn filter_by_value_returns_predicate_passing_subset_via_single_query_many() {
+        let ids = vec![
+            GeometryHandleId(1001),
+            GeometryHandleId(1002),
+            GeometryHandleId(1003),
+        ];
+        let kernel = CountingKernel::new()
+            .with_edges(ids.clone())
+            .with_response(ids[0], Value::Real(0.001))
+            .with_response(ids[1], Value::Real(0.002))
+            .with_response(ids[2], Value::Real(0.003));
+
+        let result = filter_by_value(
+            &kernel,
+            &ids,
+            "test_label",
+            GeometryQuery::EdgeLength,
+            |id, value| {
+                let x = expect_real("EdgeLength", id, value)?;
+                Ok(x >= 0.0015 && x <= 0.0025)
+            },
+        )
+        .expect("filter_by_value should succeed");
+
+        assert_eq!(
+            result,
+            vec![ids[1]],
+            "only the middle id (value 0.002) should pass the predicate"
+        );
+        assert_eq!(
+            kernel.query_many_calls(),
+            1,
+            "filter_by_value must issue exactly one query_many call"
+        );
+        assert_eq!(
+            kernel.query_calls(),
+            0,
+            "filter_by_value must not fall back to per-element query"
+        );
+    }
+
     /// Regression: dedup must apply to the full candidate set, not only matching
     /// ids.  Interleaves a matching id with a non-matching id (both duplicated)
     /// to verify that the dedup gate (`seen.insert`) is evaluated unconditionally
