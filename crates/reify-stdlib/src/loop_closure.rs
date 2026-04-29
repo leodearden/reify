@@ -594,6 +594,113 @@ mod tests {
         assert!(super::per_joint_jacobian_local(&Value::Real(0.5)).is_none());
     }
 
+    // ── chain_jacobian_fd tests ──────────────────────────────────────────
+
+    fn assert_columns_close(
+        actual: &[[f64; 6]],
+        expected: &[[f64; 6]],
+        tol: f64,
+        label: &str,
+    ) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label}: column count mismatch"
+        );
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            for k in 0..6 {
+                assert!(
+                    (a[k] - e[k]).abs() < tol,
+                    "{label}: col[{i}][{k}] expected {}, got {} (diff {})",
+                    e[k],
+                    a[k],
+                    (a[k] - e[k]).abs(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chain_jacobian_fd_single_prismatic_matches_analytic() {
+        let chain = vec![prismatic_x()];
+        let analytic = super::per_joint_jacobian_local(&chain[0]).unwrap();
+        let cols = super::chain_jacobian_fd(&chain, &[0.5], &[0], 1e-6).expect("cols");
+        assert_eq!(cols.len(), 1);
+        assert_columns_close(&cols, &[analytic], 1e-7, "single_prismatic");
+    }
+
+    #[test]
+    fn chain_jacobian_fd_single_revolute_matches_analytic() {
+        let chain = vec![revolute_z()];
+        let analytic = super::per_joint_jacobian_local(&chain[0]).unwrap();
+        let cols = super::chain_jacobian_fd(&chain, &[0.0], &[0], 1e-6).expect("cols");
+        assert_eq!(cols.len(), 1);
+        assert_columns_close(&cols, &[analytic], 1e-7, "single_revolute");
+    }
+
+    #[test]
+    fn chain_jacobian_fd_two_joint_returns_two_columns() {
+        let chain = vec![prismatic_x(), revolute_z()];
+        let cols = super::chain_jacobian_fd(
+            &chain,
+            &[0.5, 0.0],
+            &[0, 1],
+            1e-6,
+        )
+        .expect("cols");
+        assert_eq!(cols.len(), 2);
+        for col in &cols {
+            for v in col.iter() {
+                assert!(v.is_finite(), "expected finite, got {col:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn chain_jacobian_fd_out_of_range_returns_none() {
+        let chain = vec![prismatic_x()];
+        assert!(super::chain_jacobian_fd(&chain, &[0.5], &[5], 1e-6).is_none());
+    }
+
+    #[test]
+    fn chain_jacobian_fd_zero_eps_returns_none() {
+        let chain = vec![prismatic_x()];
+        assert!(super::chain_jacobian_fd(&chain, &[0.5], &[0], 0.0).is_none());
+    }
+
+    #[test]
+    fn chain_jacobian_fd_undef_chain_returns_none() {
+        let mut bogus = std::collections::BTreeMap::new();
+        bogus.insert(
+            Value::String("kind".to_string()),
+            Value::String("bogus".to_string()),
+        );
+        let chain = vec![Value::Map(bogus)];
+        assert!(super::chain_jacobian_fd(&chain, &[0.5], &[0], 1e-6).is_none());
+    }
+
+    #[test]
+    fn chain_jacobian_fd_two_joint_only_second_free_axis_aligned() {
+        // chain = [prismatic_x at 0.5m, revolute_z at 0]
+        // free index 1 (revolute_z) → column should be axis-aligned around Z
+        // (angular ≈ [0,0,1], linear close to zero — exact form depends on
+        // the SE(3) chain's left-Jacobian at the trunk; we only assert finite,
+        // axis-aligned structure here).
+        let chain = vec![prismatic_x(), revolute_z()];
+        let cols = super::chain_jacobian_fd(&chain, &[0.5, 0.0], &[1], 1e-6).expect("cols");
+        assert_eq!(cols.len(), 1);
+        let col = cols[0];
+        for v in col.iter() {
+            assert!(v.is_finite(), "expected finite, got {col:?}");
+        }
+        // Angular: dominant Z component (within 1e-4 of unity at small angle).
+        assert!(
+            (col[2] - 1.0).abs() < 1e-4,
+            "expected angular Z ≈ 1, got {}",
+            col[2]
+        );
+    }
+
     #[test]
     fn joint_range_midpoint_non_map_returns_none() {
         assert!(super::joint_range_midpoint(&Value::Real(0.5)).is_none());
