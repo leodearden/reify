@@ -80,6 +80,14 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             {
                 return Some(Value::Undef);
             }
+            // Errored-mechanism short-circuit (mirrors snapshot.rs's
+            // snapshot arm and body_id_of in mechanism.rs). Layered
+            // AFTER the kind-guard so an unrelated error-bearing Map
+            // without kind="mechanism" still hits the kind-mismatch
+            // guard, not this short-circuit.
+            if mech_map.contains_key(&Value::String("error".to_string())) {
+                return Some(Value::Undef);
+            }
             let expected_dim = match driving_joint_kind(&args[1]) {
                 Some(d) => d,
                 None => return Some(Value::Undef),
