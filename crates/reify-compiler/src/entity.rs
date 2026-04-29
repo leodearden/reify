@@ -1918,6 +1918,9 @@ pub(crate) fn compile_entity(
         // lexicographic key order — guaranteeing deterministic iteration of
         // `TopologyTemplate::match_arm_groups` across compiles.
         match_arm_groups: scope.match_arm_groups.values().cloned().collect(),
+        // task 2629: capture is wired in step-5; step-4 only adds the field
+        // and initializes it empty here.
+        forall_templates: Vec::new(),
     }
 }
 
