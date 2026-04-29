@@ -158,6 +158,17 @@ pub struct ModuleCrossRefs {
 ///
 /// Factored out of `ItemDoc` to eliminate per-variant repetition of the five
 /// fields that are common to all declaration kinds.
+///
+/// Direct `Default::default()` construction is intentionally not supported —
+/// every `ItemHeader` must be built with explicit field values to keep callers
+/// aligned with the `ItemDoc { header, kind }` construction pattern. `ItemDoc`
+/// itself has no meaningful default (no obvious `ItemKind`), so neither does
+/// its header.
+///
+/// ```compile_fail
+/// use reify_doc::model::ItemHeader;
+/// let _ = ItemHeader::default();
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ItemHeader {
     pub name: String,
