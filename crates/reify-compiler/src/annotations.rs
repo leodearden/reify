@@ -557,6 +557,42 @@ mod tests {
         );
     }
 
+    /// A name resolvable only via the `functions` list (not in scope) is accepted.
+    ///
+    /// Exercises the second lookup branch in `validate_solver_hint_collections`:
+    /// `scope.resolve` returns `None` (scope is empty) but
+    /// `functions.iter().any(|f| f.name == *name)` succeeds because the function
+    /// list contains an entry whose name matches the hint collection.  This
+    /// confirms that the scope and function lookups are independent fallbacks.
+    #[test]
+    fn validate_collections_accepts_name_via_functions() {
+        let hints = vec![make_hint(SolverHintKind::DiscreteSet, "fn_collection")];
+        let scope = CompilationScope::new("Test");
+        let stub_fn = CompiledFunction {
+            name: "fn_collection".to_string(),
+            is_pub: false,
+            params: vec![],
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: reify_types::CompiledExpr::literal(
+                    reify_types::Value::Real(0.0),
+                    Type::Real,
+                ),
+            },
+            content_hash: reify_types::ContentHash::of_str("fn_collection_stub"),
+            annotations: vec![],
+        };
+        let functions = &[stub_fn];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "name in functions should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
     /// An unresolvable discrete_set collection name emits an Error diagnostic.
     #[test]
     fn validate_collections_errors_on_unresolvable_name() {
