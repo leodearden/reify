@@ -719,4 +719,61 @@ mod tests {
         );
         assert!(diagnostics.is_empty());
     }
+
+    /// Regression pin for the feature_id-only contract (plan #2704).
+    ///
+    /// A query with `feature_id=Some` but both positional fields
+    /// (`user_label` and `role_and_index`) `None` is contractually invalid
+    /// per [`AttributeQuery`]'s docs. The resolver intentionally routes such
+    /// queries through the all-None positional branch, returning `Unresolved`
+    /// with a `TopologyAttributeStale` "matched 0 sub-shapes" diagnostic —
+    /// the same outcome as an all-three-fields-None query.
+    ///
+    /// This is a **behavior pin**, not a doc-string assertion: it locks the
+    /// documented contract so a future maintainer cannot silently change the
+    /// all-None positional check to also consult `feature_id` and divert
+    /// feature_id-only queries to the FallbackToComputed arm (which would
+    /// misclassify a caller bug as an imported-geometry signal).
+    #[test]
+    fn feature_id_only_query_is_treated_as_all_none_positional_miss() {
+        // Populate the table with two entries so we are NOT in the
+        // imported-geometry FallbackToComputed arm.
+        // h(90) is attributed to the default feature (feat()).
+        // h(91) is attributed to a different feature — confirming that
+        // feature_id is NOT consulted by the all-None positional pre-pass
+        // even when some candidates would match the filter.
+        let other_feature = FeatureId::new("OtherFeature");
+        let mut table = TopologyAttributeTable::default();
+        table.record(h(90), attr(Role::Side, 0, None));
+        table.record(h(91), attr_for(other_feature, Role::Side, 1, None));
+        let candidates = [h(90), h(91)];
+
+        // feature_id=Some, but both positional fields are None.
+        // This is a contract-illegal query per AttributeQuery's docs.
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: None,
+            feature_id: Some(feat()),
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+
+        // The all-None positional check fires regardless of feature_id, so
+        // the resolver returns Unresolved with the standard zero-match
+        // diagnostic. feature_id alone does not supply a query.
+        assert_eq!(
+            result,
+            AttributeResolution::Unresolved,
+            "feature_id-only query must be routed through the all-None positional branch"
+        );
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 0 sub-shapes"),
+            "message should contain 'matched 0 sub-shapes', got: {}",
+            diag.message
+        );
+    }
 }
