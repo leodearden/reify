@@ -685,7 +685,7 @@ pub(crate) fn compile_entity(
             // declaration is treated as a user assertion that bypasses any future runtime
             // conformance check (PRD geometry-traits.md task 6 / W_TRAIT_USER_ASSERTED).
             // Detection is name-based (case-sensitive) — see design decision §1 of task 2321.
-            if crate::geometry_traits_inference::is_geometry_marker_trait(&trait_bound.name) {
+            if crate::geometry_traits::is_geometry_marker_trait(&trait_bound.name) {
                 diagnostics.push(
                     Diagnostic::warning(format!(
                         "geometry trait '{}' on '{}' is treated as a user assertion; runtime conformance check is suppressed",
