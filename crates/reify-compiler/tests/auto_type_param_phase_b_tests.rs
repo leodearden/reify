@@ -32,9 +32,57 @@
 //! `SimpleConstraintChecker`. Templates are built via `TopologyTemplateBuilder`
 //! with literal constraint expressions (the mock ignores expr content).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use reify_compiler::auto_type_param::*;
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
-use reify_types::{CompiledExpr, CompiledFunction, ConstraintNodeId, Satisfaction, Value};
+use reify_types::{
+    CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
+    ConstraintNodeId, ConstraintResult, Satisfaction, Value,
+};
+
+/// Stateful mock whose verdict is keyed by *call number*, not by
+/// `ConstraintNodeId`. Used to detect single-broadcast regressions in
+/// `filter_feasible_candidates` — see test below.
+struct StatefulMockConstraintChecker {
+    /// Pre-set verdicts, one per expected `check()` invocation (indexed by call
+    /// number). `check()` panics if the call count exceeds the vec length,
+    /// which catches "too few calls" just as well as "too many calls".
+    results: Vec<Satisfaction>,
+    call_count: AtomicUsize,
+}
+
+impl StatefulMockConstraintChecker {
+    fn new(results: Vec<Satisfaction>) -> Self {
+        Self {
+            results,
+            call_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Return the number of times `check()` has been invoked so far.
+    fn calls(&self) -> usize {
+        self.call_count.load(Ordering::SeqCst)
+    }
+}
+
+impl ConstraintChecker for StatefulMockConstraintChecker {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+        // Intentional panic on out-of-bounds: the test pre-sets exactly as many
+        // verdicts as expected calls; more calls than expected is a bug.
+        let satisfaction = self.results[n];
+        input
+            .constraints
+            .iter()
+            .map(|(id, _)| ConstraintResult {
+                id: id.clone(),
+                satisfaction,
+                diagnostics: ConstraintDiagnostics::default(),
+            })
+            .collect()
+    }
+}
 
 // ─── step-1: empty input is a precondition violation (debug_assert!) ─────────
 
@@ -341,5 +389,86 @@ fn filter_partitions_mixed_candidates_into_accepted_and_rejected() {
             ],
         },
         "all candidates rejected: rejected vec must contain all three in input order"
+    );
+}
+
+// ─── step-17: checker is invoked independently per candidate (not broadcast) ─
+
+/// `filter_feasible_candidates` must invoke `constraint_checker.check()` once
+/// per candidate, not once for all candidates.
+///
+/// **Why existing Phase B tests cannot distinguish per-candidate from broadcast:**
+/// All earlier tests use `MockConstraintChecker`, which returns a verdict keyed
+/// on `ConstraintNodeId`. In Phase B, every candidate receives a byte-identical
+/// `ConstraintInput` (same constraint list, same empty `ValueMap`), so a
+/// hypothetical regression that replaced the `for candidate in candidates` loop
+/// with a single broadcast call — `let r = checker.check(&input); for c in
+/// candidates { use r }` — would produce identical results and pass every
+/// existing test. The per-candidate contract is therefore unobservable under
+/// the current fixture.
+///
+/// **Asymmetric load-bearing assertion:**
+/// This test uses `StatefulMockConstraintChecker`, whose verdict is keyed by
+/// *call number* rather than `ConstraintNodeId`:
+/// - Call #1 → `Violated` → candidate "A" goes to `rejected`.
+/// - Call #2 → `Satisfied` → candidate "B" goes to `accepted`.
+///
+/// A single-broadcast regression would call `check()` only once. Both
+/// candidates would then receive `Violated`, yielding
+/// `Empty { rejected: [A, B] }` instead of the expected
+/// `Feasible { accepted: [B], rejected: [A] }`. The asymmetric partition is
+/// what makes the regression observable.
+///
+/// The `checker.calls() == 2` assertion additionally pins the exact invocation
+/// count: it would catch a regression that skips one candidate entirely.
+///
+/// **Phase C preparation:** When the upcoming type-substitution pass lands
+/// (substituting `Type::TypeParam(T)` → `Type::StructureRef(candidate)`), each
+/// candidate's `ConstraintInput` will differ in its `ValueMap`. The
+/// `StatefulMockConstraintChecker` primitive developed here will be useful for
+/// future Phase C regression tests, at which point promotion to
+/// `reify_test_support::mocks` is justified.
+#[test]
+fn filter_invokes_checker_independently_per_candidate() {
+    let cnid = ConstraintNodeId::new("Bearing", 0);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("Bearing")
+        .constraint("Bearing", 0, None, expr)
+        .build();
+
+    // Call #1 → Violated (candidate "A" rejected)
+    // Call #2 → Satisfied (candidate "B" accepted)
+    let checker = StatefulMockConstraintChecker::new(vec![
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+    ]);
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(
+        &["A".to_string(), "B".to_string()],
+        &template,
+        &checker,
+        functions,
+    );
+
+    // The asymmetric partition is the load-bearing assertion: a single-broadcast
+    // regression would yield Empty { rejected: [A, B] }.
+    assert_eq!(
+        result,
+        FeasibilityResult::Feasible {
+            accepted: vec!["B".to_string()],
+            rejected: vec![RejectedCandidate {
+                name: "A".to_string(),
+                violated_constraints: vec![cnid],
+            }],
+        },
+        "per-candidate check: A must be rejected (call #1=Violated), B accepted (call #2=Satisfied)"
+    );
+
+    // Explicitly pin the invocation count: exactly 2 calls, one per candidate.
+    assert_eq!(
+        checker.calls(),
+        2,
+        "check() must be called exactly once per candidate (2 candidates → 2 calls)"
     );
 }
