@@ -344,6 +344,29 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
+    /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
+    /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
+    /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
+    /// invariant is violated for the supplied `AttributeQuery`).
+    ///
+    /// Canonical message form:
+    /// `"topology-attribute selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`.
+    ///
+    /// Two labels accompany the warning where information is available:
+    ///   - a primary label at the selector call site (`"selector call"`); and
+    ///   - (optionally, when an originating `source_span` becomes available on
+    ///     `TopologyAttribute` in a later task) a secondary label at the
+    ///     originating-feature span (`"feature originally produced here"`).
+    /// Today only the primary label is emitted because `TopologyAttribute` carries
+    /// no `source_span` field.
+    ///
+    /// Coexists with [`TopologyTagStale`] during the v0.1→v0.2 migration window
+    /// (see PRD `docs/prds/v0_2/persistent-naming-v2.md`). Distinct codes let
+    /// test assertions and downstream tooling distinguish a v0.1 selector failure
+    /// from a v0.2 attribute-resolver failure during the migration window.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_STALE`.
+    TopologyAttributeStale,
     /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
     ///
     /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
