@@ -195,7 +195,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{CapKind, FeatureId};
+    use reify_types::{CapKind, FeatureId, Severity};
 
     fn span() -> SourceSpan {
         SourceSpan::empty(0)
@@ -309,6 +309,46 @@ mod tests {
             "missing user_label falls through to role/idx branch"
         );
         assert!(diagnostics.is_empty());
+    }
+
+    /// step-9 — zero-match unresolved diagnostic emission.
+    ///
+    /// At least one candidate has an attribute entry (so we are NOT in the
+    /// imported-geometry fallback case), but the query asks for a role/idx
+    /// that no candidate matches. The resolver returns Unresolved and emits
+    /// exactly one TopologyAttributeStale Warning with a primary label at
+    /// `selector_span` reading "selector call" and a message containing
+    /// "matched 0 sub-shapes".
+    #[test]
+    fn unresolved_with_diagnostic_when_zero_match_but_entries_exist() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(h(50), attr(Role::Side, 0, None));
+        let candidates = [h(50)];
+        let selector_span = SourceSpan::new(10, 20);
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Cap(CapKind::Top), 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, selector_span, &mut diagnostics);
+        assert_eq!(result, AttributeResolution::Unresolved);
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, Severity::Warning);
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 0 sub-shapes"),
+            "message should contain 'matched 0 sub-shapes', got: {}",
+            diag.message
+        );
+        // Primary label at selector_span with the canonical "selector call"
+        // text (mirrors resolve_unique_by_tag).
+        assert!(!diag.labels.is_empty(), "expected at least one label");
+        let primary = &diag.labels[0];
+        assert_eq!(primary.span, selector_span);
+        assert_eq!(primary.message, "selector call");
     }
 
     /// step-7 — imported-geometry fallback (PRD line 68).
