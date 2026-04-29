@@ -98,3 +98,91 @@ fn mechanism_builder_happy_path_e2e() {
         "body_id_of(m2, \"solid_a\") should be Int(0)"
     );
 }
+
+/// Source: a `Kinematic` structure that constructs a closed chain via the
+/// parent-conflict path. Joint `j_x` is recorded with parent `j_a` in the
+/// first `body()` call and then re-recorded with a different parent `j_b`
+/// in the second call — the build-time DAG validation must surface this
+/// as `error="closed_chain"` with both ancestor paths captured on the
+/// resulting Mechanism Map.
+///
+/// Bindings:
+///   `j_a` = `prismatic(vec3(1,0,0), 0mm..1000mm)` — X-axis translation
+///   `j_b` = `prismatic(vec3(0,1,0), 0mm..1000mm)` — Y-axis translation
+///   `j_x` = `revolute(vec3(0,0,1), 0rad..3.14rad)` — Z-axis rotation
+///   `m0`  = `mechanism()`
+///   `m1`  = `body(m0, "solid_a", j_x, j_a)` — records j_x → j_a
+///   `m2`  = `body(m1, "solid_b", j_x, j_b)` — conflicts: j_x already → j_a
+const CLOSED_CHAIN_SOURCE: &str = r#"
+structure def Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_x, j_a)
+    let m2  = body(m1, "solid_b", j_x, j_b)
+}
+"#;
+
+/// Closed-chain e2e: parse, compile, eval a source that triggers the
+/// parent-conflict closed-chain path and assert the Mechanism Map carries
+/// `error="closed_chain"` with non-empty `error_path1` and `error_path2`.
+/// Locks in that closed-chain detection survives the full parse → compile →
+/// eval round-trip — no compile-time pruning, no eval-pipeline glue that
+/// could mangle the structured-error fields.
+///
+/// No `Diagnostic` is expected on the eval pipeline yet — that emission
+/// step is deferred to a future snapshot/eval-pipeline integration (see
+/// the design-decision note in the task plan and the
+/// `DiagnosticCode::KinematicClosedChain` reservation in
+/// `reify-types/src/diagnostics.rs`). Eval errors are still asserted
+/// absent so a regression that began emitting an unrelated Error
+/// diagnostic would surface here.
+#[test]
+fn mechanism_builder_closed_chain_e2e() {
+    let compiled = parse_and_compile_with_stdlib(CLOSED_CHAIN_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics yet \
+         (Diagnostic emission for closed_chain is deferred); got: {eval_errors:?}"
+    );
+
+    let v = &result.values;
+    let m2 = get_value(v, "m2");
+    let map = match m2 {
+        Value::Map(m) => m,
+        other => panic!("m2 should be a Map, got {other:?}"),
+    };
+
+    assert_eq!(
+        map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("mechanism".to_string())),
+        "m2.kind should still be 'mechanism' on errored Mechanism"
+    );
+    assert_eq!(
+        map.get(&Value::String("error".to_string())),
+        Some(&Value::String("closed_chain".to_string())),
+        "m2.error should be 'closed_chain' for the parent-conflict scenario"
+    );
+
+    let path1 = match map.get(&Value::String("error_path1".to_string())) {
+        Some(Value::List(p)) => p,
+        other => panic!("m2.error_path1 should be a List, got {other:?}"),
+    };
+    let path2 = match map.get(&Value::String("error_path2".to_string())) {
+        Some(Value::List(p)) => p,
+        other => panic!("m2.error_path2 should be a List, got {other:?}"),
+    };
+    assert!(
+        !path1.is_empty(),
+        "m2.error_path1 should be non-empty (walks world → ... → j_a → j_x)"
+    );
+    assert!(
+        !path2.is_empty(),
+        "m2.error_path2 should be non-empty (walks world → ... → j_b → j_x)"
+    );
+}
