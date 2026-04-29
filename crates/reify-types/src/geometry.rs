@@ -987,7 +987,13 @@ pub enum BooleanOpParents<'a> {
     },
     /// N-ary boolean (multi-input fuse): arbitrary number of parents.
     /// `faces[i]` / `edges[i]` correspond to `HistoryRecord::parent_index == i`.
-    /// The two slices must have the same length (caller invariant).
+    ///
+    /// **Invariant:** `faces.len() == edges.len()`. Use
+    /// [`BooleanOpParents::try_nary`] (fallible) or
+    /// [`BooleanOpParents::nary`] (panicking) to construct checked instances.
+    /// Direct enum-literal construction (`BooleanOpParents::NAry { … }`) is
+    /// still permitted but is **unchecked** — the caller is responsible for
+    /// ensuring the two slices have the same length.
     NAry {
         faces: &'a [&'a [GeometryHandleId]],
         edges: &'a [&'a [GeometryHandleId]],
@@ -1039,39 +1045,29 @@ impl<'a> BooleanOpParents<'a> {
 
     /// Returns the per-parent face-handle slices as a flat slice of slices,
     /// regardless of variant. Index `i` gives the face handles for parent `i`.
+    ///
+    /// For [`NAry`][Self::NAry] instances, length correctness is the caller's
+    /// responsibility when using direct enum-literal construction. Use
+    /// [`try_nary`][Self::try_nary] or [`nary`][Self::nary] to obtain a
+    /// checked instance.
     pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { faces, .. } => &faces[..],
-            Self::NAry { faces, edges } => {
-                debug_assert_eq!(
-                    faces.len(),
-                    edges.len(),
-                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
-                     each parent must have an entry in both slices",
-                    faces.len(),
-                    edges.len(),
-                );
-                faces
-            }
+            Self::NAry { faces, .. } => faces,
         }
     }
 
     /// Returns the per-parent edge-handle slices as a flat slice of slices,
     /// regardless of variant. Index `i` gives the edge handles for parent `i`.
+    ///
+    /// For [`NAry`][Self::NAry] instances, length correctness is the caller's
+    /// responsibility when using direct enum-literal construction. Use
+    /// [`try_nary`][Self::try_nary] or [`nary`][Self::nary] to obtain a
+    /// checked instance.
     pub fn edge_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { edges, .. } => &edges[..],
-            Self::NAry { faces, edges } => {
-                debug_assert_eq!(
-                    faces.len(),
-                    edges.len(),
-                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
-                     each parent must have an entry in both slices",
-                    faces.len(),
-                    edges.len(),
-                );
-                edges
-            }
+            Self::NAry { edges, .. } => edges,
         }
     }
 }
