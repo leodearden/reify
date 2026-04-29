@@ -406,6 +406,16 @@ pub enum CompiledForallBody {
     /// mirrors the Constraint arm's "compile substitution; trust at runtime"
     /// policy. Auto-creation of `connector_sub` / `frame_constraint` is
     /// deferred to a future task.
+    ///
+    /// **Connector-spec drop at runtime** (task 2690 amendment): for the
+    /// rich form (`forall v in coll: connect a -> b : T(p = e, ...)`) the
+    /// captured `connector_type` and `params` fields are populated here at
+    /// compile time, but `engine_edit.rs`'s re-emission drops them — only
+    /// the port-to-port connection is materialised, with `connector_sub`
+    /// set to `None` and `port_mappings` carried verbatim. The deferred
+    /// compile-time path emits an info diagnostic surfacing this limitation;
+    /// the captured fields are kept for a future task that wires
+    /// connector-spec-aware runtime emission.
     Connect {
         /// Substituted left-side port name (e.g. `"vents[0].inlet"`).
         left_port_template: String,

@@ -915,6 +915,145 @@ structure def S {
     );
 }
 
+/// task 2690 amendment (reviewer suggestion 2): pin the connector-spec drop
+/// contract for the rich-form `forall v in <coll_sub>: connect a -> b : T(p = e)`
+/// body shape over a deferred-count collection.
+///
+/// The runtime re-emission path (`engine_edit.rs`) does not propagate the
+/// `connector_type` or `params` from the captured template — only the
+/// port-to-port connection is materialised. Per the amendment, the
+/// deferred-capture path emits an info diagnostic surfacing this scope
+/// limitation. Capture itself still proceeds: `connector_type` and
+/// compiled `params` are stored on the captured template for a future task
+/// to consume when connector-spec-aware runtime emission lands.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero CompiledConnections (deferred-count → runtime emission).
+/// (c) Exactly one captured `CompiledForallTemplate`.
+/// (d) Captured Connect body has `connector_type == Some("BoltSet")`,
+///     a non-empty `params` Vec containing the `grade` entry.
+/// (e) Exactly one `Diagnostic::info` mentioning the connector-spec
+///     drop, anchored at the source forall span.
+#[test]
+fn forall_connect_rich_form_over_undef_count_collection_sub_emits_connector_drop_info_diagnostic() {
+    use reify_compiler::CompiledForallBody;
+    use reify_types::Severity;
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel : BoltSet { grade = 10.9 }
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for rich-form deferred-count forall connect, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections at compile time — count is deferred.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) Exactly one captured runtime template.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 captured CompiledForallTemplate for rich-form \
+         deferred-count forall connect, got {}",
+        template.forall_templates.len()
+    );
+
+    // (d) Captured Connect body carries the connector_type and params.
+    let ft = &template.forall_templates[0];
+    match &ft.body {
+        CompiledForallBody::Connect {
+            connector_type,
+            params,
+            ..
+        } => {
+            assert_eq!(
+                connector_type.as_deref(),
+                Some("BoltSet"),
+                "expected captured connector_type == Some(\"BoltSet\"), got {:?}",
+                connector_type
+            );
+            assert_eq!(
+                params.len(),
+                1,
+                "expected exactly 1 captured param, got {}: {:?}",
+                params.len(),
+                params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                params[0].0, "grade",
+                "expected captured param name 'grade', got {:?}",
+                params[0].0
+            );
+        }
+        other => panic!(
+            "expected CompiledForallBody::Connect for rich-form capture, got {:?}",
+            other
+        ),
+    }
+
+    // (e) Exactly one info diagnostic mentioning the connector-spec drop.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| {
+            d.message.contains("connector type and params are not propagated")
+                || d.message.contains("connector spec dropped")
+        })
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic naming the connector-spec drop \
+         for rich-form deferred-count forall connect, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // The diagnostic should be anchored at the source forall span (via
+    // its label). Re-parse the source to recover the span and assert the
+    // diagnostic's primary label points at it.
+    let forall_span = find_forall_connect_span(source, "S");
+    let diag = info_diags[0];
+    let label_spans: Vec<reify_types::SourceSpan> =
+        diag.labels.iter().map(|l| l.span).collect();
+    assert!(
+        label_spans.iter().any(|s| *s == forall_span),
+        "expected diagnostic label span to match the source forall span; \
+         labels = {:?}, forall_span = {:?}",
+        label_spans,
+        forall_span
+    );
+}
+
 /// task 2629 amendment (reviewer suggestion 1): the deferred-count
 /// info-diagnostic contract for the `forall v in <coll_sub>: chain ...`
 /// body shape (Chain) must be pinned. The Chain arm retains compile-time

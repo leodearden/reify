@@ -588,9 +588,39 @@ pub(crate) fn elaborate_forall_connect(
                         None => return,
                     };
 
+                    // task-2690 amendment: surface the connector-spec drop.
+                    //
+                    // The runtime re-emission path in `engine_edit.rs` does
+                    // NOT replicate `compile_connection`'s connector-spec
+                    // handling: it does not auto-create a `connector_sub`
+                    // sub-component, does not validate connector params, and
+                    // does not generate a `frame_constraint`. For the simple
+                    // form (no `via T(args)`, no params) this is invisible.
+                    // For the rich form, the captured `connector_type` and
+                    // `params` are dropped at runtime — emit an info
+                    // diagnostic so users discover the limitation rather
+                    // than getting a silent semantic divergence vs. the
+                    // resolved (non-deferred) path. Mirrors the Chain-arm
+                    // info diagnostic shape just below.
+                    if cd.connector_type.is_some() || !cd.params.is_empty() {
+                        diagnostics.push(Diagnostic::info(
+                            "forall connect with `via T(args)` over deferred-count \
+                             collections: connector type and params are not \
+                             propagated by runtime re-elaboration; only the \
+                             port-to-port connection is materialised (task 2690 \
+                             future scope)",
+                        ).with_label(DiagnosticLabel::new(decl.span, "connector spec dropped at runtime")));
+                    }
+
                     // Compile each substituted param expression once at
                     // capture time. Mirrors the Constraint arm's
-                    // `compile_expr(&substituted_body, ...)` policy.
+                    // `compile_expr(&substituted_body, ...)` policy. The
+                    // result is captured on `CompiledForallBody::Connect`
+                    // for completeness even though `engine_edit.rs`'s
+                    // current re-emission drops it (see diagnostic above);
+                    // capturing here means the data is ready for a future
+                    // task to wire connector-spec-aware runtime emission
+                    // without re-doing the substitution work.
                     let params_substituted: Vec<(String, CompiledExpr)> = cd
                         .params
                         .iter()
