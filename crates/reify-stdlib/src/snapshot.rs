@@ -43,8 +43,61 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_binding(args[0].clone(), args[1].clone())
         }
+        "snapshot" => {
+            // Validation surface (each guard short-circuits to
+            // Value::Undef BEFORE the FK walk):
+            //   args.len() == 2                                → arity guard
+            //   args[0] is Map with kind="mechanism"           → mechanism guard
+            //   args[1] is Value::List                         → bindings guard
+            // Errored-mechanism short-circuit and per-binding
+            // shape validation are layered on in subsequent steps.
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let mech_map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            if mech_map.get(&Value::String("kind".to_string()))
+                != Some(&Value::String("mechanism".to_string()))
+            {
+                return Some(Value::Undef);
+            }
+            // Bindings argument: must be a List. Per-entry shape
+            // validation lands in a later step.
+            if !matches!(&args[1], Value::List(_)) {
+                return Some(Value::Undef);
+            }
+            // Read the mechanism's `bodies` list — defense-in-depth
+            // (the `kind` guard above ensures this is well-formed
+            // for any value produced by `mechanism()` / `body()`).
+            let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+                Some(Value::List(b)) => b,
+                _ => return Some(Value::Undef),
+            };
+            if bodies.is_empty() {
+                return Some(make_empty_snapshot());
+            }
+            // Non-empty FK walk lands in subsequent steps.
+            make_empty_snapshot()
+        }
         _ => return None,
     })
+}
+
+/// Build the canonical empty Snapshot `Value::Map`.
+///
+/// Shape (alphabetical key order, matching `BTreeMap` iteration):
+/// - `bodies` → `Value::List(vec![])`
+/// - `kind` → `Value::String("snapshot")`
+fn make_empty_snapshot() -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("bodies".to_string()), Value::List(vec![]));
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("snapshot".to_string()),
+    );
+    Value::Map(m)
 }
 
 /// Build a binding `Value::Map` with the standard three-key layout:
