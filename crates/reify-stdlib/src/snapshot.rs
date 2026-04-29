@@ -1543,6 +1543,128 @@ mod tests {
         assert!(cz.abs() < 1e-12, "COM.z with Undef densities should be 0, got {}", cz);
     }
 
+    // ── center_of_mass with per-body density Map ──────────────────────────
+    //
+    // densities is a `Value::Map { id → density }`.  Bodies absent from
+    // the map fall back to density 1.0 (uniform fallback for partial
+    // maps).  Non-numeric density entries (or a non-Map densities arg)
+    // collapse the whole call to Undef.
+
+    /// Helper: build a 2-body Snapshot with bodies at world translations
+    /// (-1.0, 0, 0) and (+1.0, 0, 0).  Uses a wider prismatic range so
+    /// the binding values land cleanly inside it.
+    fn make_two_body_snapshot_unit_separation() -> Value {
+        let j_neg = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(-2.0))),
+                    upper: Some(Box::new(Value::length(0.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_pos = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("a".to_string()), j_neg.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("b".to_string()), j_pos.clone()],
+        );
+
+        let bind_neg = eval_builtin("bind", &[j_neg, Value::length(-1.0)]);
+        let bind_pos = eval_builtin("bind", &[j_pos, Value::length(1.0)]);
+        eval_builtin("snapshot", &[m2, Value::List(vec![bind_neg, bind_pos])])
+    }
+
+    /// `center_of_mass(s, {Int(0): Real(3.0), Int(1): Real(1.0)})` on a
+    /// 2-body Snapshot with bodies at (-1, 0, 0) and (+1, 0, 0):
+    /// COM = (3·(-1) + 1·(+1)) / (3 + 1) = -0.5.
+    #[test]
+    fn center_of_mass_per_body_densities_weighted_mean() {
+        let s = make_two_body_snapshot_unit_separation();
+        let mut densities = std::collections::BTreeMap::new();
+        densities.insert(Value::Int(0), Value::Real(3.0));
+        densities.insert(Value::Int(1), Value::Real(1.0));
+        let result = eval_builtin("center_of_mass", &[s, Value::Map(densities)]);
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            (cx - (-0.5)).abs() < 1e-12,
+            "COM.x with densities {{0:3, 1:1}} should be -0.5, got {}",
+            cx
+        );
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+    }
+
+    /// Partial densities Map: only body 0 is listed (density 3.0); body 1
+    /// is absent and falls back to the uniform default of 1.0.
+    /// COM = (3·(-1) + 1·(+1)) / (3 + 1) = -0.5 (same as the explicit
+    /// fully-specified case).
+    #[test]
+    fn center_of_mass_partial_densities_map_falls_back_to_one() {
+        let s = make_two_body_snapshot_unit_separation();
+        let mut densities = std::collections::BTreeMap::new();
+        densities.insert(Value::Int(0), Value::Real(3.0));
+        // Body 1 absent — should fall back to 1.0.
+        let result = eval_builtin("center_of_mass", &[s, Value::Map(densities)]);
+        let [cx, _, _] = decompose_point3_length_for_assert(&result);
+        assert!(
+            (cx - (-0.5)).abs() < 1e-12,
+            "COM.x with partial densities {{0:3}} (1 absent → 1.0) should be -0.5, got {}",
+            cx
+        );
+    }
+
+    /// `center_of_mass(s, non_map_densities)` returns Undef when args[1]
+    /// is neither Undef, an empty Map, nor a populated Map.  Covers
+    /// `Value::Real`, `Value::List`, and `Value::String` — all three are
+    /// non-Map shapes that must be rejected before any FK arithmetic.
+    #[test]
+    fn center_of_mass_non_map_densities_returns_undef() {
+        let s = make_two_body_snapshot_unit_separation();
+        // Real
+        assert!(eval_builtin("center_of_mass", &[s.clone(), Value::Real(1.0)]).is_undef());
+        // List
+        assert!(eval_builtin("center_of_mass", &[s.clone(), Value::List(vec![])]).is_undef());
+        // String
+        assert!(eval_builtin(
+            "center_of_mass",
+            &[s, Value::String("uniform".to_string())]
+        )
+        .is_undef());
+    }
+
+    /// `center_of_mass(s, {Int(0): String(...)})`: a non-numeric density
+    /// value collapses the whole call to Undef.  Mirrors the strict
+    /// rejection in `bind`/`snapshot` — silent fallback to 1.0 here would
+    /// paper over a bug at the call site.
+    #[test]
+    fn center_of_mass_non_numeric_density_value_returns_undef() {
+        let s = make_two_body_snapshot_unit_separation();
+        let mut densities = std::collections::BTreeMap::new();
+        densities.insert(Value::Int(0), Value::String("heavy".to_string()));
+        densities.insert(Value::Int(1), Value::Real(1.0));
+        assert!(eval_builtin("center_of_mass", &[s, Value::Map(densities)]).is_undef());
+    }
+
     /// `center_of_mass()` validation surface: arity outside {1, 2} and
     /// non-snapshot args[0] both return `Value::Undef`.
     #[test]
