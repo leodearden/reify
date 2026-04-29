@@ -46,6 +46,14 @@ use reify_types::{
 /// Same convention as `feature_tag_e2e.rs` and the other OCCT tests.
 const BOX_SIDE_M: f64 = 10.0e-3;
 
+/// Synthetic FeatureId used as the `splitting_feature_id` argument by
+/// every fuse-driven e2e test in this file. Hoisted so the canonical
+/// "Fuse#realization[0]" path lives in one place — mirrors the
+/// like-named helper in topology_attribute_propagation.rs's tests.
+fn fuse_feature_id() -> FeatureId {
+    FeatureId::new("Fuse#realization[0]")
+}
+
 fn ten_mm_box_op() -> GeometryOp {
     GeometryOp::Box {
         width: Value::Real(BOX_SIDE_M),
@@ -255,7 +263,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     // test only seeds parent-face attributes; it does NOT exercise the
     // resolver's AmbiguousAfterSplit path here (that's the dedicated
     // mod-history e2e test below).
-    let fuse_feature_id = FeatureId::new("Fuse#realization[0]");
+    let fuse_feature_id = fuse_feature_id();
     propagate_attributes_via_brepalgoapi_history(
         &mut table,
         &parents,
@@ -501,7 +509,7 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
         faces: [&left_face_handles, &right_face_handles],
         edges: [&left_edge_handles, &right_edge_handles],
     };
-    let fuse_feature_id = FeatureId::new("Fuse#realization[0]");
+    let fuse_feature_id = fuse_feature_id();
     propagate_attributes_via_brepalgoapi_history(
         &mut table,
         &parents,
@@ -627,7 +635,7 @@ fn mod_history_threading_with_orthogonal_slabs() {
         faces: [&slab_x_face_handles, &slab_y_face_handles],
         edges: [&slab_x_edge_handles, &slab_y_edge_handles],
     };
-    let fuse_feature_id = FeatureId::new("Fuse#realization[0]");
+    let fuse_feature_id = fuse_feature_id();
     propagate_attributes_via_brepalgoapi_history(
         &mut table,
         &parents,
