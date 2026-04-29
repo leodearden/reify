@@ -329,6 +329,18 @@ pub enum DiagnosticCode {
     /// (`"selector call"`) and a secondary label at the `FeatureTag::source_span`
     /// of the target tag (`"feature originally produced here"`).
     ///
+    /// The [`FeatureTagTable`] that `resolve_unique_by_tag` reads from is
+    /// populated by the four `*_with_tags` filter selectors in
+    /// `crates/reify-eval/src/topology_selectors.rs`:
+    ///   - `edges_at_height_with_tags` (task 2323)
+    ///   - `edges_by_length_with_tags` (task 2329)
+    ///   - `faces_by_area_with_tags` (task 2329)
+    ///   - `edges_parallel_to_with_tags` (task 2329)
+    ///
+    /// Each populator records a tag for every extracted sub-shape before
+    /// applying its filter predicate, so `resolve_unique_by_tag` can look up
+    /// any extracted sub-shape, not just those that passed the predicate.
+    ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
