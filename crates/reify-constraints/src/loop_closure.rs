@@ -285,6 +285,119 @@ where
     }
 }
 
+/// Single-loop convenience wrapper: drive `chain_b`'s free variables to
+/// satisfy the loop-closure residual against the (fixed) `chain_a`.
+///
+/// `chain_a` / `vals_a` is the reference side (held fixed for the solve).
+/// `chain_b` / `vals_b_initial` is the free side; the indices in `free_b`
+/// select which entries of `vals_b_initial` the solver moves.  `strategy`
+/// picks the initial guess: [`StartStrategy::WarmStart`] uses the supplied
+/// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
+/// queries each free joint's `joint_range_midpoint` from `chain_b`.
+///
+/// Internally builds a residual+jacobian closure that calls
+/// [`reify_stdlib::loop_closure::loop_residual_twist`] and
+/// [`reify_stdlib::loop_closure::chain_jacobian_fd`], then dispatches to
+/// [`newton_solve`].
+///
+/// Multi-loop is future work (the [`newton_solve`] core is generic — callers
+/// can stack residuals/columns from multiple loops).
+pub fn solve_loop_closure(
+    chain_a: &[reify_types::Value],
+    vals_a: &[f64],
+    chain_b: &[reify_types::Value],
+    vals_b_initial: &[f64],
+    free_b: &[usize],
+    strategy: &StartStrategy,
+    config: &NewtonConfig,
+) -> NewtonOutcome {
+    // Resolve initial x0 from the strategy.
+    let x0: Vec<f64> = match strategy {
+        StartStrategy::WarmStart(v) => {
+            if v.len() != free_b.len() {
+                tracing::warn!(
+                    "solve_loop_closure: WarmStart length {} != free_b length {}",
+                    v.len(),
+                    free_b.len()
+                );
+                return NewtonOutcome::NotConverged {
+                    x: vec![],
+                    residual_norm: f64::INFINITY,
+                };
+            }
+            v.clone()
+        }
+        StartStrategy::Midpoint => {
+            let mut out = Vec::with_capacity(free_b.len());
+            for &i in free_b {
+                if i >= chain_b.len() {
+                    tracing::warn!(
+                        "solve_loop_closure: free_b index {} out of range (chain_b len {})",
+                        i,
+                        chain_b.len()
+                    );
+                    return NewtonOutcome::NotConverged {
+                        x: vec![],
+                        residual_norm: f64::INFINITY,
+                    };
+                }
+                match reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]) {
+                    Some(m) => out.push(m),
+                    None => {
+                        tracing::warn!(
+                            "solve_loop_closure: joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
+                        );
+                        return NewtonOutcome::NotConverged {
+                            x: vec![],
+                            residual_norm: f64::INFINITY,
+                        };
+                    }
+                }
+            }
+            out
+        }
+    };
+
+    // Capture inputs for the closure.  The closure is FnMut over an internal
+    // scratch buffer for vals_b to avoid reallocating each call.
+    let chain_a_vec = chain_a.to_vec();
+    let vals_a_vec = vals_a.to_vec();
+    let chain_b_vec = chain_b.to_vec();
+    let mut vals_b_scratch = vals_b_initial.to_vec();
+    let free_b_vec = free_b.to_vec();
+
+    let closure = move |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        if x.len() != free_b_vec.len() {
+            return None;
+        }
+        // Substitute x into the free entries of vals_b_scratch.
+        for (k, &i) in free_b_vec.iter().enumerate() {
+            if i >= vals_b_scratch.len() {
+                return None;
+            }
+            vals_b_scratch[i] = x[k];
+        }
+        let twist = reify_stdlib::loop_closure::loop_residual_twist(
+            &chain_a_vec,
+            &vals_a_vec,
+            &chain_b_vec,
+            &vals_b_scratch,
+        )?;
+        let cols = reify_stdlib::loop_closure::chain_jacobian_fd(
+            &chain_b_vec,
+            &vals_b_scratch,
+            &free_b_vec,
+            1e-6,
+        )?;
+        // Twist is fixed-array [f64; 6]; convert to Vec<f64> for newton_solve.
+        let r = twist.to_vec();
+        let j_cols: Vec<Vec<f64>> = cols.into_iter().map(|c| c.to_vec()).collect();
+        Some((r, j_cols))
+    };
+
+    newton_solve(x0, closure, config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
