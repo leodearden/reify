@@ -349,8 +349,20 @@ pub enum DiagnosticCode {
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
     /// invariant is violated for the supplied `AttributeQuery`).
     ///
-    /// Canonical message form:
-    /// `"topology-attribute selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`.
+    /// Canonical message forms:
+    ///   - `"topology-attribute selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`
+    ///     — emitted on a zero-match miss or a multi-match where the matched
+    ///     candidates have MIXED parent-keys (genuine ambiguity, e.g. label
+    ///     collision across distinct features). Resolution outcome:
+    ///     `AttributeResolution::Unresolved`.
+    ///   - `"topology-attribute selector matched <N> split children of the same parent (disambiguate via split_by(...) selector once vocabulary v2 lands)"`
+    ///     — emitted on a multi-match where ALL matched candidates share the
+    ///     parent-key (`feature_id, role, local_index, user_label`) and only
+    ///     differ in `mod_history`. The post-split-cluster sub-form added in
+    ///     task #2653; resolution outcome:
+    ///     `AttributeResolution::AmbiguousAfterSplit { children }`. Per PRD
+    ///     `docs/prds/v0_2/persistent-naming-v2.md` line 64, this surfaces the
+    ///     children set for user disambiguation rather than silently rebinding.
     ///
     /// Two labels accompany the warning where information is available:
     ///   - a primary label at the selector call site (`"selector call"`); and

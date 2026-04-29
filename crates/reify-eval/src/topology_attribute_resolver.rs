@@ -388,12 +388,20 @@ where
 /// Otherwise return `None` so the caller falls through to the generic
 /// Unresolved arm with the existing "matched N sub-shapes" diagnostic.
 ///
-/// Failure mode: when ANY two matched candidates' attributes disagree on
-/// any parent-key field, the windows-pairwise check returns false → `None`.
-/// This is the genuine-ambiguity path (e.g. two distinct features
-/// colliding on a label, two roles colliding on local_index after
-/// reassignment) and intentionally distinct from a post-split cluster
-/// where every matched candidate shares one parent.
+/// Failure modes that yield `None` (caller proceeds to Unresolved):
+///   - `matches.len() < 2` — no cluster to detect; a single-element
+///     match is handled upstream by the unique-match short-circuit and
+///     a zero-element match would be caught by the zero-match emission.
+///   - Any matched id is missing from `table` — we cannot prove
+///     clustering without all attributes, so default to the safer
+///     genuine-ambiguity path.
+///   - Any pair of matched attributes disagrees on any parent-key field
+///     (`feature_id`, `role`, `local_index`, or `user_label`). This is
+///     the genuine-ambiguity path: e.g. two distinct features colliding
+///     on a label (`Boss` and `Slot` both labelled `"top"`), or two
+///     roles colliding on `local_index` after a populator reassignment.
+///     Distinct from a post-split cluster where every matched candidate
+///     shares one parent and only `mod_history` differs.
 ///
 /// Children list inside the returned variant is `matches` verbatim, in
 /// candidate-encounter order — which matches per-parent record-stream
