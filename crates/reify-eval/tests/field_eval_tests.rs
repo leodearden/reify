@@ -11,8 +11,9 @@ use reify_test_support::{
     parse_and_compile_with_stdlib,
 };
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    InterpolationKind, ResolvedFunction, SampledGridKind, Type, Value, ValueCellId, ValueMap,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX,
+    FieldSourceKind, InterpolationKind, ResolvedFunction, SampledGridKind, Severity, Type, Value,
+    ValueCellId, ValueMap,
 };
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
@@ -1419,4 +1420,77 @@ structure S {
         ),
         other => panic!("expected Value::Real(1.0), got: {:?}", other),
     }
+}
+
+// ── Task 2341 step-15: out-of-bounds sample → Undef + once-per-session warning ──
+//
+// Pin two contracts at once:
+// 1. Every OOB query returns `Value::Undef` (no fallback to clamped value).
+// 2. The `W_FIELD_OUT_OF_BOUNDS` warning fires AT MOST ONCE per field per
+//    session even when the same field has multiple OOB queries. The
+//    `AtomicBool` flag on `SampledField` is the suppression mechanism.
+//
+// The structure has three sample sites that all query outside the field's
+// `[0.0m, 1.0m]` bounds (5.0m, 10.0m, 2.0m). Each must produce Undef; the
+// diagnostic vector should contain exactly one entry whose code is
+// `FieldOutOfBounds`, severity `Warning`, and whose message names field
+// `'f'`.
+
+#[test]
+fn sample_sampled_field_out_of_bounds_returns_undef_and_emits_warning_once() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
+
+structure S {
+    let oob_a = sample(f, 5.0m)
+    let oob_b = sample(f, 10.0m)
+    let oob_c = sample(f, 2.0m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // Every OOB sample call returns Undef.
+    for member in &["oob_a", "oob_b", "oob_c"] {
+        let val = result
+            .values
+            .get(&ValueCellId::new("S", *member))
+            .unwrap_or_else(|| panic!("'S.{member}' not found in eval result values"));
+        assert!(
+            val.is_undef(),
+            "expected S.{member} = Undef for out-of-bounds sample, got {:?}",
+            val
+        );
+    }
+
+    // The `W_FIELD_OUT_OF_BOUNDS` warning fires exactly once across all
+    // three OOB queries in this session (suppression by AtomicBool on
+    // SampledField).
+    let oob_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldOutOfBounds)
+        })
+        .collect();
+    assert_eq!(
+        oob_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_OUT_OF_BOUNDS warning, got {}: {:?}",
+        oob_warnings.len(),
+        result.diagnostics
+    );
+    assert!(
+        oob_warnings[0].message.contains("'f'"),
+        "OOB warning message should name field 'f', got: {:?}",
+        oob_warnings[0].message
+    );
 }
