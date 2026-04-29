@@ -2828,6 +2828,49 @@ mod tests {
         );
     }
 
+    // ── screw constructor: happy path ────────────────────────────────────────
+
+    #[test]
+    fn screw_returns_correct_coupling_and_transform_at_works() {
+        // screw(prismatic-X, lead=1mm) → coupling Map with:
+        //   kind="coupling", parent=prismatic-X, ratio=1e-3/(2π), offset=length(0)
+        // transform_at(result, length(2π)) → translation [1e-3, 0, 0] (one lead per 2π input)
+        let pi = std::f64::consts::PI;
+        let parent = prismatic_x_joint();
+        let lead = Value::length(1e-3); // 1 mm
+        let result = eval_builtin("screw", &[parent.clone(), lead]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("screw: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "screw: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "screw: parent should match the prismatic joint"
+        );
+        let expected_ratio = 1e-3 / (2.0 * pi);
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(expected_ratio)),
+            "screw: ratio should be Value::Real(lead/(2π))"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "screw: default offset for prismatic parent should be Value::length(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, length(2π)) → translation [1e-3, 0, 0]
+        // Math: coupled = (1e-3/(2π)) * 2π + 0 = 1e-3 m, translated along prismatic-X axis.
+        let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
+        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [1e-3, 0.0, 0.0], 1e-12,
+            "screw transform_at: 1mm lead, 2π input → [1e-3, 0, 0]");
+    }
+
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
 
     /// All negative-case inputs for `is_joint_value` in one table-driven test.
