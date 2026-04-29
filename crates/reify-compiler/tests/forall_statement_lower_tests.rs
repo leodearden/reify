@@ -69,9 +69,13 @@ fn find_forall_connect_span(
     panic!("no ForallConnect found in structure {}", structure_name);
 }
 
-/// Assert that `template` has zero connections and zero `forall@v[`-labelled
-/// constraints. Covers the "empty-collection / undef-count → zero emissions"
-/// invariant shared by Connect-form forall tests (PRD criteria 6 and 7 first-half).
+/// Assert that `template` has zero connections and zero `forall@`-prefixed
+/// constraint labels. Covers the "empty-collection / undef-count → zero
+/// emissions" invariant shared by Connect-form forall tests (PRD criteria 6
+/// and 7 first-half). The prefix `forall@` (without the bound-variable name)
+/// future-proofs the helper against callers that use bound variable names
+/// other than `v`, while remaining a strict superset of the previous
+/// `forall@v[` filter for all current callers.
 fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplate) {
     assert_eq!(
         template.connections.len(),
@@ -90,13 +94,13 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
         .filter(|c| {
             c.label
                 .as_deref()
-                .is_some_and(|s| s.starts_with("forall@v["))
+                .is_some_and(|s| s.starts_with("forall@"))
         })
         .count();
     assert_eq!(
         forall_label_count,
         0,
-        "expected zero forall@v[*] constraint labels (empty/undef-count forall), got {}",
+        "expected zero forall@* constraint labels (empty/undef-count forall), got {}",
         forall_label_count
     );
 }
@@ -511,6 +515,161 @@ structure S {
             }
             other => panic!(
                 "expected guard_expr to be ValueRef(S.heavy) for group {}, got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
+/// `forall v in vents: constraint v.mass < 100kg where v.mass > threshold`
+/// over a 3-element collection sub should emit exactly 3
+/// `CompiledGuardedGroup`s. Each group's guard_expr must be a
+/// `BinOp::Gt` whose left is `ValueRef(S.vents[i].mass)` and whose right
+/// is `ValueRef(S.threshold)` — proving that the bound variable `v` is
+/// substituted inside `wc.condition` by `substitute_expr` in the
+/// `ForallConstraintBody::Constraint` where-clause branch of
+/// `elaborate_forall_constraint`. A regression that dropped that
+/// `substitute_expr` call would leave `v.mass` unresolved and either
+/// fail to compile or produce a wrong ValueRef, neither of which the
+/// existing `where heavy` test (which does not reference `v`) would catch.
+/// Briefing item 4 (guard composition) gap-fill.
+#[test]
+fn forall_constraint_body_where_clause_referencing_bound_var_substitutes_per_element() {
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    param threshold : Scalar = 0kg
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    forall v in vents: constraint v.mass < 100kg where v.mass > threshold
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for bound-var where-clause forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (a) Exactly 3 guarded groups — one per element.
+    assert_eq!(
+        template.guarded_groups.len(),
+        3,
+        "expected 3 guarded groups (one per forall element), got {}: {:?}",
+        template.guarded_groups.len(),
+        template
+            .guarded_groups
+            .iter()
+            .map(|g| {
+                g.constraints
+                    .iter()
+                    .map(|c| c.label.as_deref())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    );
+
+    // None of the forall constraints should leak into the top-level
+    // `constraints` vec — they live inside the guarded groups.
+    let top_level_forall = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        top_level_forall, 0,
+        "guarded forall constraints must not appear in top-level constraints, got {}",
+        top_level_forall
+    );
+
+    for (i, group) in template.guarded_groups.iter().enumerate() {
+        // (b) Each group has exactly one constraint labelled `forall@v[i]`.
+        assert_eq!(
+            group.constraints.len(),
+            1,
+            "expected exactly 1 constraint in guarded group {}, got {}",
+            i,
+            group.constraints.len()
+        );
+        let label = group.constraints[0].label.as_deref();
+        let expected_label = format!("forall@v[{}]", i);
+        assert_eq!(
+            label,
+            Some(expected_label.as_str()),
+            "label mismatch for group {}: got {:?}",
+            i,
+            label
+        );
+
+        // (c) The guard_expr is `BinOp::Gt` with left = ValueRef(S.vents[i].mass)
+        //     and right = ValueRef(S.threshold).  This pins that `v.mass` in
+        //     the where-clause condition was substituted to `S.vents[i].mass`
+        //     for each element index i.
+        match &group.guard_expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                assert_eq!(
+                    *op,
+                    BinOp::Gt,
+                    "expected guard_expr BinOp::Gt for group {}, got {:?}",
+                    i, op
+                );
+                // left: v.mass → S.vents[i].mass after substitution
+                match &left.kind {
+                    CompiledExprKind::ValueRef(id) => {
+                        assert_eq!(
+                            id.entity,
+                            format!("S.vents[{}]", i),
+                            "expected guard_expr left.entity == 'S.vents[{}]' for group {}, got {}",
+                            i, i, id.entity
+                        );
+                        assert_eq!(
+                            id.member, "mass",
+                            "expected guard_expr left.member == 'mass' for group {}, got {}",
+                            i, id.member
+                        );
+                    }
+                    other => panic!(
+                        "expected guard_expr left to be ValueRef(S.vents[{}].mass) \
+                         for group {}, got {:?}",
+                        i, i, other
+                    ),
+                }
+                // right: threshold → S.threshold (unaffected by bound-var substitution)
+                match &right.kind {
+                    CompiledExprKind::ValueRef(id) => {
+                        assert_eq!(
+                            id.entity, "S",
+                            "expected guard_expr right.entity == 'S' for group {}, got {}",
+                            i, id.entity
+                        );
+                        assert_eq!(
+                            id.member, "threshold",
+                            "expected guard_expr right.member == 'threshold' for group {}, got {}",
+                            i, id.member
+                        );
+                    }
+                    other => panic!(
+                        "expected guard_expr right to be ValueRef(S.threshold) \
+                         for group {}, got {:?}",
+                        i, other
+                    ),
+                }
+            }
+            other => panic!(
+                "expected guard_expr to be BinOp(Gt) for group {}, got {:?}",
                 i, other
             ),
         }
@@ -990,6 +1149,10 @@ structure def S {
     // The chain guard ("chain statement requires at least two elements") is
     // Severity::Error, so its absence is already covered by
     // errors_only(&module).is_empty() above.
+
+    // Confirm the source actually contains a ForallConnect (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_connect_span(source, "S");
 }
 
 /// `forall v in []: chain v.a -> v.b -> v.c` should emit zero connections and
@@ -1114,6 +1277,10 @@ structure S {
             .filter_map(|c| c.label.as_deref())
             .collect::<Vec<_>>()
     );
+
+    // Confirm the source actually contains a ForallConstraint (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_constraint_span(source, "S");
 }
 
 /// `forall v in vents: connect v.inlet -> air_channel` over a collection sub
@@ -1153,6 +1320,10 @@ structure def S {
         .expect("template S not found");
 
     assert_no_forall_connect_emissions(template);
+
+    // Confirm the source actually contains a ForallConnect (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_connect_span(source, "S");
 }
 
 /// `forall v in []: constraint MinThreshold(value: v)` should emit zero
@@ -1346,6 +1517,86 @@ structure S {
             "forall-emitted constraint span must equal the source forall span; \
              label = {:?}, span = {}..{}, expected = {}..{}",
             c.label, c.span.start, c.span.end, forall_span.start, forall_span.end
+        );
+    }
+}
+
+/// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
+/// `bidi`-ported collection sub should emit exactly 3 `CompiledConnection`s,
+/// each with `operator == ConnectOp::Bidirectional`. Pins that `cd.operator`
+/// is threaded through `elaborate_forall_connect` into the per-element
+/// `compile_connection` call rather than being dropped or hardcoded to
+/// `Forward`. The existing `forall_connect_emits_per_element_connections`
+/// test only exercises `ConnectOp::Forward`; a regression that hardcoded
+/// `Forward` for forall connect would be invisible to it. Briefing item 3
+/// (connect-form lowering non-Forward operator) gap-fill.
+#[test]
+fn forall_connect_with_bidirectional_operator_emits_per_element_bidi_connections() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : bidi Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    port air_channel : bidi Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet <-> air_channel
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forall bidi connect over collection sub, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        3,
+        "expected exactly 3 CompiledConnections (one per forall element), got {}: \
+         left_ports = {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| c.left_port.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let forall_span = find_forall_connect_span(source, "S");
+
+    for (i, conn) in template.connections.iter().enumerate() {
+        let expected_left = format!("vents[{}].inlet", i);
+        assert_eq!(
+            conn.left_port, expected_left,
+            "expected left_port == {:?} for element {}, got {:?}",
+            expected_left, i, conn.left_port
+        );
+        assert_eq!(
+            conn.right_port, "air_channel",
+            "expected right_port == 'air_channel' for element {}, got {:?}",
+            i, conn.right_port
+        );
+        // The critical assertion: operator must be Bidirectional, not Forward.
+        assert_eq!(
+            conn.operator,
+            reify_syntax::ConnectOp::Bidirectional,
+            "expected ConnectOp::Bidirectional for element {}, got {:?}",
+            i, conn.operator
+        );
+        assert_eq!(
+            conn.span, forall_span,
+            "expected forall-emitted connection span to equal source forall span \
+             for element {}, got connection.span = {:?}, forall_span = {:?}",
+            i, conn.span, forall_span
         );
     }
 }

@@ -360,6 +360,61 @@ structure S {
     }
 }
 
+/// step-1 (task 2366): Parse `forall v in vents: constraint v.mass < 50 where active`
+/// → `MemberDecl::ForallConstraint` with `ForallConstraintBody::Constraint` whose
+/// `where_clause` is `Some(wc)` and `wc.condition.kind == ExprKind::Ident("active")`.
+/// Pins the `Some` half of the body where-clause contract that
+/// `parse_forall_constraint` covers in the `None` direction (briefing item 1,
+/// parser-disambiguation gap-fill).
+#[test]
+fn parse_forall_constraint_with_body_where_clause() {
+    // NOTE: `vents` is intentionally undeclared here. The syntax-level parser
+    // does not perform identifier resolution, so `vents` parses as a bare
+    // `Ident` collection expression without error. The purpose of this test is
+    // to pin the body where-clause `Some` shape, not to exercise declaration
+    // checking — which belongs in compiler-level tests.
+    let source = r#"
+structure S {
+    param active : Bool = true
+    forall v in vents: constraint v.mass < 50 where active
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 2, "expected exactly two members (param + forall)");
+
+    let decl = match &members[1] {
+        MemberDecl::ForallConstraint(d) => d,
+        other => panic!("expected ForallConstraint at members[1], got {:?}", other),
+    };
+
+    assert_eq!(decl.variable, "v");
+    assert!(
+        matches!(&decl.collection.kind, ExprKind::Ident(n) if n == "vents"),
+        "expected collection Ident(vents), got {:?}",
+        decl.collection.kind
+    );
+
+    let constraint = match &decl.body {
+        ForallConstraintBody::Constraint(c) => c,
+        other => panic!("expected ForallConstraintBody::Constraint, got {:?}", other),
+    };
+
+    // The body where-clause must be Some — this is the gap the existing
+    // `parse_forall_constraint` test does not cover.
+    let wc = constraint
+        .where_clause
+        .as_ref()
+        .expect("expected Some(where_clause) on the body constraint, got None");
+
+    // Condition: `active` — an Ident
+    assert!(
+        matches!(&wc.condition.kind, ExprKind::Ident(n) if n == "active"),
+        "expected where_clause condition Ident(active), got {:?}",
+        wc.condition.kind
+    );
+}
+
 /// step-9c: A `forall_statement` whose collection is itself a parenthesized
 /// quantifier expression must lower correctly, producing `ForallConnect` with
 /// `collection.kind == ExprKind::Quantifier`.  Pins the GLR-resolution corpus
