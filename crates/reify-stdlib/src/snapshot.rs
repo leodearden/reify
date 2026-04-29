@@ -1751,6 +1751,21 @@ mod tests {
         assert!(eval_builtin("center_of_mass", &[s, Value::Map(densities)]).is_undef());
     }
 
+    /// `center_of_mass(s, {Int(0): Real(-2.0), Int(1): Real(1.0)})`: a
+    /// negative density collapses the whole call to Undef.  The densities
+    /// sum to -1.0 (non-zero, so the `total_density == 0.0` guard does not
+    /// apply) and produce a non-trivially-non-zero weighted sum — without the
+    /// per-body negative check the function would return a sign-mixed real
+    /// Point3 rather than Undef.
+    #[test]
+    fn center_of_mass_negative_density_returns_undef() {
+        let s = make_two_body_snapshot_unit_separation();
+        let mut densities = std::collections::BTreeMap::new();
+        densities.insert(Value::Int(0), Value::Real(-2.0));
+        densities.insert(Value::Int(1), Value::Real(1.0));
+        assert!(eval_builtin("center_of_mass", &[s, Value::Map(densities)]).is_undef());
+    }
+
     /// `center_of_mass()` validation surface: arity outside {1, 2} and
     /// non-snapshot args[0] both return `Value::Undef`.
     #[test]
