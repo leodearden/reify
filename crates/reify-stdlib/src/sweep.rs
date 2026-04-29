@@ -199,11 +199,15 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                 Value::List(d) => d,
                 _ => return Some(Value::Undef),
             };
-            // Per-entry shape validation: each must be a SweepDim Map
-            // with the canonical four-field layout (kind="sweep_dim",
-            // joint, range, steps). Whole-call rejection on any
-            // malformed entry, mirroring snapshot.rs's bindings
+            // Per-entry shape + content validation. Each entry must be
+            // a SweepDim Map with the canonical four-field layout
+            // (kind="sweep_dim", joint, range, steps), and the inner
+            // joint / range / steps must satisfy the same constraints
+            // that `dim()` enforces — so a hand-constructed SweepDim
+            // can't bypass dim()'s validation. Whole-call rejection on
+            // any malformed entry, mirroring snapshot.rs's bindings
             // validation.
+            let mut metas: Vec<DimMeta> = Vec::with_capacity(dims.len());
             for entry in dims {
                 let emap = match entry {
                     Value::Map(m) => m,
@@ -214,29 +218,88 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                 {
                     return Some(Value::Undef);
                 }
-                if !emap.contains_key(&Value::String("joint".to_string()))
-                    || !emap.contains_key(&Value::String("range".to_string()))
-                    || !emap.contains_key(&Value::String("steps".to_string()))
-                {
+                let joint = match emap.get(&Value::String("joint".to_string())) {
+                    Some(j) => j.clone(),
+                    None => return Some(Value::Undef),
+                };
+                let range = match emap.get(&Value::String("range".to_string())) {
+                    Some(r) => r,
+                    None => return Some(Value::Undef),
+                };
+                let steps = match emap.get(&Value::String("steps".to_string())) {
+                    Some(Value::Int(n)) if *n >= 0 => *n,
+                    _ => return Some(Value::Undef),
+                };
+                let expected_dim = match driving_joint_kind(&joint) {
+                    Some(d) => d,
+                    None => return Some(Value::Undef),
+                };
+                if validate_range_with_dimension(range, expected_dim).is_none() {
                     return Some(Value::Undef);
                 }
+                let (lo_si, up_si) = match range {
+                    Value::Range {
+                        lower: Some(lo),
+                        upper: Some(up),
+                        ..
+                    } => match (lo.as_f64(), up.as_f64()) {
+                        (Some(a), Some(b)) => (a, b),
+                        _ => return Some(Value::Undef),
+                    },
+                    _ => return Some(Value::Undef),
+                };
+                metas.push(DimMeta {
+                    joint,
+                    lo_si,
+                    up_si,
+                    steps,
+                });
             }
-            // Empty dims: product of empty set = 1 snapshot, every joint
-            // falls back to its range midpoint via snapshot()'s
-            // existing fallback. Multi-dim cross-product is wired in
-            // step-18.
-            if dims.is_empty() {
-                let snap = eval_builtin(
-                    "snapshot",
-                    &[args[0].clone(), Value::List(vec![])],
-                );
+            // Total snapshot count = product of all step counts.
+            // Empty `metas` (no dims) → empty product = 1, yielding a
+            // single all-midpoints snapshot via the empty-bindings path
+            // in snapshot(). Any dim with steps=0 collapses total to 0
+            // → empty List.
+            let total: i64 = metas.iter().map(|m| m.steps).product();
+            if total == 0 {
+                return Some(Value::List(vec![]));
+            }
+            // Per-dim strides for lexicographic-order index decomposition
+            // — last dim varies fastest. For dims = [d0, d1, ..., dk]:
+            //   stride[k]   = 1
+            //   stride[k-1] = steps[k]
+            //   stride[k-2] = steps[k-1] * steps[k]
+            //   ...
+            // Then per-tuple indices[d] = (idx / stride[d]) % steps[d].
+            let n = metas.len();
+            let mut strides: Vec<i64> = vec![1; n];
+            for d in (0..n.saturating_sub(1)).rev() {
+                strides[d] = strides[d + 1] * metas[d + 1].steps;
+            }
+            let mut snapshots: Vec<Value> = Vec::with_capacity(total as usize);
+            for idx in 0..total {
+                let mut bindings: Vec<Value> = Vec::with_capacity(n);
+                for d in 0..n {
+                    let i_d = (idx / strides[d]) % metas[d].steps;
+                    let v_si = interpolate_dim(&metas[d], i_d);
+                    let wrapped = match wrap_value_for_driving_joint(&metas[d].joint, v_si) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    let binding = eval_builtin("bind", &[metas[d].joint.clone(), wrapped]);
+                    if binding.is_undef() {
+                        return Some(Value::Undef);
+                    }
+                    bindings.push(binding);
+                }
+                let snap =
+                    eval_builtin("snapshot", &[args[0].clone(), Value::List(bindings)]);
                 if snap.is_undef() {
                     return Some(Value::Undef);
                 }
-                return Some(Value::List(vec![snap]));
+                snapshots.push(snap);
             }
-            // Multi-dim cross-product: wired in step-18.
-            return Some(Value::Undef);
+            Value::List(snapshots)
         }
         _ => return None,
     })
@@ -325,6 +388,39 @@ fn validate_range_with_dimension(value: &Value, expected_dim: DimensionVector) -
             Some(())
         }
         _ => None,
+    }
+}
+
+/// Cross-product iteration metadata for a single sweep_grid dim.
+///
+/// Cached upfront so the per-tuple inner loop doesn't re-walk the
+/// SweepDim Map's keys, re-validate the joint kind, or re-extract SI
+/// bounds from `Value::Range` for every grid index.
+struct DimMeta {
+    joint: Value,
+    lo_si: f64,
+    up_si: f64,
+    steps: i64,
+}
+
+/// Interpolate the `i`-th motion-variable value (in SI units) for a
+/// single sweep_grid dim.
+///
+/// - `steps == 1`  → returns `lo_si` (matches the steps==1 branch in
+///   `sweep`; the spec is silent for n=1, lower is the canonical
+///   single-sample choice — design decision pinned in step-13).
+/// - `steps >= 2`  → linearly interpolated:
+///   `lo + (i / (steps - 1)) * (up - lo)`.
+///
+/// Caller must guarantee `i ∈ 0..steps`.  `steps == 0` is unreachable
+/// because the cross-product loop short-circuits when the total
+/// product is 0 (any dim with steps=0 collapses total to 0).
+fn interpolate_dim(meta: &DimMeta, i: i64) -> f64 {
+    if meta.steps == 1 {
+        meta.lo_si
+    } else {
+        let t = (i as f64) / ((meta.steps - 1) as f64);
+        meta.lo_si + t * (meta.up_si - meta.lo_si)
     }
 }
 
