@@ -1177,3 +1177,123 @@ fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
         );
     }
 }
+
+/// task-2690 step-15: regression-pin guarding against accidental cross-arm
+/// regressions in `engine_edit.rs`'s shared per-template re-emission loop.
+///
+/// Re-runs the existing Constraint-arm `FORALL_FIXTURE_SRC` fixture through
+/// the full Undef → 3 → 1 → 0 → 2 lifecycle and asserts the exact
+/// `forall@v[i]` label set + `forall_emitted` ledger shape are unchanged
+/// from task 2629's behaviour after task 2690 lands the Connect arm.
+///
+/// This duplicates partial coverage from existing 2629 tests
+/// (`edit_param_count_decrease_removes_stale_forall_constraints_and_changes_fingerprint`,
+/// `full_lifecycle_undef_to_three_to_zero_to_two_per_element_constraints`),
+/// but the value of this test is the explicit cross-arm pin: assertions
+/// also check that `collect_forall_connect_ids` returns empty at every
+/// step (the Constraint-arm fixture has zero Connect bodies, so the
+/// Connect-arm ledger / labels must be empty throughout the lifecycle).
+#[test]
+fn edit_param_constraint_arm_unchanged_after_connect_arm_landed() {
+    let module = compile_source(FORALL_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval — count Undef ⇒ zero forall@* labels and zero
+    //     forall_connect@* labels.
+    let _ = engine.eval(&module);
+    let snap_initial = engine.snapshot().expect("initial snapshot");
+    assert!(
+        collect_forall_labels(snap_initial).is_empty(),
+        "Constraint-arm: expected zero forall@v[*] labels at Undef"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_initial, "v").is_empty(),
+        "Connect-arm namespace must be empty for a Constraint-only fixture at Undef"
+    );
+
+    // (2) edit n=3 ⇒ forall@v[0..2] and zero Connect-arm labels.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param(n, 3) should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    assert_eq!(
+        collect_forall_labels(snap_3),
+        vec![
+            "forall@v[0]".to_string(),
+            "forall@v[1]".to_string(),
+            "forall@v[2]".to_string(),
+        ],
+        "Constraint-arm regression: expected forall@v[0..2] after edit n=3"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_3, "v").is_empty(),
+        "Connect-arm namespace must remain empty for a Constraint-only fixture at n=3"
+    );
+    // The forall_emitted ledger has exactly one slot (the lone forall in
+    // the fixture), and that slot holds the 3 emitted ConstraintNodeIds.
+    assert_eq!(
+        snap_3.forall_emitted.len(),
+        1,
+        "Constraint-arm regression: forall_emitted should have 1 slot"
+    );
+    assert_eq!(
+        snap_3.forall_emitted[0].len(),
+        3,
+        "Constraint-arm regression: forall_emitted[0] should hold 3 ids at n=3"
+    );
+
+    // (3) edit n=1 ⇒ exactly forall@v[0] remains.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(1))
+        .expect("edit_param(n, 1) should succeed");
+    let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
+    assert_eq!(
+        collect_forall_labels(snap_1),
+        vec!["forall@v[0]".to_string()],
+        "Constraint-arm regression: expected forall@v[0] after edit n=1"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_1, "v").is_empty(),
+        "Connect-arm namespace must remain empty after edit n=1"
+    );
+    assert_eq!(
+        snap_1.forall_emitted[0].len(),
+        1,
+        "Constraint-arm regression: forall_emitted[0] should hold 1 id at n=1"
+    );
+
+    // (4) edit n=0 ⇒ all forall@v[*] cleared.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(0))
+        .expect("edit_param(n, 0) should succeed");
+    let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
+    assert!(
+        collect_forall_labels(snap_0).is_empty(),
+        "Constraint-arm regression: expected zero forall@v[*] after edit n=0"
+    );
+    assert!(
+        snap_0.forall_emitted[0].is_empty(),
+        "Constraint-arm regression: forall_emitted[0] should be empty at n=0"
+    );
+
+    // (5) edit n=2 ⇒ forall@v[0..1] re-emitted from the cleared state.
+    let _ = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param(n, 2) should succeed");
+    let snap_2 = engine.snapshot().expect("snapshot after edit n=2");
+    assert_eq!(
+        collect_forall_labels(snap_2),
+        vec!["forall@v[0]".to_string(), "forall@v[1]".to_string()],
+        "Constraint-arm regression: expected forall@v[0..1] after edit n=2"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_2, "v").is_empty(),
+        "Connect-arm namespace must remain empty after edit n=2"
+    );
+    assert_eq!(
+        snap_2.forall_emitted[0].len(),
+        2,
+        "Constraint-arm regression: forall_emitted[0] should hold 2 ids at n=2"
+    );
+}
