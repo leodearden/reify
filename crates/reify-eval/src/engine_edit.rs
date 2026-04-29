@@ -1080,8 +1080,13 @@ impl Engine {
             if !dirty_cone.contains(&field_node) {
                 continue;
             }
-            let new_field_value =
-                crate::engine_eval::elaborate_field(field, &values, &functions, &self.meta_map);
+            let new_field_value = crate::engine_eval::elaborate_field(
+                field,
+                &values,
+                &functions,
+                &self.meta_map,
+                Some(&runtime_sink),
+            );
             values.insert(field_cell.clone(), new_field_value.clone());
             new_snapshot.values.insert(
                 field_cell,

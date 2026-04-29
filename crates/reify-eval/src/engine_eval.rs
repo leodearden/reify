@@ -1089,7 +1089,13 @@ impl Engine {
         // to refresh composed fields when their tracked dependencies change
         // — see `engine_edit.rs` for the incremental call site.
         for field in &module.fields {
-            let field_value = elaborate_field(field, &values, &functions, &self.meta_map);
+            let field_value = elaborate_field(
+                field,
+                &values,
+                &functions,
+                &self.meta_map,
+                Some(&runtime_sink),
+            );
             let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
             values.insert(field_id.clone(), field_value.clone());
             snapshot
