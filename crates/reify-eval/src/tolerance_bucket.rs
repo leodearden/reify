@@ -112,6 +112,27 @@ mod tests {
     }
 
     #[test]
+    fn lookup_returns_loosest_satisfying_entry_among_many() {
+        let mut bucket = ToleranceBucket::<&str>::new();
+        // Insert 0.001 first — succeeds (no existing entry satisfies 0.001).
+        assert!(bucket.insert(0.001, "A"));
+        // Insert 0.0001 — succeeds because 0.001 does NOT satisfy 0.0001 (0.001 > 0.0001).
+        assert!(bucket.insert(0.0001, "B"));
+        assert_eq!(bucket.len(), 2);
+
+        // lookup(0.001): largest cached_tol <= 0.001 is 0.001 = "A".
+        assert_eq!(bucket.lookup(0.001), Some(&"A"));
+        // lookup(0.01): both satisfy; loosest = 0.001 = "A".
+        assert_eq!(bucket.lookup(0.01), Some(&"A"));
+        // lookup(0.0005): only 0.0001 satisfies (0.001 > 0.0005); loosest = 0.0001 = "B".
+        assert_eq!(bucket.lookup(0.0005), Some(&"B"));
+        // lookup(0.0001): largest cached_tol <= 0.0001 is 0.0001 = "B".
+        assert_eq!(bucket.lookup(0.0001), Some(&"B"));
+        // lookup(0.00001): nothing satisfies.
+        assert!(bucket.lookup(0.00001).is_none());
+    }
+
+    #[test]
     fn insert_idempotent_when_existing_entry_satisfies() {
         let mut bucket = ToleranceBucket::<&str>::new();
         // First insert: no existing entry satisfies 0.001, so it succeeds.
