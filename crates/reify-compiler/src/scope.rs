@@ -247,4 +247,24 @@ mod tests {
         let (_, ty, _) = scope.names["x"].clone();
         assert_eq!(ty, Type::Real, "existing type must not be overwritten");
     }
+
+    /// Task 2612 step-4: registering the same cluster name twice must panic in
+    /// debug builds via `debug_assert!`.
+    ///
+    /// The production-path early-return diagnostic in `compile_match_arm_decl_group`
+    /// (entity.rs) already prevents reaching `register_match_arm_group` a second
+    /// time for the same name during normal compilation. This unit test exercises
+    /// the API contract directly — it documents that `register_match_arm_group` is
+    /// the defensive backstop if that early-return is ever refactored away.
+    ///
+    /// RED before the `debug_assert!` exists; GREEN after.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "duplicate cluster registration for")]
+    fn register_match_arm_group_panics_on_duplicate_in_debug_builds() {
+        let mut scope = CompilationScope::new("TestEntity");
+        scope.register_match_arm_group("head", make_test_group("head"));
+        // Second call with same name must panic via debug_assert!.
+        scope.register_match_arm_group("head", make_test_group("head"));
+    }
 }
