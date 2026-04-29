@@ -406,4 +406,115 @@ mod tests {
             "sweep with steps==0 should yield an empty List"
         );
     }
+
+    // ── sweep(): headline acceptance test (PRD task 5) ────────────────────
+
+    /// Decompose a `Value::Transform` into its translation `[tx, ty, tz]`
+    /// (SI metres). Mirrors the pattern in
+    /// `snapshot.rs::tests::decompose_transform_for_assert`.
+    fn translation_of_transform(t: &Value) -> [f64; 3] {
+        let trans = match t {
+            Value::Transform { translation, .. } => translation.as_ref(),
+            other => panic!("expected Value::Transform, got {:?}", other),
+        };
+        let comps = match trans {
+            Value::Vector(c) if c.len() == 3 => c,
+            other => panic!("expected Value::Vector len=3, got {:?}", other),
+        };
+        let read = |v: &Value| -> f64 {
+            match v {
+                Value::Real(r) => *r,
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected numeric component, got {:?}", other),
+            }
+        };
+        [read(&comps[0]), read(&comps[1]), read(&comps[2])]
+    }
+
+    /// Extract a snapshot's body 0 world translation (assumes id=0 sits
+    /// at index 0 of the bodies list).
+    fn body_0_translation(snapshot: &Value) -> [f64; 3] {
+        let smap = match snapshot {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected snapshot bodies List, got {:?}", other),
+        };
+        let body = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("expected snapshot body record Map, got {:?}", other),
+        };
+        let wt = body
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body record must carry world_transform");
+        translation_of_transform(wt)
+    }
+
+    /// Headline acceptance test (PRD task 5): 11 evenly-spaced
+    /// snapshots over a 0..1m prismatic +X joint. The i-th snapshot's
+    /// body sits at world translation (i/10, 0, 0). Endpoints match
+    /// `snapshot(m, [bind(j, range.lower)])` and `snapshot(m, [bind(j,
+    /// range.upper)])` per spec §13.4.
+    #[test]
+    fn sweep_eleven_steps_evenly_spaced_first_last_match_snapshot() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+        let result = eval_builtin(
+            "sweep",
+            &[m.clone(), j.clone(), r.clone(), Value::Int(11)],
+        );
+        let list = match result {
+            Value::List(l) => l,
+            other => panic!("expected Value::List, got {:?}", other),
+        };
+        assert_eq!(list.len(), 11, "sweep with steps=11 should produce 11 snapshots");
+
+        // Each snapshot is a Snapshot Map with kind="snapshot"; body 0
+        // sits at world translation (i/10, 0, 0).
+        for i in 0..=10 {
+            let snap = &list[i];
+            let smap = match snap {
+                Value::Map(m) => m,
+                other => panic!("snap[{}] should be a Map, got {:?}", i, other),
+            };
+            assert_eq!(
+                smap.get(&Value::String("kind".to_string())),
+                Some(&Value::String("snapshot".to_string())),
+                "snap[{}].kind should be 'snapshot'",
+                i
+            );
+            let [tx, ty, tz] = body_0_translation(snap);
+            let expected_x = (i as f64) / 10.0;
+            assert!(
+                (tx - expected_x).abs() < 1e-12,
+                "snap[{}] body translation x should be {}, got {}",
+                i,
+                expected_x,
+                tx
+            );
+            assert!(ty.abs() < 1e-12, "snap[{}] body translation y should be 0, got {}", i, ty);
+            assert!(tz.abs() < 1e-12, "snap[{}] body translation z should be 0, got {}", i, tz);
+        }
+
+        // First snapshot equals snapshot(m, [bind(j, length(0.0))]).
+        let bind_lo = eval_builtin("bind", &[j.clone(), Value::length(0.0)]);
+        let snap_lo = eval_builtin(
+            "snapshot",
+            &[m.clone(), Value::List(vec![bind_lo])],
+        );
+        assert_eq!(
+            list[0], snap_lo,
+            "first sweep element should equal snapshot(m, [bind(j, length(0))])"
+        );
+
+        // Last snapshot equals snapshot(m, [bind(j, length(1.0))]).
+        let bind_hi = eval_builtin("bind", &[j.clone(), Value::length(1.0)]);
+        let snap_hi = eval_builtin("snapshot", &[m, Value::List(vec![bind_hi])]);
+        assert_eq!(
+            list[10], snap_hi,
+            "last sweep element should equal snapshot(m, [bind(j, length(1))])"
+        );
+    }
 }
