@@ -384,6 +384,32 @@ fn append_body(
         _ => return Value::Undef,
     };
 
+    // Duplicate-solid detection: scan `bodies` for any existing record
+    // whose `solid` field is structurally equal to the new solid. Runs
+    // BEFORE the closed-chain checks so duplicate-solid takes precedence
+    // when both errors would fire (per design-decisions in plan.json:
+    // duplicate-solid is body-local and surfaces the smaller-scope
+    // diagnostic first).
+    //
+    // v0.1 uses structural `Value` equality — the docs §13.2 spec says
+    // "by referential identity" but Reify's Value model only exposes
+    // structural equality. The follow-on docs task (#2538) reconciles
+    // the spec wording with the v0.1 implementation.
+    for existing in &bodies {
+        if let Value::Map(b) = existing {
+            if b.get(&Value::String("solid".to_string())) == Some(&solid) {
+                return make_error_mechanism(
+                    mech_map,
+                    "duplicate_solid",
+                    Vec::new(),
+                    Vec::new(),
+                    "duplicate solid: solid value already attached to a body in this mechanism"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     // Closed-chain conflict detection: if `at` is already mapped to a
     // *different* parent, surface a `closed_chain` error before any
     // mutation. (Same-parent re-registration is a no-op overwrite.)
