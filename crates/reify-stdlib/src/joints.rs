@@ -3477,6 +3477,24 @@ mod tests {
         }
     }
 
+    // ── transform_at on spherical: identity quaternion (step-5) ──────────────
+
+    #[test]
+    fn transform_at_spherical_identity_quaternion_returns_identity() {
+        // Build the spherical joint inline; the spherical_joint() fixture
+        // helper lands in step-6 alongside the transform_at impl.
+        let sj = eval_builtin("spherical", &[angle_range_0_to_pi()]);
+        let identity_q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("transform_at", &[sj, identity_q]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical identity quaternion → identity Transform",
+        );
+    }
+
     // ── spherical constructor: validation surface (step-3) ───────────────────
 
     #[test]
