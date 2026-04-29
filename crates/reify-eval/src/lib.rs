@@ -1150,6 +1150,20 @@ structure S {
         );
     }
 
+    // ── Type-narrow contract: ResolutionProblem.functions (task #2413) ──────────
+    //
+    // Pin the field shape to `Arc<[CompiledFunction]>` so a future regression
+    // to `Arc<Vec<CompiledFunction>>` (or any other inner T) fails to compile
+    // here. The Arc-identity sentinel tests below cover the *sharing* invariant;
+    // this pin guards the *layout* invariant — single-allocation slice Arc, one
+    // pointer hop instead of Arc → Vec header → heap (task #2286 follow-up).
+    const _: fn() = || {
+        use std::sync::Arc;
+        use reify_types::{CompiledFunction, ResolutionProblem};
+        let _typed: fn(&ResolutionProblem) -> &Arc<[CompiledFunction]> =
+            |p| &p.functions;
+    };
+
     // ── Arc-sharing invariant: Engine.functions ───────────────────────────────
 
     /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
