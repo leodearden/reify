@@ -235,9 +235,10 @@ fn full_revolve_with_history_reports_no_caps() {
     // 2 radial (perpendicular to Z, synthesized by the C++ post-pass in
     // make_revolve_with_history for annular-disk surfaces, task 2636).
     // Every profile edge produces exactly one face_generated record.
-    assert!(
-        history.face_generated.len() >= 4,
-        "expected ≥4 generated faces (4 rect profile edges → 4 lateral faces: \
+    assert_eq!(
+        history.face_generated.len(),
+        4,
+        "expected exactly 4 generated-face records (one per rect profile edge: \
          2 cylindrical from axial edges via OCCT Generated(), \
          2 annular-disk from radial edges via C++ synthesis post-pass), \
          got {} ({:?})",

@@ -555,6 +555,16 @@ void emit_cap_face_indices(
 ///   |dot| ≤ DIR_TOL    → purely radial  (synthesize annular-disk record)
 ///   |dot| ≥ 1.0-DIR_TOL → purely axial   (OCCT Generated() should cover; skip)
 ///   otherwise           → slanted (OCCT reports conical sweeps correctly; skip)
+///
+/// CALLER CONTRACT: profile edges geometrically intended to be radial must
+/// have a residual axial component ≤ 1e-6 (i.e. the edge direction must be
+/// perpendicular to the rotation axis to within ~0.057 arcseconds). Edges
+/// constructed from analytic/exact coordinates satisfy this easily; edges
+/// derived from trig approximations typically have residuals ≤ 1e-9 to 1e-12
+/// and are well within tolerance. If a radial edge has a larger residual it
+/// will be classified 'slanted', OCCT will also not report it, and the
+/// corresponding annular-disk face will have no face_generated record
+/// (silent gap — callers must ensure sufficient construction precision).
 constexpr double DIR_TOL = 1e-6;
 
 /// Positional tolerance (m) for matching a result face's centroid axial
@@ -569,18 +579,6 @@ constexpr double POS_TOL = 1e-6;
 /// matching tolerance (POS_TOL) is applied consistently.
 static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
     return gp_Vec(axis.Location(), point).Dot(gp_Vec(axis.Direction()));
-}
-
-/// Compute the axial coordinate of a face's centroid along `axis`.
-///
-/// Uses `BRepGProp::SurfaceProperties + GProp_GProps::CentreOfMass` to
-/// locate the centroid, then projects it via `compute_axial_coord`.
-/// Used by `synthesize_full_revolution_radial_face_records` to match
-/// candidate annular-disk faces to the source radial edge by axial position.
-static double compute_face_axial_coord(const TopoDS_Face& face, const gp_Ax1& axis) {
-    GProp_GProps fprops;
-    BRepGProp::SurfaceProperties(face, fprops);
-    return compute_axial_coord(fprops.CentreOfMass(), axis);
 }
 
 /// Synthesize `face_generated` records for purely-radial profile edges
@@ -605,6 +603,26 @@ static double compute_face_axial_coord(const TopoDS_Face& face, const gp_Ax1& ax
 /// records interleave with OCCT-reported ones in profile-edge order.
 /// This preserves the `local_index = parent_subshape_index` invariant that
 /// `populate_revolve_attributes` (crates/reify-eval) relies on.
+///
+/// INVARIANT CAVEAT: `local_index = parent_subshape_index` holds only when
+/// each profile edge index appears exactly once in face_generated. If OCCT's
+/// Generated() reports two records for the same edge (possible in degenerate
+/// sweeps with self-touching profiles), or if a synthesized record collides
+/// with an OCCT-reported one (prevented by the `tracked_parent_edges` guard
+/// but theoretically possible if OCCT partially reports a radial edge), the
+/// stable-sort will place duplicates adjacently but positions will diverge
+/// from parent_subshape_index and populate_revolve_attributes will assign
+/// misaligned local_index values silently. Well-formed CAD profiles (distinct
+/// edges, no self-intersection) are not expected to trigger this path.
+///
+/// MATCHING CAVEAT (same-z radial edges): the face-matching logic is greedy
+/// (first untracked face whose normal is parallel to the axis AND whose
+/// centroid axial coordinate matches wins). If two profile edges share the
+/// same axial coordinate (e.g. a profile with a slot that has two radial
+/// edges at the same z), assignment between the two annular-disk faces is
+/// arbitrary and depends on result_face_map iteration order. CALLER CONTRACT:
+/// distinct radial profile edges must sit at distinct axial positions for
+/// synthesis to be unambiguous.
 ///
 /// Coverage by profile shape (empirical, OCCT 7.5.x):
 ///   rect (2 axial + 2 radial)        → 2 OCCT-reported + 2 synthesized
@@ -687,8 +705,8 @@ static void synthesize_full_revolution_radial_face_records(
             const TopoDS_Face face = TopoDS::Face(fshape);
 
             // Compute face normal at centroid (mirrors query_face_normal).
-            // Centroid is also needed for compute_face_axial_coord, so we
-            // compute it once via BRepGProp::SurfaceProperties.
+            // Centroid is also needed for the axial-coordinate match below,
+            // so we compute it once via BRepGProp::SurfaceProperties.
             GProp_GProps fprops;
             BRepGProp::SurfaceProperties(face, fprops);
             gp_Pnt centroid = fprops.CentreOfMass();
