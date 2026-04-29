@@ -1119,8 +1119,13 @@ mod tests {
     ///
     /// `bracket_compile_error.ri` parses cleanly so `load_file` succeeds; it
     /// contains an unresolved-name reference (`unknown_name`) that produces a
-    /// compile-time Error diagnostic — confirmed by `check_compile_error_exits_failure`
-    /// in `crates/reify-cli/tests/cli_check.rs`.
+    /// compile-time Error diagnostic. `check_compile_error_exits_failure` in
+    /// `crates/reify-cli/tests/cli_check.rs` confirms the fixture causes a
+    /// non-zero exit — that is informational linkage only (it checks exit
+    /// status / stderr, not `Severity::Error` specifically). The `!diags.is_empty()`
+    /// and `any(severity == "Error")` assertions below are the authoritative guards
+    /// for this test; if `unknown_name` resolution were ever relaxed to a Warning
+    /// the final assertion below would fail explicitly here.
     #[test]
     fn get_diagnostics_severity_is_pascal_case_wire_format() {
         use reify_types::Severity;
@@ -1139,14 +1144,11 @@ mod tests {
              fixture or grammar may have changed"
         );
 
-        let valid = [
-            Severity::Error.as_wire_str(),
-            Severity::Warning.as_wire_str(),
-            Severity::Info.as_wire_str(),
-        ];
         for d in &diags {
             assert!(
-                valid.contains(&d.severity.as_str()),
+                d.severity == Severity::Error.as_wire_str()
+                    || d.severity == Severity::Warning.as_wire_str()
+                    || d.severity == Severity::Info.as_wire_str(),
                 "get_diagnostics must emit PascalCase wire format (\"Error\"/\"Warning\"/\"Info\") \
                  but got {:?} — do not use Display (which returns lowercase) for MCP wire output",
                 d.severity,
