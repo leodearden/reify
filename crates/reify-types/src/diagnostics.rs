@@ -949,6 +949,37 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::FieldOutOfBounds).unwrap();
         assert_eq!(s, "\"FieldOutOfBounds\"");
     }
+
+    // --- FieldSampledInvalidConfig tests (task 2341 — W_FIELD_SAMPLED_INVALID_CONFIG) ---
+    // Pairs with the runtime parse-failure / invariant-violation handler in
+    // `crates/reify-eval/src/engine_eval.rs::build_sampled_field`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSampledInvalidConfig` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::FieldSampledInvalidConfig)`.
+    /// Pins existence of the new variant for v0.2 sampled-field parse-failure
+    /// and runtime-invariant-violation diagnostics.
+    #[test]
+    fn field_sampled_invalid_config_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d =
+            Diagnostic::warning("invalid").with_code(DiagnosticCode::FieldSampledInvalidConfig);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSampledInvalidConfig));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSampledInvalidConfig`
+    /// serializes as `"FieldSampledInvalidConfig"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_sampled_invalid_config_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
+        assert_eq!(s, "\"FieldSampledInvalidConfig\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
