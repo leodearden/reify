@@ -1088,7 +1088,7 @@ pub(crate) fn compile_entity(
                             // can distinguish "user wrote no guard" from "user's guard was broken".
                             GuardState::Broken
                         } else {
-                            GuardState::Compiled(compiled)
+                            GuardState::Compiled(Box::new(compiled))
                         }
                     }
                 };
@@ -2238,7 +2238,7 @@ fn compile_match_arm_decl_group(
                 type_args: resolved_type_args,
                 is_collection: false,
                 count_cell: None,
-                guard_state: GuardState::Compiled(arm_guard_expr.clone()),
+                guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 span: sub.span,
                 content_hash: sub.content_hash,
             });

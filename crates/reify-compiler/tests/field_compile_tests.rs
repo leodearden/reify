@@ -2,7 +2,7 @@
 //!
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
 
 // ── Step 13: compile analytical field ──────────────────────────────────
@@ -43,57 +43,299 @@ fn compile_field_analytical() {
     }
 }
 
-// ── Step 15 / 2416: compile sampled field emits v0.2 deferral diagnostic ───
+// ── Task 2341 step-5/8b: well-formed sampled field config compiles clean ────
 
 #[test]
-fn compile_field_sampled() {
-    let module = compile_source(
-        "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
+fn compile_field_sampled_with_well_formed_config_compiles_clean() {
+    // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when all five
+    // required keys (`grid`, `bounds`, `spacing`, `interpolation`, `data`)
+    // are present and each value is a clean-compiling expression, no
+    // `FieldSampledV02` deferral diagnostic is emitted and the compiled
+    // config Vec carries one `(String, CompiledExpr)` entry per key.
+    //
+    // Eval-time parsing of the values into a runtime `SampledField` is
+    // pinned by separate tests in `crates/reify-eval/tests/field_eval_tests.rs`.
+    //
+    // `bbox`/`point3` are stdlib builtins, so this test uses
+    // `compile_source_with_stdlib` to make those names resolve. (Steps 9/10
+    // wire the eval-time parsing that consumes the BoundingBox/Point shapes.)
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
     );
 
-    // sampled is deferred to v0.2: compilation must emit exactly one error and
-    // it must be FieldSampledV02 (tighter than .any() to catch regressions where
-    // the config path emits additional unrelated errors).
-    let errors = errors_only(&module);
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly one error (FieldSampledV02), got: {:?}",
-        errors
-    );
-    let diag = &errors[0];
-    assert_eq!(
-        diag.code,
-        Some(DiagnosticCode::FieldSampledV02),
-        "expected FieldSampledV02 code, got: {:?}",
-        diag.code
-    );
+    // Zero `FieldSampledV02` errors — the v0.1 deferral has been replaced.
+    let v02_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FieldSampledV02))
+        .collect();
     assert!(
-        diag.message.contains("v0.2") && diag.message.contains("sampled"),
-        "expected message to contain 'v0.2' and 'sampled', got: {:?}",
-        diag.message
+        v02_errs.is_empty(),
+        "expected zero FieldSampledV02 errors after v0.2 implementation, got: {:?}",
+        v02_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    assert!(!diag.labels.is_empty(), "expected at least one label");
-    assert!(!diag.labels[0].span.is_empty(), "expected non-empty span");
+
+    // No other compile errors should appear for this well-formed source.
+    let all_errs = errors_only(&module);
+    assert!(
+        all_errs.is_empty(),
+        "expected no errors for well-formed sampled field, got: {:?}",
+        all_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
-    assert_eq!(field.name, "pressure");
+    assert_eq!(field.name, "f");
 
-    // Source should be Sampled with an empty config (mirrors Imported: compile-time
-    // deferral diagnostic only; engine_eval.rs:652-653 returns Value::Undef regardless
-    // of config contents, so there is no runtime consumer of the compiled config).
+    // Source should be Sampled with five config entries — each compiled to a
+    // CompiledExpr — so engine_eval can later evaluate them and parse the
+    // results into a runtime `SampledField`.
     match &field.source {
         reify_compiler::CompiledFieldSource::Sampled { config } => {
-            assert!(
-                config.is_empty(),
-                "expected Sampled compiled config to be empty (dead at runtime — engine_eval.rs returns Undef), got: {:?}",
+            assert_eq!(
+                config.len(),
+                5,
+                "expected 5 compiled config entries (grid, bounds, spacing, interpolation, data), got: {:?}",
                 config.iter().map(|(k, _)| k).collect::<Vec<_>>()
             );
+            let keys: Vec<&str> = config.iter().map(|(k, _)| k.as_str()).collect();
+            for required in ["grid", "bounds", "spacing", "interpolation", "data"] {
+                assert!(
+                    keys.contains(&required),
+                    "expected `{}` key in compiled config, got: {:?}",
+                    required,
+                    keys
+                );
+            }
         }
         other => panic!("expected Sampled source, got: {:?}", other),
     }
+}
+
+// ── Task 2341 step-7/8b: sampled field config validation negative paths ─────
+
+#[test]
+fn compile_field_sampled_rejects_missing_data_key() {
+    // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when one of the
+    // five required keys is absent, exactly one error per missing key is
+    // emitted. This source provides every required key except `data`, so we
+    // expect exactly one error whose message mentions `data`.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" } }"#,
+    );
+
+    // Only count errors that reference the missing `data` key — there should
+    // be exactly one such diagnostic. We deliberately match on the message
+    // substring rather than a dedicated DiagnosticCode because the missing-key
+    // condition is a generic shape-validation error, not a user-facing
+    // diagnostic-code variant.
+    let data_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("'data'") || d.message.contains("`data`"))
+        .collect();
+    assert_eq!(
+        data_errs.len(),
+        1,
+        "expected exactly one error mentioning the missing `data` key, got {}: {:?}",
+        data_errs.len(),
+        data_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        data_errs[0].message.contains("missing")
+            || data_errs[0].message.contains("required"),
+        "expected the error message to indicate `data` is missing/required, got: {}",
+        data_errs[0].message
+    );
+    // No cascade: the missing-key error is the only error emitted (pins that
+    // a future regression introducing an unrelated diagnostic would not slip
+    // past the substring-filter above).
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_missing_bounds_key() {
+    // Pins step-8b's expansion of REQUIRED_KEYS to include `bounds`. Source
+    // omits `bounds` but provides every other required key, so we expect
+    // exactly one error whose message mentions `bounds`.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    let bounds_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("'bounds'") || d.message.contains("`bounds`"))
+        .collect();
+    assert_eq!(
+        bounds_errs.len(),
+        1,
+        "expected exactly one error mentioning the missing `bounds` key, got {}: {:?}",
+        bounds_errs.len(),
+        bounds_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        bounds_errs[0].message.contains("missing")
+            || bounds_errs[0].message.contains("required"),
+        "expected the error message to indicate `bounds` is missing/required, got: {}",
+        bounds_errs[0].message
+    );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_missing_spacing_key() {
+    // Pins step-8b's expansion of REQUIRED_KEYS to include `spacing`. Source
+    // omits `spacing` but provides every other required key, so we expect
+    // exactly one error whose message mentions `spacing`.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    let spacing_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("'spacing'") || d.message.contains("`spacing`"))
+        .collect();
+    assert_eq!(
+        spacing_errs.len(),
+        1,
+        "expected exactly one error mentioning the missing `spacing` key, got {}: {:?}",
+        spacing_errs.len(),
+        spacing_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        spacing_errs[0].message.contains("missing")
+            || spacing_errs[0].message.contains("required"),
+        "expected the error message to indicate `spacing` is missing/required, got: {}",
+        spacing_errs[0].message
+    );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_unknown_key() {
+    // Pins the v0.2 behavior: keys outside the closed set
+    // {grid, bounds, spacing, interpolation, data} produce an error
+    // mentioning both `unknown` and the offending key name. The five required
+    // keys are still present in the source so the missing-key check doesn't
+    // fire and confuse the diagnostic count.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] resolution = 100 } }"#,
+    );
+
+    let unknown_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("unknown") && d.message.contains("resolution"))
+        .collect();
+    assert_eq!(
+        unknown_errs.len(),
+        1,
+        "expected exactly one 'unknown' error mentioning `resolution`, got {}: {:?}",
+        unknown_errs.len(),
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_sampled_unknown_key_with_broken_value_does_not_cascade() {
+    // Pins the no-cascade design (functions.rs:327-330): when an unknown
+    // sampled-config key is encountered the entry is dropped WITHOUT calling
+    // `compile_expr` on its value.  A future refactor that accidentally
+    // compiles the dropped value would surface an extra "unresolved name"
+    // error from `nonexistent_func()`, breaking this test.  The five
+    // required keys are present so missing-key errors do not fire.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] bogus_key = nonexistent_func() } }"#,
+    );
+
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected only the unknown-key error (no cascade from compiling the dropped value), got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors_only(&module)[0].message.contains("unknown")
+            && errors_only(&module)[0].message.contains("bogus_key"),
+        "expected the single error to be the unknown-key diagnostic for `bogus_key`, got: {}",
+        errors_only(&module)[0].message
+    );
+}
+
+#[test]
+fn compile_field_sampled_duplicate_key_with_broken_value_does_not_cascade() {
+    // Sister test to the unknown-key no-cascade pin: a duplicate key whose
+    // value is a deliberately broken expression should not surface the
+    // unresolved-name error (functions.rs:343-344 drops without compiling).
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" grid = nonexistent_func() bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected only the duplicate-key error (no cascade from compiling the dropped value), got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors_only(&module)[0].message.contains("duplicate")
+            && errors_only(&module)[0].message.contains("grid"),
+        "expected the single error to be the duplicate-key diagnostic for `grid`, got: {}",
+        errors_only(&module)[0].message
+    );
+}
+
+#[test]
+fn compile_field_sampled_rejects_duplicate_grid_key() {
+    // Pins the v0.2 behavior: duplicate keys (e.g. two `grid = ...` lines)
+    // produce a duplicate-key error referencing the offending key. The four
+    // other required keys are present so missing-key errors do not fire.
+    let module = compile_source_with_stdlib(
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
+    );
+
+    let dup_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("duplicate") && d.message.contains("grid"))
+        .collect();
+    assert_eq!(
+        dup_errs.len(),
+        1,
+        "expected exactly one 'duplicate' error mentioning `grid`, got {}: {:?}",
+        dup_errs.len(),
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        errors_only(&module).len(),
+        1,
+        "expected exactly one total error, got: {:?}",
+        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 // ── Step 17: compose type check valid ───────────────────────────────

@@ -1,3 +1,10 @@
+// `Value` carries a `SampledField` whose `oob_emitted: AtomicBool` introduces
+// interior mutability that does NOT participate in `PartialEq`/`Ord`/`Hash`/
+// `content_hash`. `BTreeMap<Value, _>` (notably `Value::Map`) therefore preserves
+// its ordering invariants, but `clippy::mutable_key_type` still fires. See
+// `value.rs::SampledField` for the full rationale.
+#![allow(clippy::mutable_key_type)]
+
 pub mod annotation;
 pub mod constraint;
 pub mod diagnostics;
@@ -56,8 +63,8 @@ pub use provenance::SnapshotProvenance;
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
-    DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, ResultRef, Satisfaction,
-    Value, ValueMap, quaternion_is_finite,
+    DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
+    ResultRef, SampledField, SampledGridKind, Satisfaction, Value, ValueMap, quaternion_is_finite,
 };
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use spanned_ident::SpannedIdent;

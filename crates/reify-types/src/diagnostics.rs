@@ -251,6 +251,45 @@ pub enum DiagnosticCode {
     /// Emitted when a field declaration uses the `imported { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
     FieldImportedV02,
+    /// Origin: `crates/reify-expr/src/sampled.rs::sample_at_point`.
+    /// Emitted as a `Severity::Warning` once per Sampled field per session
+    /// when a `sample(field, point)` query falls outside the configured
+    /// `BoundingBox` bounds; the result is `Value::Undef`.
+    ///
+    /// Canonical message form:
+    /// `"sampled field '<name>' query is out of bounds; returning Undef"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FIELD_OUT_OF_BOUNDS`.
+    /// Once-per-field-per-session emission is enforced by an `AtomicBool`
+    /// `oob_emitted` flag on the runtime `SampledField` value
+    /// (see `crates/reify-types/src/value.rs::SampledField`).
+    FieldOutOfBounds,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::build_sampled_field`.
+    /// Emitted as a `Severity::Warning` when a `sampled` field's runtime
+    /// config fails to parse (typo'd grid kind, wrong interpolation name,
+    /// non-string slot for a string-keyed key, non-list `data`, etc.) or
+    /// violates a runtime invariant required by the interpolation primitives
+    /// (mismatched `data` length, axis grid with fewer than 2 nodes,
+    /// non-positive or non-finite spacing).
+    ///
+    /// On emission the field's lambda becomes `Value::Undef` and any
+    /// `sample(...)` call returns `Undef` — the warning gives the user a
+    /// clear message naming the field, the offending value, and (where
+    /// applicable) the allowed-set hint, instead of letting
+    /// `interp::interpolate_Nd`'s `assert!` panic the eval loop.
+    ///
+    /// Canonical message form:
+    /// `"sampled field '<name>': invalid <key>: expected <hint>, got <short_value>"`
+    /// (parse failure) or
+    /// `"sampled field '<name>': data length <N> does not match grid shape (<...>); expected <M> elements"`
+    /// (runtime invariant violation).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FIELD_SAMPLED_INVALID_CONFIG`.
+    /// Severity is `Warning` (not `Error`) for consistency with the sibling
+    /// `W_FIELD_OUT_OF_BOUNDS` and `W_INTERPOLATION_DEFERRED` warnings emitted
+    /// from the same dispatch path; downstream tooling that wants to surface
+    /// these as harder failures can filter by code at the consumer side.
+    FieldSampledInvalidConfig,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
@@ -907,6 +946,65 @@ mod tests {
     fn diagnostic_code_purpose_let_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::PurposeLetUnsupported).unwrap();
         assert_eq!(s, "\"PurposeLetUnsupported\"");
+    }
+
+    // --- FieldOutOfBounds tests (task 2341 — W_FIELD_OUT_OF_BOUNDS) ---
+    // Pairs with the runtime out-of-bounds detector in
+    // `crates/reify-expr/src/sampled.rs::sample_at_point`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldOutOfBounds` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::FieldOutOfBounds)`.
+    /// Pins existence of the new variant for v0.2 sampled-field OOB detection.
+    #[test]
+    fn field_out_of_bounds_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::warning("oob").with_code(DiagnosticCode::FieldOutOfBounds);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldOutOfBounds));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldOutOfBounds` serializes as
+    /// `"FieldOutOfBounds"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_out_of_bounds_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldOutOfBounds).unwrap();
+        assert_eq!(s, "\"FieldOutOfBounds\"");
+    }
+
+    // --- FieldSampledInvalidConfig tests (task 2341 — W_FIELD_SAMPLED_INVALID_CONFIG) ---
+    // Pairs with the runtime parse-failure / invariant-violation handler in
+    // `crates/reify-eval/src/engine_eval.rs::build_sampled_field`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSampledInvalidConfig` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::FieldSampledInvalidConfig)`.
+    /// Pins existence of the new variant for v0.2 sampled-field parse-failure
+    /// and runtime-invariant-violation diagnostics.
+    #[test]
+    fn field_sampled_invalid_config_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d =
+            Diagnostic::warning("invalid").with_code(DiagnosticCode::FieldSampledInvalidConfig);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSampledInvalidConfig));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSampledInvalidConfig`
+    /// serializes as `"FieldSampledInvalidConfig"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_sampled_invalid_config_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
+        assert_eq!(s, "\"FieldSampledInvalidConfig\"");
     }
 }
 

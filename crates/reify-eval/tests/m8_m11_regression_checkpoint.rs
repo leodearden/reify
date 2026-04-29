@@ -443,6 +443,8 @@ fn assert_all_value_variants_listed(v: &reify_types::Value) {
         Value::Range { .. } => true,
         // Matrix
         Value::Matrix(_) => true,
+        // Sampled field runtime payload (v0.2 — task 2341)
+        Value::SampledField(_) => true,
         // Undefined
         Value::Undef => true,
     };
