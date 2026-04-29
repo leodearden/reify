@@ -36,36 +36,51 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             make_world_sentinel()
         }
         "body" => {
-            // Dispatch on arity. Later steps extend with 4-arg (explicit
-            // parent) and 5-arg (explicit pose) forms; this step lands the
-            // 3-arg default-parent / identity-pose path.
-            match args.len() {
-                3 => {
-                    // Validate args[0] is a Mechanism Map.
-                    let mech_map = match &args[0] {
-                        Value::Map(m) => m,
-                        _ => return Some(Value::Undef),
-                    };
-                    if mech_map.get(&Value::String("kind".to_string()))
-                        != Some(&Value::String("mechanism".to_string()))
-                    {
-                        return Some(Value::Undef);
-                    }
-                    // Validate args[2] is a joint value.
-                    if !is_joint_value(&args[2]) {
-                        return Some(Value::Undef);
-                    }
-                    // Delegate to the 5-arg core with defaults.
-                    append_body(
-                        mech_map,
-                        args[1].clone(),
-                        args[2].clone(),
-                        make_world_sentinel(),
-                        identity_transform(),
-                    )
-                }
-                _ => return Some(Value::Undef),
+            // Dispatch on arity. Later steps extend with the 5-arg
+            // (explicit pose) form. The 3-arg (default parent = world)
+            // and 4-arg (explicit parent) forms both delegate to the
+            // 5-arg core (`append_body`) after substituting defaults.
+            if !matches!(args.len(), 3 | 4) {
+                return Some(Value::Undef);
             }
+
+            // Validate args[0] is a Mechanism Map.
+            let mech_map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            if mech_map.get(&Value::String("kind".to_string()))
+                != Some(&Value::String("mechanism".to_string()))
+            {
+                return Some(Value::Undef);
+            }
+
+            // Validate args[2] is a joint value.
+            if !is_joint_value(&args[2]) {
+                return Some(Value::Undef);
+            }
+
+            // Resolve the parent argument: 3-arg form defaults to the
+            // world sentinel; 4-arg form takes args[3] which must be a
+            // joint value or the world sentinel.
+            let parent = if args.len() == 4 {
+                if !is_joint_value(&args[3]) && !is_world(&args[3]) {
+                    return Some(Value::Undef);
+                }
+                args[3].clone()
+            } else {
+                make_world_sentinel()
+            };
+
+            // Delegate to the 5-arg core with the resolved parent and
+            // identity pose (5-arg form lands later).
+            append_body(
+                mech_map,
+                args[1].clone(),
+                args[2].clone(),
+                parent,
+                identity_transform(),
+            )
         }
         _ => return None,
     })
@@ -111,10 +126,6 @@ fn make_world_sentinel() -> Value {
 /// Returns true when `v` is the world-frame sentinel — a `Value::Map`
 /// whose `kind` field equals `"world"`. Used by `body()` parent-arg
 /// validation (the world sentinel is an acceptable parent value).
-//
-// Used by the `body()` builtin arm landed in a later step; allow dead
-// code until that arm wires it up.
-#[allow(dead_code)]
 fn is_world(v: &Value) -> bool {
     match v {
         Value::Map(m) => matches!(
