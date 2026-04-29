@@ -17,6 +17,8 @@
 //! the `engine_edit::edit_param` collection-count re-elaboration block that
 //! drives the runtime emission.
 
+use std::collections::{HashMap, HashSet};
+
 use reify_compiler::CompiledModule;
 use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
@@ -538,5 +540,177 @@ fn full_lifecycle_undef_to_three_to_zero_to_two_per_element_constraints() {
         collect_forall_labels(snap_2),
         vec!["forall@v[0]".to_string(), "forall@v[1]".to_string()],
         "expected forall@v[0..1] after edit_param to Int(2) following Int(0)"
+    );
+}
+
+/// Fixture with TWO `forall` declarations sharing the same `(variable,
+/// parent_entity, collection_sub_name)` triple — `(v, S, vents)` — but
+/// referring to different members in their bodies (`v.mass` vs
+/// `v.length`). Used to pin the reviewer-flagged ID-collision concern
+/// (reviewer_comprehensive correctness/id_collision).
+const FORALL_FIXTURE_SRC_TWO_FORALLS_SAME_TRIPLE: &str = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+    param length : Scalar = 1m
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: constraint v.mass < 50kg
+    forall v in vents: constraint v.length < 5m
+}
+"#;
+
+/// task-2629 step-25: pin the reviewer-flagged ID-collision concern in the
+/// runtime forall re-emission code in `engine_edit.rs`. Two
+/// `CompiledForallTemplate`s sharing the same
+/// `(variable, parent_entity, collection_sub_name)` triple currently produce
+/// identical `ConstraintNodeId`s because `cnid_entity` is built only from
+/// that triple, so the second template's emissions silently overwrite the
+/// first's in `graph.constraints` (and the first template's
+/// `forall_emitted` ledger holds IDs that are also owned by the second
+/// template, breaking drain-on-decrease).
+///
+/// Sequence + assertions:
+/// 1. Initial `engine.eval()` — count is Undef ⇒ zero `forall@*` constraints.
+/// 2. `edit_param(S.n, Int(2))` — assert exactly **4 distinct
+///    `ConstraintNodeId`s** whose label starts with `forall@v[`. With the
+///    bug present, only 2 IDs would exist (the second template overwrites
+///    the first at the same IDs).
+/// 3. Partition the 4 constraints by the `member` field of the LHS
+///    `ValueRef` extracted from each constraint's `BinOp`: the partition
+///    must be `{mass: 2, length: 2}` (each forall contributes its full
+///    set of per-element emissions, with no cross-pollution).
+/// 4. `edit_param(S.n, Int(1))` — assert exactly **2 distinct
+///    `ConstraintNodeId`s** remain in `graph.constraints` with `forall@v[*]`
+///    labels, one per template (both at element index 0). With the bug
+///    present, the drain-on-decrease path would misfire because the first
+///    template's `forall_emitted[0]` ledger holds IDs also owned by the
+///    second template — the assertion would fail with either fewer than 2
+///    (over-cleanup) or stale IDs leaking through from the prior
+///    4-element snapshot.
+/// 5. `edit_param(S.n, Int(2))` again — assert 4 distinct IDs again with
+///    the `{mass: 2, length: 2}` partition restored, pinning that the
+///    cleanup-then-re-emit cycle is symmetric across both templates with
+///    no leakage between their `forall_emitted` ledgers.
+///
+/// RED before step-26 disambiguates `cnid_entity` with the per-template
+/// `t_idx`.
+#[test]
+fn edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constraint_ids() {
+    let module = compile_source(FORALL_FIXTURE_SRC_TWO_FORALLS_SAME_TRIPLE);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // Helper: collect all (id, member) pairs for forall@v[*] constraints,
+    // pulling the LHS member from `BinOp { left: ValueRef(id), .. }`.
+    let collect_id_member_pairs = |snap: &Snapshot| -> Vec<(ConstraintNodeId, String)> {
+        snap.graph
+            .constraints
+            .iter()
+            .filter_map(|(id, n)| {
+                let label = n.label.as_deref()?;
+                if !label.starts_with("forall@v[") {
+                    return None;
+                }
+                let CompiledExprKind::BinOp { left, .. } = &n.expr.kind else {
+                    return None;
+                };
+                let CompiledExprKind::ValueRef(vid) = &left.kind else {
+                    return None;
+                };
+                Some((id.clone(), vid.member.clone()))
+            })
+            .collect()
+    };
+
+    // (1) Initial eval: count Undef ⇒ zero forall@v[*] constraints.
+    let _ = engine.eval(&module);
+    let initial_snap = engine.snapshot().expect("initial snapshot");
+    assert!(
+        collect_forall_labels(initial_snap).is_empty(),
+        "expected zero forall@v[*] when count is Undef"
+    );
+
+    // (2) edit n=2 ⇒ 4 distinct ConstraintNodeIds (2 per template × 2 templates).
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(2))
+        .expect("edit_param(n, 2) should succeed");
+    let snap_2 = engine.snapshot().expect("snapshot after edit n=2");
+    let pairs_2 = collect_id_member_pairs(snap_2);
+    let ids_2: HashSet<ConstraintNodeId> = pairs_2.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(
+        ids_2.len(),
+        4,
+        "expected 4 distinct ConstraintNodeIds for two foralls × 2 elements (got {} — id-collision bug present?)",
+        ids_2.len()
+    );
+
+    // (3) Partition by member: each forall contributed its 2 emissions.
+    let mut by_member: HashMap<String, usize> = HashMap::new();
+    for (_, member) in &pairs_2 {
+        *by_member.entry(member.clone()).or_insert(0) += 1;
+    }
+    let mut expected: HashMap<String, usize> = HashMap::new();
+    expected.insert("mass".to_string(), 2);
+    expected.insert("length".to_string(), 2);
+    assert_eq!(
+        by_member, expected,
+        "expected per-member partition {{mass: 2, length: 2}}, got {:?} (cross-pollution between foralls?)",
+        by_member
+    );
+
+    // (4) edit n=1 ⇒ exactly 2 distinct ConstraintNodeIds remain (one per
+    //     template, both at element index 0). Drain-on-decrease must not
+    //     leak across the per-template ledgers.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(1))
+        .expect("edit_param(n, 1) should succeed");
+    let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
+    let pairs_1 = collect_id_member_pairs(snap_1);
+    let ids_1: HashSet<ConstraintNodeId> = pairs_1.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(
+        ids_1.len(),
+        2,
+        "expected exactly 2 distinct ConstraintNodeIds after count decrease 2 → 1 (got {} — drain-on-decrease misfired?)",
+        ids_1.len()
+    );
+    let mut by_member_1: HashMap<String, usize> = HashMap::new();
+    for (_, member) in &pairs_1 {
+        *by_member_1.entry(member.clone()).or_insert(0) += 1;
+    }
+    let mut expected_1: HashMap<String, usize> = HashMap::new();
+    expected_1.insert("mass".to_string(), 1);
+    expected_1.insert("length".to_string(), 1);
+    assert_eq!(
+        by_member_1, expected_1,
+        "expected per-member partition {{mass: 1, length: 1}} after count decrease, got {:?}",
+        by_member_1
+    );
+
+    // (5) edit n=2 again ⇒ 4 distinct IDs restored with the {mass:2, length:2}
+    //     partition. Pins symmetry of cleanup-then-re-emit across both templates.
+    let _ = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("second edit_param(n, 2) should succeed");
+    let snap_2_again = engine.snapshot().expect("snapshot after second edit n=2");
+    let pairs_2_again = collect_id_member_pairs(snap_2_again);
+    let ids_2_again: HashSet<ConstraintNodeId> =
+        pairs_2_again.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(
+        ids_2_again.len(),
+        4,
+        "expected 4 distinct ConstraintNodeIds after re-grow 1 → 2 (got {} — ledger leak between templates?)",
+        ids_2_again.len()
+    );
+    let mut by_member_2_again: HashMap<String, usize> = HashMap::new();
+    for (_, member) in &pairs_2_again {
+        *by_member_2_again.entry(member.clone()).or_insert(0) += 1;
+    }
+    assert_eq!(
+        by_member_2_again, expected,
+        "expected per-member partition {{mass: 2, length: 2}} after re-grow, got {:?}",
+        by_member_2_again
     );
 }
