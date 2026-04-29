@@ -82,8 +82,18 @@ pub(crate) fn is_geometry_let(
     known_geometry_lets: &HashSet<&str>,
 ) -> bool {
     match &expr.kind {
-        reify_syntax::ExprKind::FunctionCall { name, .. } => {
-            is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
+        reify_syntax::ExprKind::FunctionCall { name, args } => {
+            is_geometry_function(name)
+                && !functions.iter().any(|f| f.name == *name)
+                // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
+                // 2-ary geometry) from the kinematic
+                // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
+                // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
+                // form is not a geometry let — it routes through eval-time
+                // dispatch where the kinematic arm resolves it. Other arities
+                // still flow into compile_geometry_call's sweep arm and get
+                // its strict "expects exactly 2 arguments" diagnostic.
+                && !(name == "sweep" && args.len() == 4)
         }
         // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
         // populated only from let-binding names (never function names), and an Ident
