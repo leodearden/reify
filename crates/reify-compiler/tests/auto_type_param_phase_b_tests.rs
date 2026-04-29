@@ -32,13 +32,9 @@
 //! `SimpleConstraintChecker`. Templates are built via `TopologyTemplateBuilder`
 //! with literal constraint expressions (the mock ignores expr content).
 
-#![allow(unused_imports)]
-
 use reify_compiler::auto_type_param::*;
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
-use reify_types::{
-    CompiledExpr, CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value,
-};
+use reify_types::{CompiledExpr, CompiledFunction, ConstraintNodeId, Satisfaction, Value};
 
 // ─── step-1: empty input returns FeasibilityResult::Empty ─────────────────
 
@@ -114,7 +110,6 @@ fn filter_accepts_single_candidate_when_template_has_no_constraints() {
 /// to store in the `CompiledConstraint::expr` field.
 #[test]
 fn filter_accepts_candidate_when_all_constraints_satisfied() {
-    let cnid = ConstraintNodeId::new("Bearing", 0);
     let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr)
@@ -139,7 +134,6 @@ fn filter_accepts_candidate_when_all_constraints_satisfied() {
         "all-Satisfied constraints → candidate accepted; got: {:?}",
         result
     );
-    let _ = cnid; // Used to document which constraint is in the template.
 }
 
 // ─── step-7: any-Violated → rejected with violated ids ────────────────────
@@ -232,10 +226,11 @@ fn filter_treats_indeterminate_as_feasible_per_arch_2_5() {
 #[test]
 fn filter_only_violated_constraints_are_recorded_in_rejection() {
     let cnid_0 = ConstraintNodeId::new("Bearing", 0);
-    let cnid_1 = ConstraintNodeId::new("Bearing", 1);
     let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr.clone())
+        // Constraint index 1 exists in the template but returns Indeterminate —
+        // it must NOT appear in violated_constraints.
         .constraint("Bearing", 1, None, expr)
         .build();
     // Constraint 0: Violated; constraint 1: Indeterminate (the default).
@@ -262,7 +257,6 @@ fn filter_only_violated_constraints_are_recorded_in_rejection() {
         },
         "only Violated constraint ids must be recorded; Indeterminate id must not appear"
     );
-    let _ = cnid_1; // Documents that constraint 1 exists but must not appear in rejected.
 }
 
 // ─── step-13: input order is preserved (not re-sorted by Phase B) ─────────

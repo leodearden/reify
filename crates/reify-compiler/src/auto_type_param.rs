@@ -54,8 +54,8 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    ConstraintChecker, ConstraintInput, ConstraintNodeId, Diagnostic, DiagnosticCode,
-    DiagnosticLabel, CompiledFunction, SourceSpan,
+    CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId, Diagnostic,
+    DiagnosticCode, DiagnosticLabel, SourceSpan,
 };
 
 use crate::entity::satisfies_trait_bound;
@@ -302,6 +302,15 @@ pub enum FeasibilityResult {
 ///   in value-cell types and supply per-candidate resolved defaults.
 /// - **No parser/AST integration.** Same as Phase A — pure utility function.
 ///
+/// # Preconditions
+///
+/// Callers are expected to supply a **non-empty** `candidates` slice. Phase A's
+/// [`CandidateEnumeration::Found`] arm guarantees 1..=[`MAX_AUTO_TYPE_PARAM_CANDIDATES`]
+/// entries, so in normal usage this is always satisfied. Passing an empty slice
+/// is handled gracefully — the function returns `FeasibilityResult::Empty { rejected: [] }`
+/// immediately without invoking the checker — but this degenerate case has no
+/// semantic meaning for the selection phase and callers should avoid it.
+///
 /// # Determinism
 ///
 /// Input order is preserved in both `accepted` and `rejected`; callers are
@@ -335,23 +344,24 @@ pub fn filter_feasible_candidates(
     }
 
     let empty_values = ValueMap::new();
+
+    // Build the template's constraint list once — it does not change across
+    // candidates in Phase B.  When the deferred type-substitution pass lands
+    // (substituting Type::TypeParam(T) → Type::StructureRef(candidate)), this
+    // will need to move back inside the loop with per-candidate ValueMap setup.
+    let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        parameterized_template
+            .constraints
+            .iter()
+            .map(|c| (c.id.clone(), &c.expr))
+            .collect();
+
     let mut accepted: Vec<String> = Vec::new();
     let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
     for candidate in candidates {
-        // Build the constraint input for this candidate. Phase B uses an
-        // empty ValueMap (every cell Undef). The constraint checker will
-        // return Indeterminate for any constraint that depends on Undef
-        // cells, which counts as feasible per architecture §2.5.
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
-            parameterized_template
-                .constraints
-                .iter()
-                .map(|c| (c.id.clone(), &c.expr))
-                .collect();
-
         let input = ConstraintInput {
-            constraints,
+            constraints: constraints_template.clone(),
             values: &empty_values,
             functions,
             determinacy: None,
