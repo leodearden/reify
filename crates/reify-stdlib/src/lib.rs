@@ -17,6 +17,7 @@ mod joints;
 mod linalg;
 pub mod loop_closure;
 mod matrix;
+mod mechanism;
 mod numeric;
 mod orientation;
 mod trig;
@@ -50,6 +51,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = joints::eval_joints(name, args) {
+        return v;
+    }
+    if let Some(v) = mechanism::eval_mechanism(name, args) {
         return v;
     }
     Value::Undef
