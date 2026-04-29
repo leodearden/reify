@@ -29,7 +29,8 @@ pub mod warm_pool;
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
-    populate_extrude_attributes, propagate_attributes_via_brepalgoapi_history,
+    populate_extrude_attributes, populate_revolve_attributes,
+    propagate_attributes_via_brepalgoapi_history,
 };
 
 use std::collections::HashMap;

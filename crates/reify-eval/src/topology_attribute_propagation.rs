@@ -285,6 +285,71 @@ pub fn populate_extrude_attributes(
     Ok(())
 }
 
+/// Originate topology attributes for a `BRepPrimAPI_MakeRevol` (revolve)
+/// result, given the per-op history records returned by
+/// `OcctKernel::revolve_with_history`.
+///
+/// Mirrors [`populate_extrude_attributes`] but emits revolve-specific
+/// roles:
+///   - `start_cap_face_indices` → `Role::Cap(CapKind::Start)` (partial
+///     revolutions only; empty for full-2π).
+///   - `end_cap_face_indices` → `Role::Cap(CapKind::End)` (partial
+///     revolutions only; empty for full-2π).
+///   - `face_generated` → `Role::RevolvedFace` (NOT `Role::Side` — this
+///     is the per-op distinguisher between extrude lateral faces and
+///     revolve lateral faces, per task-5a design decisions).
+///
+/// `Role::AxisFace` is **not** emitted by this helper. The variant is
+/// declared in `Role` for type-system completeness — selectors built
+/// against the v0.2 vocabulary v2 (PRD line 102) need it stable — but
+/// detection of "this face touches the revolve axis" requires geometric
+/// analysis (face surface contains axis, or near-zero surface area)
+/// that is deferred to a follow-up task per task-5a's documented scope.
+///
+/// Local-index assignment, parameter semantics, and out-of-range error
+/// behaviour are identical to [`populate_extrude_attributes`]; see
+/// that helper's doc-comment for the parameter contract.
+pub fn populate_revolve_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &SweepOpHistoryRecords,
+) -> Result<(), QueryError> {
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Start),
+        "revolve start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::End),
+        "revolve end cap",
+    )?;
+
+    write_face_generated_attributes(
+        table,
+        feature_id,
+        profile_face_handles,
+        profile_edge_handles,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+        Role::RevolvedFace,
+        "revolve revolved face",
+    )?;
+
+    Ok(())
+}
+
 /// Shared helper: write `(feature_id, role, local_index = 0)` to each
 /// cap face index in `cap_indices`, validating that each index is in
 /// range for `result_face_handles`.
