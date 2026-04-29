@@ -196,10 +196,18 @@ fn count_children_per_parent(
 /// If the parent at `(parent_index, parent_subshape_index)` has more than
 /// one same-kind result child (count > 1), append a fresh
 /// `ModEntry { splitting_feature_id, split_index }` to `attr` and bump
-/// the per-parent `split_index` counter for the next sibling. For
-/// single-result parents (count == 1) this is a no-op — the v0.2 invariant
-/// is that `mod_history` is only augmented on actual splits, preserving
-/// prior history exactly for pure pass-through propagation.
+/// the per-parent `split_index` counter for the next sibling.
+///
+/// **Regression pin (`propagate_skips_mod_entry_for_single_result_parent`):**
+/// for single-result parents (count == 1) and parents absent from the
+/// count map (count == 0; defensive — the populator builds the map over
+/// the same record stream the propagator walks, so this branch is
+/// unreachable in practice) this is a no-op. The v0.2 invariant is that
+/// `mod_history` is only augmented on actual splits — pure pass-through
+/// propagation preserves prior `mod_history` exactly, including
+/// non-empty history accumulated by upstream split feeds (a parent that
+/// was itself split by an earlier feature retains its accumulated postfix
+/// when a later non-splitting op forwards it).
 fn maybe_append_split_entry(
     attr: &mut TopologyAttribute,
     parent_key: (u8, u32),
