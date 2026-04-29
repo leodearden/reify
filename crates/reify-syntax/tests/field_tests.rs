@@ -315,3 +315,34 @@ fn parse_imported_field_wrong_type_values_dropped() {
         other => panic!("expected Imported source, got {:?}", other),
     }
 }
+
+// ── Step 2689-2: imported field empty block ──────────────────────────
+
+/// Verify that an empty `imported { }` block (zero `field_config_entry` children)
+/// produces `Imported { path: None, format: None, grid: None }`.
+/// The grammar uses `repeat($.field_config_entry)` allowing zero entries; the
+/// lowering in `ts_parser.rs:746-789` initialises all three options to `None`
+/// and only mutates them inside the loop — so an empty block trivially yields
+/// all-None. This is the boundary of "partial block" as documented in `lib.rs:708-709`.
+#[test]
+fn parse_imported_field_empty_block() {
+    let (decls, errors) = parse_decls(
+        "field def fea : Point3 -> Scalar { source = imported { } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { path, format, grid } => {
+            assert_eq!(*path, None, "path should be None for empty block");
+            assert_eq!(*format, None, "format should be None for empty block");
+            assert_eq!(*grid, None, "grid should be None for empty block");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
