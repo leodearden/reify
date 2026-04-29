@@ -483,6 +483,95 @@ mod tests {
         assert!(super::joint_range_midpoint(&j).is_none());
     }
 
+    // ── per_joint_jacobian_local tests ───────────────────────────────────
+
+    #[test]
+    fn per_joint_jacobian_local_prismatic_x_unit() {
+        let j = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
+        let col = super::per_joint_jacobian_local(&j).expect("col");
+        // [ω; v]: angular zero, linear = unit X
+        assert!(col[0].abs() < 1e-12);
+        assert!(col[1].abs() < 1e-12);
+        assert!(col[2].abs() < 1e-12);
+        assert!((col[3] - 1.0).abs() < 1e-12);
+        assert!(col[4].abs() < 1e-12);
+        assert!(col[5].abs() < 1e-12);
+    }
+
+    #[test]
+    fn per_joint_jacobian_local_prismatic_unnormalized_axis() {
+        // axis [3, 4, 0] has magnitude 5; normalized → [0.6, 0.8, 0]
+        let axis = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let j = eval_builtin("prismatic", &[axis, length_range(0.0, 1.0)]);
+        let col = super::per_joint_jacobian_local(&j).expect("col");
+        assert!(col[0].abs() < 1e-12);
+        assert!(col[1].abs() < 1e-12);
+        assert!(col[2].abs() < 1e-12);
+        assert!((col[3] - 0.6).abs() < 1e-12);
+        assert!((col[4] - 0.8).abs() < 1e-12);
+        assert!(col[5].abs() < 1e-12);
+    }
+
+    #[test]
+    fn per_joint_jacobian_local_revolute_z() {
+        let j = eval_builtin(
+            "revolute",
+            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
+        );
+        let col = super::per_joint_jacobian_local(&j).expect("col");
+        // angular = unit Z, linear zero
+        assert!(col[0].abs() < 1e-12);
+        assert!(col[1].abs() < 1e-12);
+        assert!((col[2] - 1.0).abs() < 1e-12);
+        assert!(col[3].abs() < 1e-12);
+        assert!(col[4].abs() < 1e-12);
+        assert!(col[5].abs() < 1e-12);
+    }
+
+    #[test]
+    fn per_joint_jacobian_local_coupling_revolute_ratio_2() {
+        let parent = eval_builtin(
+            "revolute",
+            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
+        );
+        let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
+        let col = super::per_joint_jacobian_local(&coupling).expect("col");
+        // ratio * parent_jac = ratio * [0,0,1, 0,0,0] = [0,0,2, 0,0,0]
+        assert!(col[0].abs() < 1e-12);
+        assert!(col[1].abs() < 1e-12);
+        assert!((col[2] - 2.0).abs() < 1e-12);
+        assert!(col[3].abs() < 1e-12);
+        assert!(col[4].abs() < 1e-12);
+        assert!(col[5].abs() < 1e-12);
+    }
+
+    #[test]
+    fn per_joint_jacobian_local_unknown_kind_returns_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("spherical".to_string()),
+        );
+        let j = Value::Map(m);
+        assert!(super::per_joint_jacobian_local(&j).is_none());
+    }
+
+    #[test]
+    fn per_joint_jacobian_local_missing_axis_returns_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
+        let j = Value::Map(m);
+        assert!(super::per_joint_jacobian_local(&j).is_none());
+    }
+
+    #[test]
+    fn per_joint_jacobian_local_non_map_returns_none() {
+        assert!(super::per_joint_jacobian_local(&Value::Real(0.5)).is_none());
+    }
+
     #[test]
     fn joint_range_midpoint_non_map_returns_none() {
         assert!(super::joint_range_midpoint(&Value::Real(0.5)).is_none());
