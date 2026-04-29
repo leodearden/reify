@@ -109,6 +109,34 @@ where
     Ok(values)
 }
 
+/// Record a [`FeatureTag`] in `table` for every id in `ids`.
+///
+/// Each tag is derived from `parent_tag` with `sub_index` set to the
+/// enumerate position (overriding `parent_tag.sub_index`). `source_span`
+/// and `step_kind` are copied verbatim from `parent_tag`.
+///
+/// Called by every `*_with_tags` selector **before** applying its filter
+/// predicate, ensuring the table is fully populated regardless of which
+/// sub-shapes pass the predicate. This centralises the per-child tag-
+/// derivation rule so a single change here propagates to all four tagged
+/// variants.
+fn record_subshape_tags(
+    table: &mut FeatureTagTable,
+    ids: &[GeometryHandleId],
+    parent_tag: FeatureTag,
+) {
+    for (i, id) in ids.iter().enumerate() {
+        table.record(
+            *id,
+            FeatureTag {
+                source_span: parent_tag.source_span,
+                step_kind: parent_tag.step_kind,
+                sub_index: i as u32,
+            },
+        );
+    }
+}
+
 /// Return the subset of `extract_edges(handle)` whose length lies in
 /// `[min_m, max_m]` (inclusive on both ends).
 ///
@@ -172,17 +200,7 @@ pub fn edges_by_length_with_tags<K: GeometryKernel + ?Sized>(
     max_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(parent_handle)?;
-    // Record a per-edge tag for every extracted edge (before filtering).
-    for (i, edge_id) in edges.iter().enumerate() {
-        table.record(
-            *edge_id,
-            FeatureTag {
-                source_span: parent_tag.source_span,
-                step_kind: parent_tag.step_kind,
-                sub_index: i as u32,
-            },
-        );
-    }
+    record_subshape_tags(table, &edges, parent_tag);
     let values = query_per_subshape(
         kernel,
         &edges,
@@ -264,17 +282,7 @@ pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(parent_handle)?;
-    // Record a per-face tag for every extracted face (before filtering).
-    for (i, face_id) in faces.iter().enumerate() {
-        table.record(
-            *face_id,
-            FeatureTag {
-                source_span: parent_tag.source_span,
-                step_kind: parent_tag.step_kind,
-                sub_index: i as u32,
-            },
-        );
-    }
+    record_subshape_tags(table, &faces, parent_tag);
     let values = query_per_subshape(
         kernel,
         &faces,
@@ -552,17 +560,7 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     })?;
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(parent_handle)?;
-    // Record a per-edge tag for every extracted edge (before filtering).
-    for (i, edge_id) in edges.iter().enumerate() {
-        table.record(
-            *edge_id,
-            FeatureTag {
-                source_span: parent_tag.source_span,
-                step_kind: parent_tag.step_kind,
-                sub_index: i as u32,
-            },
-        );
-    }
+    record_subshape_tags(table, &edges, parent_tag);
     let values = query_per_subshape(
         kernel,
         &edges,
@@ -650,17 +648,7 @@ pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
     tol_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(parent_handle)?;
-    // Record a per-edge tag for every extracted edge (before filtering).
-    for (i, edge_id) in edges.iter().enumerate() {
-        table.record(
-            *edge_id,
-            FeatureTag {
-                source_span: parent_tag.source_span,
-                step_kind: parent_tag.step_kind,
-                sub_index: i as u32,
-            },
-        );
-    }
+    record_subshape_tags(table, &edges, parent_tag);
     let values = query_per_subshape(
         kernel,
         &edges,

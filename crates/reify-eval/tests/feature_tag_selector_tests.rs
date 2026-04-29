@@ -18,7 +18,7 @@
 
 use reify_eval::topology_selectors;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{FeatureTag, FeatureTagTable, GeometryHandleId, SourceSpan, StepKind, Value};
+use reify_types::{FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, SourceSpan, StepKind, Value};
 
 // ─── edges_by_length_with_tags ────────────────────────────────────────────────
 
@@ -287,5 +287,206 @@ fn edges_parallel_to_with_tags_matches_baseline_and_records_per_edge_tags() {
         sub_indices,
         vec![0u32, 1, 2],
         "sub_index values must be the enumerate positions {{0,1,2}}"
+    );
+}
+
+// ─── edges_parallel_to_with_tags: 'fail before kernel touch' contract ─────────
+
+/// `edges_parallel_to_with_tags` with a zero axis must return
+/// `Err(QueryFailed)` *before* calling `extract_edges` or mutating `table`.
+///
+/// This pins the 'fail before kernel touch' contract documented in the
+/// function's rustdoc: `normalize3(axis)` is the first operation, so a
+/// degenerate axis never reaches the kernel or the tag-recording step.
+#[test]
+fn edges_parallel_to_with_tags_zero_axis_errors_before_table_mutation() {
+    let parent = GeometryHandleId(1);
+    // No edges configured — the kernel must not be touched at all.
+    let mut kernel = MockGeometryKernel::new();
+    let mut table = FeatureTagTable::default();
+    let parent_tag = FeatureTag {
+        source_span: SourceSpan::new(0, 10),
+        step_kind: StepKind::Primitive,
+        sub_index: 0,
+    };
+
+    let result = topology_selectors::edges_parallel_to_with_tags(
+        &mut kernel,
+        &mut table,
+        parent,
+        parent_tag,
+        [0.0, 0.0, 0.0], // zero axis — degenerate
+        1f64.to_radians(),
+    );
+
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-zero and finite"),
+                "error should mention 'non-zero and finite', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for zero axis, got {:?}", other),
+    }
+    // Table must be untouched: axis validation fires before any extract / record.
+    assert_eq!(
+        table.len(),
+        0,
+        "table must remain empty: zero axis must error before any kernel or table touch"
+    );
+}
+
+// ─── negative tests: post-extraction error paths ──────────────────────────────
+
+/// `edges_by_length_with_tags` must propagate `Err(QueryFailed)` when the
+/// kernel returns a non-`Real` value for `EdgeLength`.
+///
+/// Tags are recorded **before** the per-subshape query loop (in
+/// `record_subshape_tags`), so the table IS populated even when the query
+/// reply is invalid. This test pins that contract: callers can inspect the
+/// table after catching the error and still see which sub-shapes were
+/// extracted before the failure.
+#[test]
+fn edges_by_length_with_tags_bad_query_reply_propagates_error() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_length_result(e, Value::Int(5)); // intentionally wrong type
+
+    let mut table = FeatureTagTable::default();
+    let parent_tag = FeatureTag {
+        source_span: SourceSpan::new(10, 30),
+        step_kind: StepKind::Primitive,
+        sub_index: 0,
+    };
+
+    let result = topology_selectors::edges_by_length_with_tags(
+        &mut kernel,
+        &mut table,
+        parent,
+        parent_tag,
+        0.0,
+        100.0,
+    );
+
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-real value"),
+                "error message should mention 'non-real value', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for non-real EdgeLength, got {:?}", other),
+    }
+    // Tags are recorded pre-filter (before query_per_subshape runs), so the
+    // table IS populated even on a query error.
+    assert_eq!(
+        table.len(),
+        1,
+        "table should contain the tag recorded before the query error"
+    );
+}
+
+/// `faces_by_area_with_tags` must propagate `Err(QueryFailed)` when the
+/// kernel returns a non-`Real` value for `SurfaceArea`.
+///
+/// Tags are recorded before the query loop, so the table IS populated
+/// even when the query reply is invalid (same contract as
+/// `edges_by_length_with_tags`).
+#[test]
+fn faces_by_area_with_tags_bad_query_reply_propagates_error() {
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_surface_area_result(f, Value::Int(5)); // intentionally wrong type
+
+    let mut table = FeatureTagTable::default();
+    let parent_tag = FeatureTag {
+        source_span: SourceSpan::new(50, 80),
+        step_kind: StepKind::Boolean,
+        sub_index: 0,
+    };
+
+    let result = topology_selectors::faces_by_area_with_tags(
+        &mut kernel,
+        &mut table,
+        parent,
+        parent_tag,
+        0.0,
+        100.0,
+    );
+
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-real value"),
+                "error message should mention 'non-real value', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for non-real SurfaceArea, got {:?}", other),
+    }
+    // Tags are recorded pre-filter, so table IS populated even on query error.
+    assert_eq!(
+        table.len(),
+        1,
+        "table should contain the tag recorded before the query error"
+    );
+}
+
+/// `edges_parallel_to_with_tags` must propagate `Err(QueryFailed)` when
+/// an extracted edge returns a degenerate (near-zero) tangent.
+///
+/// Unlike the zero-axis case, a degenerate *tangent* is detected in the
+/// predicate loop **after** `record_subshape_tags` has already run — so the
+/// table IS populated even when the tangent normalisation fails. This test
+/// pins that ordering contract explicitly.
+#[test]
+fn edges_parallel_to_with_tags_degenerate_tangent_errors_after_tag_recording() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        // A zero vector: normalize3 returns None → QueryFailed("degenerate").
+        .with_edge_tangent_result(e, Value::String("{\"x\":0,\"y\":0,\"z\":0}".into()));
+
+    let mut table = FeatureTagTable::default();
+    let parent_tag = FeatureTag {
+        source_span: SourceSpan::new(100, 130),
+        step_kind: StepKind::Sweep,
+        sub_index: 0,
+    };
+
+    let result = topology_selectors::edges_parallel_to_with_tags(
+        &mut kernel,
+        &mut table,
+        parent,
+        parent_tag,
+        [1.0, 0.0, 0.0],
+        0.1,
+    );
+
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("degenerate"),
+                "error should mention 'degenerate' for a zero tangent, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for degenerate tangent, got {:?}",
+            other
+        ),
+    }
+    // record_subshape_tags runs before the predicate loop, so the tag IS recorded
+    // even when the tangent normalisation fails mid-loop.
+    assert_eq!(
+        table.len(),
+        1,
+        "table should contain the tag recorded before the tangent normalisation error"
     );
 }

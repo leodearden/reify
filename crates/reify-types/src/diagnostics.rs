@@ -329,7 +329,7 @@ pub enum DiagnosticCode {
     /// (`"selector call"`) and a secondary label at the `FeatureTag::source_span`
     /// of the target tag (`"feature originally produced here"`).
     ///
-    /// The [`FeatureTagTable`] that `resolve_unique_by_tag` reads from is
+    /// The [`crate::FeatureTagTable`] that `resolve_unique_by_tag` reads from is
     /// populated by the four `*_with_tags` filter selectors in
     /// `crates/reify-eval/src/topology_selectors.rs`:
     ///   - `edges_at_height_with_tags` (task 2323)
