@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 
 use reify_types::Value;
 
+use crate::joints::is_joint_value;
+
 /// Evaluate a mechanism stdlib function by name.
 ///
 /// Returns `Some(Value)` for known function names (including
@@ -214,28 +216,6 @@ fn is_world(v: &Value) -> bool {
         Value::Map(m) => matches!(
             m.get(&Value::String("kind".to_string())),
             Some(Value::String(s)) if s == "world"
-        ),
-        _ => false,
-    }
-}
-
-/// Returns true when `v` is a joint `Value::Map` — a Map whose `kind`
-/// field is one of `"prismatic"`, `"revolute"`, or `"coupling"`. Used
-/// by `body()` for `at`-arg validation and by the 4-arg form for
-/// parent-arg validation (joint values OR the world sentinel are
-/// acceptable parents).
-///
-/// Mirrors the kind-discriminator pattern in
-/// `joints.rs::transform_at` and `joints.rs::joint_jacobian` (the
-/// `kind in {"prismatic","revolute","coupling"}` guard). Kept private
-/// to `mechanism.rs` for now; if a third call site emerges, it can be
-/// promoted to a shared helpers module.
-fn is_joint_value(v: &Value) -> bool {
-    match v {
-        Value::Map(m) => matches!(
-            m.get(&Value::String("kind".to_string())),
-            Some(Value::String(s))
-                if matches!(s.as_str(), "prismatic" | "revolute" | "coupling")
         ),
         _ => false,
     }
