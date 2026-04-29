@@ -29,6 +29,12 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_empty_mechanism()
         }
+        "world" => {
+            if !args.is_empty() {
+                return Some(Value::Undef);
+            }
+            make_world_sentinel()
+        }
         _ => return None,
     })
 }
@@ -55,6 +61,62 @@ fn make_empty_mechanism() -> Value {
     );
     m.insert(Value::String("next_id".to_string()), Value::Int(0));
     Value::Map(m)
+}
+
+/// Build the world-frame sentinel `Value::Map` with the single key
+/// `kind = "world"`. The sentinel is the implicit ground-frame root of
+/// every Mechanism DAG and the default `parent` argument for `body()`
+/// when omitted (`docs/reify-stdlib-reference.md` §13.2).
+fn make_world_sentinel() -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("world".to_string()),
+    );
+    Value::Map(m)
+}
+
+/// Returns true when `v` is the world-frame sentinel — a `Value::Map`
+/// whose `kind` field equals `"world"`. Used by `body()` parent-arg
+/// validation (the world sentinel is an acceptable parent value).
+//
+// Used by the `body()` builtin arm landed in a later step; allow dead
+// code until that arm wires it up.
+#[allow(dead_code)]
+fn is_world(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => matches!(
+            m.get(&Value::String("kind".to_string())),
+            Some(Value::String(s)) if s == "world"
+        ),
+        _ => false,
+    }
+}
+
+/// Returns true when `v` is a joint `Value::Map` — a Map whose `kind`
+/// field is one of `"prismatic"`, `"revolute"`, or `"coupling"`. Used
+/// by `body()` for `at`-arg validation and by the 4-arg form for
+/// parent-arg validation (joint values OR the world sentinel are
+/// acceptable parents).
+///
+/// Mirrors the kind-discriminator pattern in
+/// `joints.rs::transform_at` and `joints.rs::joint_jacobian` (the
+/// `kind in {"prismatic","revolute","coupling"}` guard). Kept private
+/// to `mechanism.rs` for now; if a third call site emerges, it can be
+/// promoted to a shared helpers module.
+//
+// Used by the `body()` builtin arm landed in a later step; allow dead
+// code until that arm wires it up.
+#[allow(dead_code)]
+fn is_joint_value(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => matches!(
+            m.get(&Value::String("kind".to_string())),
+            Some(Value::String(s))
+                if matches!(s.as_str(), "prismatic" | "revolute" | "coupling")
+        ),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
