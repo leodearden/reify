@@ -397,6 +397,12 @@ pub(crate) fn elaborate_forall_connect(
         trait_registry,
     };
 
+    // PRD criterion 6 — empty-collection path: when `elements` is empty (either
+    // a `ListLiteral([])` or a count-cell-zero collection sub), this loop
+    // iterates zero times and emits no connections and no diagnostics. The
+    // criterion-7-first-half deferred case (count not yet determined) is
+    // handled by the `let Some(elements) = … else { return; }` early-return
+    // above — it never reaches this loop.
     for (i, element) in elements.iter().enumerate() {
         let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
         bindings.insert(decl.variable.clone(), element.clone());
