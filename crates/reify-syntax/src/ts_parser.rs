@@ -740,15 +740,43 @@ impl<'a> Lowering<'a> {
                 Some(FieldSource::Composed { expr })
             }
             "field_source_imported" => {
-                let path_node = inner.child_by_field_name("path")?;
-                let raw = self.node_text(path_node);
-                // Strip only the outer pair of quotes (trim_matches strips ALL matching chars)
-                let path = raw
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(raw)
-                    .to_string();
-                Some(FieldSource::Imported { path })
+                let mut path: Option<String> = None;
+                let mut format: Option<String> = None;
+                let mut grid: Option<String> = None;
+                let mut cursor = inner.walk();
+                for child in inner.named_children(&mut cursor) {
+                    if child.kind() == "field_config_entry"
+                        && let Some(key_node) = child.child_by_field_name("key")
+                    {
+                        let key = self.node_text(key_node).to_string();
+                        if let Some(val_node) = child.child_by_field_name("value")
+                            && let Some(val_expr) = self.lower_expr(val_node)
+                        {
+                            match key.as_str() {
+                                "path" => {
+                                    if let ExprKind::StringLiteral(s) = val_expr.kind {
+                                        path = Some(s);
+                                    }
+                                }
+                                "format" => {
+                                    if let ExprKind::Ident(s) = val_expr.kind {
+                                        format = Some(s);
+                                    }
+                                }
+                                "grid" => {
+                                    if let ExprKind::StringLiteral(s) = val_expr.kind {
+                                        grid = Some(s);
+                                    }
+                                }
+                                _ => {
+                                    // Unknown keys are silently ignored at parse time.
+                                    // The compile phase owns unknown-key diagnostics.
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(FieldSource::Imported { path, format, grid })
             }
             _ => None,
         }

@@ -203,7 +203,7 @@ module.exports = grammar({
     field_source_imported: $ => seq(
       'imported',
       '{',
-      field('path', $.string_literal),
+      repeat($.field_config_entry),
       '}',
     ),
 

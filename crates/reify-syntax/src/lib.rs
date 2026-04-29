@@ -703,8 +703,15 @@ pub enum FieldSource {
     Sampled { config: Vec<(String, Expr)> },
     /// `composed { |f, g| |p| f(g(p)) }` — composition of fields.
     Composed { expr: Expr },
-    /// `imported { "path/to/data.vtu" }` — imported from external file.
-    Imported { path: String },
+    /// `imported { path = "..." format = OpenVDB grid = "..." }` — imported from external file.
+    ///
+    /// All three fields are optional at the parser level so that partial blocks still produce
+    /// a structured AST. The compiler (task 2666) emits "missing path/format/grid" diagnostics.
+    Imported {
+        path: Option<String>,
+        format: Option<String>,
+        grid: Option<String>,
+    },
 }
 
 /// A type parameter declaration: `T`, `T: Numeric`, or `T: Numeric = Int`

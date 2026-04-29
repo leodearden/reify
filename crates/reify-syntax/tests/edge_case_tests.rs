@@ -83,11 +83,10 @@ structure S {
 
 // ── L5: field_source_imported should strip only one pair of quotes ───
 
-/// Verify that an imported field path has exactly one pair of quotes stripped.
+/// Verify that an imported field path round-trips correctly with the v0.2 key=value syntax.
 #[test]
 fn imported_field_strips_one_pair_of_quotes() {
-    let source =
-        r#"field def data : Point3 -> Scalar { source = imported { "path/to/data.vtu" } }"#;
+    let source = r#"field def data : Point3 -> Scalar { source = imported { path = "path/to/data.vtu" format = OpenVDB grid = "pressure" } }"#;
     let (decls, errors) = parse_decls(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
@@ -99,26 +98,21 @@ fn imported_field_strips_one_pair_of_quotes() {
     assert_eq!(field.name, "data");
 
     match &field.source {
-        FieldSource::Imported { path } => {
-            assert_eq!(path, "path/to/data.vtu");
+        FieldSource::Imported { path, .. } => {
+            assert_eq!(path.as_deref(), Some("path/to/data.vtu"));
         }
         other => panic!("expected Imported source, got {:?}", other),
     }
 }
 
-/// A path with embedded quotes should only have the outer pair stripped.
-/// With trim_matches('"'), a path like `""nested""` would lose ALL quotes.
-/// With strip_prefix/strip_suffix, only the outer pair is removed.
+/// Verify the v0.2 key=value form produces the correct path without extra quote stripping.
+/// The legacy `imported { "path" }` form required manual strip_prefix/strip_suffix; the new
+/// form uses lower_expr which already produces an unquoted string for StringLiteral.
 #[test]
 fn imported_field_preserves_inner_quotes() {
-    // This test documents the L5 bug fix: trim_matches strips ALL leading/trailing
-    // quote chars. A path like `"data""file.vtu"` would become `data""file.vtu`
-    // with the correct fix, but `data` with trim_matches.
-    //
-    // We can't easily construct such a path through the grammar (the grammar
-    // only allows one string literal), but the fix in step-4 ensures correctness
-    // at the code level.
-    let source = r#"field def data : Point3 -> Scalar { source = imported { "data.vtu" } }"#;
+    // The path value is extracted via lower_expr → ExprKind::StringLiteral, which already
+    // carries the unquoted body. No extra stripping is performed in the lowering arm.
+    let source = r#"field def data : Point3 -> Scalar { source = imported { path = "data.vtu" format = OpenVDB grid = "g" } }"#;
     let (decls, errors) = parse_decls(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
@@ -127,8 +121,8 @@ fn imported_field_preserves_inner_quotes() {
         other => panic!("expected Field, got {:?}", other),
     };
     match &field.source {
-        FieldSource::Imported { path } => {
-            assert_eq!(path, "data.vtu");
+        FieldSource::Imported { path, .. } => {
+            assert_eq!(path.as_deref(), Some("data.vtu"));
         }
         other => panic!("expected Imported source, got {:?}", other),
     }

@@ -415,7 +415,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
 #[test]
 fn compile_field_imported_emits_v02_deferral_diagnostic() {
     let module = compile_source(
-        r#"field def data : Point3 -> Scalar { source = imported { "data.vtu" } }"#,
+        r#"field def data : Point3 -> Scalar { source = imported { path = "data.vtu" format = OpenVDB grid = "voxel" } }"#,
     );
 
     let errors = errors_only(&module);
