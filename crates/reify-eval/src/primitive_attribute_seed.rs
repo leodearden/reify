@@ -120,7 +120,15 @@ const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 /// Errors: same contract as [`seed_primitive_attributes`] — callers
 /// should treat any `Err(QueryError)` as auxiliary-metadata failure
 /// (warn and continue) rather than primary geometry failure.
-pub fn seed_primitive_attributes_for_handle(
+///
+/// Visibility: `pub(crate)` — this wrapper exists solely to keep
+/// `Engine::execute_realization_ops`'s borrow brackets clean (see the
+/// rationale paragraph above). The module-level
+/// [`seed_primitive_attributes`] is the public entry point that
+/// integration tests in `tests/topology_attribute_primitives_direct.rs`
+/// consume directly. Re-exporting this wrapper would grow the crate's
+/// public API for a single-call-site helper.
+pub(crate) fn seed_primitive_attributes_for_handle(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
     result_handle: GeometryHandleId,

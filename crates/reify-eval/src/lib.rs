@@ -19,14 +19,14 @@ mod engine_purposes;
 mod geometry_ops;
 pub mod graph;
 pub mod journal;
+pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
-pub mod primitive_attribute_seed;
 pub mod topology_attribute_propagation;
 pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
-pub use primitive_attribute_seed::{seed_primitive_attributes, seed_primitive_attributes_for_handle};
+pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::propagate_attributes_via_brepalgoapi_history;
 
