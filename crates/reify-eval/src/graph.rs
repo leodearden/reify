@@ -552,7 +552,45 @@ impl EvaluationGraph {
             ContentHash::combine_all(per_group)
         };
 
-        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash])
+        // Task 2690: connections bucket. Each connection contributes a
+        // composite hash over its compatibility-constraint id, both port
+        // names, the operator discriminant, and the (sorted) port-mappings.
+        // The per-connection hashes are sorted by raw `.0` then combined,
+        // mirroring the order-independence treatment used by the other
+        // buckets above.
+        let conn_hash = {
+            let mut per_conn: Vec<ContentHash> = self
+                .connections
+                .iter()
+                .map(|c| {
+                    let cnid_hash = ContentHash::of_str(&format!(
+                        "{}",
+                        c.compatibility_constraint
+                    ));
+                    let left_hash = ContentHash::of_str(&c.left_port);
+                    let right_hash = ContentHash::of_str(&c.right_port);
+                    let op_hash = ContentHash::of_str(&format!("op:{}", c.operator.as_u8()));
+                    let mut pm_strs: Vec<String> = c
+                        .port_mappings
+                        .iter()
+                        .map(|(l, r)| format!("{}->{}", l, r))
+                        .collect();
+                    pm_strs.sort();
+                    let pm_hash = ContentHash::combine_all(
+                        pm_strs.iter().map(|s| ContentHash::of_str(s)),
+                    );
+                    ContentHash::combine_all([
+                        cnid_hash, left_hash, right_hash, op_hash, pm_hash,
+                    ])
+                })
+                .collect();
+            per_conn.sort_by_key(|h| h.0);
+            ContentHash::combine_all(per_conn)
+        };
+
+        ContentHash::combine_all([
+            vc_hash, cn_hash, real_hash, res_hash, guard_hash, conn_hash,
+        ])
     }
 }
 
