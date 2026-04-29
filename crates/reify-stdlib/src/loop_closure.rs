@@ -984,4 +984,33 @@ mod tests {
             "joint_range_midpoint must return None for a planar joint"
         );
     }
+
+    /// `chain_transform` returns `None` when the chain contains a planar joint.
+    ///
+    /// Pins the contract that the f64-per-joint chain machinery short-circuits
+    /// gracefully on planar (no panic, deterministic None). `value_for_joint`
+    /// cannot map a scalar f64 to planar's 3-element List motion variable, so
+    /// the chain aborts. Multi-DOF chain support is deferred to PRD v0.2
+    /// kinematic task 2 (taskmaster #2670).
+    #[test]
+    fn chain_transform_with_planar_returns_none() {
+        assert!(
+            super::chain_transform(&[planar_xy_joint()], &[0.0]).is_none(),
+            "chain_transform must return None for a chain containing a planar joint"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` when the chain contains a planar joint.
+    ///
+    /// Pins the contract that the FD Jacobian assembler short-circuits gracefully
+    /// on planar (no panic, deterministic None). The FD perturbation relies on
+    /// `chain_transform` which itself short-circuits for planar, so the whole
+    /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
+    #[test]
+    fn chain_jacobian_fd_with_planar_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(&[planar_xy_joint()], &[0.0], &[0], 1e-6).is_none(),
+            "chain_jacobian_fd must return None for a chain containing a planar joint"
+        );
+    }
 }
