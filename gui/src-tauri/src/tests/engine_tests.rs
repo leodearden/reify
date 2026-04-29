@@ -397,6 +397,93 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
     );
 }
 
+/// Source for step-11: 1-body mechanism where y_axis is bound to param y_pos.
+/// `snapshot(m1, [bind(y_axis, y_pos)])` — y_pos is a param → driving param
+/// resolution should yield driving_param_cell_id = Some("Kinematic.y_pos").
+const SNAPSHOT_PARAM_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    param y_pos: Length = 100mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, y_pos)])
+}
+"#;
+
+/// Source for step-11 sibling: 1-body mechanism where y_axis is bound to a
+/// literal `50mm` instead of a param.  `bind(y_axis, 50mm)` — literal →
+/// driving_param_cell_id must remain None.
+const SNAPSHOT_LITERAL_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 50mm)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_resolves_driving_param_via_ast() {
+    // Step-11 RED: load a mechanism where `bind(y_axis, y_pos)` maps the
+    // prismatic joint to param y_pos.  After AST traversal the joint descriptor
+    // should have driving_param_cell_id = Some("Kinematic.y_pos").
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    // m1 has bodies_count=1 and one prismatic joint.
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    assert_eq!(
+        m1_desc.joints.len(),
+        1,
+        "m1 has one joint; got {:?}",
+        m1_desc.joints
+    );
+
+    let joint = &m1_desc.joints[0];
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "bind(y_axis, y_pos) → driving_param_cell_id should be Some(\"Kinematic.y_pos\"); got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_literal_bind_yields_no_driving_param() {
+    // Step-11 RED sibling: bind(y_axis, 50mm) — literal value → driving param
+    // cannot be resolved → driving_param_cell_id must be None.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+literal source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+    assert!(
+        joint.driving_param_cell_id.is_none(),
+        "literal bind must NOT resolve to a driving param; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
 #[test]
 fn set_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
