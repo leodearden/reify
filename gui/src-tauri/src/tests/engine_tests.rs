@@ -484,6 +484,75 @@ fn get_mechanism_descriptors_literal_bind_yields_no_driving_param() {
     );
 }
 
+// ---- step-23: current_value_si round-trip ---------------------------------
+
+#[test]
+fn get_mechanism_descriptors_current_value_si_reflects_initial_param() {
+    // Step-23 RED (part 1): after loading SNAPSHOT_PARAM_BIND_SOURCE, the joint
+    // descriptor should have current_value_si = Some(0.1) (y_pos = 100mm = 0.1 SI).
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    // Must have resolved a driving param (prerequisite for current_value_si).
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving param should be Kinematic.y_pos"
+    );
+
+    // current_value_si must be populated with the default value 100mm = 0.1 SI.
+    assert_eq!(
+        joint.current_value_si,
+        Some(0.1),
+        "initial current_value_si should be 0.1 (100mm); got {:?}",
+        joint.current_value_si
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
+    // Step-23 RED (part 2): after set_parameter("Kinematic.y_pos", "150mm"), a
+    // fresh get_mechanism_descriptors call must report current_value_si = Some(0.15).
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    // Scrub the slider by setting y_pos to 150mm.
+    session
+        .set_parameter("Kinematic.y_pos", "150mm")
+        .expect("set_parameter should succeed");
+
+    // Re-fetch descriptors after the edit.
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    // current_value_si must now reflect 150mm = 0.15 SI.
+    assert_eq!(
+        joint.current_value_si,
+        Some(0.15),
+        "current_value_si should be 0.15 (150mm) after set_parameter; got {:?}",
+        joint.current_value_si
+    );
+}
+
 #[test]
 fn set_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
