@@ -31,11 +31,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_eval::propagate_attributes_via_brepalgoapi_history;
+use reify_eval::{
+    AttributeQuery, AttributeResolution, propagate_attributes_via_brepalgoapi_history,
+    resolve_unique_by_attribute,
+};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpParents, FeatureId, GeometryHandleId, GeometryOp, RealizationNodeId, Role,
-    TopologyAttribute, TopologyAttributeTable, Value,
+    BooleanOpParents, DiagnosticCode, FeatureId, GeometryHandleId, GeometryOp, ModEntry,
+    RealizationNodeId, Role, SourceSpan, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -417,4 +420,300 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
             result_edge_id,
         );
     }
+}
+
+/// step-15 (task #2653) — end-to-end mod_history threading and resolver
+/// AmbiguousAfterSplit clustering.
+///
+/// Reuses the existing two-cube fuse fixture and seeds parent face
+/// attributes the same way as the previous test. After propagation:
+///
+///   (a) For each parent with count > 1 across face_modified ∪
+///       face_generated: each child carries a `mod_history` whose tail
+///       entry is `ModEntry { splitting_feature_id == fuse_feature_id,
+///       split_index = i }` for i = 0..count, in records-encounter order
+///       (Modified records first, then Generated). The child's
+///       parent-key fields (feature_id, role, local_index, user_label)
+///       inherit verbatim from the parent.
+///   (b) For each parent with count == 1: the single child's
+///       `mod_history.is_empty()` (pure pass-through, no ModEntry).
+///   (c) Pick the FIRST parent with count > 1. Build an `AttributeQuery`
+///       from its `(feature_id, role, local_index)` and pass
+///       `result_face_handles` as candidates. The resolver must return
+///       `AttributeResolution::AmbiguousAfterSplit { children }` whose
+///       handles match the SET of children we identified in (a). A
+///       `TopologyAttributeStale` diagnostic with the "split children"
+///       message sub-form must accompany the resolution.
+///
+/// If OCCT's actual fuse output for two cubes offset by half-width
+/// produces NO parent face splits — possible for an aligned fuse where
+/// every overlapping parent face is either fully Modified into one
+/// result face, fully Deleted, or absent from history — sub-clauses (a)
+/// and (c) gracefully no-op (with eprintln so the skip is visible in
+/// CI). Sub-clause (b) ALWAYS runs; non-split parents must always have
+/// empty mod_history regardless of OCCT's particular split topology.
+/// Step-16's orthogonal-slab variant covers the explicit-split path
+/// when this fixture doesn't naturally exercise it.
+#[test]
+fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // ─── Setup mirrors the existing fixture ───────────────────────────
+    let kernel = OcctKernelHandle::spawn();
+    let left = kernel
+        .execute(&ten_mm_box_op())
+        .expect("left box should build")
+        .id;
+    let right_origin = kernel
+        .execute(&ten_mm_box_op())
+        .expect("right box should build")
+        .id;
+    let right = kernel
+        .execute(&GeometryOp::Translate {
+            target: right_origin,
+            dx: 5.0e-3,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("right translate should build")
+        .id;
+    let left_face_handles = kernel.extract_faces(left).unwrap();
+    let right_face_handles = kernel.extract_faces(right).unwrap();
+    let left_edge_handles = kernel.extract_edges(left).unwrap();
+    let right_edge_handles = kernel.extract_edges(right).unwrap();
+    let left_feature_id = FeatureId::from(&RealizationNodeId::new("Left", 0));
+    let right_feature_id = FeatureId::from(&RealizationNodeId::new("Right", 0));
+    let mut table = TopologyAttributeTable::default();
+    seed_face_attributes(&mut table, &left_face_handles, &left_feature_id);
+    seed_face_attributes(&mut table, &right_face_handles, &right_feature_id);
+
+    let (result_handle, history) = kernel
+        .boolean_fuse_with_history(left, right)
+        .expect("boolean_fuse_with_history should succeed");
+    let result_face_handles = kernel.extract_faces(result_handle).unwrap();
+    let result_edge_handles = kernel.extract_edges(result_handle).unwrap();
+
+    let parents = BooleanOpParents::Binary {
+        faces: [&left_face_handles, &right_face_handles],
+        edges: [&left_edge_handles, &right_edge_handles],
+    };
+    let fuse_feature_id = FeatureId::new("Fuse#realization[0]");
+    propagate_attributes_via_brepalgoapi_history(
+        &mut table,
+        &parents,
+        &result_face_handles,
+        &result_edge_handles,
+        &history,
+        &fuse_feature_id,
+    )
+    .expect("propagation should succeed");
+
+    // ─── Build per-parent child enumeration in records-encounter order ─
+    // Walk face_modified.iter().chain(face_generated.iter()) in the same
+    // order the propagator did, accumulating each parent's children with
+    // their assigned split_index (0, 1, 2, …).
+    //
+    // Caveat: a single result_subshape_index can appear in records for
+    // MULTIPLE parents (e.g. an internal face that was deleted from one
+    // operand and "modified" from the other, OCCT's history may emit
+    // both). Last-write-wins propagation means the table's entry for
+    // that result face reflects only the LAST parent to write. We track
+    // the LAST writing parent per result_subshape_index here so the
+    // assertions below can skip non-authoritative writes — those
+    // shared-result-face stamps are the table's contract under
+    // last-write-wins (which the previous test pinned), not a regression
+    // of mod_history threading.
+    let mut children_per_parent: HashMap<(u8, u32), Vec<u32>> = HashMap::new();
+    let mut last_writer_for_result: HashMap<u32, (u8, u32)> = HashMap::new();
+    for rec in history
+        .face_modified
+        .iter()
+        .chain(history.face_generated.iter())
+    {
+        children_per_parent
+            .entry((rec.parent_index, rec.parent_subshape_index))
+            .or_default()
+            .push(rec.result_subshape_index);
+        last_writer_for_result.insert(
+            rec.result_subshape_index,
+            (rec.parent_index, rec.parent_subshape_index),
+        );
+    }
+
+    let parent_face_slices = parents.face_slices();
+    let mut split_parent_with_children: Option<((u8, u32), Vec<u32>)> = None;
+
+    // ─── (a) + (b): mod_history per child for split vs non-split ─────
+    for (&parent_key, child_result_indices) in children_per_parent.iter() {
+        let count = child_result_indices.len();
+        let parent_handle = parent_face_slices[parent_key.0 as usize][parent_key.1 as usize];
+        let parent_attr = table.lookup(parent_handle).expect(
+            "seeded parent face must still be in the table after propagation \
+             (parents are never removed, only result entries are added)",
+        );
+        let parent_feature_id = parent_attr.feature_id.clone();
+        let parent_role = parent_attr.role;
+        let parent_local_index = parent_attr.local_index;
+        let parent_user_label = parent_attr.user_label.clone();
+        let parent_prior_history = parent_attr.mod_history.clone();
+        if count > 1 {
+            // (a) Split parent: each child carries a fresh ModEntry whose
+            // split_index follows records-encounter order. Parent-key
+            // fields inherit verbatim. Skip children where ANOTHER parent
+            // was the last writer (last-write-wins) — those are pinned by
+            // the previous integration test.
+            let mut authoritative_children: Vec<u32> = Vec::new();
+            for (split_index, &result_subshape_index) in child_result_indices.iter().enumerate() {
+                if last_writer_for_result.get(&result_subshape_index) != Some(&parent_key) {
+                    // Another parent is the authoritative writer for this
+                    // result face. The split_index this parent assigned
+                    // is overwritten in the table; skip per-entry
+                    // assertions for this child.
+                    continue;
+                }
+                authoritative_children.push(result_subshape_index);
+                let child_handle = result_face_handles[result_subshape_index as usize];
+                let child_attr = table.lookup(child_handle).unwrap_or_else(|| {
+                    panic!(
+                        "split child (parent={:?}, result_subshape_index={}) must have a \
+                         propagated entry",
+                        parent_key, result_subshape_index
+                    )
+                });
+                assert_eq!(
+                    child_attr.feature_id, parent_feature_id,
+                    "split child inherits parent feature_id verbatim"
+                );
+                assert_eq!(
+                    child_attr.role, parent_role,
+                    "split child inherits parent role verbatim"
+                );
+                assert_eq!(
+                    child_attr.local_index, parent_local_index,
+                    "split child inherits parent local_index verbatim"
+                );
+                assert_eq!(
+                    child_attr.user_label, parent_user_label,
+                    "split child inherits parent user_label verbatim"
+                );
+                let expected_tail = ModEntry {
+                    splitting_feature_id: fuse_feature_id.clone(),
+                    split_index: split_index as u32,
+                };
+                let actual_tail = child_attr
+                    .mod_history
+                    .last()
+                    .expect("split child mod_history must be non-empty");
+                assert_eq!(
+                    actual_tail, &expected_tail,
+                    "split child {} of parent {:?} must carry tail {:?}",
+                    split_index, parent_key, expected_tail
+                );
+                // mod_history prefix must equal the parent's prior history
+                // (preserved verbatim; new ModEntry is APPENDED).
+                let prefix_len = child_attr.mod_history.len() - 1;
+                assert_eq!(
+                    &child_attr.mod_history[..prefix_len],
+                    parent_prior_history.as_slice(),
+                    "split child mod_history prefix must equal parent's prior history"
+                );
+            }
+            // Remember the FIRST split parent that has ≥ 2 authoritative
+            // children (i.e. children this parent actually owns in the
+            // table) for the resolver query in clause (c). Without ≥ 2
+            // authoritative children the resolver cannot witness the
+            // cluster — every entry in the table for those children
+            // attributes them to a DIFFERENT parent.
+            if split_parent_with_children.is_none() && authoritative_children.len() >= 2 {
+                split_parent_with_children = Some((parent_key, authoritative_children));
+            }
+        } else {
+            // (b) Non-split parent: child's mod_history is the parent's
+            // mod_history verbatim — no new ModEntry appended. For the
+            // existing fixture (no prior splits), this is empty.
+            // Skip if another parent is the authoritative writer
+            // (last-write-wins overwrote this parent's pass-through).
+            let result_subshape_index = child_result_indices[0];
+            if last_writer_for_result.get(&result_subshape_index) != Some(&parent_key) {
+                continue;
+            }
+            let child_handle = result_face_handles[result_subshape_index as usize];
+            let child_attr = table.lookup(child_handle).unwrap_or_else(|| {
+                panic!(
+                    "non-split child (parent={:?}, result_subshape_index={}) must have a \
+                     propagated entry",
+                    parent_key, result_subshape_index
+                )
+            });
+            assert_eq!(
+                child_attr.mod_history, parent_prior_history,
+                "non-split child mod_history must equal parent's prior history (no new \
+                 ModEntry appended; count=1 means pure pass-through)"
+            );
+        }
+    }
+
+    // ─── (c) Resolver clustering on the first split parent ───────────
+    let Some((split_parent_key, child_result_indices)) = split_parent_with_children else {
+        eprintln!(
+            "note: this OCCT output had no face splits (every parent has count==1 across \
+             face_modified ∪ face_generated); resolver clustering not exercised by this fixture. \
+             See `mod_history_threading_with_orthogonal_slabs` for explicit-split coverage."
+        );
+        return;
+    };
+
+    let split_parent_handle =
+        parent_face_slices[split_parent_key.0 as usize][split_parent_key.1 as usize];
+    let split_parent_attr = table
+        .lookup(split_parent_handle)
+        .expect("split-parent attribute must round-trip");
+    let query = AttributeQuery {
+        user_label: split_parent_attr.user_label.clone(),
+        role_and_index: Some((split_parent_attr.role, split_parent_attr.local_index)),
+        feature_id: Some(split_parent_attr.feature_id.clone()),
+    };
+    let mut diagnostics = Vec::new();
+    let resolution = resolve_unique_by_attribute(
+        &table,
+        &result_face_handles,
+        &query,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    let expected_children: HashSet<GeometryHandleId> = child_result_indices
+        .iter()
+        .map(|&i| result_face_handles[i as usize])
+        .collect();
+    match &resolution {
+        AttributeResolution::AmbiguousAfterSplit { children } => {
+            let actual: HashSet<GeometryHandleId> = children.iter().copied().collect();
+            assert_eq!(
+                actual, expected_children,
+                "AmbiguousAfterSplit children must equal the propagated child set for the \
+                 split parent {:?}",
+                split_parent_key
+            );
+        }
+        other => panic!(
+            "expected AmbiguousAfterSplit for split parent {:?}, got {:?}",
+            split_parent_key, other
+        ),
+    }
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected exactly one TopologyAttributeStale diagnostic for the split-children resolution"
+    );
+    let diag = &diagnostics[0];
+    assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+    assert!(
+        diag.message.contains("split children"),
+        "diagnostic message must mention 'split children', got: {}",
+        diag.message
+    );
 }
