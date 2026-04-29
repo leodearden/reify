@@ -394,6 +394,11 @@ pub(crate) fn extract_solver_hints(
 /// Type validation is intentionally deferred to a later compiler pass (see
 /// follow-up noted in task 2334).
 ///
+/// **Severity — Error vs. Warning:** an unresolved-name diagnostic is escalated
+/// to `Error` because solver back-ends cannot recover from a missing collection
+/// at run time.  By contrast, an unknown-kind hint emitted by `extract_solver_hints`
+/// can be safely dropped and is therefore only a `Warning`.
+///
 /// `PreferredStrategy` hints are intentionally exempt: spec §12.2 states that
 /// any identifier is accepted at compile time and the back-end emits a runtime
 /// warning for unrecognised strategy names.
@@ -531,16 +536,17 @@ mod tests {
         );
     }
 
-    /// A name registered in scope resolves cleanly.
+    /// Any name registered in scope is accepted regardless of the resolved type.
     ///
-    /// Uses `Type::List(Box::new(Type::Real))` to represent a realistic
-    /// collection type.  Note: the validator does not check that the resolved
-    /// type is `List`-typed — type-checking is deferred to a later compiler pass.
+    /// The validator checks name presence only — it does not inspect the
+    /// resolved type at all.  Using a non-`List` type (`Type::Real`) here makes
+    /// that contract visually obvious: if the type were inspected, this test
+    /// would produce a diagnostic and fail.
     #[test]
     fn validate_collections_accepts_name_in_scope() {
         let hints = vec![make_hint(SolverHintKind::DiscreteSet, "my_collection")];
         let mut scope = CompilationScope::new("Test");
-        scope.register("my_collection", Type::List(Box::new(Type::Real)));
+        scope.register("my_collection", Type::Real);
         let functions: &[CompiledFunction] = &[];
         let mut diagnostics = Vec::new();
         validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
