@@ -430,6 +430,11 @@ pub struct Engine {
     /// predicate, so the `catch_unwind` boundary that converts the panic into
     /// `Freshness::Failed { error }` + `EventKind::Failed` (arch §9.1
     /// lines 868–877) is also absent in production builds.
+    ///
+    /// **Sole init site:** `Engine::with_prelude` in `engine_admin.rs`
+    /// (`panic_on_eval_cells: std::collections::HashSet::new()`). Any future
+    /// `Engine` constructor must add the same cfg-gated field initialiser, or
+    /// production builds will fail to compile due to a missing struct field.
     #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
 }

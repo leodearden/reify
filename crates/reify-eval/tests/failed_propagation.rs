@@ -136,8 +136,9 @@ fn forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event() {
 ///   (a) After `set_panic_on_eval(b)` and the first `eval`, freshness(b)
 ///       is `Freshness::Failed { .. }` (mirrors the existing test).
 ///   (b) `remove_panic_on_eval(&b)` returns `true` (cell was registered).
-///   (c) After a second `eval`, freshness(b) is NOT `Failed` — the
-///       recovery branch re-evaluates the cell cleanly.
+///   (c) After a second `eval`, freshness(b) is `Final` and the cached
+///       value is `Value::Real(1.0)` — the recovery branch re-evaluates
+///       the cell cleanly and produces the expected result.
 ///   (d) A second call to `remove_panic_on_eval(&b)` returns `false`
 ///       (the cell is no longer in the injection set).
 #[test]
@@ -171,14 +172,30 @@ fn forced_panic_recovers_after_remove_panic_on_eval() {
     // === Pass 2: re-eval after removing the panic injection ===
     let _ = engine.eval(&module);
 
-    // (c) b is no longer Failed after re-eval with injection removed.
-    let b_freshness_pass2 = engine.cache_store().freshness(&b_node);
-    assert!(
-        !matches!(b_freshness_pass2, Freshness::Failed { .. }),
-        "(c) freshness(b) must NOT be Failed after remove_panic_on_eval + re-eval; \
+    // (c) b recovers to Final with the expected value after re-eval.
+    let b_cache_pass2 = engine
+        .cache_store()
+        .get(&b_node)
+        .expect("(c) b must be cached after re-eval");
+    assert_eq!(
+        b_cache_pass2.freshness,
+        Freshness::Final,
+        "(c) freshness(b) must be Final after remove_panic_on_eval + re-eval; \
          got {:?}",
-        b_freshness_pass2
+        b_cache_pass2.freshness
     );
+    match &b_cache_pass2.result {
+        CachedResult::Value(v, _) => assert_eq!(
+            *v,
+            Value::Real(1.0),
+            "(c) recovered value must be Value::Real(1.0); got {:?}",
+            v
+        ),
+        other => panic!(
+            "(c) cache result for b must be CachedResult::Value; got {:?}",
+            other
+        ),
+    }
 
     // (d) A second call to remove_panic_on_eval returns false (no longer registered).
     let removed_again = engine.remove_panic_on_eval(&b_id);
