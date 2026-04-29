@@ -140,6 +140,65 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     Ok(out)
 }
 
+/// Return the subset of `extract_edges(parent_handle)` whose length lies in
+/// `[min_m, max_m]` (inclusive on both ends), while also recording a
+/// [`FeatureTag`] for every extracted edge in `table`.
+///
+/// Mirrors [`edges_by_length`]'s logic exactly — same filter predicate, same
+/// canonical sub-shape order — while additionally populating `table` with
+/// per-edge tags derived from `parent_tag`: each edge at position `i` in the
+/// extracted list gets a tag whose `source_span` and `step_kind` are copied
+/// from `parent_tag` and whose `sub_index` is `i as u32`.
+///
+/// Tags are recorded for **all** extracted edges (before the length-filter
+/// runs), so callers can query the table even for edges that do not pass the
+/// filter. This matches the recording contract established by
+/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
+///
+/// Downstream consumers can pass the populated table to
+/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
+/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
+/// unique-tag invariant is later violated.
+///
+/// # Errors
+///
+/// Same as [`edges_by_length`].
+pub fn edges_by_length_with_tags<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    table: &mut FeatureTagTable,
+    parent_handle: GeometryHandleId,
+    parent_tag: FeatureTag,
+    min_m: f64,
+    max_m: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let edges = kernel.extract_edges(parent_handle)?;
+    // Record a per-edge tag for every extracted edge (before filtering).
+    for (i, edge_id) in edges.iter().enumerate() {
+        table.record(
+            *edge_id,
+            FeatureTag {
+                source_span: parent_tag.source_span,
+                step_kind: parent_tag.step_kind,
+                sub_index: i as u32,
+            },
+        );
+    }
+    let values = query_per_subshape(
+        kernel,
+        &edges,
+        "edges_by_length_with_tags",
+        GeometryQuery::EdgeLength,
+    )?;
+    let mut out = Vec::with_capacity(edges.len());
+    for (id, value) in edges.iter().zip(values) {
+        let len = expect_real("EdgeLength", *id, value)?;
+        if len >= min_m && len <= max_m {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
+
 /// Return the subset of `extract_faces(handle)` whose surface area lies in
 /// `[min_m2, max_m2]` (inclusive on both ends).
 ///
@@ -161,6 +220,67 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
     let values = query_per_subshape(kernel, &faces, "faces_by_area", GeometryQuery::SurfaceArea)?;
+    let mut out = Vec::with_capacity(faces.len());
+    for (id, value) in faces.iter().zip(values) {
+        let area = expect_real("SurfaceArea", *id, value)?;
+        if area >= min_m2 && area <= max_m2 {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
+
+/// Return the subset of `extract_faces(parent_handle)` whose surface area lies
+/// in `[min_m2, max_m2]` (inclusive on both ends), while also recording a
+/// [`FeatureTag`] for every extracted face in `table`.
+///
+/// Mirrors [`faces_by_area`]'s logic exactly — same filter predicate, same
+/// canonical sub-shape order — while additionally populating `table` with
+/// per-face tags derived from `parent_tag`: each face at position `i` in the
+/// extracted list gets a tag whose `source_span` and `step_kind` are copied
+/// from `parent_tag` and whose `sub_index` is `i as u32` (the parent's
+/// `sub_index` is **not** inherited — each child position determines its own
+/// `sub_index`).
+///
+/// Tags are recorded for **all** extracted faces (before the area-filter
+/// runs), so callers can query the table even for faces that do not pass the
+/// filter. This matches the recording contract established by
+/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
+///
+/// Downstream consumers can pass the populated table to
+/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
+/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
+/// unique-tag invariant is later violated.
+///
+/// # Errors
+///
+/// Same as [`faces_by_area`].
+pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    table: &mut FeatureTagTable,
+    parent_handle: GeometryHandleId,
+    parent_tag: FeatureTag,
+    min_m2: f64,
+    max_m2: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let faces = kernel.extract_faces(parent_handle)?;
+    // Record a per-face tag for every extracted face (before filtering).
+    for (i, face_id) in faces.iter().enumerate() {
+        table.record(
+            *face_id,
+            FeatureTag {
+                source_span: parent_tag.source_span,
+                step_kind: parent_tag.step_kind,
+                sub_index: i as u32,
+            },
+        );
+    }
+    let values = query_per_subshape(
+        kernel,
+        &faces,
+        "faces_by_area_with_tags",
+        GeometryQuery::SurfaceArea,
+    )?;
     let mut out = Vec::with_capacity(faces.len());
     for (id, value) in faces.iter().zip(values) {
         let area = expect_real("SurfaceArea", *id, value)?;
@@ -380,6 +500,85 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
         // Note: cos is monotone-decreasing on [0, π], so the condition
         // angle <= tol is equivalent to cos(angle) >= cos(tol). For the
         // sign-tolerant variant we use |cos|.
+        if abs_dot >= cos_tol {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
+
+/// Return the subset of `extract_edges(parent_handle)` whose midpoint tangent
+/// is (anti-)parallel to `axis` within `angular_tol_rad`, while also recording
+/// a [`FeatureTag`] for every extracted edge in `table`.
+///
+/// Mirrors [`edges_parallel_to`]'s logic exactly — same sign-tolerant predicate
+/// (`|t · axis| >= cos(angular_tol_rad)`), same canonical sub-shape order —
+/// while additionally populating `table` with per-edge tags derived from
+/// `parent_tag`: each edge at position `i` in the extracted list gets a tag
+/// whose `source_span` and `step_kind` are copied from `parent_tag` and whose
+/// `sub_index` is `i as u32`.
+///
+/// **Axis validation happens before extraction:** if `axis` is the zero vector
+/// or contains a non-finite component, the function returns a
+/// `QueryError::QueryFailed` immediately, before calling `extract_edges` or
+/// touching `table`. This matches the baseline's "fail before kernel touch"
+/// contract.
+///
+/// Tags are recorded for **all** extracted edges (before the axis-filter
+/// runs), so callers can query the table even for edges that do not pass the
+/// filter. This matches the recording contract established by
+/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
+///
+/// Downstream consumers can pass the populated table to
+/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
+/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
+/// unique-tag invariant is later violated.
+///
+/// # Errors
+///
+/// Same as [`edges_parallel_to`].
+pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    table: &mut FeatureTagTable,
+    parent_handle: GeometryHandleId,
+    parent_tag: FeatureTag,
+    axis: [f64; 3],
+    angular_tol_rad: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let axis = normalize3(axis).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),
+        )
+    })?;
+    let cos_tol = angular_tol_rad.cos();
+    let edges = kernel.extract_edges(parent_handle)?;
+    // Record a per-edge tag for every extracted edge (before filtering).
+    for (i, edge_id) in edges.iter().enumerate() {
+        table.record(
+            *edge_id,
+            FeatureTag {
+                source_span: parent_tag.source_span,
+                step_kind: parent_tag.step_kind,
+                sub_index: i as u32,
+            },
+        );
+    }
+    let values = query_per_subshape(
+        kernel,
+        &edges,
+        "edges_parallel_to_with_tags",
+        GeometryQuery::EdgeTangent,
+    )?;
+    let mut out = Vec::with_capacity(edges.len());
+    for (id, tan_value) in edges.iter().zip(values) {
+        let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
+        let tan = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
+                id
+            ))
+        })?;
+        let abs_dot = dot3(tan, axis).abs();
         if abs_dot >= cos_tol {
             out.push(*id);
         }

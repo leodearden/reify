@@ -189,7 +189,7 @@ fn faces_by_area_with_tags_matches_baseline_and_records_per_face_tags() {
     assert_eq!(
         sub_indices,
         vec![0u32, 1, 2],
-        "sub_index values must be the enumerate positions {0,1,2}"
+        "sub_index values must be the enumerate positions {{0,1,2}}"
     );
 }
 
@@ -286,6 +286,6 @@ fn edges_parallel_to_with_tags_matches_baseline_and_records_per_edge_tags() {
     assert_eq!(
         sub_indices,
         vec![0u32, 1, 2],
-        "sub_index values must be the enumerate positions {0,1,2}"
+        "sub_index values must be the enumerate positions {{0,1,2}}"
     );
 }
