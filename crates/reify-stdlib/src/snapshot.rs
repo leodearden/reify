@@ -612,4 +612,45 @@ mod tests {
             rz
         );
     }
+
+    // ── Midpoint fallback for unbound joints ──────────────────────────────
+
+    /// Joints absent from the bindings list default to their range
+    /// midpoint per spec §13.3. With the same single-body mechanism as
+    /// the world-parent test (prismatic +X, range 0..1m), passing `[]`
+    /// as bindings should produce a body world translation of
+    /// (0.5, 0, 0) — the midpoint of 0..1m.
+    #[test]
+    fn snapshot_unbound_joint_uses_range_midpoint() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, j]);
+
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![])]);
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected snapshot bodies List, got {:?}", other),
+        };
+        let body = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("expected snapshot body record Map, got {:?}", other),
+        };
+        let wt = body
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body record must carry a world_transform field");
+        let (_, [tx, ty, tz]) = decompose_transform_for_assert(wt);
+
+        assert!(
+            (tx - 0.5).abs() < 1e-12,
+            "tx should be 0.5 m (midpoint of 0..1m), got {}",
+            tx
+        );
+        assert!(ty.abs() < 1e-12, "ty should be 0, got {}", ty);
+        assert!(tz.abs() < 1e-12, "tz should be 0, got {}", tz);
+    }
 }
