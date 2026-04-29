@@ -425,6 +425,11 @@ structure S {
 ///     `body_expr` references `S.vents[0].mass` (the canonical placeholder
 ///     element, rewritten at runtime to `S.vents[i].mass` per emission).
 ///
+/// The fixture uses `param n: Int` with no default + `constraint vents.count == n`
+/// so the synthesized `__count_vents` cell exists but evaluates to undef
+/// (matching the runtime entry-point in `engine_edit::edit_param`'s
+/// collection-count phase).
+///
 /// RED before step-4 (types do not yet exist) and step-5 (capture path
 /// not yet wired through `forall_elaborate.rs`).
 #[test]
@@ -438,6 +443,8 @@ structure Vent {
 }
 structure S {
     sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
     forall v in vents: constraint v.mass < 50kg
 }
 "#;

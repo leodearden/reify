@@ -1436,6 +1436,13 @@ pub(crate) fn compile_entity(
     // to a u32-valued map for the helpers; the existing `usize` map is kept for
     // the original ConstraintInst arm and will share the same counter once
     // step-14 refactors that arm into a shared helper.
+    //
+    // task 2629: when a `forall` over a deferred-count collection sub is
+    // encountered, capture a `CompiledForallTemplate` here so the runtime
+    // (engine_edit) can re-elaborate per-element constraints / connections
+    // when the count cell becomes known. The capture is in addition to the
+    // existing zero-emission compile-time silent-skip behaviour.
+    let mut forall_templates_out: Vec<CompiledForallTemplate> = Vec::new();
     for f in &pending_forall_constraint {
         elaborate_forall_constraint(
             f,
@@ -1452,6 +1459,7 @@ pub(crate) fn compile_entity(
             &mut guarded_groups,
             &mut structure_controlling,
             &mut guard_index,
+            &mut forall_templates_out,
             diagnostics,
         );
     }
@@ -1470,6 +1478,7 @@ pub(crate) fn compile_entity(
             &mut connections,
             &mut sub_components,
             &mut connector_index,
+            &mut forall_templates_out,
             diagnostics,
         );
     }
@@ -1918,9 +1927,11 @@ pub(crate) fn compile_entity(
         // lexicographic key order — guaranteeing deterministic iteration of
         // `TopologyTemplate::match_arm_groups` across compiles.
         match_arm_groups: scope.match_arm_groups.values().cloned().collect(),
-        // task 2629: capture is wired in step-5; step-4 only adds the field
-        // and initializes it empty here.
-        forall_templates: Vec::new(),
+        // task 2629: per-element body templates captured by
+        // `elaborate_forall_constraint` / `elaborate_forall_connect` for
+        // statement-form `forall` over deferred-count collection subs.
+        // Empty when no such forall exists.
+        forall_templates: forall_templates_out,
     }
 }
 
