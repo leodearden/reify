@@ -4,10 +4,11 @@
 //! OcctKernelHandle, but all operations return errors. This allows
 //! downstream crates to compile and fail gracefully at runtime.
 
-use crate::BooleanOpHistoryRecords;
+use crate::{BooleanOpHistoryRecords, SweepOpHistoryRecords};
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
+    AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
+    WarmStartable,
 };
 
 /// Stub topology cache build counts (OCCT not available).
@@ -181,6 +182,29 @@ impl OcctKernelHandle {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub `execute_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::execute_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-8).
+    pub fn execute_with_history(
+        &self,
+        _op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub `extrude_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::extrude_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-8).
+    pub fn extrude_with_history(
+        &self,
+        _profile: GeometryHandleId,
+        _distance: f64,
+    ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     /// No-op shutdown (no thread to join).
     pub async fn shutdown(self) {}
 }
@@ -233,6 +257,16 @@ impl GeometryKernel for OcctKernelHandle {
         _handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Override the trait default to surface the OCCT-unavailable message
+    /// (matches the inherent stub `OcctKernelHandle::execute_with_history`).
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-8).
+    fn execute_with_history(
+        &mut self,
+        _op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 }
 

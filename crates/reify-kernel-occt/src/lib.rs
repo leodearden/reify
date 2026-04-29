@@ -183,7 +183,10 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // without taking a normal-dep on `reify-kernel-occt`. Re-exported here for
 // callers that already import from this crate; new call sites should prefer
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
-pub use reify_types::{BooleanOpHistoryRecords, DeletedRecord, HistoryRecord};
+pub use reify_types::{
+    AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord,
+    SweepOpHistoryRecords,
+};
 
 #[cfg(has_occt)]
 /// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,
@@ -480,6 +483,85 @@ impl OcctKernel {
                 edge_modified,
                 edge_generated,
                 edge_deleted,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
+    }
+
+    /// Extrude `profile` along the +Z direction by `distance` metres via
+    /// `BRepPrimAPI_MakePrism`, returning the swept-result handle alongside
+    /// the per-parent face/edge Modified/Generated/Deleted history records
+    /// AND the FirstShape/LastShape cap-face indices.
+    ///
+    /// Mirrors the call convention of the `GeometryOp::Extrude` arm of
+    /// [`OcctKernel::execute`]: profile is extruded along `(0, 0, distance)`,
+    /// validated to be finite and non-zero. Result handle is registered
+    /// with `ReprKind::Solid`.
+    ///
+    /// `parent_index` in every record is `0` (single parent profile).
+    /// `start_cap_face_indices` carries the FirstShape() face index (the
+    /// profile-as-placed); `end_cap_face_indices` carries the LastShape()
+    /// face index (the swept-end face).
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-8).
+    pub fn extrude_with_history(
+        &mut self,
+        profile_id: GeometryHandleId,
+        distance: f64,
+    ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
+        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Extrude validation in
+        // `execute` so direct callers (integration tests, future inherent
+        // dispatchers) get the same descriptive errors.
+        if !distance.is_finite() {
+            return Err(GeometryError::OperationFailed(
+                "extrude distance must be finite".into(),
+            ));
+        }
+        if distance == 0.0 {
+            return Err(GeometryError::OperationFailed(
+                "extrude distance must not be zero".into(),
+            ));
+        }
+        let (result_shape, records) = {
+            let profile_shape = self.get_shape(profile_id)?;
+            let mut history =
+                ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
+            let start_cap_face_indices =
+                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
+                .into_iter()
+                .collect();
+            // Take the result shape last, after all record buffers have
+            // been read off — `take_result_shape` leaves `history` with
+            // an empty result pointer, but the record buffers are still
+            // live (separate `std::vector`s in the wrapper).
+            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
+            let records = SweepOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+                start_cap_face_indices,
+                end_cap_face_indices,
             };
             (result_shape, records)
         };
@@ -1569,6 +1651,22 @@ impl OcctKernel {
         let shape = ffi::ffi::make_circle_face(radius, z)
             .expect("make_circle_face should succeed in test fixture");
         let h = self.store(shape);
+        h.id
+    }
+
+    /// Create a `width × height` rectangular face centered at the origin in
+    /// the XY plane via the OCCT FFI and store it in the kernel, returning
+    /// its `GeometryHandleId` (registered with `ReprKind::Face`).
+    ///
+    /// Exposed for integration tests of sweep history primitives
+    /// (`extrude_with_history`, `revolve_with_history`) that need a planar
+    /// face profile. The production `GeometryOp` API has no standalone face
+    /// constructor — see `crates/reify-kernel-occt/src/lib.rs` `store_*_for_test`
+    /// section docstring for the rationale.
+    pub fn store_rect_face_for_test(&mut self, width: f64, height: f64) -> GeometryHandleId {
+        let shape = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed in test fixture");
+        let h = self.store_with_repr(shape, ReprKind::Face);
         h.id
     }
 
