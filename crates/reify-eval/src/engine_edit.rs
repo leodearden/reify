@@ -1594,13 +1594,23 @@ impl Engine {
                     //     loop body runs zero times — prior emissions are
                     //     still cleared above.
                     let mut fresh_ids: Vec<ConstraintNodeId> = Vec::new();
-                    // The match is exhaustive on the single live variant. The
-                    // Connect body shape is reserved for follow-up task 2690
-                    // (it will re-add the variant alongside the runtime arm).
+                    // The match is exhaustive on the live variants. Task 2690
+                    // added the `Connect` arm; the stub here will be replaced
+                    // with the full Connect re-emission in step-10.
                     // Adding a new `CompiledForallBody` variant will cause
                     // this match to fail to compile, forcing an explicit
                     // decision rather than a silent drop.
                     match &t.body {
+                        CompiledForallBody::Connect { .. } => {
+                            // TODO(task 2690 step-10): drain prior emissions
+                            // and emit fresh per-element connections by
+                            // rewriting `<sub>[0]` placeholder port-name
+                            // tokens to `<sub>[i]`, allocating a synthetic
+                            // compatibility-constraint id per element, and
+                            // pushing into `graph.constraints` and
+                            // `graph.connections`. Stub emits zero entries;
+                            // tests guard against silent skip.
+                        }
                         CompiledForallBody::Constraint { body_expr } => {
                             let placeholder_entity =
                                 format!("{}.{}[0]", t.parent_entity, t.collection_sub_name);

@@ -519,11 +519,15 @@ structure S {
     assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
 
     // (d) Body shape: Constraint with body_expr referencing S.vents[0].mass.
-    // The match is exhaustive on the single live variant; if task 2690 (or any
-    // future task) re-adds a sibling variant to `CompiledForallBody`, this
-    // match will fail to compile and the test will be forced to spell out the
-    // expected discriminant explicitly.
-    let CompiledForallBody::Constraint { body_expr } = &ft.body;
+    // Task 2690 added a sibling `Connect` variant to `CompiledForallBody`,
+    // so this pattern is no longer irrefutable; an explicit `else` branch
+    // panics so the wrong discriminant surfaces a clear failure.
+    let CompiledForallBody::Constraint { body_expr } = &ft.body else {
+        panic!(
+            "expected CompiledForallBody::Constraint variant, got {:?}",
+            &ft.body
+        );
+    };
     // The body should reference S.vents[0].mass somewhere in its expression
     // tree. Walk the expr and confirm.
     let mut found_vent_mass = false;
