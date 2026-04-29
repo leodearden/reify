@@ -2355,6 +2355,49 @@ std::unique_ptr<OcctShape> make_closed_shell_for_test() {
     });
 }
 
+std::unique_ptr<OcctShape> make_triangle_face(
+    double x1, double z1,
+    double x2, double z2,
+    double x3, double z3,
+    double cy) {
+    // Test fixture: triangular planar face in the plane Y=cy with vertices
+    // (x1, cy, z1), (x2, cy, z2), (x3, cy, z3).  Used by the revolve
+    // history regression test (task 2636, step-3) to exercise a
+    // non-rectangular profile with one radial and two slanted edges.
+    return wrap_occt_call("make_triangle_face", [&]() {
+        if (!(std::isfinite(x1) && std::isfinite(z1) &&
+              std::isfinite(x2) && std::isfinite(z2) &&
+              std::isfinite(x3) && std::isfinite(z3) &&
+              std::isfinite(cy))) {
+            throw std::runtime_error("make_triangle_face: all coordinates must be finite");
+        }
+        gp_Pnt p1(x1, cy, z1);
+        gp_Pnt p2(x2, cy, z2);
+        gp_Pnt p3(x3, cy, z3);
+
+        BRepBuilderAPI_MakeEdge e1(p1, p2);
+        BRepBuilderAPI_MakeEdge e2(p2, p3);
+        BRepBuilderAPI_MakeEdge e3(p3, p1);
+        if (!e1.IsDone() || !e2.IsDone() || !e3.IsDone()) {
+            throw std::runtime_error("make_triangle_face: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wire_builder;
+        wire_builder.Add(e1.Edge());
+        wire_builder.Add(e2.Edge());
+        wire_builder.Add(e3.Edge());
+        if (!wire_builder.IsDone()) {
+            throw std::runtime_error("make_triangle_face: MakeWire failed");
+        }
+        BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), Standard_True);
+        if (!face_builder.IsDone()) {
+            throw std::runtime_error("make_triangle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = face_builder.Face();
+        return result;
+    });
+}
+
 // --- OcctShape lazy accessor implementations ---
 
 // STRONG-EXCEPTION-GUARANTEE: Build into a local `unique_ptr` (`tmp`) and only

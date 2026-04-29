@@ -420,6 +420,16 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
 std::unique_ptr<OcctShape> make_rect_face(double width, double height,
     double cx, double cy, double cz);
 
+/// Create a triangular face (planar) in the plane Y=cy with vertices
+/// (x1, cy, z1), (x2, cy, z2), (x3, cy, z3). Used as a test fixture
+/// for revolve history integration tests (task 2636, step-3) that need
+/// a non-rectangular profile in the XZ plane.
+std::unique_ptr<OcctShape> make_triangle_face(
+    double x1, double z1,
+    double x2, double z2,
+    double x3, double z3,
+    double cy);
+
 // --- Wire queries ---
 
 /// Return the normalised start-tangent of a wire (unit vector at the first

@@ -101,6 +101,22 @@ enum OcctRequest {
         cz: f64,
         reply: oneshot::Sender<GeometryHandleId>,
     },
+    /// Test-fixture: build a triangular face profile in the plane Y=cy
+    /// with vertices (x1, cy, z1), (x2, cy, z2), (x3, cy, z3), store it
+    /// in the kernel, and return its handle id. Used by the revolve
+    /// history regression test (task 2636, step-3) to exercise a
+    /// non-rectangular profile with one radial edge and two slanted edges.
+    #[cfg(feature = "test-fixtures")]
+    MakeTriangleProfileAtForTest {
+        x1: f64,
+        z1: f64,
+        x2: f64,
+        z2: f64,
+        x3: f64,
+        z3: f64,
+        cy: f64,
+        reply: oneshot::Sender<GeometryHandleId>,
+    },
 }
 
 /// Thread-safe handle to an OCCT kernel running on a dedicated thread.
@@ -476,6 +492,42 @@ impl OcctKernelHandle {
         )
     }
 
+    /// Test-fixture: build a triangular face profile in the plane Y=cy
+    /// with vertices (x1, cy, z1), (x2, cy, z2), (x3, cy, z3) on the
+    /// kernel thread, and return its handle id (registered with
+    /// `ReprKind::Face`). Used by the revolve history regression test
+    /// (task 2636, step-3) to exercise a non-rectangular profile.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context, or
+    /// if the kernel thread is dead (test-fixture path).
+    #[cfg(feature = "test-fixtures")]
+    pub fn make_triangle_profile_at_for_test(
+        &self,
+        x1: f64,
+        z1: f64,
+        x2: f64,
+        z2: f64,
+        x3: f64,
+        z3: f64,
+        cy: f64,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        self.send_request_blocking(
+            |reply| OcctRequest::MakeTriangleProfileAtForTest {
+                x1,
+                z1,
+                x2,
+                z2,
+                x3,
+                z3,
+                cy,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )
+    }
+
     /// Execute a geometry operation on the kernel thread.
     ///
     /// # Panics
@@ -611,6 +663,21 @@ impl OcctKernelHandle {
                         reply,
                     } => {
                         let id = kernel.store_rect_face_at_for_test(width, height, cx, cy, cz);
+                        let _ = reply.send(id);
+                    }
+                    #[cfg(feature = "test-fixtures")]
+                    OcctRequest::MakeTriangleProfileAtForTest {
+                        x1,
+                        z1,
+                        x2,
+                        z2,
+                        x3,
+                        z3,
+                        cy,
+                        reply,
+                    } => {
+                        let id =
+                            kernel.store_triangle_face_at_for_test(x1, z1, x2, z2, x3, z3, cy);
                         let _ = reply.send(id);
                     }
                 }
