@@ -302,21 +302,9 @@ pub fn compute_diagnostics_with_state(
                         &reify_eval::cache::NodeId::Value(vc.id.clone()),
                     );
                     let message = match cause {
-                        Some(reify_eval::cache::NodeId::Value(ref v)) => format!(
+                        Some(node) => format!(
                             "computation pending: upstream dependency failed (because {} failed)",
-                            v
-                        ),
-                        Some(reify_eval::cache::NodeId::Constraint(ref c)) => format!(
-                            "computation pending: upstream dependency failed (because {} failed)",
-                            c
-                        ),
-                        Some(reify_eval::cache::NodeId::Realization(ref r)) => format!(
-                            "computation pending: upstream dependency failed (because {} failed)",
-                            r
-                        ),
-                        Some(reify_eval::cache::NodeId::Resolution(ref s)) => format!(
-                            "computation pending: upstream dependency failed (because {} failed)",
-                            s
+                            node
                         ),
                         None => {
                             "computation pending: upstream dependency failed".to_string()
