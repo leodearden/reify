@@ -1053,4 +1053,65 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         assert!(eval_builtin("bodies", &[m0]).is_undef());
     }
+
+    // ── transform_of(snapshot, id) accessor ───────────────────────────────
+
+    /// `transform_of(s, id)` returns the body's recorded
+    /// `world_transform` for each id present in the snapshot's
+    /// bodies list.  Verified against a fresh `transform_at(joint, v)`
+    /// so the accessor is checked against the same FK-walk output.
+    #[test]
+    fn transform_of_returns_body_world_transform() {
+        let (s, j_neg, j_pos) = make_two_body_snapshot();
+
+        // Body 0 (id=0, at j_neg, value=-0.5m, identity pose)
+        let expected_0 = eval_builtin("transform_at", &[j_neg, Value::length(-0.5)]);
+        let result_0 = eval_builtin("transform_of", &[s.clone(), Value::Int(0)]);
+        assert_eq!(
+            result_0, expected_0,
+            "transform_of(s, 0) should equal transform_at(j_neg, -0.5m)"
+        );
+
+        // Body 1 (id=1, at j_pos, value=+0.5m, identity pose)
+        let expected_1 = eval_builtin("transform_at", &[j_pos, Value::length(0.5)]);
+        let result_1 = eval_builtin("transform_of", &[s, Value::Int(1)]);
+        assert_eq!(
+            result_1, expected_1,
+            "transform_of(s, 1) should equal transform_at(j_pos, +0.5m)"
+        );
+    }
+
+    /// `transform_of(s, unknown_id)` returns `Value::Undef`.
+    #[test]
+    fn transform_of_unknown_id_returns_undef() {
+        let (s, _, _) = make_two_body_snapshot();
+        assert!(eval_builtin("transform_of", &[s, Value::Int(99)]).is_undef());
+    }
+
+    /// `transform_of()` validation surface: arity, non-snapshot
+    /// first arg, and non-Int second arg all return `Value::Undef`.
+    #[test]
+    fn transform_of_validation_returns_undef() {
+        let (s, _, _) = make_two_body_snapshot();
+        // Wrong arity (0, 1, 3 args)
+        assert!(eval_builtin("transform_of", &[]).is_undef());
+        assert!(eval_builtin("transform_of", std::slice::from_ref(&s)).is_undef());
+        assert!(eval_builtin(
+            "transform_of",
+            &[s.clone(), Value::Int(0), Value::Int(1)]
+        )
+        .is_undef());
+        // Non-snapshot first arg
+        assert!(eval_builtin("transform_of", &[Value::Real(1.0), Value::Int(0)]).is_undef());
+        let m0 = eval_builtin("mechanism", &[]);
+        assert!(eval_builtin("transform_of", &[m0, Value::Int(0)]).is_undef());
+        // Non-Int second arg: String, Real, world sentinel
+        assert!(eval_builtin(
+            "transform_of",
+            &[s.clone(), Value::String("0".to_string())]
+        )
+        .is_undef());
+        assert!(eval_builtin("transform_of", &[s.clone(), Value::Real(0.0)]).is_undef());
+        assert!(eval_builtin("transform_of", &[s, eval_builtin("world", &[])]).is_undef());
+    }
 }
