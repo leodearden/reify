@@ -1308,6 +1308,13 @@ fn resolve_driving_params_from_ast(
 /// match this search and produce incorrect (false-positive) bind pairs.  The
 /// caller (`resolve_driving_params_from_ast`) therefore relies on the assumption
 /// that `snapshot`/`bind` are stdlib-only names in well-formed Reify source.
+///
+/// **Telemetry:** when a `name == "snapshot"` call with `args.len() >= 2` is
+/// found but contributes *zero* bind pairs (empty list or no valid
+/// `bind(Ident, Ident)` entries), a `tracing::debug!` event is emitted at
+/// target `"reify_gui::engine"`.  This surfaces potential user-shadowed
+/// `snapshot` functions or malformed bind lists that would otherwise silently
+/// produce no driving-param resolutions.
 fn collect_snapshot_bind_pairs(
     expr: &reify_syntax::Expr,
     pairs: &mut Vec<(String, String)>,
@@ -1316,6 +1323,10 @@ fn collect_snapshot_bind_pairs(
     match &expr.kind {
         ExprKind::FunctionCall { name, args } => {
             if name == "snapshot" && args.len() >= 2 {
+                // Snapshot the pair count before processing so we can detect
+                // whether this snapshot() call contributed any bind pairs.
+                let pairs_before = pairs.len();
+
                 // Extract bind() entries from the second argument (the bindings list).
                 if let ExprKind::ListLiteral(elems) = &args[1].kind {
                     for elem in elems {
@@ -1336,6 +1347,20 @@ fn collect_snapshot_bind_pairs(
                         };
                         pairs.push((joint_ident, value_ident));
                     }
+                }
+
+                // Telemetry: surface zero-contribution snapshots.  Fires when:
+                // (a) args[1] is not a ListLiteral, or
+                // (b) the list had no valid bind(Ident, Ident) entries.
+                // Helps operators distinguish stdlib snapshot/bind from any
+                // user-defined function that shadows the same name.
+                if pairs.len() == pairs_before {
+                    tracing::debug!(
+                        target: "reify_gui::engine",
+                        arg_count = args.len(),
+                        "snapshot() textual match contributed zero bind pairs \
+                         (potential user-shadowed snapshot or malformed bind list)"
+                    );
                 }
             }
             // Recurse into all args regardless (snapshot may be nested).
