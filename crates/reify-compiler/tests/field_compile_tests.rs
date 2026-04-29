@@ -43,53 +43,75 @@ fn compile_field_analytical() {
     }
 }
 
-// ── Step 15 / 2416: compile sampled field emits v0.2 deferral diagnostic ───
+// ── Task 2341 step-5: well-formed sampled field config compiles clean ───────
 
 #[test]
-fn compile_field_sampled() {
+fn compile_field_sampled_with_well_formed_config_compiles_clean() {
+    // Pins the v0.2 behavior of `compile_field`'s Sampled arm: when all three
+    // required keys (`grid`, `interpolation`, `data`) are present and each
+    // value is a clean-compiling expression, no `FieldSampledV02` deferral
+    // diagnostic is emitted and the compiled config Vec carries one
+    // `(String, CompiledExpr)` entry per key.
+    //
+    // The values here are deliberately simple literal expressions
+    // (string/list-of-Real) that `compile_expr` handles without emitting
+    // any unresolved-name diagnostics. Eval-time parsing of the values into
+    // a runtime `SampledField` is pinned by separate tests in
+    // `crates/reify-eval/tests/field_eval_tests.rs`.
     let module = compile_source(
-        "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
+        r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#,
     );
 
-    // sampled is deferred to v0.2: compilation must emit exactly one error and
-    // it must be FieldSampledV02 (tighter than .any() to catch regressions where
-    // the config path emits additional unrelated errors).
-    let errors = errors_only(&module);
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly one error (FieldSampledV02), got: {:?}",
-        errors
-    );
-    let diag = &errors[0];
-    assert_eq!(
-        diag.code,
-        Some(DiagnosticCode::FieldSampledV02),
-        "expected FieldSampledV02 code, got: {:?}",
-        diag.code
-    );
+    // Zero `FieldSampledV02` errors — the v0.1 deferral has been replaced.
+    let v02_errs: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FieldSampledV02))
+        .collect();
     assert!(
-        diag.message.contains("v0.2") && diag.message.contains("sampled"),
-        "expected message to contain 'v0.2' and 'sampled', got: {:?}",
-        diag.message
+        v02_errs.is_empty(),
+        "expected zero FieldSampledV02 errors after v0.2 implementation, got: {:?}",
+        v02_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    assert!(!diag.labels.is_empty(), "expected at least one label");
-    assert!(!diag.labels[0].span.is_empty(), "expected non-empty span");
+
+    // No other compile errors should appear for this well-formed source.
+    let all_errs = errors_only(&module);
+    assert!(
+        all_errs.is_empty(),
+        "expected no errors for well-formed sampled field, got: {:?}",
+        all_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
-    assert_eq!(field.name, "pressure");
+    assert_eq!(field.name, "f");
 
-    // Source should be Sampled with an empty config (mirrors Imported: compile-time
-    // deferral diagnostic only; engine_eval.rs:652-653 returns Value::Undef regardless
-    // of config contents, so there is no runtime consumer of the compiled config).
+    // Source should be Sampled with the three config entries — each compiled to a
+    // CompiledExpr — so engine_eval can later evaluate them and parse the results
+    // into a runtime `SampledField`.
     match &field.source {
         reify_compiler::CompiledFieldSource::Sampled { config } => {
-            assert!(
-                config.is_empty(),
-                "expected Sampled compiled config to be empty (dead at runtime — engine_eval.rs returns Undef), got: {:?}",
+            assert_eq!(
+                config.len(),
+                3,
+                "expected 3 compiled config entries (grid, interpolation, data), got: {:?}",
                 config.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+            let keys: Vec<&str> = config.iter().map(|(k, _)| k.as_str()).collect();
+            assert!(
+                keys.contains(&"grid"),
+                "expected `grid` key in compiled config, got: {:?}",
+                keys
+            );
+            assert!(
+                keys.contains(&"interpolation"),
+                "expected `interpolation` key in compiled config, got: {:?}",
+                keys
+            );
+            assert!(
+                keys.contains(&"data"),
+                "expected `data` key in compiled config, got: {:?}",
+                keys
             );
         }
         other => panic!("expected Sampled source, got: {:?}", other),
