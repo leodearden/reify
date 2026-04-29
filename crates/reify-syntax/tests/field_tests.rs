@@ -284,3 +284,34 @@ fn parse_pub_field() {
     assert_eq!(field.name, "temp");
     assert!(field.is_pub);
 }
+
+// ── Step 2689-1: imported field wrong-type values silently dropped ──
+
+/// Verify that type-mismatched values for known keys are silently dropped to `None`.
+/// `path` expects a string literal but receives an identifier → None.
+/// `format` expects an identifier but receives a string literal → None.
+/// `grid` expects a string literal but receives an identifier → None.
+/// This pins the contract documented in `lib.rs:706-728` and the `_ =>` arms in
+/// `ts_parser.rs:779-784`: wrong-ExprKind values are silently ignored.
+#[test]
+fn parse_imported_field_wrong_type_values_dropped() {
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { path = OpenVDB format = "openvdb" grid = bare } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { path, format, grid } => {
+            assert_eq!(*path, None, "path with non-string value should be dropped");
+            assert_eq!(*format, None, "format with non-ident value should be dropped");
+            assert_eq!(*grid, None, "grid with non-string value should be dropped");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
