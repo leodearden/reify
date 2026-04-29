@@ -562,8 +562,8 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // the v0.1 single-column convention returns one Map per joint. The
         // analytic 3-column form is deferred per PRD task 2 / #2670 ("FD fallback
         // for multi-DOF kinds"). Note: chain_jacobian_fd also returns None for
-        // chains containing a spherical joint because value_for_joint has no
-        // spherical arm yet (the f64-per-joint chain machinery cannot represent
+        // chains containing a spherical joint because `value_for_joint` returns
+        // None for spherical (the f64-per-joint chain machinery cannot represent
         // a quaternion motion variable); this zero placeholder is NOT equivalent
         // to "FD chain Jacobians work for spherical" — they do not yet.
         //
@@ -3564,9 +3564,12 @@ mod tests {
             ("Orientation x=NaN", Value::Orientation { w: 1.0, x: f64::NAN, y: 0.0, z: 0.0 }),
             ("Orientation y=NaN", Value::Orientation { w: 1.0, x: 0.0, y: f64::NAN, z: 0.0 }),
             ("Orientation z=NaN", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NAN }),
-            // (e) Inf components
+            // (e) Inf components — one Inf per axis covers the symmetric
+            // `quaternion_is_finite` arms; +Inf and -Inf are mixed across
+            // axes to exercise both signs.
             ("Orientation w=Inf", Value::Orientation { w: f64::INFINITY, x: 0.0, y: 0.0, z: 0.0 }),
             ("Orientation x=Inf", Value::Orientation { w: 1.0, x: f64::INFINITY, y: 0.0, z: 0.0 }),
+            ("Orientation y=Inf", Value::Orientation { w: 1.0, x: 0.0, y: f64::INFINITY, z: 0.0 }),
             ("Orientation z=-Inf", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NEG_INFINITY }),
             // (f) zero-norm quaternion (normalize_quaternion returns None)
             ("Orientation all-zero", Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 }),

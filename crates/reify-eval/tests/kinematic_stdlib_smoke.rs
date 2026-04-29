@@ -569,6 +569,7 @@ fn kinematic_stdlib_smoke_e2e() {
         "sj_xform_euler rotation",
     );
     assert_vec3_close(sxe_trans, [0.0, 0.0, 0.0], 1e-12, "sj_xform_euler translation");
+    assert_vec3_dim(sxe_trans, DimensionVector::LENGTH, "sj_xform_euler translation dim");
 
     // sj_euler_back = orient_to_euler("xyz", q_euler_in) → List of 3 angle
     // scalars round-tripping the input (0.1, 0.2, 0.3) within 1e-12. Note
