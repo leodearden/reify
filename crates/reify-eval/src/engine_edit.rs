@@ -4384,10 +4384,13 @@ mod tests {
     /// Dropping a guard with a non-empty staging map emits a WARN event whose
     /// structured-field schema includes `count` (entry count, regression-locked).
     ///
-    /// This test pins the *schema* — which fields are present — but does **not**
-    /// assert the message-body wording (per the pattern established by
-    /// `auto_trim_warn_omits_invariant_current_len_field` in `warm_pool.rs`,
-    /// which uses `contains_key` rather than string matching).
+    /// This test pins the *schema* — which fields are present and what value
+    /// `count` carries — but does **not** assert the message-body wording.
+    /// It mirrors `auto_trim_warn_omits_invariant_current_len_field` in
+    /// `warm_pool.rs` by combining a positive `contains_key("count")` check,
+    /// a value-pin `assert_eq!(…, Some("1"))`, and a discriminating negative
+    /// `!contains_key("cap")` (the auto-trim WARN's signature field must not
+    /// appear in the drop path).
     ///
     /// Structured fields with actionable, varying values are the unit of
     /// log-aggregator queries; body wording is verified by code review.
@@ -4419,6 +4422,26 @@ mod tests {
         assert!(
             event_fields.contains_key("count"),
             "safety-net WARN must include the `count` structured field; \
+             got fields: {event_fields:?}"
+        );
+
+        // Value-pin: `count` must equal "1" for a single staged entry.
+        // The test-support visitor captures integer fields via record_debug,
+        // which stores format!("{value:?}"); for usize, Debug == Display == "1".
+        assert_eq!(
+            event_fields.get("count").map(String::as_str),
+            Some("1"),
+            "safety-net WARN's `count` field must equal \"1\" for a single staged \
+             entry; got fields: {event_fields:?}"
+        );
+
+        // Discriminating negative: the auto-trim WARN's `cap` field must NOT
+        // appear in the drop path (mirrors the negative assertion in
+        // `auto_trim_warn_omits_invariant_current_len_field` in warm_pool.rs).
+        assert!(
+            !event_fields.contains_key("cap"),
+            "`cap` must NOT appear in the safety-net WARN (it is the auto-trim \
+             WARN's signature field; this drop path emits only `count`); \
              got fields: {event_fields:?}"
         );
     }
