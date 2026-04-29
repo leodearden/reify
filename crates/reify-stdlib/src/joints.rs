@@ -41,6 +41,27 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // `joint_axis` returns this raw value — see its doc-comment.
             make_joint("revolute", args[0].clone(), args[1].clone())
         }
+        // 3-DOF planar joint: two prismatic DOFs (along axis_x and axis_y) plus one
+        // revolute DOF (about axis_x × axis_y). Per PRD v0_2/kinematic-constraints.md
+        // §"Decomposition plan" task 6.
+        //
+        // Signature: planar(axis_x, axis_y, range_x, range_y, range_theta)
+        // where axis_x ⊥ axis_y (both dimensionless Vector3, finite, non-zero),
+        // range_x / range_y are LENGTH ranges, range_theta is an ANGLE range.
+        // The raw (unnormalised) axes are stored in the Map; normalisation happens
+        // at `transform_at` time — matching the prismatic/revolute precedent.
+        "planar" => {
+            if args.len() != 5 {
+                return Some(Value::Undef);
+            }
+            make_planar(
+                args[0].clone(),
+                args[1].clone(),
+                args[2].clone(),
+                args[3].clone(),
+                args[4].clone(),
+            )
+        }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
         //
@@ -566,6 +587,23 @@ fn make_coupling(parent: Value, ratio: Value, offset: Value) -> Value {
     m.insert(Value::String("offset".to_string()), offset);
     m.insert(Value::String("parent".to_string()), parent);
     m.insert(Value::String("ratio".to_string()), ratio);
+    Value::Map(m)
+}
+
+/// Build a planar joint `Value::Map` with the six-key layout:
+/// `"axis_x"`, `"axis_y"`, `"kind"`, `"range_theta"`, `"range_x"`, `"range_y"`.
+///
+/// Keys are in BTreeMap alphabetical order.  Raw (potentially unnormalised) axes
+/// are stored — normalisation happens at `transform_at` time, matching the
+/// prismatic/revolute `make_joint` precedent.
+fn make_planar(axis_x: Value, axis_y: Value, range_x: Value, range_y: Value, range_theta: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("planar".to_string()));
+    m.insert(Value::String("axis_x".to_string()), axis_x);
+    m.insert(Value::String("axis_y".to_string()), axis_y);
+    m.insert(Value::String("range_x".to_string()), range_x);
+    m.insert(Value::String("range_y".to_string()), range_y);
+    m.insert(Value::String("range_theta".to_string()), range_theta);
     Value::Map(m)
 }
 
