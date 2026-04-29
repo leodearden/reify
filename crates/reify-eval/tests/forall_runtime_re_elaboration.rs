@@ -18,11 +18,12 @@
 //! drives the runtime emission.
 
 use reify_compiler::CompiledModule;
+use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{CompiledExprKind, Value, ValueCellId};
+use reify_types::{CompiledExprKind, ConstraintNodeId, Value, ValueCellId};
 
 /// Convenience: parse + compile a single-source string via the shared
 /// test-support helper. Mirrors the `compile_source` helper in
@@ -269,4 +270,124 @@ fn edit_param_count_decrease_removes_stale_forall_constraints_and_changes_finger
         fingerprint_1, fingerprint_0,
         "topology_fingerprint must change across count transition 1 -> 0"
     );
+}
+
+/// Helper: collect the `ConstraintNodeId`s of constraints whose label matches
+/// `forall@<var>[<i>]` for the given variable, sorted by `i`. Used in tests
+/// that need to capture the live IDs and re-check them after a count edit.
+fn collect_forall_ids(snap: &Snapshot, variable: &str) -> Vec<ConstraintNodeId> {
+    let prefix = format!("forall@{}[", variable);
+    let mut entries: Vec<(usize, ConstraintNodeId)> = snap
+        .graph
+        .constraints
+        .iter()
+        .filter_map(|(id, n)| {
+            let label = n.label.as_deref()?;
+            let rest = label.strip_prefix(&prefix)?;
+            let idx_str = rest.strip_suffix(']')?;
+            let i: usize = idx_str.parse().ok()?;
+            Some((i, id.clone()))
+        })
+        .collect();
+    entries.sort_by_key(|(i, _)| *i);
+    entries.into_iter().map(|(_, id)| id).collect()
+}
+
+/// task-2629 step-14: pins that count-decrease invalidates the engine cache
+/// entries for prior per-element forall constraints (mirrors task 2184's
+/// per-instance value-cell invalidation contract for `NodeId::Value`).
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` (count=Undef).
+/// 2. `edit_param(S.n, Int(3))` — record the `ConstraintNodeId`s of the 3
+///    emitted forall constraints (forall@v[0], [1], [2]).
+/// 3. Inject a synthetic cache entry for the constraint id that will be
+///    REMOVED on the next edit (forall@v[2]) via `cache_store_mut().put(...)`.
+///    Confirm `cache_store().get(...)` finds it.
+/// 4. `edit_param(S.n, Int(1))` — the runtime re-elaboration drains prior
+///    emissions and calls `cache.invalidate(&NodeId::Constraint(id))` for
+///    every drained id. Assert that for the 2 `ConstraintNodeId`s that were
+///    removed (forall@v[1], forall@v[2]),
+///    `engine.cache_store().get(&NodeId::Constraint(id))` returns `None` —
+///    confirming the synthetic cache entry from step (3) has been cleared,
+///    not just stale-replayable.
+///
+/// This pins the invalidation contract concretely: an actually-present cache
+/// entry on a removed forall constraint id must be cleared, not preserved.
+/// The synthetic-injection pattern is necessary because the eval pipeline
+/// does not currently materialise `NodeId::Constraint` cache entries at
+/// `edit_param` time — that doesn't change the contract, and a future
+/// change that DOES populate them must still invalidate.
+#[test]
+fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
+    use reify_eval::cache::{CachedResult, NodeCache};
+    use reify_eval::deps::DependencyTrace;
+    use reify_types::{DeterminacyState, Freshness, VersionId};
+
+    let module = compile_source(FORALL_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval: count Undef ⇒ zero forall@* constraints.
+    let _ = engine.eval(&module);
+
+    // (2) Edit n=3, capture the 3 emitted ConstraintNodeIds in order.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param to 3 should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    let ids_3 = collect_forall_ids(snap_3, "v");
+    assert_eq!(
+        ids_3.len(),
+        3,
+        "expected 3 forall@v[*] constraint ids after n=3 (got {})",
+        ids_3.len()
+    );
+
+    // (3) Inject synthetic cache entries for the 2 ids that will be removed
+    //     (forall@v[1] and forall@v[2]). Use a trivial CachedResult::Value(Bool(true))
+    //     to give the test something concrete to observe being cleared.
+    let removed_ids = vec![ids_3[1].clone(), ids_3[2].clone()];
+    for id in &removed_ids {
+        let entry = NodeCache::new(
+            CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace { reads: Vec::new() },
+            VersionId(0),
+        );
+        engine
+            .cache_store_mut()
+            .put(NodeId::Constraint(id.clone()), entry);
+    }
+    // Confirm the synthetic entries are in place before the next edit.
+    for id in &removed_ids {
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Constraint(id.clone()))
+                .is_some(),
+            "synthetic cache entry for {} should be present before edit_param to 1",
+            id
+        );
+    }
+
+    // (4) Edit n=1: forall@v[1] and forall@v[2] are removed from the graph;
+    //     their cache entries must be cleared by the runtime invalidation
+    //     loop in engine_edit.rs.
+    let _ = engine
+        .edit_param(n_id, Value::Int(1))
+        .expect("edit_param to 1 should succeed");
+
+    for (i_in_3, id) in removed_ids.iter().enumerate() {
+        let label_idx = i_in_3 + 1; // 1, 2 — the labels that were removed
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Constraint(id.clone()))
+                .is_none(),
+            "expected cache entry for forall@v[{}] (id={}) to be invalidated after count decrease, but it was still present",
+            label_idx,
+            id
+        );
+    }
 }
