@@ -696,4 +696,137 @@ mod tests {
         assert!(ty.abs() < 1e-12, "ty should be 0, got {}", ty);
         assert!(tz.abs() < 1e-12, "tz should be 0, got {}", tz);
     }
+
+    // ── snapshot() input validation: full surface returns Undef ───────────
+    //
+    // Validation allow-list (matches `eval_snapshot::snapshot` arm):
+    //   args.len() == 2                                 → arity guard
+    //   args[0] is Map with kind="mechanism"            → mechanism guard
+    //   args[1] is Value::List                          → bindings guard
+    //   each entry of args[1] is Map with kind="binding"
+    //   AND a present `joint`/`value` field             → per-entry guard
+    // Any guard failure returns `Value::Undef` BEFORE any FK work.
+
+    /// `snapshot()` with an arity outside {2} returns Undef.
+    #[test]
+    fn snapshot_wrong_arity_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        // 0, 1, 3 args
+        assert!(eval_builtin("snapshot", &[]).is_undef());
+        assert!(eval_builtin("snapshot", std::slice::from_ref(&m0)).is_undef());
+        assert!(eval_builtin(
+            "snapshot",
+            &[m0.clone(), Value::List(vec![]), Value::List(vec![])]
+        )
+        .is_undef());
+    }
+
+    /// `snapshot(non_mechanism, [])` returns Undef when args[0] is not
+    /// a Mechanism Map.  Covers `Value::Real` (non-Map), the world
+    /// sentinel (Map with kind="world"), and an error-bearing non-
+    /// mechanism Map (Map with kind="error" — unrelated to the
+    /// mechanism's internal `error` field, which lives under
+    /// kind="mechanism").
+    #[test]
+    fn snapshot_non_mechanism_first_arg_returns_undef() {
+        // Real (not a Map at all)
+        assert!(eval_builtin("snapshot", &[Value::Real(1.0), Value::List(vec![])]).is_undef());
+
+        // World sentinel (Map with kind="world", not "mechanism")
+        let world = eval_builtin("world", &[]);
+        assert!(eval_builtin("snapshot", &[world, Value::List(vec![])]).is_undef());
+
+        // Map with kind="error" (a non-mechanism kind)
+        let mut error_map = std::collections::BTreeMap::new();
+        error_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("error".to_string()),
+        );
+        assert!(eval_builtin(
+            "snapshot",
+            &[Value::Map(error_map), Value::List(vec![])]
+        )
+        .is_undef());
+    }
+
+    /// `snapshot(m, non_list)` returns Undef when args[1] is not a
+    /// `Value::List`.  Covers `Value::Real`, `Value::Map(empty)`, and
+    /// `Value::Undef` — all three are non-List shapes that must be
+    /// rejected before any FK walk.
+    #[test]
+    fn snapshot_non_list_bindings_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        assert!(eval_builtin("snapshot", &[m0.clone(), Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin(
+            "snapshot",
+            &[m0.clone(), Value::Map(std::collections::BTreeMap::new())]
+        )
+        .is_undef());
+        assert!(eval_builtin("snapshot", &[m0, Value::Undef]).is_undef());
+    }
+
+    /// A bindings list containing any non-binding entry causes
+    /// `snapshot()` to return `Value::Undef` — even when other
+    /// entries are valid binding Maps.  This is whole-call rejection,
+    /// not silent skipping: a malformed entry signals a bug at the
+    /// call site that should not be papered over by midpoint
+    /// fallback.
+    #[test]
+    fn snapshot_invalid_binding_entry_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, j.clone()]);
+        let valid_binding = eval_builtin("bind", &[j.clone(), Value::length(0.002)]);
+
+        // Non-Map entry (Real)
+        assert!(eval_builtin(
+            "snapshot",
+            &[
+                m1.clone(),
+                Value::List(vec![valid_binding.clone(), Value::Real(0.5)])
+            ]
+        )
+        .is_undef());
+
+        // Map with kind != "binding"
+        let mut wrong_kind = std::collections::BTreeMap::new();
+        wrong_kind.insert(
+            Value::String("kind".to_string()),
+            Value::String("not_a_binding".to_string()),
+        );
+        wrong_kind.insert(Value::String("joint".to_string()), j.clone());
+        wrong_kind.insert(Value::String("value".to_string()), Value::length(0.001));
+        assert!(eval_builtin(
+            "snapshot",
+            &[m1.clone(), Value::List(vec![Value::Map(wrong_kind)])]
+        )
+        .is_undef());
+
+        // Map with kind="binding" but missing `joint` field
+        let mut missing_joint = std::collections::BTreeMap::new();
+        missing_joint.insert(
+            Value::String("kind".to_string()),
+            Value::String("binding".to_string()),
+        );
+        missing_joint.insert(Value::String("value".to_string()), Value::length(0.001));
+        assert!(eval_builtin(
+            "snapshot",
+            &[m1.clone(), Value::List(vec![Value::Map(missing_joint)])]
+        )
+        .is_undef());
+
+        // Map with kind="binding" but missing `value` field
+        let mut missing_value = std::collections::BTreeMap::new();
+        missing_value.insert(
+            Value::String("kind".to_string()),
+            Value::String("binding".to_string()),
+        );
+        missing_value.insert(Value::String("joint".to_string()), j);
+        assert!(eval_builtin(
+            "snapshot",
+            &[m1, Value::List(vec![Value::Map(missing_value)])]
+        )
+        .is_undef());
+    }
 }
