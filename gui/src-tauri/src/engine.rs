@@ -543,6 +543,11 @@ impl EngineSession {
         // resolve_driving_params_from_ast, avoiding a redundant O(B) body-walk
         // inside the AST resolver for every (bind-pair, descriptor) pair.
         let mut seen_joints_cache: HashMap<String, Vec<Value>> = HashMap::new();
+        // Shared empty-set fallback for the consumed-idents lookup below.
+        // Declared once before the loop so both match arms can return `&HashSet`
+        // without cloning — `consumed_idents` is used only immutably (`.contains`),
+        // so a reference suffices.
+        let empty_consumed: HashSet<String> = HashSet::new();
 
         // This loop emits one descriptor per **terminal** mechanism cell.
         // A mechanism cell is considered intermediate (and dropped) when its
@@ -567,13 +572,13 @@ impl EngineSession {
         // check below.
         for template in &compiled.templates {
             // Look up the consumed-idents set for this template from the cache.
-            // The cache was eagerly populated for all templates above (when
-            // parsed_cache is Some).  When parsed_cache is None, the cache is
-            // left None and the WARN branch fires on every call — preserving the
-            // existing regression signal.
-            let consumed_idents: HashSet<String> =
+            // A reference is returned rather than a clone — `consumed_idents` is
+            // only used for `.contains()` below, so no owned copy is needed.
+            // `empty_consumed` is used as the fallback when the cache has no entry
+            // for this template (or when the cache is None and the WARN fires).
+            let consumed_idents: &HashSet<String> =
                 match self.consumed_idents_cache.as_ref() {
-                    Some(cache) => cache.get(&template.name).cloned().unwrap_or_default(),
+                    Some(cache) => cache.get(&template.name).unwrap_or(&empty_consumed),
                     None => {
                         tracing::warn!(
                             target: "reify_gui::engine",
@@ -582,7 +587,7 @@ impl EngineSession {
                              terminal-mechanism filter inactive — intermediate mechanism \
                              cells may appear in descriptors"
                         );
-                        HashSet::new()
+                        &empty_consumed
                     }
                 };
 
