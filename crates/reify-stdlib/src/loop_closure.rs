@@ -352,6 +352,96 @@ mod tests {
         assert!(super::loop_residual_twist(&b, &[0.5], &b, &[0.3, 0.1]).is_none());
     }
 
+    // ── joint_range_midpoint tests ───────────────────────────────────────
+
+    #[test]
+    fn joint_range_midpoint_prismatic_0_to_1m() {
+        let j = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
+        let mid = super::joint_range_midpoint(&j).expect("midpoint");
+        assert!((mid - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn joint_range_midpoint_prismatic_neg_to_pos() {
+        let j = eval_builtin("prismatic", &[axis_x(), length_range(-2.0, 2.0)]);
+        let mid = super::joint_range_midpoint(&j).expect("midpoint");
+        assert!(mid.abs() < 1e-12);
+    }
+
+    #[test]
+    fn joint_range_midpoint_revolute_0_to_pi() {
+        let j = eval_builtin(
+            "revolute",
+            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
+        );
+        let mid = super::joint_range_midpoint(&j).expect("midpoint");
+        assert!((mid - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn joint_range_midpoint_revolute_neg_pi_2_to_pi_2() {
+        let j = eval_builtin(
+            "revolute",
+            &[
+                axis_z(),
+                angle_range(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+            ],
+        );
+        let mid = super::joint_range_midpoint(&j).expect("midpoint");
+        assert!(mid.abs() < 1e-12);
+    }
+
+    #[test]
+    fn joint_range_midpoint_coupling_delegates_to_parent() {
+        let parent = eval_builtin(
+            "revolute",
+            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
+        );
+        let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
+        let mid = super::joint_range_midpoint(&coupling).expect("midpoint");
+        assert!(
+            (mid - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+            "expected π/2, got {mid}"
+        );
+    }
+
+    #[test]
+    fn joint_range_midpoint_missing_range_returns_none() {
+        // Build a Map with a "kind" but no "range" key.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
+        let j = Value::Map(m);
+        assert!(super::joint_range_midpoint(&j).is_none());
+    }
+
+    #[test]
+    fn joint_range_midpoint_unbounded_returns_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
+        m.insert(
+            Value::String("range".to_string()),
+            Value::Range {
+                lower: Some(Box::new(Value::length(0.0))),
+                upper: None,
+                lower_inclusive: true,
+                upper_inclusive: false,
+            },
+        );
+        let j = Value::Map(m);
+        assert!(super::joint_range_midpoint(&j).is_none());
+    }
+
+    #[test]
+    fn joint_range_midpoint_non_map_returns_none() {
+        assert!(super::joint_range_midpoint(&Value::Real(0.5)).is_none());
+    }
+
     #[test]
     fn loop_residual_twist_undef_chain_returns_none() {
         // Hand-built joint Map with bogus kind triggers chain_transform → None.
