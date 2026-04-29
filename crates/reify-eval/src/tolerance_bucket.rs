@@ -100,6 +100,18 @@ impl<V> ToleranceBucket<V> {
             .entries
             .partition_point(|(t, _)| t.partial_cmp(&tol).expect("finite tolerances are total-ordered") == std::cmp::Ordering::Less);
         self.entries.insert(idx, (tol, val));
+        // Evict loosest (largest cached_tol) entries when cardinality exceeds the cap.
+        //
+        // Because entries are sorted ascending, the loosest entries are at the end of
+        // the Vec.  `truncate` from the end is O(1) per dropped entry.
+        //
+        // Eviction never invalidates future cache hits: any request that the evicted
+        // entry would have satisfied is also satisfied by every tighter entry that
+        // remains in the bucket (by the partial-order rule `cached_tol <= requested_tol`).
+        // Evicted entries are therefore always redundant at the moment of eviction.
+        if self.entries.len() > SOFT_CAPACITY {
+            self.entries.truncate(SOFT_CAPACITY);
+        }
         true
     }
 
