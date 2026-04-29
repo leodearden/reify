@@ -1171,25 +1171,25 @@ mod tests {
     /// mask the original error).
     #[test]
     fn errored_mechanism_propagates_through_subsequent_body_calls() {
-        // Build an errored mechanism via parent-conflict (cheaper to
-        // set up than the cycle case; both produce error="closed_chain"
-        // so the propagation contract is identical).
+        // Build an errored mechanism via duplicate-solid (same solid
+        // value used twice). After the v0.2 closed-chain → loop-closure
+        // migration, duplicate_solid remains the error trigger here; the
+        // contract under test — errored-Map propagation through subsequent
+        // body() calls — is unchanged.
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
-        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let j_b = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let solid_a = Value::String("solidA".to_string());
-        let solid_b = Value::String("solidB".to_string());
 
         let m0 = eval_builtin("mechanism", &[]);
-        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a]);
-        let errored = eval_builtin("body", &[m1, solid_b, j_x, j_b]);
+        let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_a.clone(), j_b]);
         // Sanity: the setup actually produced an errored mechanism.
         match &errored {
             Value::Map(m) => {
                 assert_eq!(
                     m.get(&Value::String("error".to_string())),
-                    Some(&Value::String("closed_chain".to_string())),
-                    "setup precondition: errored mechanism has error='closed_chain'"
+                    Some(&Value::String("duplicate_solid".to_string())),
+                    "setup precondition: errored mechanism has error='duplicate_solid'"
                 );
             }
             other => panic!("expected errored Mechanism Map, got {:?}", other),
@@ -1312,26 +1312,26 @@ mod tests {
     /// reviewer's amendment pass.
     #[test]
     fn body_id_of_on_errored_mechanism_returns_undef() {
-        // Build an errored mechanism via parent-conflict (cheaper to
-        // set up than the cycle / duplicate-solid cases; the contract
-        // is uniform across every error kind).
+        // Build an errored mechanism via duplicate-solid. After the v0.2
+        // closed-chain → loop-closure migration, duplicate_solid remains
+        // the error trigger here. solid_a IS present in the pre-error
+        // bodies list (recorded by the first body() call), and the second
+        // call with the same solid surfaces error="duplicate_solid".
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
-        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let j_b = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let solid_a = Value::String("solidA".to_string());
-        let solid_b = Value::String("solidB".to_string());
 
         let m0 = eval_builtin("mechanism", &[]);
-        let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_x.clone(), j_a]);
-        let errored = eval_builtin("body", &[m1, solid_b, j_x, j_b]);
+        let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_a.clone(), j_b]);
         // Sanity: setup actually produced an errored mechanism with
         // solid_a still in the pre-error bodies list.
         match &errored {
             Value::Map(m) => {
                 assert_eq!(
                     m.get(&Value::String("error".to_string())),
-                    Some(&Value::String("closed_chain".to_string())),
-                    "setup precondition: errored mechanism has error='closed_chain'"
+                    Some(&Value::String("duplicate_solid".to_string())),
+                    "setup precondition: errored mechanism has error='duplicate_solid'"
                 );
             }
             other => panic!("expected errored Mechanism Map, got {:?}", other),
@@ -1339,7 +1339,7 @@ mod tests {
 
         // body_id_of on the errored mechanism must yield Undef even
         // though solid_a IS present in the pre-error bodies list (the
-        // "closed_chain" error decorates the mechanism but preserves
+        // "duplicate_solid" error decorates the mechanism but preserves
         // the bodies prefix from before the conflicting body() call).
         assert!(
             eval_builtin("body_id_of", &[errored, solid_a]).is_undef(),
