@@ -174,8 +174,56 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 
             make_snapshot(snapshot_bodies)
         }
+        "bodies" => {
+            // Validation surface (each guard short-circuits to Undef):
+            //   args.len() == 1                       → arity guard
+            //   args[0] is Map with kind="snapshot"   → snapshot guard
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let snap_bodies = match snapshot_bodies(&args[0]) {
+                Some(b) => b,
+                None => return Some(Value::Undef),
+            };
+            // Project each body record's `id` field into a flat List.
+            // A missing `id` (defense-in-depth — well-formed snapshots
+            // always carry one) collapses the whole call to Undef.
+            let mut ids = Vec::with_capacity(snap_bodies.len());
+            for body in snap_bodies {
+                let body_map = match body {
+                    Value::Map(b) => b,
+                    _ => return Some(Value::Undef),
+                };
+                match body_map.get(&Value::String("id".to_string())) {
+                    Some(v) => ids.push(v.clone()),
+                    None => return Some(Value::Undef),
+                }
+            }
+            Value::List(ids)
+        }
         _ => return None,
     })
+}
+
+/// Extract the `bodies` list from a Snapshot Map, validating the
+/// `kind="snapshot"` discriminant.  Returns `None` for any non-Map,
+/// non-Snapshot, or malformed Snapshot (missing/non-List `bodies`
+/// field).  Used by the accessor arms of `eval_snapshot` to share
+/// the same validation predicate.
+fn snapshot_bodies(snap: &Value) -> Option<&[Value]> {
+    let map = match snap {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if map.get(&Value::String("kind".to_string()))
+        != Some(&Value::String("snapshot".to_string()))
+    {
+        return None;
+    }
+    match map.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => Some(b.as_slice()),
+        _ => None,
+    }
 }
 
 /// Build the canonical empty Snapshot `Value::Map`.
