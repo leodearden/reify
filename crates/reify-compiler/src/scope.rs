@@ -151,9 +151,20 @@ impl<'u> CompilationScope<'u> {
     ///
     /// Stored in `match_arm_groups` — deliberately separate from `names` so that
     /// future duplicate-name diagnostics (task 2375) cannot misfire on cluster
-    /// members. Overwriting a previous registration is harmless because the cluster
-    /// is fully assembled before this call is made.
+    /// members.
+    ///
+    /// Callers must never register the same `name` twice. In practice,
+    /// `compile_match_arm_decl_group` (entity.rs) emits a
+    /// "duplicate match-arm cluster name" diagnostic and returns early before
+    /// reaching this call for a second cluster with the same name. The
+    /// `debug_assert!` below is a defensive backstop: it will fire loudly in
+    /// debug builds if a future refactor bypasses that early return.
     pub(crate) fn register_match_arm_group(&mut self, name: &str, group: GuardedDeclGroup) {
+        debug_assert!(
+            !self.match_arm_groups.contains_key(name),
+            "duplicate cluster registration for '{}'",
+            name
+        );
         self.match_arm_groups.insert(name.to_string(), group);
     }
 
