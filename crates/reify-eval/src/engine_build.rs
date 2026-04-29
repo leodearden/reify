@@ -812,6 +812,29 @@ mod tests {
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
         assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+        // Pin the expected warning count so unrelated warning regressions still
+        // fail the test instead of being silently absorbed by the
+        // error-severity filter above. Per primitive op that succeeds at the
+        // kernel level, the seeder makes exactly one warn-and-continue
+        // attempt (extract_faces fails first on this mock kernel because
+        // no topology fixture is configured). One Box op → 1 seeder warning.
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected exactly 1 warning (seeder extract_faces failure on mock kernel), \
+             got {}: {:?}",
+            warnings.len(),
+            warnings
+        );
+        assert!(
+            warnings[0].message.contains("topology-attribute seeding failed"),
+            "the single warning must be the seeder's auxiliary-metadata failure, got: {:?}",
+            warnings[0].message
+        );
     }
 
     /// Compile failure: a Boolean op with out-of-bounds step references causes
@@ -1166,6 +1189,25 @@ mod tests {
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
         assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+        // Pin the expected warning count (one seeder extract-failure per
+        // successful primitive op). See the happy-path test for the rationale.
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected exactly 1 warning (seeder extract_faces failure on mock kernel), \
+             got {}: {:?}",
+            warnings.len(),
+            warnings
+        );
+        assert!(
+            warnings[0].message.contains("topology-attribute seeding failed"),
+            "the single warning must be the seeder's auxiliary-metadata failure, got: {:?}",
+            warnings[0].message
+        );
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
         let body_handle = named_steps.get("body").copied();
         assert!(
@@ -1367,6 +1409,26 @@ mod tests {
             "no errors expected for two valid realizations, got: {:?}",
             errors
         );
+        // Pin the expected warning count: this test runs two successful
+        // primitive ops (Box, then Cylinder) through the same `diagnostics`
+        // Vec, so one seeder warning per op accumulates → 2 total.
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            2,
+            "expected exactly 2 warnings (one seeder failure per successful primitive op), \
+             got {}: {:?}",
+            warnings.len(),
+            warnings
+        );
+        assert!(
+            warnings.iter().all(|w| w.message.contains("topology-attribute seeding failed")),
+            "every warning must be a seeder auxiliary-metadata failure, got: {:?}",
+            warnings
+        );
     }
 
     /// Pins the rollback-vs-shadowing interaction: when a named realization
@@ -1445,6 +1507,20 @@ mod tests {
             "first realization must succeed cleanly, got: {:?}",
             errors
         );
+        // Pin the expected warning count (one seeder failure for the
+        // successful Box op). See the happy-path test for the rationale.
+        let warnings_after_first: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .collect();
+        assert_eq!(
+            warnings_after_first.len(),
+            1,
+            "first realization should emit exactly 1 seeder warning, \
+             got {}: {:?}",
+            warnings_after_first.len(),
+            warnings_after_first
+        );
 
         // Second binding: let body = <invalid> — fails (rollback path).
         let mut feature_tag_table = FeatureTagTable::default();
@@ -1480,6 +1556,22 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "expected a diagnostic from the failed second realization"
+        );
+        // Pin the warning count after the second call: the second op fails
+        // before reaching `kernel.execute`, so the seeder is never invoked
+        // and no NEW warning lands on top of the one from the first call.
+        let warnings_after_second: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .collect();
+        assert_eq!(
+            warnings_after_second.len(),
+            1,
+            "after the failing second realization the warning count must remain \
+             at 1 (only the first realization's seeder warning); the failing op \
+             never reaches the seeder. Got {}: {:?}",
+            warnings_after_second.len(),
+            warnings_after_second
         );
     }
 
