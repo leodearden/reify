@@ -391,3 +391,83 @@ fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
         );
     }
 }
+
+/// Fixture variant with an unrelated `other` param to exercise the precision
+/// contract pinned by step-16. `other` is a top-level Param with no
+/// dependency on the count cell or the forall body, so editing it must
+/// leave the forall emission ledger untouched.
+const FORALL_FIXTURE_SRC_WITH_UNRELATED_PARAM: &str = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    param other : Int = 5
+    constraint vents.count == n
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+
+/// task-2629 step-16: pins that editing a param UNRELATED to the
+/// collection-count cell does NOT re-emit forall constraints. The existing
+/// gating at `engine_edit.rs:1409` (`if new_count_val == old_count_val
+/// { continue; }`) is the precision contract being pinned: only count-cell
+/// changes drive forall runtime re-elaboration.
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` (count=Undef ⇒ zero forall emissions).
+/// 2. `edit_param(S.n, Int(3))` — capture the 3 emitted ConstraintNodeIds
+///    AND the snapshot's `forall_emitted` ledger.
+/// 3. `edit_param(S.other, Int(7))` — an unrelated param edit.
+/// 4. Assert (a) the 3 forall ConstraintNodeIds are still present in the
+///    new snapshot's graph AND identical to the pre-edit ids (id stability
+///    across edits — captured by id-equality, not just count-equality), and
+///    (b) the `forall_emitted` ledger is unchanged.
+#[test]
+fn edit_param_unrelated_param_does_not_re_emit_forall_constraints() {
+    let module = compile_source(FORALL_FIXTURE_SRC_WITH_UNRELATED_PARAM);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+    let other_id = ValueCellId::new("S", "other");
+
+    // (1) Initial eval — count Undef, zero forall emissions.
+    let _ = engine.eval(&module);
+
+    // (2) Edit n=3 — capture the 3 emitted ConstraintNodeIds and ledger.
+    let _ = engine
+        .edit_param(n_id, Value::Int(3))
+        .expect("edit_param(n, 3) should succeed");
+    let snap_after_n3 = engine.snapshot().expect("snapshot after edit n=3");
+    let ids_after_n3 = collect_forall_ids(snap_after_n3, "v");
+    assert_eq!(
+        ids_after_n3.len(),
+        3,
+        "expected 3 forall@v[*] constraint ids after n=3 (got {})",
+        ids_after_n3.len()
+    );
+    let ledger_after_n3 = snap_after_n3.forall_emitted.clone();
+
+    // (3) Edit an unrelated param — must NOT trigger forall re-emission.
+    let _ = engine
+        .edit_param(other_id, Value::Int(7))
+        .expect("edit_param(other, 7) should succeed");
+
+    // (4a) The 3 forall constraint ids are still present, identical (id
+    //      stability proves "not re-emitted", not just "count preserved").
+    let snap_after_other = engine
+        .snapshot()
+        .expect("snapshot after edit other");
+    let ids_after_other = collect_forall_ids(snap_after_other, "v");
+    assert_eq!(
+        ids_after_other, ids_after_n3,
+        "forall constraint ids must be identical across an unrelated param edit (was {:?}, now {:?})",
+        ids_after_n3, ids_after_other
+    );
+
+    // (4b) The forall_emitted ledger is unchanged.
+    assert_eq!(
+        snap_after_other.forall_emitted, ledger_after_n3,
+        "forall_emitted ledger must be unchanged across an unrelated param edit"
+    );
+}
