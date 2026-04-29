@@ -237,6 +237,72 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             }
             Value::Undef
         }
+        "center_of_mass" => {
+            // Validation surface (each guard short-circuits to Undef):
+            //   args.len() in {1, 2}                     → arity guard
+            //   args[0] is Map with kind="snapshot"      → snapshot guard
+            // v0.1 semantic: density-weighted mean of per-body world-frame
+            // ORIGINS (translation of each body's `world_transform`).
+            // Point-mass approximation — real volumetric centroid needs
+            // OCCT (`BRepGProp::VolumeProperties`), scope of FFI task #2530.
+            // Empty Snapshot → Undef (zero-mass divide-by-zero).
+            //
+            // Density resolution (uniform fallback for partial maps):
+            //   - args.len() == 1 OR args[1] is Undef OR args[1] is empty Map
+            //     → all bodies get density 1.0 (uniform).
+            //   - args[1] is non-empty Map → per-body lookup with 1.0
+            //     fallback for absent ids (wired in step 26).
+            if args.len() != 1 && args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let snap_bodies = match snapshot_bodies(&args[0]) {
+                Some(b) => b,
+                None => return Some(Value::Undef),
+            };
+            if snap_bodies.is_empty() {
+                return Some(Value::Undef);
+            }
+
+            // Uniform-density default (this step) — densities arg absent,
+            // Undef, or empty Map all collapse to 1.0 per body.  Step 26
+            // extends this to per-body Map lookup with uniform fallback.
+            let _densities_uniform = args.len() == 1
+                || matches!(&args[1], Value::Undef)
+                || matches!(&args[1], Value::Map(m) if m.is_empty());
+
+            let mut weighted_xyz = [0.0_f64; 3];
+            let mut total_density = 0.0_f64;
+            for body in snap_bodies {
+                let body_map = match body {
+                    Value::Map(b) => b,
+                    _ => return Some(Value::Undef),
+                };
+                let wt = match body_map.get(&Value::String("world_transform".to_string())) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+                let xyz = match world_transform_translation(wt) {
+                    Some(t) => t,
+                    None => return Some(Value::Undef),
+                };
+                // Step 24: uniform density.  Step 26 will resolve per-body
+                // density from args[1] when it's a non-empty Map.
+                let density = 1.0_f64;
+                for i in 0..3 {
+                    weighted_xyz[i] += density * xyz[i];
+                }
+                total_density += density;
+            }
+            // total_density > 0 is guaranteed because snap_bodies is non-empty
+            // and each body contributes 1.0 (or, post-step-26, a positive
+            // density — zero/negative densities can be caught there).
+            let com = [
+                weighted_xyz[0] / total_density,
+                weighted_xyz[1] / total_density,
+                weighted_xyz[2] / total_density,
+            ];
+            make_length_point3(com)
+        }
         "bounding_box" => {
             // Validation surface (each guard short-circuits to Undef):
             //   args.len() == 1                       → arity guard
