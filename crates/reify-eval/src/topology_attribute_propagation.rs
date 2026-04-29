@@ -19,15 +19,23 @@
 //! integration test, hand-seeded) and copies the parent attribute onto
 //! each Modified/Generated result handle. Deleted records are skipped.
 //!
-//! Per task-1 design decision: the parent's attribute is cloned
-//! **unchanged** — `role`, `local_index`, `mod_history`, `user_label`
-//! are all preserved. Per-op transformation rules (e.g. "boolean cut's
-//! generated faces always carry Role::NewEdge") are deferred to tasks
-//! 5-8, which will add per-op variants of this helper.
+//! Per v0.2 task-3: the parent's attribute is cloned and the parent-key
+//! fields (`feature_id`, `role`, `local_index`, `user_label`) are
+//! propagated unchanged. The `mod_history` postfix is augmented on
+//! splits: when a parent has more than one same-kind result child
+//! (Modified ∪ Generated, face vs edge counted independently), each
+//! child is given a fresh `ModEntry { splitting_feature_id, split_index }`
+//! appended to its inherited `mod_history`. Single-result parents
+//! remain pure pass-through (mod_history unchanged). Per-op
+//! transformation rules (e.g. "boolean cut's generated faces always
+//! carry Role::NewEdge") are deferred to tasks 5-8, which will add
+//! per-op variants of this helper.
+
+use std::collections::HashMap;
 
 use reify_types::{
     BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
-    QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -51,6 +59,10 @@ use reify_types::{
 /// - `result_edge_handles`: as above, but for edges.
 /// - `history`: the records emitted by the FFI primitive
 ///   (`OcctKernelHandle::boolean_fuse_with_history`).
+/// - `splitting_feature_id`: the FeatureId of the boolean op whose history
+///   is being propagated. Stamped onto each `ModEntry` appended on splits;
+///   single-result parents remain pure pass-through and never see this
+///   value land in their `mod_history`.
 ///
 /// Why pre-extracted vectors?
 ///
@@ -67,12 +79,19 @@ use reify_types::{
 /// Behaviour:
 /// - For every Modified or Generated record (faces and edges), if the
 ///   parent sub-shape has an entry in `table`, clone it onto the
-///   corresponding result sub-shape's handle. The clone is **unchanged**
-///   — `role`, `local_index`, `mod_history`, `user_label` are all
-///   preserved (per-op transformation is task-5-8 scope per PRD).
+///   corresponding result sub-shape's handle. Parent-key fields
+///   (`feature_id`, `role`, `local_index`, `user_label`) are preserved;
+///   per-op transformation is task-5-8 scope per PRD.
+/// - Modified/Generated children of a parent that has > 1 result
+///   sub-shapes (across the same-kind Modified ∪ Generated union) inherit
+///   the parent attribute's parent-key fields AND get a fresh
+///   `ModEntry { splitting_feature_id: clone, split_index }` appended
+///   to `mod_history`. Single-result parents remain pure pass-through
+///   (mod_history unchanged). Records arriving in Modified-then-Generated
+///   order yield `split_index` 0, 1, 2, … deterministically per parent.
 /// - Deleted records are skipped: a deleted parent has no result entry
 ///   to write, and the parent's own table entry is left untouched (its
-///   handle still resolves; tasks 3/4 will add diagnostics for accidental
+///   handle still resolves; task 4 will add diagnostics for accidental
 ///   rebinds).
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any record references an
@@ -88,9 +107,25 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &BooleanOpHistoryRecords,
+    splitting_feature_id: &FeatureId,
 ) -> Result<(), QueryError> {
     let parent_face_handles = parents.face_slices();
     let parent_edge_handles = parents.edge_slices();
+
+    // Build a (parent_index, parent_subshape_index) → count map per kind
+    // (faces vs edges) across the Modified ∪ Generated union. A count > 1
+    // identifies a parent that was split, in which case each child needs
+    // a fresh ModEntry appended to its mod_history.
+    let face_child_counts =
+        count_children_per_parent(&history.face_modified, &history.face_generated);
+    let edge_child_counts =
+        count_children_per_parent(&history.edge_modified, &history.edge_generated);
+
+    // Per-parent split_index counters seeded at zero. Counts up as each
+    // record for a split parent is propagated (Modified records first,
+    // then Generated, in the same iteration order as the chain below).
+    let mut face_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
+    let mut edge_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
 
     // Faces: Modified ∪ Generated.
     for record in history
@@ -104,6 +139,9 @@ pub fn propagate_attributes_via_brepalgoapi_history(
             result_face_handles,
             record,
             "face",
+            splitting_feature_id,
+            &face_child_counts,
+            &mut face_split_counters,
         )?;
     }
 
@@ -119,26 +157,85 @@ pub fn propagate_attributes_via_brepalgoapi_history(
             result_edge_handles,
             record,
             "edge",
+            splitting_feature_id,
+            &edge_child_counts,
+            &mut edge_split_counters,
         )?;
     }
 
     // Deleted records are intentionally skipped: no result sub-shape
     // exists to receive the attribute, and parents' existing table
-    // entries remain valid (task 3 / task 4 will add diagnostics).
+    // entries remain valid (task 4 will add diagnostics).
     Ok(())
+}
+
+/// Build a `(parent_index, parent_subshape_index) → count` map across the
+/// concatenation of `records_modified` and `records_generated`.
+///
+/// Records are visited in `Modified` then `Generated` order within each
+/// kind; this ordering matches the propagation walk, so counts here pin
+/// the same per-parent record stream that determines `split_index`
+/// assignment in [`propagate_one`].
+///
+/// A parent appearing in this map with `count > 1` is a split — each of
+/// its children is given a fresh `ModEntry { splitting_feature_id,
+/// split_index }` appended to `mod_history`. `count == 1` means a pure
+/// pass-through (mod_history unchanged).
+fn count_children_per_parent(
+    records_modified: &[HistoryRecord],
+    records_generated: &[HistoryRecord],
+) -> HashMap<(u8, u32), usize> {
+    let mut counts: HashMap<(u8, u32), usize> = HashMap::new();
+    for rec in records_modified.iter().chain(records_generated.iter()) {
+        let key = (rec.parent_index, rec.parent_subshape_index);
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// If the parent at `(parent_index, parent_subshape_index)` has more than
+/// one same-kind result child (count > 1), append a fresh
+/// `ModEntry { splitting_feature_id, split_index }` to `attr` and bump
+/// the per-parent `split_index` counter for the next sibling. For
+/// single-result parents (count == 1) this is a no-op — the v0.2 invariant
+/// is that `mod_history` is only augmented on actual splits, preserving
+/// prior history exactly for pure pass-through propagation.
+fn maybe_append_split_entry(
+    attr: &mut TopologyAttribute,
+    parent_key: (u8, u32),
+    child_counts: &HashMap<(u8, u32), usize>,
+    split_counters: &mut HashMap<(u8, u32), u32>,
+    splitting_feature_id: &FeatureId,
+) {
+    let count = child_counts.get(&parent_key).copied().unwrap_or(0);
+    if count > 1 {
+        let split_index = split_counters.entry(parent_key).or_insert(0);
+        attr.mod_history.push(ModEntry {
+            splitting_feature_id: splitting_feature_id.clone(),
+            split_index: *split_index,
+        });
+        *split_index += 1;
+    }
 }
 
 /// Look up the parent attribute via `record.parent_index` /
 /// `record.parent_subshape_index`, and if present, clone it onto the
-/// result sub-shape at `record.result_subshape_index`.
+/// result sub-shape at `record.result_subshape_index`. When the parent
+/// has more than one same-kind result child (`child_counts[(parent_index,
+/// parent_subshape_index)] > 1`), append a fresh `ModEntry` to the
+/// cloned attribute's `mod_history` before recording it.
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any index is out of range.
+#[allow(clippy::too_many_arguments)] // each arg threads a needed input; alternatives bundle them into a context struct only the caller would build
 fn propagate_one(
     table: &mut TopologyAttributeTable,
     parent_handles: &[&[GeometryHandleId]],
     result_handles: &[GeometryHandleId],
     record: &HistoryRecord,
     kind: &str,
+    splitting_feature_id: &FeatureId,
+    child_counts: &HashMap<(u8, u32), usize>,
+    split_counters: &mut HashMap<(u8, u32), u32>,
 ) -> Result<(), QueryError> {
     let parent_idx = record.parent_index as usize;
     if parent_idx >= parent_handles.len() {
@@ -177,7 +274,15 @@ fn propagate_one(
     // nothing to clone — silently skip. The end-to-end test asserts
     // that explicitly-seeded parents propagate.
     if let Some(parent_attr) = table.lookup(parent_handle) {
-        let attr_clone = parent_attr.clone();
+        let mut attr_clone = parent_attr.clone();
+        let parent_key = (record.parent_index, record.parent_subshape_index);
+        maybe_append_split_entry(
+            &mut attr_clone,
+            parent_key,
+            child_counts,
+            split_counters,
+            splitting_feature_id,
+        );
         table.record(result_handle, attr_clone);
     }
     Ok(())
@@ -565,6 +670,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for parent_index out of range");
         match err {
@@ -604,6 +710,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for parent_subshape_index out of range");
         match err {
@@ -643,6 +750,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for result_subshape_index out of range");
         match err {
@@ -683,6 +791,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for edge parent_index out of range");
         match err {
@@ -722,6 +831,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for edge parent_subshape_index out of range");
         match err {
@@ -761,6 +871,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for edge result_subshape_index out of range");
         match err {
@@ -793,6 +904,7 @@ mod tests {
             &result_handles,
             &result_handles,
             &history,
+            &fuse_feature_id(),
         )
         .expect("empty history should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
@@ -817,6 +929,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect("empty history with Binary parents should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");

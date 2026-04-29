@@ -246,12 +246,19 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
         edges: [&left_edge_handles, &right_edge_handles],
     };
 
+    // The fuse op's FeatureId is passed as `splitting_feature_id` and
+    // stamped onto each `ModEntry` appended on splits. The integration
+    // test only seeds parent-face attributes; it does NOT exercise the
+    // resolver's AmbiguousAfterSplit path here (that's the dedicated
+    // mod-history e2e test below).
+    let fuse_feature_id = FeatureId::new("Fuse#realization[0]");
     propagate_attributes_via_brepalgoapi_history(
         &mut table,
         &parents,
         &result_face_handles,
         &result_edge_handles,
         &history,
+        &fuse_feature_id,
     )
     .expect("propagation should succeed for a well-formed history");
 
@@ -281,8 +288,24 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     }
 
     // (b) + (c) + (d) — every touched result-face has a lookupable entry,
-    // its feature_id matches the originating parent, and its
-    // mod_history/user_label are unchanged.
+    // its feature_id matches the originating parent, and its parent-key
+    // fields propagate unchanged. `mod_history` is augmented per the v0.2
+    // task-3 contract: split parents (count > 1 across same-kind Modified
+    // ∪ Generated) get a fresh `ModEntry { splitting_feature_id, split_index }`
+    // appended; single-result parents remain pure pass-through.
+    let face_child_counts: HashMap<(u8, u32), usize> = {
+        let mut counts: HashMap<(u8, u32), usize> = HashMap::new();
+        for rec in history
+            .face_modified
+            .iter()
+            .chain(history.face_generated.iter())
+        {
+            *counts
+                .entry((rec.parent_index, rec.parent_subshape_index))
+                .or_insert(0) += 1;
+        }
+        counts
+    };
     for (&result_subshape_index, &expected_parent_index) in last_face_record.iter() {
         let result_face_id = result_face_handles[result_subshape_index as usize];
         let propagated = table.lookup(result_face_id).unwrap_or_else(|| {
@@ -301,14 +324,50 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
             "result face index {} should carry feature_id {} (last-write-wins from parent {})",
             result_subshape_index, expected_feature_id, expected_parent_index,
         );
-        assert!(
-            propagated.mod_history.is_empty(),
-            "task-1 propagation leaves mod_history empty (got {:?})",
-            propagated.mod_history
-        );
+        // Find the parent that wrote this propagated entry. The
+        // last-write-wins iteration matches the propagation walk, so for the
+        // mod_history assertion we look up the last record's parent key.
+        // For non-split parents we expect mod_history empty; for split
+        // parents we expect a non-empty mod_history whose tail entry's
+        // splitting_feature_id matches the fuse_feature_id passed to
+        // propagation. (The dedicated mod-history e2e test pins the
+        // per-child split_index ordering.)
+        let parent_key_for_last_record = history
+            .face_modified
+            .iter()
+            .chain(history.face_generated.iter())
+            .filter(|rec| rec.result_subshape_index == result_subshape_index)
+            .last()
+            .map(|rec| (rec.parent_index, rec.parent_subshape_index))
+            .expect("touched index must originate from at least one record");
+        let parent_count = face_child_counts
+            .get(&parent_key_for_last_record)
+            .copied()
+            .unwrap_or(0);
+        if parent_count > 1 {
+            assert!(
+                !propagated.mod_history.is_empty(),
+                "split parent {:?} (count={parent_count}) should propagate a non-empty mod_history",
+                parent_key_for_last_record
+            );
+            let tail = propagated
+                .mod_history
+                .last()
+                .expect("non-empty mod_history must have a tail");
+            assert_eq!(
+                tail.splitting_feature_id, fuse_feature_id,
+                "split-induced ModEntry must stamp the propagation's splitting_feature_id"
+            );
+        } else {
+            assert!(
+                propagated.mod_history.is_empty(),
+                "non-split parent (count={parent_count}) propagation must leave mod_history empty (got {:?})",
+                propagated.mod_history
+            );
+        }
         assert_eq!(
             propagated.user_label, None,
-            "task-1 propagation leaves user_label as None"
+            "propagation preserves user_label = None from the seeded parents"
         );
     }
 
