@@ -769,8 +769,18 @@ impl<'a> Lowering<'a> {
                                     }
                                 }
                                 _ => {
-                                    // Unknown keys are silently ignored at parse time.
-                                    // The compile phase owns unknown-key diagnostics.
+                                    // Unknown keys are silently dropped here; the AST
+                                    // has no extras field, so they are unrecoverable at
+                                    // compile time. This is intentional: the open grammar
+                                    // provides forward-compatibility (v0.3 keys won't
+                                    // cause parse errors), while compile-phase diagnostics
+                                    // are limited to the three known fields.
+                                    //
+                                    // Note: the same applies to known keys whose value
+                                    // expression kind doesn't match expectations (e.g.
+                                    // `path = OpenVDB` instead of a string literal) — the
+                                    // field stays None and the compiler diagnoses
+                                    // "missing path" rather than "path has wrong type".
                                 }
                             }
                         }

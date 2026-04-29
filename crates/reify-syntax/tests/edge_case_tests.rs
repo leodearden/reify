@@ -81,11 +81,13 @@ structure S {
     }
 }
 
-// ── L5: field_source_imported should strip only one pair of quotes ───
+// ── L5: imported field path round-trip ──────────────────────────────
 
 /// Verify that an imported field path round-trips correctly with the v0.2 key=value syntax.
+/// The path is extracted via lower_expr → ExprKind::StringLiteral, which already carries the
+/// unquoted body — no manual strip_prefix/strip_suffix is performed in the lowering arm.
 #[test]
-fn imported_field_strips_one_pair_of_quotes() {
+fn imported_field_path_round_trips() {
     let source = r#"field def data : Point3 -> Scalar { source = imported { path = "path/to/data.vtu" format = OpenVDB grid = "pressure" } }"#;
     let (decls, errors) = parse_decls(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
@@ -100,29 +102,6 @@ fn imported_field_strips_one_pair_of_quotes() {
     match &field.source {
         FieldSource::Imported { path, .. } => {
             assert_eq!(path.as_deref(), Some("path/to/data.vtu"));
-        }
-        other => panic!("expected Imported source, got {:?}", other),
-    }
-}
-
-/// Verify the v0.2 key=value form produces the correct path without extra quote stripping.
-/// The legacy `imported { "path" }` form required manual strip_prefix/strip_suffix; the new
-/// form uses lower_expr which already produces an unquoted string for StringLiteral.
-#[test]
-fn imported_field_preserves_inner_quotes() {
-    // The path value is extracted via lower_expr → ExprKind::StringLiteral, which already
-    // carries the unquoted body. No extra stripping is performed in the lowering arm.
-    let source = r#"field def data : Point3 -> Scalar { source = imported { path = "data.vtu" format = OpenVDB grid = "g" } }"#;
-    let (decls, errors) = parse_decls(source);
-    assert!(errors.is_empty(), "parse errors: {:?}", errors);
-
-    let field = match &decls[0] {
-        Declaration::Field(f) => f,
-        other => panic!("expected Field, got {:?}", other),
-    };
-    match &field.source {
-        FieldSource::Imported { path, .. } => {
-            assert_eq!(path.as_deref(), Some("data.vtu"));
         }
         other => panic!("expected Imported source, got {:?}", other),
     }

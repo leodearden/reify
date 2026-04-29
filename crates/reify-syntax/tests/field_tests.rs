@@ -211,11 +211,14 @@ fn parse_imported_field_format_identifier_captured_verbatim() {
     }
 }
 
-// ── Step 2665-9: unknown keys silently ignored ───────────────────────
+// ── Step 2665-9: extra keys don't break known-key parsing ───────────
 
 #[test]
-fn parse_imported_field_unknown_keys_silently_ignored() {
+fn parse_imported_field_extra_keys_do_not_break_known_keys() {
     // Includes `units` and `interpolation` keys that v0.2 explicitly does NOT support.
+    // The test name reflects what the body can actually assert: extra keys don't break
+    // parsing of the three known keys. Unknown keys are silently dropped at parse time
+    // with no extras field; the compiler can only observe None for absent/dropped keys.
     let (decls, errors) = parse_decls(
         r#"field def fea : Point3 -> Scalar { source = imported { path = "x.vdb" format = OpenVDB grid = "g" units = MPa interpolation = trilinear } }"#,
     );
@@ -232,6 +235,33 @@ fn parse_imported_field_unknown_keys_silently_ignored() {
             assert_eq!(path.as_deref(), Some("x.vdb"), "path should be populated");
             assert_eq!(format.as_deref(), Some("OpenVDB"), "format should be populated");
             assert_eq!(grid.as_deref(), Some("g"), "grid should be populated");
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
+
+// ── Step 2665-amend: duplicate key handling (last-write-wins) ────────
+
+/// Verify that duplicate keys in an imported block are handled with last-write-wins semantics.
+/// The parser makes no attempt to detect or diagnose duplicates — that is intentional behaviour,
+/// pinned here so any future change (e.g., promoting duplicates to a parse error) is explicit.
+#[test]
+fn parse_imported_field_duplicate_keys_last_write_wins() {
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { path = "first.vdb" path = "second.vdb" format = OpenVDB grid = "g" } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    match &field.source {
+        FieldSource::Imported { path, .. } => {
+            // Last-write-wins: "second.vdb" overwrites "first.vdb".
+            assert_eq!(path.as_deref(), Some("second.vdb"), "last path value should win");
         }
         other => panic!("expected Imported source, got {:?}", other),
     }

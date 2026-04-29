@@ -707,6 +707,20 @@ pub enum FieldSource {
     ///
     /// All three fields are optional at the parser level so that partial blocks still produce
     /// a structured AST. The compiler (task 2666) emits "missing path/format/grid" diagnostics.
+    ///
+    /// ## Design note: typed fields vs `Vec<(String, Expr)>`
+    ///
+    /// Unlike [`FieldSource::Sampled`], which carries a generic `Vec<(String, Expr)>` and defers
+    /// all key validation to the compiler, `Imported` uses typed `Option<String>` fields. This is
+    /// a deliberate choice: `Imported` has three known runtime consumers (path → file I/O,
+    /// format → kernel selection, grid → grid-name lookup) that benefit from structured access.
+    ///
+    /// The trade-off is that unknown keys and type-mismatched values (e.g. `path = OpenVDB`) are
+    /// silently dropped at parse time with no extras field to recover them. The compiler can
+    /// observe `None` for those fields but cannot distinguish "absent key" from "wrong-type key".
+    /// Precise wrong-type diagnostics are therefore out of scope for task 2666's compile phase
+    /// unless this variant is later migrated to a `Vec`-based shape (which would break all
+    /// `FieldSource::Imported { path, .. }` match sites).
     Imported {
         path: Option<String>,
         format: Option<String>,
