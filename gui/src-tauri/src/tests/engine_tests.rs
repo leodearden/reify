@@ -135,6 +135,590 @@ fn set_parameter_changes_width() {
     assert_eq!(width.unit, "mm");
 }
 
+// ---- get_mechanism_descriptors tests (steps 3, 5, 7, 9, 11, 23) -----------
+
+/// A 2-body open-chain mechanism with one prismatic and one revolute joint.
+///
+/// Using explicit intermediate `let` bindings (mechanism() stdlib uses
+/// free functions, not method chaining).
+const HAPPY_MECHANISM_SOURCE: &str = r#"
+structure Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_b, j_a)
+}
+"#;
+
+/// A 3-body mechanism with a coupling joint and a fixed joint (step 7).
+///
+/// j_a: prismatic (parent)
+/// j_c: coupling of j_a with ratio -1.0 (mirrors parent, dimensionless)
+/// j_f: fixed (no axis, no range)
+const COUPLING_FIXED_SOURCE: &str = r#"
+structure Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_c = couple(j_a, -1.0)
+    let j_f = fixed()
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_c, j_a)
+    let m3  = body(m2, "solid_c", j_f, j_c)
+}
+"#;
+
+/// A closed-chain mechanism: j_x is used as the "at" joint for both solid_a
+/// and solid_b, creating a parent-conflict that stamps `error="closed_chain"`
+/// on the resulting mechanism Map (step 9).
+const CLOSED_CHAIN_SOURCE: &str = r#"
+structure Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_x, j_a)
+    let m2  = body(m1, "solid_b", j_x, j_b)
+}
+"#;
+
+/// Helper: create a fresh empty EngineSession.
+fn make_session() -> EngineSession {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+#[test]
+fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
+    // Step-5 RED: load a 2-body open-chain mechanism and assert the descriptor
+    // for m2 (bodies_count=2) has two joints with correct kind/dimension/range.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    // m0 (0 bodies), m1 (1 body), m2 (2 bodies) all appear as mechanism Maps.
+    // Assert at least one descriptor has bodies_count=2.
+    let m2_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 2)
+        .expect("expected a descriptor with bodies_count=2 (the m2 mechanism)");
+
+    // Joint extraction: two unique joints (j_a prismatic, j_b revolute).
+    assert_eq!(
+        m2_desc.joints.len(),
+        2,
+        "m2 uses 2 distinct joints; expected 2 JointDescriptors, got {:?}",
+        m2_desc.joints
+    );
+
+    // Find the prismatic joint.
+    let prismatic = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "prismatic")
+        .expect("expected a prismatic JointDescriptor");
+    assert_eq!(prismatic.dimension, "length");
+    // 0mm = 0.0 m, 1000mm = 1.0 m in SI.
+    assert_eq!(
+        prismatic.range_lower_si,
+        Some(0.0),
+        "prismatic lower bound should be 0.0 m"
+    );
+    let upper = prismatic.range_upper_si.expect("prismatic upper_si should be Some");
+    assert!(
+        (upper - 1.0).abs() < 1e-9,
+        "prismatic upper bound should be 1.0 m (1000mm), got {upper}"
+    );
+    // Axis should be [1, 0, 0].
+    let axis = prismatic.axis.expect("prismatic axis should be Some");
+    assert!(
+        (axis[0] - 1.0).abs() < 1e-9 && axis[1].abs() < 1e-9 && axis[2].abs() < 1e-9,
+        "prismatic axis should be [1,0,0], got {:?}",
+        axis
+    );
+
+    // Find the revolute joint.
+    let revolute = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "revolute")
+        .expect("expected a revolute JointDescriptor");
+    assert_eq!(revolute.dimension, "angle");
+    assert_eq!(
+        revolute.range_lower_si,
+        Some(0.0),
+        "revolute lower bound should be 0.0 rad"
+    );
+    let upper_rev = revolute.range_upper_si.expect("revolute upper_si should be Some");
+    assert!(
+        (upper_rev - 3.14).abs() < 1e-6,
+        "revolute upper bound should be 3.14 rad, got {upper_rev}"
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
+    let session = make_session();
+    let descriptors = session.get_mechanism_descriptors();
+    assert!(
+        descriptors.is_empty(),
+        "expected empty descriptor list when no module is loaded, got {:?}",
+        descriptors
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket");
+
+    let descriptors = session.get_mechanism_descriptors();
+    assert!(
+        descriptors.is_empty(),
+        "bracket has no mechanisms; expected empty list, got {:?}",
+        descriptors
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_filters_errored_mechanisms() {
+    // Step-9 RED / Step-10 GREEN: load a closed-chain mechanism (j_x used as
+    // "at" for both solid_a and solid_b).  When `body(m1, "solid_b", j_x, j_b)`
+    // is evaluated, j_x is already registered as the "at" joint of solid_a in
+    // m1, so the mechanism stdlib stamps `error="closed_chain"` on m2 (the
+    // 2-body result).  m0 (0 bodies) and m1 (1 body) are valid intermediate
+    // mechanism Maps without an error key and may legitimately appear.
+    //
+    // What MUST be true: no descriptor with `bodies_count == 2` appears in the
+    // list — the errored mechanism Map must be filtered out by the `error` key
+    // check (engine.rs, `get_mechanism_descriptors`).
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(CLOSED_CHAIN_SOURCE, "kinematic")
+        .expect("load_from_source should not fail for closed-chain (error is at eval, not compile)");
+
+    let descriptors = session.get_mechanism_descriptors();
+    assert!(
+        !descriptors.iter().any(|d| d.bodies_count == 2),
+        "errored (closed-chain) mechanism (bodies_count=2) must be filtered out; got {:?}",
+        descriptors
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
+    // Step-7 RED: load a mechanism with a coupling and a fixed joint,
+    // assert that their descriptors carry dimension="dimensionless", axis=None,
+    // range_lower_si=None, range_upper_si=None.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(COUPLING_FIXED_SOURCE, "kinematic")
+        .expect("load coupling/fixed mechanism");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    // m3 has 3 bodies and should have three distinct joints (j_a, j_c, j_f).
+    let m3_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 3)
+        .expect("expected a descriptor with bodies_count=3 (m3 mechanism)");
+
+    assert_eq!(
+        m3_desc.joints.len(),
+        3,
+        "m3 has 3 distinct joints; expected 3 JointDescriptors, got {:?}",
+        m3_desc.joints
+    );
+
+    // Coupling joint assertions.
+    let coupling = m3_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "coupling")
+        .expect("expected a coupling JointDescriptor");
+    assert_eq!(
+        coupling.dimension, "dimensionless",
+        "coupling dimension should be 'dimensionless'"
+    );
+    assert!(
+        coupling.axis.is_none(),
+        "coupling axis should be None, got {:?}",
+        coupling.axis
+    );
+    assert!(
+        coupling.range_lower_si.is_none(),
+        "coupling range_lower_si should be None, got {:?}",
+        coupling.range_lower_si
+    );
+    assert!(
+        coupling.range_upper_si.is_none(),
+        "coupling range_upper_si should be None, got {:?}",
+        coupling.range_upper_si
+    );
+
+    // Fixed joint assertions.
+    let fixed = m3_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "fixed")
+        .expect("expected a fixed JointDescriptor");
+    assert_eq!(
+        fixed.dimension, "dimensionless",
+        "fixed dimension should be 'dimensionless'"
+    );
+    assert!(
+        fixed.axis.is_none(),
+        "fixed axis should be None, got {:?}",
+        fixed.axis
+    );
+    assert!(
+        fixed.range_lower_si.is_none(),
+        "fixed range_lower_si should be None, got {:?}",
+        fixed.range_lower_si
+    );
+    assert!(
+        fixed.range_upper_si.is_none(),
+        "fixed range_upper_si should be None, got {:?}",
+        fixed.range_upper_si
+    );
+}
+
+/// Source for step-11: 1-body mechanism where y_axis is bound to param y_pos.
+/// `snapshot(m1, [bind(y_axis, y_pos)])` — y_pos is a param → driving param
+/// resolution should yield driving_param_cell_id = Some("Kinematic.y_pos").
+const SNAPSHOT_PARAM_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    param y_pos: Length = 100mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, y_pos)])
+}
+"#;
+
+/// Source for step-11 sibling: 1-body mechanism where y_axis is bound to a
+/// literal `50mm` instead of a param.  `bind(y_axis, 50mm)` — literal →
+/// driving_param_cell_id must remain None.
+const SNAPSHOT_LITERAL_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 50mm)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_resolves_driving_param_via_ast() {
+    // Step-11 RED: load a mechanism where `bind(y_axis, y_pos)` maps the
+    // prismatic joint to param y_pos.  After AST traversal the joint descriptor
+    // should have driving_param_cell_id = Some("Kinematic.y_pos").
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    // m1 has bodies_count=1 and one prismatic joint.
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    assert_eq!(
+        m1_desc.joints.len(),
+        1,
+        "m1 has one joint; got {:?}",
+        m1_desc.joints
+    );
+
+    let joint = &m1_desc.joints[0];
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "bind(y_axis, y_pos) → driving_param_cell_id should be Some(\"Kinematic.y_pos\"); got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_literal_bind_yields_no_driving_param() {
+    // Step-11 RED sibling: bind(y_axis, 50mm) — literal value → driving param
+    // cannot be resolved → driving_param_cell_id must be None.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+literal source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+    assert!(
+        joint.driving_param_cell_id.is_none(),
+        "literal bind must NOT resolve to a driving param; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+// ---- step-23: current_value_si round-trip ---------------------------------
+
+#[test]
+fn get_mechanism_descriptors_current_value_si_reflects_initial_param() {
+    // Step-23 RED (part 1): after loading SNAPSHOT_PARAM_BIND_SOURCE, the joint
+    // descriptor should have current_value_si = Some(0.1) (y_pos = 100mm = 0.1 SI).
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    // Must have resolved a driving param (prerequisite for current_value_si).
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving param should be Kinematic.y_pos"
+    );
+
+    // current_value_si must be populated with the default value 100mm = 0.1 SI.
+    assert_eq!(
+        joint.current_value_si,
+        Some(0.1),
+        "initial current_value_si should be 0.1 (100mm); got {:?}",
+        joint.current_value_si
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
+    // Step-23 RED (part 2): after set_parameter("Kinematic.y_pos", "150mm"), a
+    // fresh get_mechanism_descriptors call must report current_value_si = Some(0.15).
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    // Scrub the slider by setting y_pos to 150mm.
+    session
+        .set_parameter("Kinematic.y_pos", "150mm")
+        .expect("set_parameter should succeed");
+
+    // Re-fetch descriptors after the edit.
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    // current_value_si must now reflect 150mm = 0.15 SI.
+    assert_eq!(
+        joint.current_value_si,
+        Some(0.15),
+        "current_value_si should be 0.15 (150mm) after set_parameter; got {:?}",
+        joint.current_value_si
+    );
+}
+
+// ---- edge case tests (amendment pass, suggestion 8) -------------------------
+
+/// Source for double-bind test: same joint j bound to two different params in
+/// two separate snapshot() calls.  The first-wins guard ensures only p1 wins.
+const DOUBLE_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    param p1: Length = 100mm
+    param p2: Length = 200mm
+    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j)
+    let snap1 = snapshot(m1, [bind(j, p1)])
+    let snap2 = snapshot(m1, [bind(j, p2)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_double_bind_first_wins() {
+    // Two snapshot() calls bind the same joint j to p1 and p2 respectively.
+    // The `is_none()` guard in `resolve_driving_params_from_ast` ensures that
+    // only the first binding (p1) is recorded; p2 must NOT overwrite it.
+    let mut session = make_session();
+    session
+        .load_from_source(DOUBLE_BIND_SOURCE, "kinematic")
+        .expect("load double-bind source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    assert_eq!(m1_desc.joints.len(), 1, "m1 has one joint");
+    let joint = &m1_desc.joints[0];
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.p1".to_string()),
+        "first bind() wins: expected p1, got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// Source for let-bound test: the value side of bind() is a Let cell (not a Param).
+/// The `is_param` guard must reject it → driving_param_cell_id stays None.
+const LET_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let q  = 100mm
+    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j)
+    let snap = snapshot(m1, [bind(j, q)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_let_bound_yields_no_driving_param() {
+    // bind() where the value side is a Let cell (not a Param) must NOT resolve
+    // to a driving param.  Validates the `is_param` guard in the AST resolver.
+    let mut session = make_session();
+    session
+        .load_from_source(LET_BIND_SOURCE, "kinematic")
+        .expect("load let-bound source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    assert_eq!(m1_desc.joints.len(), 1, "m1 has one joint");
+    let joint = &m1_desc.joints[0];
+    assert!(
+        joint.driving_param_cell_id.is_none(),
+        "Let-bound bind must NOT resolve to a driving param; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// Source for world-only test: mechanism() with no real bodies added.
+/// The descriptor should have joints.len() == 0 (world sentinel filtered).
+const WORLD_ONLY_SOURCE: &str = r#"
+structure Kinematic {
+    let m0 = mechanism()
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_world_only_mechanism_has_no_joints() {
+    // mechanism() creates a mechanism with only the implicit world body.
+    // is_world_sentinel filters the world body's "at" field, so joints.len() == 0
+    // regardless of bodies_count (the world body is still in the bodies list).
+    let mut session = make_session();
+    session
+        .load_from_source(WORLD_ONLY_SOURCE, "kinematic")
+        .expect("load world-only source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m0_desc = descriptors
+        .iter()
+        .find(|d| d.name == "m0")
+        .expect("expected descriptor for m0");
+
+    assert_eq!(
+        m0_desc.joints.len(),
+        0,
+        "world-only mechanism has no scrubbable joints; got {:?}",
+        m0_desc.joints
+    );
+}
+
+/// Source for multi-snapshot test: two separate let cells each hold a snapshot()
+/// call with a distinct bind() pair.  Both bindings must be resolved, exercising
+/// the outer `for member in &structure.members` iteration and verifying that
+/// bind pairs from multiple snapshot lets are all collected.
+const MULTI_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    param p1: Length = 100mm
+    param p2: Length = 200mm
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j2 = prismatic(vec3(0, 1, 0), 0mm .. 600mm)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j1)
+    let m2  = body(m1, "solid_b", j2, j1)
+    let s1  = snapshot(m2, [bind(j1, p1)])
+    let s2  = snapshot(m2, [bind(j2, p2)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
+    // Two separate `let s = snapshot(...)` declarations each contribute one
+    // bind() pair.  Both joints should have their driving_param_cell_id resolved.
+    let mut session = make_session();
+    session
+        .load_from_source(MULTI_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load multi-snapshot source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m2_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 2)
+        .expect("expected descriptor with bodies_count=2 (m2)");
+
+    assert_eq!(m2_desc.joints.len(), 2, "m2 has two distinct joints");
+
+    let j1_desc = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.driving_param_cell_id == Some("Kinematic.p1".to_string()));
+    let j2_desc = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.driving_param_cell_id == Some("Kinematic.p2".to_string()));
+
+    assert!(
+        j1_desc.is_some(),
+        "j1 should be driven by p1; joint descriptors: {:?}",
+        m2_desc.joints
+    );
+    assert!(
+        j2_desc.is_some(),
+        "j2 should be driven by p2; joint descriptors: {:?}",
+        m2_desc.joints
+    );
+}
+
 #[test]
 fn set_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;

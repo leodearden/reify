@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { GuiState, RawGuiState, EvaluationStatus } from '../types';
+import type { GuiState, RawGuiState, EvaluationStatus, MechanismDescriptor } from '../types';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -36,6 +36,7 @@ import {
   onKernelStatus,
   readViewSidecar,
   writeViewSidecar,
+  getMechanismDescriptors,
 } from '../bridge';
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
@@ -538,5 +539,49 @@ describe('bridge view sidecar commands', () => {
     await expect(
       writeViewSidecar('/project/bracket.ri', samplePersistentState),
     ).rejects.toThrow('disk full');
+  });
+});
+
+// --- Mechanism descriptor bridge commands (step-15) ---
+
+describe('bridge mechanism commands', () => {
+  it('getMechanismDescriptors invokes the Tauri command and returns the typed array', async () => {
+    const sampleDescriptors: MechanismDescriptor[] = [
+      {
+        cell_id: 'Kinematic.m',
+        entity_path: 'Kinematic',
+        name: 'm',
+        bodies_count: 2,
+        joints: [
+          {
+            joint_index: 0,
+            kind: 'prismatic',
+            dimension: 'length',
+            range_lower_si: 0.0,
+            range_upper_si: 0.8,
+            axis: [0, 1, 0],
+            driving_param_cell_id: 'Kinematic.y_pos',
+            current_value_si: 0.1,
+          },
+        ],
+      },
+    ];
+    mockInvoke.mockResolvedValue(sampleDescriptors);
+
+    const result = await getMechanismDescriptors();
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_mechanism_descriptors');
+    expect(result).toEqual(sampleDescriptors);
+    expect(result[0].joints[0].joint_index).toBe(0);
+    expect(result[0].joints[0].driving_param_cell_id).toBe('Kinematic.y_pos');
+  });
+
+  it('getMechanismDescriptors returns empty array when no mechanisms exist', async () => {
+    mockInvoke.mockResolvedValue([]);
+
+    const result = await getMechanismDescriptors();
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_mechanism_descriptors');
+    expect(result).toEqual([]);
   });
 });

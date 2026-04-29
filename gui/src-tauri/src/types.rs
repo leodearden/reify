@@ -117,6 +117,55 @@ pub struct FileData {
     pub content: String,
 }
 
+/// Wire-format descriptor for a single mechanism (a `Value::Map` with `kind="mechanism"`
+/// and no `error` key).  Sent by the `get_mechanism_descriptors` Tauri command.
+///
+/// One descriptor per mechanism cell in the loaded module.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MechanismDescriptor {
+    /// Stringified `ValueCellId` (e.g. `"Kinematic.m"`).
+    pub cell_id: String,
+    /// Entity / structure name (e.g. `"Kinematic"`).
+    pub entity_path: String,
+    /// Member name of the mechanism cell (e.g. `"m"`).
+    pub name: String,
+    /// Number of body records in this mechanism.
+    pub bodies_count: usize,
+    /// One descriptor per unique joint appearing in `bodies`.
+    pub joints: Vec<JointDescriptor>,
+}
+
+/// Wire-format descriptor for a single joint within a mechanism.
+///
+/// Joints are identified by their zero-based index in the order they were
+/// first encountered while walking `bodies`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JointDescriptor {
+    /// Zero-based index of this joint in the deduplicated joint list.
+    pub joint_index: usize,
+    /// Joint kind string: `"prismatic"`, `"revolute"`, `"coupling"`, or `"fixed"`.
+    pub kind: String,
+    /// Physical dimension of the motion variable: `"length"`, `"angle"`, or `"dimensionless"`.
+    pub dimension: String,
+    /// Lower bound of the joint range in SI units (m for length, rad for angle).
+    /// `None` for coupling and fixed joints (no independent range).
+    pub range_lower_si: Option<f64>,
+    /// Upper bound of the joint range in SI units.
+    /// `None` for coupling and fixed joints.
+    pub range_upper_si: Option<f64>,
+    /// Unit axis direction as `[x, y, z]`.
+    /// `None` for coupling and fixed joints (no translational/rotational axis).
+    pub axis: Option<[f64; 3]>,
+    /// Stringified `ValueCellId` of the `param` cell that drives this joint via
+    /// `bind(joint, param_ref)` inside a `snapshot()` call.
+    /// `None` when the bind expression is a literal rather than a param reference,
+    /// or when no `snapshot()` / `bind()` call references this joint.
+    pub driving_param_cell_id: Option<String>,
+    /// Current evaluated SI value of the `driving_param_cell_id` cell.
+    /// `None` when `driving_param_cell_id` is `None` or the value is `Undef`.
+    pub current_value_si: Option<f64>,
+}
+
 /// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluationStatus {

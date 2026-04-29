@@ -113,6 +113,7 @@ vi.mock('../bridge', () => ({
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
+  getMechanismDescriptors: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
@@ -168,6 +169,7 @@ beforeEach(() => {
   vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(null);
   vi.mocked(sidecarPersistence.saveSidecar).mockResolvedValue(undefined);
   vi.mocked(viewPersistence.loadViewPersistence).mockReturnValue(null);
+  vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -3775,5 +3777,63 @@ describe('App persistence wiring — flush on file switch', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── MechanismPanel integration (step-21) ─────────────────────────────────────
+
+describe('App MechanismPanel integration', () => {
+  it('renders mechanism-panel inside the side panel', async () => {
+    // Provide a mechanism descriptor so the panel is visible
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
+      {
+        cell_id: 'Kinematic.m',
+        entity_path: 'Kinematic',
+        name: 'm',
+        bodies_count: 2,
+        joints: [
+          {
+            joint_index: 0,
+            kind: 'prismatic',
+            dimension: 'length',
+            range_lower_si: 0.0,
+            range_upper_si: 0.8,
+            axis: [0, 1, 0],
+            driving_param_cell_id: 'Kinematic.y_pos',
+            current_value_si: 0.1,
+          },
+        ],
+      },
+    ]);
+
+    await renderAndWaitForReady();
+
+    // MechanismPanel should be rendered in the side panel
+    await waitFor(() => {
+      expect(screen.getByTestId('mechanism-panel')).toBeTruthy();
+    });
+  });
+
+  it('calls getMechanismDescriptors on non-idle to idle transition', async () => {
+    let evalStatusCallback: ((data: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (cb: any) => {
+      evalStatusCallback = cb;
+      return () => {};
+    });
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalStatusCallback).toBeDefined());
+
+    const callsBefore = vi.mocked((bridge as any).getMechanismDescriptors).mock.calls.length;
+
+    // Trigger a non-idle to idle transition
+    evalStatusCallback!({ phase: 'evaluating' });
+    evalStatusCallback!({ phase: 'idle' });
+
+    await waitFor(() => {
+      const callsAfter = vi.mocked((bridge as any).getMechanismDescriptors).mock.calls.length;
+      expect(callsAfter).toBeGreaterThan(callsBefore);
+    });
   });
 });

@@ -15,3 +15,5 @@ export { ViewSelector } from './ViewSelector';
 export type { ViewSelectorProps } from './ViewSelector';
 export { ViewManageModal } from './ViewManageModal';
 export type { ViewManageModalProps } from './ViewManageModal';
+export { MechanismPanel } from './MechanismPanel';
+export type { MechanismPanelProps } from './MechanismPanel';

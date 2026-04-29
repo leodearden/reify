@@ -20,6 +20,7 @@ import type {
   EntityTreeNode,
   DefInfo,
   PersistentViewState,
+  MechanismDescriptor,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -109,6 +110,11 @@ export async function pickOpenPath(): Promise<string | null> {
 /** Get the entity tree from the backend. */
 export async function getEntityTree(): Promise<EntityTreeNode[]> {
   return invoke<EntityTreeNode[]>('get_entity_tree');
+}
+
+/** Get mechanism descriptors from the backend (one per evaluated Mechanism cell). */
+export async function getMechanismDescriptors(): Promise<MechanismDescriptor[]> {
+  return invoke<MechanismDescriptor[]>('get_mechanism_descriptors');
 }
 
 /** Get the source location for an entity. */

@@ -378,6 +378,80 @@ fn module_structure_all_public_types() {
     super::assert_ipc_contract::<FileData>();
 }
 
+// --- Mechanism descriptor command tests (step-13) ---
+
+/// A 1-body mechanism with a prismatic joint bound to a param via snapshot().
+/// Matches SNAPSHOT_PARAM_BIND_SOURCE in engine_tests.rs; duplicated here to keep
+/// commands_tests self-contained.
+const MECHANISM_FIXTURE_SOURCE: &str = r#"
+structure Kinematic {
+    param y_pos: Length = 100mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, y_pos)])
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_impl_round_trips() {
+    use crate::commands::get_mechanism_descriptors_impl;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
+        .expect("load mechanism fixture");
+
+    // Capture the expected descriptors via the EngineSession method directly.
+    let expected = session.get_mechanism_descriptors();
+
+    // Now wrap the same session in a Mutex and call through the impl helper.
+    let engine = Mutex::new(session);
+    let result = get_mechanism_descriptors_impl(&engine);
+    assert!(
+        result.is_ok(),
+        "get_mechanism_descriptors_impl should return Ok; got {:?}",
+        result
+    );
+    let actual = result.unwrap();
+
+    assert_eq!(
+        actual, expected,
+        "impl round-trip should return the same descriptors as EngineSession::get_mechanism_descriptors()"
+    );
+
+    // Sanity: the fixture has m0 (0 bodies) and m1 (1 body); both are mechanisms, so 2 descriptors.
+    // The impl should return at least one descriptor with bodies_count=1.
+    assert!(!actual.is_empty(), "expected at least one mechanism descriptor");
+
+    // Find the descriptor for m1 (1-body mechanism) — same approach as the engine_tests step-11.
+    let m1_desc = actual
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected a descriptor with bodies_count=1 (m1)");
+    assert_eq!(m1_desc.joints.len(), 1, "m1 should have exactly one joint");
+    assert_eq!(
+        m1_desc.joints[0].driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving param should be resolved via impl round-trip"
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_mechanism_descriptors_impl;
+
+    let engine = make_poisoned_engine();
+    let result = get_mechanism_descriptors_impl(&engine);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
 // --- View sidecar tests (step-7) ---
 
 fn make_sample_persistent_state() -> crate::types::PersistentViewState {

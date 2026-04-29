@@ -1,0 +1,131 @@
+/* MechanismPanel – per-joint slider widgets for mechanism scrub (Task 2536) */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow-y: auto;
+  min-height: 0;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 12px;
+}
+
+.emptyState {
+  color: var(--text-muted, #888);
+  font-style: italic;
+  padding: 8px 4px;
+}
+
+/* ── Mechanism section ──────────────────────────────────────────────── */
+
+.mechanismSection {
+  border: 1px solid var(--border-subtle, #333);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mechanismHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--panel-header-bg, #2a2a2a);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.mechanismName {
+  color: var(--text-primary, #e0e0e0);
+}
+
+.bodiesCount {
+  color: var(--text-muted, #888);
+  font-weight: 400;
+}
+
+/* ── Joint list ─────────────────────────────────────────────────────── */
+
+.jointList {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Joint row ──────────────────────────────────────────────────────── */
+
+.jointRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-subtle, #333);
+}
+
+.jointRow:first-child {
+  border-top: none;
+}
+
+.jointLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.jointKind {
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--accent-muted, #6fa8dc);
+}
+
+.jointIndex {
+  color: var(--text-muted, #888);
+}
+
+.jointDimension {
+  color: var(--text-secondary, #bbb);
+  font-style: italic;
+}
+
+/* ── Slider ─────────────────────────────────────────────────────────── */
+
+.jointSlider {
+  width: 100%;
+  accent-color: var(--accent, #4a9eff);
+  cursor: pointer;
+}
+
+.sliderValue {
+  font-size: 10px;
+  color: var(--text-secondary, #bbb);
+  text-align: right;
+}
+
+/* ── Read-only / no-param states ────────────────────────────────────── */
+
+.jointReadOnly {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.literalBoundBadge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--badge-neutral-bg, #3a3a3a);
+  color: var(--badge-neutral-text, #aaa);
+  border: 1px solid var(--border-subtle, #444);
+  cursor: default;
+}
+
+.noSliderBadge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--badge-info-bg, #2a3a4a);
+  color: var(--badge-info-text, #8aaccc);
+  border: 1px solid var(--border-info, #3a5a7a);
+}

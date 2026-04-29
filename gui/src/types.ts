@@ -234,6 +234,53 @@ export interface EntityTreeNode {
 }
 
 // ---------------------------------------------------------------------------
+// Mechanism descriptor types (Task 2536)
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes a single joint motion variable within a mechanism.
+ * Mirrors the Rust `JointDescriptor` struct in `gui/src-tauri/src/types.rs`.
+ */
+export interface JointDescriptor {
+  /** Zero-based index in the mechanism's body list (stable within one eval generation). */
+  joint_index: number;
+  /** Joint kind: `"prismatic"` | `"revolute"` | `"coupling"` | `"fixed"`. */
+  kind: string;
+  /** Physical dimension: `"length"` for prismatic, `"angle"` for revolute, `"dimensionless"` for coupling/fixed. */
+  dimension: string;
+  /** Lower bound of the joint's range in SI units (metres or radians), or null if none. */
+  range_lower_si: number | null;
+  /** Upper bound of the joint's range in SI units (metres or radians), or null if none. */
+  range_upper_si: number | null;
+  /** Unit axis vector `[x, y, z]` for prismatic/revolute joints, or null for coupling/fixed. */
+  axis: [number, number, number] | null;
+  /**
+   * The `ValueCellId` string of the `param` cell driving this joint via `bind(joint, param_ref)`
+   * inside a `snapshot()` call. Null when the binding expression is a literal (not a param ref).
+   */
+  driving_param_cell_id: string | null;
+  /** Current evaluated value of the driving param cell in SI units, or null if unresolved. */
+  current_value_si: number | null;
+}
+
+/**
+ * Describes a Mechanism value cell and its joints.
+ * Mirrors the Rust `MechanismDescriptor` struct in `gui/src-tauri/src/types.rs`.
+ */
+export interface MechanismDescriptor {
+  /** The `ValueCellId` string of this mechanism cell (e.g. `"Kinematic.m"`). */
+  cell_id: string;
+  /** Dot-separated entity path of the structure/template containing this mechanism. */
+  entity_path: string;
+  /** Short name of the mechanism cell (last segment of `cell_id`). */
+  name: string;
+  /** Number of bodies in this mechanism. */
+  bodies_count: number;
+  /** Joint descriptors, one per unique joint in body-order (deduplicated by structural equality). */
+  joints: JointDescriptor[];
+}
+
+// ---------------------------------------------------------------------------
 // View persistence types (Task 1749)
 // ---------------------------------------------------------------------------
 
