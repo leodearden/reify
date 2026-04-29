@@ -1446,4 +1446,35 @@ mod tests {
         let result = super::solve_normal_equations(&mut a, &mut b, 0, 1e-12);
         assert!(result, "expected solve to succeed on n=0 (trivial case)");
     }
+
+    #[test]
+    fn solve_normal_equations_flat_solves_pd_3x3_in_place() {
+        // A = [[4,1,1],[1,3,0],[1,0,2]] (row-major: [4,1,1, 1,3,0, 1,0,2])
+        // b = [6, 4, 3]  →  Ax = b  →  x = [1, 1, 1]
+        // (4+1+1=6, 1+3+0=4, 1+0+2=3)
+        //
+        // Exercises the inner Σ_{k<j} loop at j=2 (k=0..2) and the back-solve
+        // loop at i=0 (k=1..3) — the row-major indexing surface LDLᵀ is most
+        // sensitive to.  LDLᵀ factors: D=[4, 11/4, 19/11],
+        // L[1,0]=1/4, L[2,0]=1/4, L[2,1]=-1/11.
+        let mut a = vec![4.0_f64, 1.0, 1.0, 1.0, 3.0, 0.0, 1.0, 0.0, 2.0];
+        let mut b = vec![6.0_f64, 4.0, 3.0];
+        let result = super::solve_normal_equations(&mut a, &mut b, 3, 1e-12);
+        assert!(result, "expected solve to succeed on 3×3 PD matrix");
+        assert!(
+            (b[0] - 1.0).abs() < 1e-9,
+            "expected b[0] ≈ 1.0, got {}",
+            b[0]
+        );
+        assert!(
+            (b[1] - 1.0).abs() < 1e-9,
+            "expected b[1] ≈ 1.0, got {}",
+            b[1]
+        );
+        assert!(
+            (b[2] - 1.0).abs() < 1e-9,
+            "expected b[2] ≈ 1.0, got {}",
+            b[2]
+        );
+    }
 }
