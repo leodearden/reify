@@ -141,37 +141,81 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 // 3-DOF planar joint: motion_vars is a Value::List of 3 elements
-                // [x_length, y_length, theta_angle]. Return identity for now;
-                // the actual composition is added in step-8 after the pure-DOF
-                // tests are RED in step-7.
+                // [x_length, y_length, theta_angle].
+                // Composition: T_planar = T_x · T_y · T_theta (left-to-right).
                 "planar" => {
                     let items = match &args[1] {
                         Value::List(v) if v.len() == 3 => v.clone(),
                         _ => return Some(Value::Undef),
                     };
-                    // Validate motion-variable dimensions via helpers.
-                    match length_input(&items[0]) {
-                        Some(_) => {},
+                    // Extract x (metres), y (metres), theta (radians).
+                    let x = match length_input(&items[0]) {
+                        Some(v) => v,
                         None => return Some(Value::Undef),
                     };
-                    match length_input(&items[1]) {
-                        Some(_) => {},
+                    let y = match length_input(&items[1]) {
+                        Some(v) => v,
                         None => return Some(Value::Undef),
                     };
-                    match trig_input(&items[2]) {
-                        Some(_) => {},
+                    let theta = match trig_input(&items[2]) {
+                        Some(v) => v,
                         None => return Some(Value::Undef),
                     };
-                    // Stub: return identity transform regardless of motion values.
-                    // The actual composition (T_x · T_y · T_theta) is added in step-8.
-                    Value::Transform {
+                    // Defense-in-depth: helpers already enforce finiteness for
+                    // Scalar/Real branches; Int yields finite f64 by construction.
+                    if !x.is_finite() || !y.is_finite() || !theta.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    // Extract and unit-normalise axis_x and axis_y from the joint Map.
+                    let (unit_x, unit_y) = match unit_axes_xy_from_planar_map(map) {
+                        Some(axes) => axes,
+                        None => return Some(Value::Undef),
+                    };
+                    let [ux, uy, uz] = unit_x;
+                    let [vx, vy, vz] = unit_y;
+                    // Plane normal n = unit_x × unit_y (cross product).
+                    let (nx, ny, nz) = (
+                        uy * vz - uz * vy,
+                        uz * vx - ux * vz,
+                        ux * vy - uy * vx,
+                    );
+                    // T_x: pure translation x * unit_axis_x
+                    let t_x = Value::Transform {
                         rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(x * ux),
+                            Value::length(x * uy),
+                            Value::length(x * uz),
+                        ])),
+                    };
+                    // T_y: pure translation y * unit_axis_y
+                    let t_y = Value::Transform {
+                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(y * vx),
+                            Value::length(y * vy),
+                            Value::length(y * vz),
+                        ])),
+                    };
+                    // T_theta: pure rotation by theta about the plane normal.
+                    let t_theta = Value::Transform {
+                        rotation: Box::new(axis_angle_quaternion(nx, ny, nz, theta)),
                         translation: Box::new(Value::Vector(vec![
                             Value::length(0.0),
                             Value::length(0.0),
                             Value::length(0.0),
                         ])),
+                    };
+                    // Compose: T_x · T_y · T_theta (left-to-right).
+                    let t_xy = crate::eval_builtin("transform_compose", &[t_x, t_y]);
+                    if t_xy.is_undef() {
+                        return Some(Value::Undef);
                     }
+                    let t_planar = crate::eval_builtin("transform_compose", &[t_xy, t_theta]);
+                    if t_planar.is_undef() {
+                        return Some(Value::Undef);
+                    }
+                    t_planar
                 }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
@@ -552,6 +596,24 @@ fn length_input(v: &Value) -> Option<f64> {
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
+}
+
+/// Extract and unit-normalise both `"axis_x"` and `"axis_y"` from a planar joint Map.
+///
+/// Returns `Some((unit_x, unit_y))` on success, `None` if either field is
+/// missing or fails [`validate_axis`] validation.  Used by the `"planar"` arm
+/// of `transform_at` to avoid duplicating the axis lookup and normalisation logic.
+fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3], [f64; 3])> {
+    let axis_x_val = map.get(&Value::String("axis_x".to_string()))?;
+    let axis_y_val = map.get(&Value::String("axis_y".to_string()))?;
+    let cx = validate_axis(axis_x_val)?;
+    let cy = validate_axis(axis_y_val)?;
+    let mag_x = (cx[0] * cx[0] + cx[1] * cx[1] + cx[2] * cx[2]).sqrt();
+    let mag_y = (cy[0] * cy[0] + cy[1] * cy[1] + cy[2] * cy[2]).sqrt();
+    Some((
+        [cx[0] / mag_x, cx[1] / mag_x, cx[2] / mag_x],
+        [cy[0] / mag_y, cy[1] / mag_y, cy[2] / mag_y],
+    ))
 }
 
 /// Look up the `"axis"` field in a joint map, validate it via [`validate_axis`],
