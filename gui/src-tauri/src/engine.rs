@@ -1033,7 +1033,13 @@ fn build_constraints(
 ///
 /// `driving_param_cell_id` and `current_value_si` are left `None` here; they
 /// are populated by `resolve_driving_params_from_ast` (step-12 / step-24).
-fn extract_joints_from_mechanism(
+///
+/// Exposed as `pub(crate)` so unit tests in the sibling `tests/` module can
+/// pin the malformed-shape contract directly without round-tripping through
+/// Reify source.  The contract — non-Map `"at"` produces no descriptor, axis
+/// length ≠ 3 produces `axis = None` — is already enforced by
+/// `extract_joint_descriptor` and `extract_axis`; these tests lock it down.
+pub(crate) fn extract_joints_from_mechanism(
     map: &std::collections::BTreeMap<Value, Value>,
 ) -> (Vec<JointDescriptor>, Vec<Value>) {
     let bodies = match map.get(&Value::String("bodies".to_string())) {
