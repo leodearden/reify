@@ -551,6 +551,8 @@ impl OcctKernel {
             let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
                 .into_iter()
                 .collect();
+            let unmatched_radial_edge_count =
+                ffi::ffi::sweep_op_history_unmatched_radial_edge_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -565,6 +567,7 @@ impl OcctKernel {
                 edge_deleted,
                 start_cap_face_indices,
                 end_cap_face_indices,
+                unmatched_radial_edge_count,
             };
             (result_shape, records)
         };
@@ -672,6 +675,8 @@ impl OcctKernel {
             let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
                 .into_iter()
                 .collect();
+            let unmatched_radial_edge_count =
+                ffi::ffi::sweep_op_history_unmatched_radial_edge_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -686,6 +691,7 @@ impl OcctKernel {
                 edge_deleted,
                 start_cap_face_indices,
                 end_cap_face_indices,
+                unmatched_radial_edge_count,
             };
             (result_shape, records)
         };

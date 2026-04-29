@@ -192,6 +192,10 @@ pub mod ffi {
         fn sweep_op_history_start_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
         /// 0-based result face_map indices of the LastShape() (end) cap faces.
         fn sweep_op_history_end_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
+        /// Count of non-degenerate, untracked profile edges that did not produce a
+        /// face_generated record during the full-revolution synthesis post-pass.
+        /// Always 0 for prism ops and partial revolves; non-zero indicates a gap.
+        fn sweep_op_history_unmatched_radial_edge_count(history: &SweepOpHistory) -> u32;
 
         /// Probe whether `a` and `b` are intersecting (non-positive minimum distance)
         /// via BRepExtrema_DistShapeShape. Returns true iff dist.Value() <= 0.0.

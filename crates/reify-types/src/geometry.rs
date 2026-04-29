@@ -1127,6 +1127,12 @@ pub struct SweepOpHistoryRecords {
     /// end). Empty for full-2π revolutions where the start and end
     /// profile coincide and no cap face exists.
     pub end_cap_face_indices: Vec<u32>,
+    /// Count of non-degenerate, untracked profile edges that passed through
+    /// `synthesize_full_revolution_radial_face_records` without producing a
+    /// `face_generated` record. Covers axial-classifier, slanted-classifier,
+    /// and inner face-matching fall-through paths. Always 0 for prism ops and
+    /// partial revolves; non-zero indicates a synthesis gap in a full revolve.
+    pub unmatched_radial_edge_count: u32,
 }
 
 /// Typed wrapper for the per-parent face/edge handle slices passed to
@@ -2097,6 +2103,7 @@ mod tests {
             }],
             start_cap_face_indices: vec![5, 6],
             end_cap_face_indices: vec![7],
+            unmatched_radial_edge_count: 0,
         };
         assert_eq!(records.face_modified.len(), 1);
         assert_eq!(records.face_generated.len(), 1);
@@ -2123,6 +2130,7 @@ mod tests {
             edge_deleted: Vec::new(),
             start_cap_face_indices: vec![5],
             end_cap_face_indices: vec![6],
+            unmatched_radial_edge_count: 0,
         };
         let cloned = records.clone();
         assert_eq!(records, cloned);

@@ -208,6 +208,16 @@ struct SweepOpHistory {
     /// sweep). For prism this is the swept-end face; for partial revolve
     /// this is the profile rotated by `angle_rad`. Empty for full-2π revolutions.
     std::vector<uint32_t> end_cap_face_indices;
+    /// Count of non-degenerate, untracked profile edges that passed through
+    /// `synthesize_full_revolution_radial_face_records` without producing a
+    /// `face_generated` record. Covers three exit paths: (4) axial-classifier
+    /// (`dot(edge_dir, axis) > 1 - DIR_TOL`), (5) slanted-classifier
+    /// (`dot > DIR_TOL`), and (6) inner face-matching loop fall-through.
+    /// Degenerate edges (null vertices / zero-length) are NOT counted.
+    /// Always 0 for prism operations and for partial revolves; only
+    /// incremented by the full-revolution radial-face synthesis post-pass.
+    /// Zero for well-formed profiles; non-zero indicates a synthesis gap.
+    uint32_t unmatched_radial_edge_count = 0;
 };
 
 /// Run `BRepPrimAPI_MakePrism` on `profile` along the direction vector
@@ -285,6 +295,10 @@ rust::Vec<uint32_t> sweep_op_history_edge_generated(const SweepOpHistory& histor
 rust::Vec<uint32_t> sweep_op_history_edge_deleted(const SweepOpHistory& history);
 rust::Vec<uint32_t> sweep_op_history_start_cap_face_indices(const SweepOpHistory& history);
 rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& history);
+/// Count of non-degenerate, untracked profile edges that did not produce a
+/// face_generated record during the full-revolution synthesis post-pass.
+/// Always 0 for prism operations and for partial revolves.
+uint32_t sweep_op_history_unmatched_radial_edge_count(const SweepOpHistory& history);
 
 /// Probe whether `a` and `b` are intersecting (non-positive minimum distance).
 ///

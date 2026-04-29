@@ -1018,6 +1018,10 @@ rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& 
     return to_rust_vec(history.end_cap_face_indices);
 }
 
+uint32_t sweep_op_history_unmatched_radial_edge_count(const SweepOpHistory& history) {
+    return history.unmatched_radial_edge_count;
+}
+
 bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
     return wrap_occt_call("shapes_intersect", [&]() {
         // Use BRepExtrema_DistShapeShape (same algorithm as min_clearance / query_distance)
