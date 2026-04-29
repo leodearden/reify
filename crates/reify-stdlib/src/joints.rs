@@ -2967,6 +2967,92 @@ mod tests {
             "screw transform_at: 1mm lead, 2π input → [1e-3, 0, 0]");
     }
 
+    // ── screw constructor: validation rejections ─────────────────────────────
+
+    #[test]
+    fn screw_zero_args_returns_undef() {
+        assert!(eval_builtin("screw", &[]).is_undef(), "0 args should return Undef");
+    }
+
+    #[test]
+    fn screw_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("screw", &[prismatic_x_joint()]).is_undef(),
+            "1 arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_three_args_returns_undef() {
+        assert!(
+            eval_builtin("screw", &[prismatic_x_joint(), Value::length(1e-3), Value::Real(0.0)]).is_undef(),
+            "3 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_non_map_parent_returns_undef() {
+        assert!(
+            eval_builtin("screw", &[Value::Real(1.0), Value::length(1e-3)]).is_undef(),
+            "non-Map parent should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_coupling_parent_returns_undef() {
+        // nested coupling: couple wraps a screw wrap — must propagate Undef
+        let inner = eval_builtin("screw", &[prismatic_x_joint(), Value::length(1e-3)]);
+        assert!(
+            eval_builtin("screw", &[inner, Value::length(1e-3)]).is_undef(),
+            "coupling parent (kind='coupling') should return Undef (delegated to couple())"
+        );
+    }
+
+    #[test]
+    fn screw_map_missing_kind_returns_undef() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            eval_builtin("screw", &[Value::Map(m), Value::length(1e-3)]).is_undef(),
+            "Map parent missing kind key should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_mass_lead_returns_undef() {
+        use reify_types::DimensionVector;
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        assert!(
+            eval_builtin("screw", &[prismatic_x_joint(), mass]).is_undef(),
+            "MASS-dimensioned lead should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_nan_lead_returns_undef() {
+        assert!(
+            eval_builtin("screw", &[prismatic_x_joint(), Value::Real(f64::NAN)]).is_undef(),
+            "NaN lead should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_inf_lead_returns_undef() {
+        assert!(
+            eval_builtin("screw", &[prismatic_x_joint(), Value::Real(f64::INFINITY)]).is_undef(),
+            "Inf lead should return Undef"
+        );
+    }
+
+    #[test]
+    fn screw_string_lead_returns_undef() {
+        assert!(
+            eval_builtin("screw", &[prismatic_x_joint(), Value::String("bad".to_string())]).is_undef(),
+            "String lead should return Undef"
+        );
+    }
+
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
 
     /// All negative-case inputs for `is_joint_value` in one table-driven test.
