@@ -1758,6 +1758,109 @@ mod tests {
         assert_eq!(r, copy);
     }
 
+    // --- task 5a (#2573): new Role + CapKind variants for revolve ---
+
+    #[test]
+    fn cap_kind_start_and_end_are_distinct() {
+        assert_ne!(CapKind::Start, CapKind::End);
+    }
+
+    #[test]
+    fn cap_kind_start_and_end_differ_from_top_and_bottom() {
+        // Per design decision: Top/Bottom is gravitational orientation
+        // (extrude convention); Start/End is parametric sequence (revolve
+        // angle convention). All four must be pairwise distinct.
+        assert_ne!(CapKind::Start, CapKind::Top);
+        assert_ne!(CapKind::Start, CapKind::Bottom);
+        assert_ne!(CapKind::End, CapKind::Top);
+        assert_ne!(CapKind::End, CapKind::Bottom);
+    }
+
+    #[test]
+    fn cap_kind_start_and_end_debug_format() {
+        let dbg_start = format!("{:?}", CapKind::Start);
+        let dbg_end = format!("{:?}", CapKind::End);
+        assert!(dbg_start.contains("Start"), "expected Start in {dbg_start}");
+        assert!(dbg_end.contains("End"), "expected End in {dbg_end}");
+    }
+
+    #[test]
+    fn cap_kind_start_and_end_clone_round_trips() {
+        let s = CapKind::Start;
+        let s_copy = s;
+        assert_eq!(s, s_copy);
+        let s_clone = s.clone();
+        assert_eq!(s, s_clone);
+
+        let e = CapKind::End;
+        let e_copy = e;
+        assert_eq!(e, e_copy);
+        let e_clone = e.clone();
+        assert_eq!(e, e_clone);
+    }
+
+    #[test]
+    fn role_revolved_face_and_axis_face_are_distinct() {
+        assert_ne!(Role::RevolvedFace, Role::AxisFace);
+    }
+
+    #[test]
+    fn role_revolved_face_differs_from_side_and_caps() {
+        // RevolvedFace is the per-op distinguisher for revolve lateral faces;
+        // it must not collide with Side (extrude lateral) or any Cap variant.
+        assert_ne!(Role::RevolvedFace, Role::Side);
+        assert_ne!(Role::RevolvedFace, Role::NewEdge);
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::Top));
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::Bottom));
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::Start));
+        assert_ne!(Role::RevolvedFace, Role::Cap(CapKind::End));
+    }
+
+    #[test]
+    fn role_axis_face_differs_from_side_and_caps() {
+        // AxisFace is reserved for axis-touching faces (revolve only); it
+        // must be distinct from every other variant including RevolvedFace.
+        assert_ne!(Role::AxisFace, Role::Side);
+        assert_ne!(Role::AxisFace, Role::NewEdge);
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::Top));
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::Bottom));
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::Start));
+        assert_ne!(Role::AxisFace, Role::Cap(CapKind::End));
+    }
+
+    #[test]
+    fn role_cap_start_and_cap_end_distinct_from_existing_caps() {
+        assert_ne!(Role::Cap(CapKind::Start), Role::Cap(CapKind::End));
+        assert_ne!(Role::Cap(CapKind::Start), Role::Cap(CapKind::Top));
+        assert_ne!(Role::Cap(CapKind::End), Role::Cap(CapKind::Bottom));
+    }
+
+    #[test]
+    fn role_revolved_face_and_axis_face_debug_format() {
+        let dbg_rf = format!("{:?}", Role::RevolvedFace);
+        let dbg_af = format!("{:?}", Role::AxisFace);
+        assert!(
+            dbg_rf.contains("RevolvedFace"),
+            "expected RevolvedFace in {dbg_rf}"
+        );
+        assert!(dbg_af.contains("AxisFace"), "expected AxisFace in {dbg_af}");
+    }
+
+    #[test]
+    fn role_revolved_face_and_axis_face_clone_round_trips() {
+        let r = Role::RevolvedFace;
+        let r_copy = r;
+        assert_eq!(r, r_copy);
+        let r_clone = r.clone();
+        assert_eq!(r, r_clone);
+
+        let a = Role::AxisFace;
+        let a_copy = a;
+        assert_eq!(a, a_copy);
+        let a_clone = a.clone();
+        assert_eq!(a, a_clone);
+    }
+
     #[test]
     fn mod_entry_constructs_with_feature_id_and_split_index() {
         let entry = ModEntry {
