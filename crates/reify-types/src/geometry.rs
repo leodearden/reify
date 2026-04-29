@@ -2400,6 +2400,327 @@ mod tests {
         }
     }
 
+    // --- task 5b (#2619): SweptFace + LoftedFace Role variants ---
+
+    #[test]
+    fn role_swept_face_and_lofted_face_are_distinct() {
+        assert_ne!(Role::SweptFace, Role::LoftedFace);
+    }
+
+    #[test]
+    fn role_swept_face_differs_from_existing_variants() {
+        // SweptFace is the per-op distinguisher for `GeometryOp::Sweep`
+        // lateral faces; it must not collide with Side (extrude lateral),
+        // RevolvedFace (revolve lateral), AxisFace, NewEdge, or any Cap.
+        assert_ne!(Role::SweptFace, Role::Side);
+        assert_ne!(Role::SweptFace, Role::NewEdge);
+        assert_ne!(Role::SweptFace, Role::RevolvedFace);
+        assert_ne!(Role::SweptFace, Role::AxisFace);
+        assert_ne!(Role::SweptFace, Role::Cap(CapKind::Top));
+        assert_ne!(Role::SweptFace, Role::Cap(CapKind::Bottom));
+        assert_ne!(Role::SweptFace, Role::Cap(CapKind::Start));
+        assert_ne!(Role::SweptFace, Role::Cap(CapKind::End));
+    }
+
+    #[test]
+    fn role_lofted_face_differs_from_existing_variants() {
+        // LoftedFace is the per-op distinguisher for `GeometryOp::Loft`
+        // lateral faces; it must be distinct from every other variant.
+        assert_ne!(Role::LoftedFace, Role::Side);
+        assert_ne!(Role::LoftedFace, Role::NewEdge);
+        assert_ne!(Role::LoftedFace, Role::RevolvedFace);
+        assert_ne!(Role::LoftedFace, Role::AxisFace);
+        assert_ne!(Role::LoftedFace, Role::Cap(CapKind::Top));
+        assert_ne!(Role::LoftedFace, Role::Cap(CapKind::Bottom));
+        assert_ne!(Role::LoftedFace, Role::Cap(CapKind::Start));
+        assert_ne!(Role::LoftedFace, Role::Cap(CapKind::End));
+    }
+
+    #[test]
+    fn role_swept_face_and_lofted_face_debug_format() {
+        let dbg_sf = format!("{:?}", Role::SweptFace);
+        let dbg_lf = format!("{:?}", Role::LoftedFace);
+        assert!(
+            dbg_sf.contains("SweptFace"),
+            "expected SweptFace in {dbg_sf}"
+        );
+        assert!(
+            dbg_lf.contains("LoftedFace"),
+            "expected LoftedFace in {dbg_lf}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::clone_on_copy)] // intentional: exercises Clone impl on a Copy type
+    fn role_swept_face_and_lofted_face_clone_round_trips() {
+        let s = Role::SweptFace;
+        let s_copy = s;
+        assert_eq!(s, s_copy);
+        let s_clone = s.clone();
+        assert_eq!(s, s_clone);
+
+        let l = Role::LoftedFace;
+        let l_copy = l;
+        assert_eq!(l, l_copy);
+        let l_clone = l.clone();
+        assert_eq!(l, l_clone);
+    }
+
+    #[test]
+    fn role_swept_face_and_lofted_face_are_hash() {
+        // Hash bound is required because TopologyAttributeTable keys are
+        // GeometryHandleId but selector resolvers can group by role; assert
+        // by exercising HashSet membership.
+        use std::collections::HashSet;
+        let mut roles: HashSet<Role> = HashSet::new();
+        roles.insert(Role::SweptFace);
+        roles.insert(Role::LoftedFace);
+        assert!(roles.contains(&Role::SweptFace));
+        assert!(roles.contains(&Role::LoftedFace));
+    }
+
+    // --- task 5b (#2619): LoftOpHistoryRecords (multi-parent loft op) ---
+
+    #[test]
+    fn loft_op_history_records_default_is_empty() {
+        let records = LoftOpHistoryRecords::default();
+        assert!(records.face_modified.is_empty());
+        assert!(records.face_generated.is_empty());
+        assert!(records.face_deleted.is_empty());
+        assert!(records.edge_modified.is_empty());
+        assert!(records.edge_generated.is_empty());
+        assert!(records.edge_deleted.is_empty());
+        assert!(records.start_cap_face_indices.is_empty());
+        assert!(records.end_cap_face_indices.is_empty());
+    }
+
+    #[test]
+    fn loft_op_history_records_construct_with_all_vec_fields() {
+        // For loft, parent_index = section index (0..N-1 across N profiles).
+        // Field shape mirrors SweepOpHistoryRecords without the diagnostic
+        // counters (those are revolve-synthesis-specific).
+        let records = LoftOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 1,
+                result_subshape_index: 2,
+            }],
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 4,
+                },
+                HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 5,
+                },
+            ],
+            face_deleted: vec![DeletedRecord {
+                parent_index: 0,
+                parent_subshape_index: 9,
+            }],
+            edge_modified: vec![HistoryRecord {
+                parent_index: 1,
+                parent_subshape_index: 3,
+                result_subshape_index: 4,
+            }],
+            edge_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 5,
+                result_subshape_index: 6,
+            }],
+            edge_deleted: vec![DeletedRecord {
+                parent_index: 1,
+                parent_subshape_index: 8,
+            }],
+            start_cap_face_indices: vec![5, 6],
+            end_cap_face_indices: vec![7],
+        };
+        assert_eq!(records.face_modified.len(), 1);
+        assert_eq!(records.face_generated.len(), 2);
+        assert_eq!(records.face_deleted.len(), 1);
+        assert_eq!(records.edge_modified.len(), 1);
+        assert_eq!(records.edge_generated.len(), 1);
+        assert_eq!(records.edge_deleted.len(), 1);
+        assert_eq!(records.start_cap_face_indices, vec![5_u32, 6]);
+        assert_eq!(records.end_cap_face_indices, vec![7_u32]);
+        // Confirm parent_index distinguishes sections.
+        assert_eq!(records.face_generated[0].parent_index, 0);
+        assert_eq!(records.face_generated[1].parent_index, 1);
+    }
+
+    #[test]
+    fn loft_op_history_records_clone_preserves_value() {
+        let records = LoftOpHistoryRecords {
+            face_modified: Vec::new(),
+            face_generated: vec![HistoryRecord {
+                parent_index: 1,
+                parent_subshape_index: 0,
+                result_subshape_index: 7,
+            }],
+            face_deleted: Vec::new(),
+            edge_modified: Vec::new(),
+            edge_generated: Vec::new(),
+            edge_deleted: Vec::new(),
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+        };
+        let cloned = records.clone();
+        assert_eq!(records, cloned);
+        assert_eq!(cloned.start_cap_face_indices, vec![5_u32]);
+        assert_eq!(cloned.end_cap_face_indices, vec![6_u32]);
+    }
+
+    // --- task 5b (#2619): AttributeHistory::Sweep + AttributeHistory::Loft ---
+
+    #[test]
+    fn attribute_history_sweep_and_loft_variants_construct_and_match() {
+        // Sweep wraps SweepOpHistoryRecords (single parent).
+        let sweep = AttributeHistory::Sweep(SweepOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..SweepOpHistoryRecords::default()
+        });
+        match &sweep {
+            AttributeHistory::Sweep(records) => {
+                assert_eq!(records.start_cap_face_indices, vec![5_u32]);
+                assert_eq!(records.end_cap_face_indices, vec![6_u32]);
+            }
+            _ => panic!("expected AttributeHistory::Sweep"),
+        }
+
+        // Loft wraps LoftOpHistoryRecords (multi-parent).
+        let loft = AttributeHistory::Loft(LoftOpHistoryRecords {
+            start_cap_face_indices: vec![1],
+            end_cap_face_indices: vec![2],
+            ..LoftOpHistoryRecords::default()
+        });
+        match &loft {
+            AttributeHistory::Loft(records) => {
+                assert_eq!(records.start_cap_face_indices, vec![1_u32]);
+                assert_eq!(records.end_cap_face_indices, vec![2_u32]);
+            }
+            _ => panic!("expected AttributeHistory::Loft"),
+        }
+    }
+
+    #[test]
+    fn attribute_history_sweep_and_loft_variants_distinct_from_extrude_revolve_none() {
+        let none = AttributeHistory::None;
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords::default());
+        let revolve = AttributeHistory::Revolve(SweepOpHistoryRecords::default());
+        let sweep = AttributeHistory::Sweep(SweepOpHistoryRecords::default());
+        let loft = AttributeHistory::Loft(LoftOpHistoryRecords::default());
+
+        assert_ne!(sweep, none);
+        assert_ne!(sweep, extrude);
+        assert_ne!(sweep, revolve);
+        assert_ne!(sweep, loft);
+
+        assert_ne!(loft, none);
+        assert_ne!(loft, extrude);
+        assert_ne!(loft, revolve);
+    }
+
+    #[test]
+    fn attribute_history_sweep_and_loft_clone_round_trips() {
+        let sweep = AttributeHistory::Sweep(SweepOpHistoryRecords {
+            start_cap_face_indices: vec![1, 2],
+            end_cap_face_indices: vec![3],
+            ..SweepOpHistoryRecords::default()
+        });
+        let cloned = sweep.clone();
+        assert_eq!(sweep, cloned);
+
+        let loft = AttributeHistory::Loft(LoftOpHistoryRecords {
+            start_cap_face_indices: vec![4],
+            end_cap_face_indices: vec![5, 6],
+            ..LoftOpHistoryRecords::default()
+        });
+        let cloned = loft.clone();
+        assert_eq!(loft, cloned);
+    }
+
+    #[test]
+    fn attribute_history_sweep_and_loft_debug_format() {
+        let dbg = format!(
+            "{:?}",
+            AttributeHistory::Sweep(SweepOpHistoryRecords::default())
+        );
+        assert!(dbg.contains("Sweep"), "expected Sweep in {dbg}");
+        let dbg = format!(
+            "{:?}",
+            AttributeHistory::Loft(LoftOpHistoryRecords::default())
+        );
+        assert!(dbg.contains("Loft"), "expected Loft in {dbg}");
+    }
+
+    #[test]
+    fn geometry_kernel_execute_with_history_default_returns_none_for_sweep_loft_ops() {
+        // Verify the default `execute_with_history` impl on `GeometryKernel`
+        // still returns AttributeHistory::None for Sweep/Loft ops on
+        // non-overriding kernels — task 5b does not change the default.
+        struct ExecuteOnlyKernel {
+            next_id: u64,
+        }
+
+        impl GeometryKernel for ExecuteOnlyKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                let id = self.next_id;
+                self.next_id += 1;
+                Ok(GeometryHandle {
+                    id: GeometryHandleId(id),
+                    repr: ReprKind::Solid,
+                })
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                unimplemented!()
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!()
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!()
+            }
+        }
+
+        let mut kernel = ExecuteOnlyKernel { next_id: 1 };
+
+        let op = GeometryOp::Sweep {
+            profile: GeometryHandleId(99),
+            path: GeometryHandleId(100),
+        };
+        let (_handle, history) = kernel
+            .execute_with_history(&op)
+            .expect("default execute_with_history must succeed");
+        assert_eq!(history, AttributeHistory::None);
+
+        let op = GeometryOp::Loft {
+            profiles: vec![GeometryHandleId(99), GeometryHandleId(100)],
+        };
+        let (_handle, history) = kernel
+            .execute_with_history(&op)
+            .expect("default execute_with_history must succeed");
+        assert_eq!(history, AttributeHistory::None);
+    }
+
     #[test]
     fn mod_entry_constructs_with_feature_id_and_split_index() {
         let entry = ModEntry {
