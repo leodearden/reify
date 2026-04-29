@@ -413,3 +413,81 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         );
     }
 }
+
+/// Selector-stability: the stable-sort in `make_revolve_with_history` guarantees
+/// that `face_generated` records appear in profile-edge order (record position i
+/// ↔ `parent_subshape_index == i`) regardless of geometric dimensions.
+///
+/// This property is what `populate_revolve_attributes` relies on to assign
+/// `local_index = parent_subshape_index` for full-revolution results — the same
+/// invariant that holds naturally for partial revolutions via OCCT's own ordering.
+///
+/// The test runs two full-revolution revolves on different rect dimensions and
+/// asserts that both produce identical `(parent_subshape_index, record_position)`
+/// orderings: `[(0,0), (1,1), (2,2), (3,3)]`.
+#[test]
+fn full_revolve_synthesis_keeps_per_edge_record_ordering_stable_across_dimension_edits() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+
+    // Helper: revolve a rect profile and return the (parent_subshape_index,
+    // record_position) ordering vec, asserting len == 4 along the way.
+    let revolve_rect = |kernel: &mut OcctKernelHandle, width: f64, height: f64, cx: f64| {
+        let profile_id = kernel
+            .make_rect_profile_at_for_test(width, height, cx, 0.0, 0.0)
+            .expect("rect profile should build");
+        let (_result_handle, history) = kernel
+            .revolve_with_history(
+                profile_id,
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                2.0 * std::f64::consts::PI,
+            )
+            .expect("revolve_with_history should succeed");
+        assert_eq!(
+            history.face_generated.len(),
+            4,
+            "rect full-revolve must produce exactly 4 face_generated records \
+             (2 axial via OCCT Generated() + 2 radial via synthesis), \
+             got {} ({:?}) for {}×{} rect at cx={}",
+            history.face_generated.len(),
+            history.face_generated,
+            width * 1000.0,
+            height * 1000.0,
+            cx * 1000.0,
+        );
+        // Build the (parent_subshape_index, sequential_record_position) vec.
+        history
+            .face_generated
+            .iter()
+            .enumerate()
+            .map(|(pos, r)| (r.parent_subshape_index, pos as u32))
+            .collect::<Vec<_>>()
+    };
+
+    // Run 1: 5×10mm rect at cx=17.5mm (same profile as the other tests).
+    let ordering_5x10 = revolve_rect(&mut kernel, 5.0e-3, 10.0e-3, 17.5e-3);
+
+    // Run 2: 8×6mm rect at cx=20mm (different dimensions, same profile topology).
+    let ordering_8x6 = revolve_rect(&mut kernel, 8.0e-3, 6.0e-3, 20.0e-3);
+
+    // Both orderings must be [(0,0), (1,1), (2,2), (3,3)] — profile-edge order.
+    let expected: Vec<(u32, u32)> = vec![(0, 0), (1, 1), (2, 2), (3, 3)];
+    assert_eq!(
+        ordering_5x10, expected,
+        "5×10mm rect: face_generated must be in profile-edge order, got {:?}",
+        ordering_5x10
+    );
+    assert_eq!(
+        ordering_8x6, expected,
+        "8×6mm rect: face_generated must be in profile-edge order, got {:?}",
+        ordering_8x6
+    );
+    assert_eq!(
+        ordering_5x10, ordering_8x6,
+        "per-edge record ordering must be identical across dimension changes"
+    );
+}
