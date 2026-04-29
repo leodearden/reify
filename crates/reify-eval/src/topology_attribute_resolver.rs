@@ -215,12 +215,17 @@ pub fn resolve_unique_by_attribute(
 
     // user_label branch (step-2). Per PRD line 62, this branch fires first
     // when query.user_label is Some.
+    //
+    // A single `collect_matches` call replaces the legacy two-pass scan
+    // (count then collect): the unique-match short-circuit and the
+    // multi-match clustering path both consume the same Vec, dropping the
+    // redundant predicate-closure construction per multi-match.
     if let Some(label) = query.user_label.as_deref() {
-        let (found, n) = count_unique_matches(table, candidates, |attr| {
+        let matches = collect_matches(table, candidates, |attr| {
             attr.user_label.as_deref() == Some(label) && feature_id_filter(attr)
         });
-        match n {
-            1 => return AttributeResolution::Resolved(found.unwrap()),
+        match matches.len() {
+            1 => return AttributeResolution::Resolved(matches[0].0),
             // Zero matches: fall through to role/idx branch.
             0 => last_count = Some(0),
             // Multi-match: explicitly do NOT fall through. The role/idx
@@ -234,12 +239,9 @@ pub fn resolve_unique_by_attribute(
             // user_label)` is a split, surfaced via AmbiguousAfterSplit.
             // Otherwise (mixed parent-keys = genuine label collision)
             // fall through to Unresolved with the count-aware diagnostic.
-            _ => {
-                let matches = collect_matches(table, candidates, |attr| {
-                    attr.user_label.as_deref() == Some(label) && feature_id_filter(attr)
-                });
+            n => {
                 if let Some(resolution) =
-                    try_cluster_after_split(table, &matches, selector_span, diagnostics)
+                    try_cluster_after_split(&matches, selector_span, diagnostics)
                 {
                     return resolution;
                 }
@@ -248,31 +250,32 @@ pub fn resolve_unique_by_attribute(
             }
         }
     }
-    // role + local_index branch (step-4).
+    // role + local_index branch (step-4). Same single-scan discipline as
+    // the user_label branch above.
     if let Some((role, idx)) = query.role_and_index {
-        let (found, n) = count_unique_matches(table, candidates, |attr| {
+        let matches = collect_matches(table, candidates, |attr| {
             attr.role == role && attr.local_index == idx && feature_id_filter(attr)
         });
-        if n == 1 {
-            return AttributeResolution::Resolved(found.unwrap());
-        }
-        // Multi-match: try the parent-key clustering check (task #2653).
-        // If all matched candidates share `(feature_id, role, local_index,
-        // user_label)` and differ only in `mod_history`, this is a split —
-        // surface the SET of children via AmbiguousAfterSplit instead of
-        // Unresolved. Otherwise fall through to the existing Unresolved
-        // arm with the generic count-aware diagnostic.
-        if n > 1 {
-            let matches = collect_matches(table, candidates, |attr| {
-                attr.role == role && attr.local_index == idx && feature_id_filter(attr)
-            });
-            if let Some(resolution) =
-                try_cluster_after_split(table, &matches, selector_span, diagnostics)
-            {
-                return resolution;
+        match matches.len() {
+            1 => return AttributeResolution::Resolved(matches[0].0),
+            // Multi-match: try the parent-key clustering check (task
+            // #2653). If all matched candidates share `(feature_id, role,
+            // local_index, user_label)` and differ only in `mod_history`,
+            // this is a split — surface the SET of children via
+            // AmbiguousAfterSplit instead of Unresolved. Otherwise fall
+            // through to the existing Unresolved arm with the generic
+            // count-aware diagnostic.
+            n if n > 1 => {
+                if let Some(resolution) =
+                    try_cluster_after_split(&matches, selector_span, diagnostics)
+                {
+                    return resolution;
+                }
+                last_count = Some(n);
             }
+            // Zero matches.
+            n => last_count = Some(n),
         }
-        last_count = Some(n);
     }
     // Stale-attribute diagnostic emission (step-10/step-12). At least one
     // candidate carries an entry (the fallback pre-pass already eliminated
@@ -311,28 +314,32 @@ fn emit_attribute_stale_diagnostic(
 }
 
 /// Walk `candidates`, looking up each id in `table` and applying `predicate`
-/// to the attribute. Returns `(first_matching_handle, total_match_count)`.
+/// to the attribute. Returns the de-duplicated Vec of all matching
+/// `(handle, attribute)` pairs in candidate-encounter order.
 ///
-/// Mirrors `resolve_unique_by_tag`'s zero/one/many counting discipline. The
-/// returned count is exactly the number of candidates that matched the
-/// predicate; callers branch on `0` / `1` / `>1` to decide whether to
-/// resolve, fall through, or emit a diagnostic.
-fn count_unique_matches<F>(
-    table: &TopologyAttributeTable,
+/// Mirrors `resolve_unique_by_tag`'s zero/one/many counting discipline.
+/// Callers branch on `matches.len()` (`0` / `1` / `>1`) to decide whether
+/// to resolve, fall through, or emit a diagnostic. The returned slice
+/// also feeds [`try_cluster_after_split`] without re-querying the table:
+/// each match already carries a borrow of the matching attribute, so
+/// the cluster predicate runs directly over the borrowed attrs rather
+/// than re-doing `table.lookup` per matched id.
+///
+/// Deduplicates candidate ids via a HashSet (mirroring
+/// `resolve_unique_by_tag` at topology_selectors.rs:703) so a misbehaving
+/// extractor that returned the same handle multiple times does not
+/// inflate the match count and spuriously trigger an ambiguity
+/// diagnostic.
+fn collect_matches<'t, F>(
+    table: &'t TopologyAttributeTable,
     candidates: &[GeometryHandleId],
     predicate: F,
-) -> (Option<GeometryHandleId>, usize)
+) -> Vec<(GeometryHandleId, &'t TopologyAttribute)>
 where
     F: Fn(&TopologyAttribute) -> bool,
 {
-    // (step-16c) Deduplicate candidate ids before counting. Mirrors
-    // `resolve_unique_by_tag` at topology_selectors.rs:703 so a
-    // misbehaving extractor that returned the same handle multiple times
-    // does not inflate the match count and spuriously trigger an
-    // ambiguity diagnostic.
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut found: Option<GeometryHandleId> = None;
-    let mut n: usize = 0;
+    let mut out: Vec<(GeometryHandleId, &TopologyAttribute)> = Vec::new();
     for &id in candidates {
         if !seen.insert(id) {
             continue;
@@ -340,43 +347,7 @@ where
         if let Some(attr) = table.lookup(id)
             && predicate(attr)
         {
-            n += 1;
-            if n == 1 {
-                found = Some(id);
-            }
-        }
-    }
-    (found, n)
-}
-
-/// Walk `candidates`, looking up each id in `table` and applying `predicate`
-/// to the attribute. Returns the de-duplicated Vec of all matching ids in
-/// candidate-encounter order.
-///
-/// The set-returning sibling of [`count_unique_matches`]: same dedup
-/// discipline (HashSet-backed), same predicate shape, but exposes the
-/// full Vec rather than collapsing to (first, count). Used by
-/// [`try_cluster_after_split`] to inspect the matched set's parent-keys
-/// before deciding between AmbiguousAfterSplit (cluster) and Unresolved
-/// (mixed parents).
-fn collect_matches<F>(
-    table: &TopologyAttributeTable,
-    candidates: &[GeometryHandleId],
-    predicate: F,
-) -> Vec<GeometryHandleId>
-where
-    F: Fn(&TopologyAttribute) -> bool,
-{
-    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut out: Vec<GeometryHandleId> = Vec::new();
-    for &id in candidates {
-        if !seen.insert(id) {
-            continue;
-        }
-        if let Some(attr) = table.lookup(id)
-            && predicate(attr)
-        {
-            out.push(id);
+            out.push((id, attr));
         }
     }
     out
@@ -384,17 +355,19 @@ where
 
 /// If every attribute behind `matches` agrees on its parent-key fields
 /// (`feature_id, role, local_index, user_label`), emit a `split children`
-/// diagnostic and return `Some(AmbiguousAfterSplit { children: matches })`.
+/// diagnostic and return `Some(AmbiguousAfterSplit { children })`.
 /// Otherwise return `None` so the caller falls through to the generic
 /// Unresolved arm with the existing "matched N sub-shapes" diagnostic.
+///
+/// Operates directly on the `(handle, attr)` pairs returned by
+/// [`collect_matches`] — both the parent-key windows check and the
+/// children-list construction use the borrowed attrs, so no
+/// `table.lookup` is re-issued per matched id.
 ///
 /// Failure modes that yield `None` (caller proceeds to Unresolved):
 ///   - `matches.len() < 2` — no cluster to detect; a single-element
 ///     match is handled upstream by the unique-match short-circuit and
 ///     a zero-element match would be caught by the zero-match emission.
-///   - Any matched id is missing from `table` — we cannot prove
-///     clustering without all attributes, so default to the safer
-///     genuine-ambiguity path.
 ///   - Any pair of matched attributes disagrees on any parent-key field
 ///     (`feature_id`, `role`, `local_index`, or `user_label`). This is
 ///     the genuine-ambiguity path: e.g. two distinct features colliding
@@ -403,32 +376,24 @@ where
 ///     Distinct from a post-split cluster where every matched candidate
 ///     shares one parent and only `mod_history` differs.
 ///
-/// Children list inside the returned variant is `matches` verbatim, in
+/// Children list inside the returned variant is the `matches` ids in
 /// candidate-encounter order — which matches per-parent record-stream
 /// position (i.e. ascending `split_index`), per the propagator's
 /// iteration order documented in `count_children_per_parent`.
 fn try_cluster_after_split(
-    table: &TopologyAttributeTable,
-    matches: &[GeometryHandleId],
+    matches: &[(GeometryHandleId, &TopologyAttribute)],
     selector_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<AttributeResolution> {
     if matches.len() < 2 {
         return None;
     }
-    // Resolve each handle's attribute up-front so the windows check is a
-    // pure predicate over a Vec<&TopologyAttribute>. A missing entry in
-    // the table for any matched id means we cannot prove clustering and
-    // must fall through to Unresolved.
-    let attrs: Option<Vec<&TopologyAttribute>> =
-        matches.iter().map(|&id| table.lookup(id)).collect();
-    let attrs = attrs?;
-    if !attrs.windows(2).all(|w| w[0].same_parent_as(w[1])) {
+    if !matches.windows(2).all(|w| w[0].1.same_parent_as(w[1].1)) {
         return None;
     }
     emit_split_children_diagnostic(selector_span, matches.len(), diagnostics);
     Some(AttributeResolution::AmbiguousAfterSplit {
-        children: matches.to_vec(),
+        children: matches.iter().map(|(id, _)| *id).collect(),
     })
 }
 
