@@ -1603,10 +1603,10 @@ mod tests {
     }
 
     /// visit_structure_member_root_exprs is a no-op (visitor never called) when
-    /// the module contains only non-Structure declarations (here, a top-level enum).
+    /// the module contains only non-Structure declarations (here, an empty module).
     #[test]
     fn visit_structure_member_root_exprs_no_op_when_module_has_no_structure() {
-        let source = "enum Foo { Bar }";
+        let source = "";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut call_count = 0usize;
