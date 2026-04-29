@@ -22,6 +22,7 @@ use reify_types::Value;
 
 use crate::eval_builtin;
 use crate::joints::is_joint_value;
+use crate::mechanism::is_world;
 
 /// Evaluate a snapshot/FK stdlib function by name.
 ///
@@ -80,15 +81,24 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(make_empty_snapshot());
             }
 
-            // FK walk: for each body record, compute the world transform
-            // by composing the joint's `transform_at(value_for(at))` (the
-            // parent-chain walk lands in a later step) with the body's
-            // own `pose`. The `joint_parents` map is read from the
-            // mechanism for future use by the parent-chain walk.
+            // Read the mechanism's `joint_parents` map for parent-chain
+            // walking.
+            let joint_parents = match mech_map.get(&Value::String("joint_parents".to_string())) {
+                Some(Value::Map(jp)) => jp,
+                _ => return Some(Value::Undef),
+            };
+
             let bindings_list = match &args[1] {
                 Value::List(b) => b.as_slice(),
                 _ => return Some(Value::Undef), // unreachable: validated above.
             };
+
+            // Per-snapshot memoization cache for joint world transforms.
+            // Keys are joint Map values themselves — equal joints share
+            // an entry by `Value::Eq`. The cache is local to this
+            // `snapshot()` call so it doesn't leak state across calls
+            // and is invalidated naturally when bindings change.
+            let mut cache: BTreeMap<Value, Value> = BTreeMap::new();
 
             let mut snapshot_bodies = Vec::with_capacity(bodies.len());
             for body_value in bodies {
@@ -113,22 +123,13 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                     None => return Some(Value::Undef),
                 };
 
-                // Resolve the motion value for the body's `at` joint:
-                // first match in the bindings list wins (parent-chain
-                // walking lands in the multi-level step).
-                let motion_value = match value_for(&at, bindings_list) {
-                    Some(v) => v,
-                    None => return Some(Value::Undef),
-                };
-
-                // T_at_world = transform_at(at, motion_value).
-                // Parent = world ⇒ this is also the body's joint frame
-                // expressed in world coordinates. The multi-level
-                // parent-chain walk lands in a later step.
-                let t_at_world = eval_builtin("transform_at", &[at, motion_value]);
-                if t_at_world.is_undef() {
-                    return Some(Value::Undef);
-                }
+                // Walk the parent chain ancestor-ward to compute the
+                // body's `at`-joint frame in world coordinates.
+                let t_at_world =
+                    match joint_world_transform(&at, joint_parents, bindings_list, &mut cache) {
+                        Some(t) => t,
+                        None => return Some(Value::Undef),
+                    };
 
                 // body's world_transform = T_at_world ∘ pose.
                 let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
@@ -181,6 +182,69 @@ fn make_snapshot_body_record(id: Value, solid: Value, pose: Value, world_transfo
         world_transform,
     );
     Value::Map(b)
+}
+
+/// Compute the world-frame transform of a joint by walking the
+/// `joint_parents` chain ancestor-ward to the world sentinel and
+/// folding `transform_at(joint_k, value_for(joint_k))` into a running
+/// composition.
+///
+/// Returns `None` on any of:
+///   - a joint along the chain has no resolvable motion value (no
+///     binding entry and the midpoint fallback is not yet wired in
+///     this step — added in step 12),
+///   - `transform_at` or `transform_compose` returns Undef,
+///   - the chain length exceeds `joint_parents.len() + 1` (cycle-
+///     safe, defence-in-depth — `mechanism::body()` already rejects
+///     cycle-creating edges).
+///
+/// Memoizes per-joint results in `cache` so a chain shared by many
+/// bodies is O(D + N) instead of O(D·N). Keys are joint Map values
+/// themselves — equal joints share a cache entry by `Value::Eq`.
+fn joint_world_transform(
+    joint: &Value,
+    joint_parents: &BTreeMap<Value, Value>,
+    bindings: &[Value],
+    cache: &mut BTreeMap<Value, Value>,
+) -> Option<Value> {
+    // Cache hit: return the memoized world transform directly.
+    if let Some(cached) = cache.get(joint) {
+        return Some(cached.clone());
+    }
+
+    // Resolve this joint's parent in the recorded `joint_parents` map.
+    // A missing entry means the joint was never registered as an `at`
+    // value — defence-in-depth, not reachable for joints in
+    // mechanism's `bodies` list (every body's `at` joint has its
+    // parent recorded by `append_body`).
+    let parent = joint_parents.get(joint)?;
+
+    // Compute the parent's world transform first (recursive walk).
+    // The world sentinel is the chain's terminator: its world frame
+    // is the SE(3) identity.
+    let parent_world = if is_world(parent) {
+        eval_builtin("transform3_identity", &[])
+    } else {
+        joint_world_transform(parent, joint_parents, bindings, cache)?
+    };
+    if parent_world.is_undef() {
+        return None;
+    }
+
+    // Compose: T_joint_world = T_parent_world ∘ T_joint_local
+    // where T_joint_local = transform_at(joint, value_for(joint)).
+    let motion_value = value_for(joint, bindings)?;
+    let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
+    if t_local.is_undef() {
+        return None;
+    }
+    let t_world = eval_builtin("transform_compose", &[parent_world, t_local]);
+    if t_world.is_undef() {
+        return None;
+    }
+
+    cache.insert(joint.clone(), t_world.clone());
+    Some(t_world)
 }
 
 /// Look up the motion value for `joint` in a bindings list.
