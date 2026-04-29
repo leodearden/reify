@@ -21,9 +21,11 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
 #[cfg(has_occt)]
 #[allow(dead_code)]
-mod ffi;
+pub mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
+#[cfg(has_occt)]
+pub use ffi::ffi::RevolveSynthesisPostSortResult;
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 #[cfg(has_occt)]
@@ -553,6 +555,8 @@ impl OcctKernel {
                 .collect();
             let unmatched_radial_edge_count =
                 ffi::ffi::sweep_op_history_unmatched_radial_edge_count(&history);
+            let duplicate_parent_subshape_index_count =
+                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -568,6 +572,7 @@ impl OcctKernel {
                 start_cap_face_indices,
                 end_cap_face_indices,
                 unmatched_radial_edge_count,
+                duplicate_parent_subshape_index_count,
             };
             (result_shape, records)
         };
@@ -677,6 +682,8 @@ impl OcctKernel {
                 .collect();
             let unmatched_radial_edge_count =
                 ffi::ffi::sweep_op_history_unmatched_radial_edge_count(&history);
+            let duplicate_parent_subshape_index_count =
+                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -692,6 +699,7 @@ impl OcctKernel {
                 start_cap_face_indices,
                 end_cap_face_indices,
                 unmatched_radial_edge_count,
+                duplicate_parent_subshape_index_count,
             };
             (result_shape, records)
         };

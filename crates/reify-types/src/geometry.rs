@@ -1133,6 +1133,12 @@ pub struct SweepOpHistoryRecords {
     /// and inner face-matching fall-through paths. Always 0 for prism ops and
     /// partial revolves; non-zero indicates a synthesis gap in a full revolve.
     pub unmatched_radial_edge_count: u32,
+    /// Count of `face_generated` records dropped by the post-sort dedup pass
+    /// because their `parent_subshape_index` duplicated the preceding record
+    /// (after stable-sort by `parent_subshape_index`). Always 0 for
+    /// well-formed profiles; non-zero indicates OCCT emitted a duplicate edge
+    /// report or a synthesis record collided with an OCCT-reported one.
+    pub duplicate_parent_subshape_index_count: u32,
 }
 
 /// Typed wrapper for the per-parent face/edge handle slices passed to
@@ -2104,6 +2110,7 @@ mod tests {
             start_cap_face_indices: vec![5, 6],
             end_cap_face_indices: vec![7],
             unmatched_radial_edge_count: 0,
+            duplicate_parent_subshape_index_count: 0,
         };
         assert_eq!(records.face_modified.len(), 1);
         assert_eq!(records.face_generated.len(), 1);
@@ -2131,6 +2138,7 @@ mod tests {
             start_cap_face_indices: vec![5],
             end_cap_face_indices: vec![6],
             unmatched_radial_edge_count: 0,
+            duplicate_parent_subshape_index_count: 0,
         };
         let cloned = records.clone();
         assert_eq!(records, cloned);

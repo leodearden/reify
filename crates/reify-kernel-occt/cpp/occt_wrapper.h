@@ -80,6 +80,8 @@ struct BBox;
 struct TessResult;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+/// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
+struct RevolveSynthesisPostSortResult;
 
 // --- Primitive construction ---
 
@@ -218,6 +220,13 @@ struct SweepOpHistory {
     /// incremented by the full-revolution radial-face synthesis post-pass.
     /// Zero for well-formed profiles; non-zero indicates a synthesis gap.
     uint32_t unmatched_radial_edge_count = 0;
+    /// Count of `face_generated` records dropped by `revolve_synthesis_
+    /// post_sort_and_dedup` because their `parent_subshape_index` duplicated
+    /// the immediately preceding record's (after stable-sort). Always 0 for
+    /// well-formed profiles; non-zero indicates OCCT emitted a duplicate edge
+    /// report or a synthesis collision occurred. Only incremented by the
+    /// full-revolution radial-face synthesis post-pass.
+    uint32_t duplicate_parent_subshape_index_count = 0;
 };
 
 /// Run `BRepPrimAPI_MakePrism` on `profile` along the direction vector
@@ -299,6 +308,18 @@ rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& 
 /// face_generated record during the full-revolution synthesis post-pass.
 /// Always 0 for prism operations and for partial revolves.
 uint32_t sweep_op_history_unmatched_radial_edge_count(const SweepOpHistory& history);
+/// Count of face_generated records dropped by the post-sort dedup pass because
+/// their parent_subshape_index duplicated the preceding record (after stable-sort).
+/// Zero for a well-formed full revolve.
+uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history);
+
+/// Test fixture: run `revolve_synthesis_post_sort_and_dedup` on a synthetic flat
+/// `face_generated`-layout input (`parent_index, parent_subshape_index,
+/// result_subshape_index` triples). Returns the deduplicated records and the
+/// count of dropped duplicates. Exposed for unit-testing the dedup logic
+/// without real OCCT geometry.
+RevolveSynthesisPostSortResult revolve_synthesis_post_sort_for_test(
+    rust::Slice<const uint32_t> input);
 
 /// Probe whether `a` and `b` are intersecting (non-positive minimum distance).
 ///
