@@ -242,30 +242,145 @@ pub(crate) fn elaborate_forall_constraint(
 /// Drive per-element connection emission for a `forall ... : connect ...`
 /// or `forall ... : chain ...` declaration.
 ///
-/// Stub: implemented incrementally across steps 16, 18, and 20.
+/// Currently supports:
+///   * `ListLiteral` collection × any body — substitution replaces the bound
+///     var with the literal element AST.
+///   * `Ident(name)` collection-sub × any body — substitution replaces the
+///     bound var with `IndexAccess { object: Ident(name), index: NumberLiteral(i) }`.
+///   * `ConnectBody::Connect(cd)` — emits one `CompiledConnection` per element
+///     via `compile_connection`, with `span = decl.span`.
+///
+/// `ConnectBody::Chain(cd)` is left for step-18.
 ///
 /// Note on borrowing: `sub_components` is passed mutably because the
 /// per-element `compile_connection` calls may push connector sub-components.
-/// The helper is responsible for taking an immutable read of collection
-/// sub-component info (count_cell, etc.) before entering the per-element
-/// emission loop, so that the immutable borrow is dropped before any
-/// mutating call.
+/// The helper takes an immutable read of collection sub-component info
+/// (count_cell, etc.) up front to compute the element list, then drops that
+/// borrow before entering the per-element emission loop where
+/// `sub_components` is borrowed mutably via the `ConnectAccumulator`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn elaborate_forall_connect(
-    _decl: &reify_syntax::ForallConnectDecl,
-    _entity_name: &str,
-    _ports: &[CompiledPort],
-    _scope: &CompilationScope,
-    _enum_defs: &[reify_types::EnumDef],
-    _functions: &[CompiledFunction],
-    _trait_registry: &HashMap<String, &CompiledTrait>,
-    _value_cells: &[ValueCellDecl],
-    _constraints: &mut Vec<CompiledConstraint>,
-    _constraint_index: &mut u32,
-    _connections: &mut Vec<CompiledConnection>,
-    _sub_components: &mut Vec<SubComponentDecl>,
-    _connector_index: &mut u32,
-    _diagnostics: &mut Vec<Diagnostic>,
+    decl: &reify_syntax::ForallConnectDecl,
+    entity_name: &str,
+    ports: &[CompiledPort],
+    scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    value_cells: &[ValueCellDecl],
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    connections: &mut Vec<CompiledConnection>,
+    sub_components: &mut Vec<SubComponentDecl>,
+    connector_index: &mut u32,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Implemented in step-16.
+    use reify_syntax::{Expr, ExprKind, ForallConnectBody};
+
+    // Resolve the collection expression to per-element replacement ASTs.
+    // Mirrors the dispatch in `elaborate_forall_constraint`. Anything that
+    // can't be resolved at compile time emits zero decls silently. Re-elaboration
+    // on count change is deferred to future SchemaNode work (PRD criterion 7).
+    let elements: Vec<Expr> = match &decl.collection.kind {
+        ExprKind::ListLiteral(items) => items.clone(),
+        ExprKind::Ident(name) => {
+            let sub = sub_components
+                .iter()
+                .find(|s| s.name == *name && s.is_collection);
+            let count = sub
+                .and_then(|s| s.count_cell.as_ref())
+                .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
+            let Some(count) = count else {
+                // PRD criterion 7: silent skip when count is undef. Step-20
+                // adds a non-iterable diagnostic for genuinely mistyped
+                // collection expressions; here we defer to support future
+                // re-elaboration on count change.
+                return;
+            };
+            let coll_span = decl.collection.span;
+            (0..count)
+                .map(|i| Expr {
+                    kind: ExprKind::IndexAccess {
+                        object: Box::new(Expr {
+                            kind: ExprKind::Ident(name.clone()),
+                            span: coll_span,
+                        }),
+                        index: Box::new(Expr {
+                            kind: ExprKind::NumberLiteral(i as f64),
+                            span: coll_span,
+                        }),
+                    },
+                    span: coll_span,
+                })
+                .collect()
+        }
+        // Step-20: non-iterable diagnostic. For now, silently skip.
+        _ => return,
+    };
+
+    // Build the read-only `ConnectContext` once. The accumulator is rebuilt
+    // per element so we avoid retaining a long-lived mutable borrow on
+    // `constraints` / `connections` / `sub_components` across loop iterations.
+    let ctx = ConnectContext {
+        entity_name,
+        ports,
+        scope,
+        enum_defs,
+        functions,
+        trait_registry,
+    };
+
+    for (i, element) in elements.iter().enumerate() {
+        let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+        bindings.insert(decl.variable.clone(), element.clone());
+
+        match &decl.body {
+            ForallConnectBody::Connect(cd) => {
+                // Substitute every expression-bearing position in the body.
+                let left_substituted = substitute_expr(&cd.left.expr, &bindings);
+                let right_substituted = substitute_expr(&cd.right.expr, &bindings);
+                let params_substituted: Vec<(String, reify_syntax::Expr)> = cd
+                    .params
+                    .iter()
+                    .map(|(n, e)| (n.clone(), substitute_expr(e, &bindings)))
+                    .collect();
+
+                let mut acc = ConnectAccumulator {
+                    constraints,
+                    constraint_index,
+                    connections,
+                    sub_components,
+                    connector_index,
+                };
+                compile_connection(
+                    &ctx,
+                    &ConnectInput {
+                        left_expr: &left_substituted,
+                        operator: cd.operator,
+                        right_expr: &right_substituted,
+                        connector_type: cd.connector_type.as_deref(),
+                        params: &params_substituted,
+                        port_mappings: &cd.port_mappings,
+                        // Anchor the emitted connection at the source forall
+                        // declaration so per-element diagnostics cite the
+                        // forall site and the element index travels in the
+                        // synthetic compatibility constraint label.
+                        span: decl.span,
+                    },
+                    diagnostics,
+                    &mut acc,
+                );
+                let _ = i; // element index currently encoded only via the
+                           // synthetic `connect_compat_<l>_<r>` label produced
+                           // by `compile_connection` (the substituted port
+                           // names already include `[i]`); a dedicated
+                           // forall-element label is added in step-21 if
+                           // needed for diagnostic provenance.
+            }
+            // Step-18: Chain body desugared per element into pairwise Forward
+            // connections. Left as a no-op for step-16; the chain test will
+            // be added then and pinned by step-18.
+            ForallConnectBody::Chain(_) => {}
+        }
+    }
 }

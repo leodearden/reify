@@ -6,8 +6,41 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
         reify_syntax::ExprKind::Ident(name) => Some(name.clone()),
         reify_syntax::ExprKind::MemberAccess { object, member } => match &object.kind {
             reify_syntax::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
+            // Indexed sub-component port refs after `forall` substitution
+            // (task 2364): e.g. `vents[0].inlet` parses as
+            // `MemberAccess { object: IndexAccess { Ident("vents"),
+            //                                       NumberLiteral(0) },
+            //                 member: "inlet" }`. Format as the dotted-bracket
+            // string `"vents[0].inlet"` so the existing dotted-port-name
+            // branches in `compile_connection` (which skip entity-port
+            // lookup and direction checks for refs containing '.') flow
+            // unchanged.
+            reify_syntax::ExprKind::IndexAccess { object: inner, index } => {
+                match (&inner.kind, &index.kind) {
+                    (
+                        reify_syntax::ExprKind::Ident(obj_name),
+                        reify_syntax::ExprKind::NumberLiteral(n),
+                    ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
+                    _ => None,
+                }
+            }
             _ => None,
         },
+        // Bare indexed sub-component (e.g. `vents[0]`) — also produced by
+        // `forall` substitution when the body references the bound var
+        // without dotting into a port. Returned as `"vents[0]"`. Currently
+        // only well-formed `Ident[NumberLiteral]` shapes are accepted; other
+        // index expressions (non-literal index, non-Ident object) return
+        // None so existing diagnostic behaviour is preserved.
+        reify_syntax::ExprKind::IndexAccess { object, index } => {
+            match (&object.kind, &index.kind) {
+                (
+                    reify_syntax::ExprKind::Ident(obj_name),
+                    reify_syntax::ExprKind::NumberLiteral(n),
+                ) => Some(format!("{}[{}]", obj_name, *n as i64)),
+                _ => None,
+            }
+        }
         // Ad-hoc selector: `port @ face("top")` — extract the base port name.
         reify_syntax::ExprKind::AdHocSelector { base, .. } => resolve_port_name(base),
         _ => None,
