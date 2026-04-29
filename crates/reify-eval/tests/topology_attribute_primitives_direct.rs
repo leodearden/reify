@@ -1,0 +1,161 @@
+//! Direct-OCCT integration tests for the v0.2 primitive attribute seeder
+//! (PRD docs/prds/v0_2/persistent-naming-v2.md decomposition-plan task 6).
+//!
+//! These tests bypass the engine wire-up: they spawn an `OcctKernelHandle`,
+//! build a primitive via `GeometryOp`, and call
+//! [`reify_eval::seed_primitive_attributes`] directly. The contract under
+//! test is that for each primitive, the seeder records one
+//! `TopologyAttribute` per emitted face/edge with the expected
+//! `(role, local_index)` distribution. The Engine-level pipeline tests live
+//! in `topology_attribute_primitives_e2e.rs`.
+//!
+//! Sibling pattern: `topology_attribute_e2e.rs`. Same `OCCT_AVAILABLE` gate,
+//! same `BOX_SIDE_M = 10e-3` constant, same "extract face/edge handle
+//! vectors ONCE and reuse" discipline.
+
+use std::collections::HashSet;
+
+use reify_eval::seed_primitive_attributes;
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
+use reify_types::{
+    CapKind, FeatureId, GeometryOp, RealizationNodeId, Role, TopologyAttributeTable, Value,
+};
+
+/// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
+const BOX_SIDE_M: f64 = 10.0e-3;
+
+/// 5mm-radius / 10mm-height cylinder for cap-classification tests.
+const CYL_RADIUS_M: f64 = 5.0e-3;
+const CYL_HEIGHT_M: f64 = 10.0e-3;
+
+/// 5mm-radius sphere for the sphere-side tests.
+const SPHERE_RADIUS_M: f64 = 5.0e-3;
+
+fn box_op() -> GeometryOp {
+    GeometryOp::Box {
+        width: Value::Real(BOX_SIDE_M),
+        height: Value::Real(BOX_SIDE_M),
+        depth: Value::Real(BOX_SIDE_M),
+    }
+}
+
+fn cylinder_op() -> GeometryOp {
+    GeometryOp::Cylinder {
+        radius: Value::Real(CYL_RADIUS_M),
+        height: Value::Real(CYL_HEIGHT_M),
+    }
+}
+
+fn sphere_op() -> GeometryOp {
+    GeometryOp::Sphere {
+        radius: Value::Real(SPHERE_RADIUS_M),
+    }
+}
+
+fn body_realization_feature_id() -> FeatureId {
+    FeatureId::from(&RealizationNodeId::new("Body", 0))
+}
+
+// ─── step-1: Box → 6 face entries, all Role::Side ─────────────────────────────
+
+#[test]
+fn seed_primitive_attributes_box_records_six_side_faces() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&box_op())
+        .expect("box should build")
+        .id;
+
+    // Pre-extract ONCE: extract_faces allocates fresh handles on every call.
+    let face_handles = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+    assert_eq!(
+        face_handles.len(),
+        6,
+        "a 10mm box should have exactly 6 faces in TopExp order"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    let mut kernel_for_seed = kernel;
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel_for_seed,
+        box_id,
+        &feature_id,
+        &box_op(),
+    )
+    .expect("seed_primitive_attributes for a 10mm box should succeed");
+
+    // After step-1 (faces only) the table should hold exactly 6 entries.
+    // (Step-7 will extend the seeder to also walk edges; this test pins the
+    // face-only contract.)
+    let face_entry_count = face_handles
+        .iter()
+        .filter(|id| table.lookup(**id).is_some())
+        .count();
+    assert_eq!(
+        face_entry_count, 6,
+        "all 6 box faces must have a TopologyAttribute entry"
+    );
+
+    let mut local_indices: HashSet<u32> = HashSet::new();
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table.lookup(face_id).unwrap_or_else(|| {
+            panic!(
+                "box face #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, face_id
+            )
+        });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "box face #{idx} feature_id should equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.role,
+            Role::Side,
+            "box face #{idx} role should be Role::Side (no caps for a box)"
+        );
+        assert!(
+            local_indices.insert(attr.local_index),
+            "box face #{idx} has a duplicate local_index {}; \
+             each face must have a unique local_index in 0..6",
+            attr.local_index
+        );
+        assert!(
+            attr.local_index < 6,
+            "box face #{idx} local_index {} must be in 0..6",
+            attr.local_index
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "box face #{idx} user_label should be None per task-1 invariant"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "box face #{idx} mod_history should be empty per task-1 invariant"
+        );
+    }
+
+    // Round-trip: each value in {0..6} appears exactly once across the 6 faces.
+    let mut sorted: Vec<u32> = local_indices.into_iter().collect();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        (0..6u32).collect::<Vec<u32>>(),
+        "box face local_indices must be a permutation of 0..6"
+    );
+
+    // Touch the imports we'll use later so the test compiles cleanly when
+    // sphere/cylinder helpers are added (and so a future step-3 doesn't have
+    // to rewrite the imports block). No-op assertions.
+    let _cyl = cylinder_op();
+    let _sph = sphere_op();
+    let _: CapKind = CapKind::Top;
+}
