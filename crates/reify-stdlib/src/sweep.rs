@@ -650,4 +650,211 @@ mod tests {
             "sweep() on errored mechanism must yield Undef"
         );
     }
+
+    // ── sweep() input validation: full surface returns Undef ──────────────
+    //
+    // Validation allow-list (matches `eval_sweep::sweep` arm):
+    //   args.len() == 4                                → arity guard
+    //   args[0] is Map with kind="mechanism"           → mechanism guard
+    //   no `error` key on the mechanism Map            → errored-mech guard
+    //   is_driving_joint(args[1])                      → joint kind guard
+    //   args[2] is Value::Range with both bounds and
+    //     dimension matching the joint kind            → range/dim guard
+    //   args[3] is Value::Int(n) with n >= 0           → steps guard
+    // Any guard failure returns `Value::Undef`.
+
+    /// `sweep()` with an arity outside {4} returns Undef.
+    #[test]
+    fn sweep_wrong_arity_returns_undef() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
+
+        // 0, 1, 2, 3, 5 args
+        assert!(eval_builtin("sweep", &[]).is_undef());
+        assert!(eval_builtin("sweep", std::slice::from_ref(&m)).is_undef());
+        assert!(eval_builtin("sweep", &[m.clone(), j.clone()]).is_undef());
+        assert!(eval_builtin("sweep", &[m.clone(), j.clone(), r.clone()]).is_undef());
+        assert!(
+            eval_builtin("sweep", &[m, j, r, n.clone(), n]).is_undef()
+        );
+    }
+
+    /// `sweep(non_mechanism, ...)` returns Undef when args[0] is not a
+    /// Mechanism Map.
+    #[test]
+    fn sweep_non_mechanism_returns_undef() {
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
+
+        // Real
+        assert!(
+            eval_builtin("sweep", &[Value::Real(1.0), j.clone(), r.clone(), n.clone()])
+                .is_undef()
+        );
+
+        // world sentinel — Map with kind="world"
+        assert!(
+            eval_builtin(
+                "sweep",
+                &[eval_builtin("world", &[]), j.clone(), r.clone(), n.clone()]
+            )
+            .is_undef()
+        );
+
+        // Map with a different kind discriminator
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("other".to_string()),
+        );
+        assert!(eval_builtin("sweep", &[Value::Map(m), j, r, n]).is_undef());
+    }
+
+    /// `sweep(m, non_driving_joint, range, steps)` returns Undef.
+    #[test]
+    fn sweep_non_driving_joint_returns_undef() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
+
+        // Real
+        assert!(
+            eval_builtin("sweep", &[m.clone(), Value::Real(1.0), r.clone(), n.clone()])
+                .is_undef()
+        );
+
+        // world sentinel
+        assert!(
+            eval_builtin(
+                "sweep",
+                &[m.clone(), eval_builtin("world", &[]), r.clone(), n.clone()]
+            )
+            .is_undef()
+        );
+
+        // fixed joint
+        let fixed = eval_builtin("fixed", &[]);
+        assert!(eval_builtin("sweep", &[m.clone(), fixed, r.clone(), n.clone()]).is_undef());
+
+        // coupling joint
+        let parent = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
+        assert!(eval_builtin("sweep", &[m, coupling, r, n]).is_undef());
+    }
+
+    /// `sweep(m, joint, non_range, steps)` returns Undef.
+    #[test]
+    fn sweep_non_range_returns_undef() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let n = Value::Int(11);
+
+        // Real
+        assert!(
+            eval_builtin("sweep", &[m.clone(), j.clone(), Value::Real(1.0), n.clone()])
+                .is_undef()
+        );
+
+        // Map (not a Range)
+        let other = eval_builtin("mechanism", &[]);
+        assert!(eval_builtin("sweep", &[m.clone(), j.clone(), other, n.clone()]).is_undef());
+
+        // List
+        assert!(
+            eval_builtin("sweep", &[m, j, Value::List(vec![]), n]).is_undef()
+        );
+    }
+
+    /// `sweep(m, joint, range, non_int_steps)` returns Undef.
+    #[test]
+    fn sweep_non_int_steps_returns_undef() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+
+        // Real
+        assert!(
+            eval_builtin("sweep", &[m.clone(), j.clone(), r.clone(), Value::Real(11.0)])
+                .is_undef()
+        );
+
+        // String
+        assert!(
+            eval_builtin("sweep", &[m, j, r, Value::String("eleven".to_string())])
+                .is_undef()
+        );
+    }
+
+    /// `sweep(m, joint, range, Int(<0))` returns Undef.
+    #[test]
+    fn sweep_negative_steps_returns_undef() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+
+        assert!(
+            eval_builtin("sweep", &[m.clone(), j.clone(), r.clone(), Value::Int(-1)])
+                .is_undef()
+        );
+        assert!(eval_builtin("sweep", &[m, j, r, Value::Int(-3)]).is_undef());
+    }
+
+    /// `sweep(m, joint, range, steps)` returns Undef when range
+    /// dimension does not match joint kind.
+    #[test]
+    fn sweep_dimension_mismatch_returns_undef() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+        let n = Value::Int(11);
+
+        // Prismatic joint + angle range → Undef.
+        let j_pris = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        assert!(
+            eval_builtin(
+                "sweep",
+                &[m.clone(), j_pris, angle_range_0_to_pi(), n.clone()]
+            )
+            .is_undef()
+        );
+
+        // Revolute joint + length range → Undef.
+        let j_rev = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        // Need a mechanism whose body uses j_rev for the parent-chain
+        // walk to even start; build a dedicated one so the mismatch
+        // surfaces from the sweep arm's range guard, not from snapshot.
+        let m0 = eval_builtin("mechanism", &[]);
+        let m_rev = eval_builtin(
+            "body",
+            &[m0, Value::String("a".to_string()), j_rev.clone()],
+        );
+        assert!(
+            eval_builtin("sweep", &[m_rev, j_rev, length_range_0_to_1m(), n]).is_undef()
+        );
+    }
+
+    /// `sweep(m, joint, unbounded_range, steps)` returns Undef when
+    /// either range bound is `None`.
+    #[test]
+    fn sweep_unbounded_range_returns_undef() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let n = Value::Int(11);
+
+        // No lower bound
+        let no_lower = Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        };
+        assert!(
+            eval_builtin("sweep", &[m.clone(), j.clone(), no_lower, n.clone()]).is_undef()
+        );
+
+        // No upper bound
+        let no_upper = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        assert!(eval_builtin("sweep", &[m, j, no_upper, n]).is_undef());
+    }
 }
