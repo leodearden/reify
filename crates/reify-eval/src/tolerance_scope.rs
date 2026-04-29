@@ -90,30 +90,38 @@ mod tests {
     use super::*;
     use reify_test_support::builders::CompiledPurposeBuilder;
     use reify_types::{
-        CompiledExpr, DimensionVector, Type, Value, ValueCellId,
+        BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId,
     };
 
-    #[test]
-    fn extract_tolerance_bindings_returns_single_binding_for_one_representation_within() {
-        // Build: RepresentationWithin(ValueRef("subject", "self") : StructureRef("Bracket"),
-        //                              Literal(Scalar { si_value: 1e-6, dim: LENGTH }))
+    /// Build the canonical `RepresentationWithin(<ValueRef typed
+    /// StructureRef>, <Literal Scalar(LENGTH)>)` shape that
+    /// `extract_tolerance_bindings` is expected to recognise.
+    fn representation_within_constraint(
+        subject_kind: &str,
+        si_value: f64,
+        dimension: DimensionVector,
+    ) -> CompiledExpr {
         let subject_arg = CompiledExpr::value_ref(
             ValueCellId::new("subject", "self"),
-            Type::StructureRef("Bracket".to_string()),
+            Type::StructureRef(subject_kind.to_string()),
         );
         let tol_arg = CompiledExpr::literal(
-            Value::Scalar {
-                si_value: 1e-6,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
+            Value::Scalar { si_value, dimension },
+            Type::Scalar { dimension },
         );
-        let constraint_expr = CompiledExpr::user_function_call(
+        CompiledExpr::user_function_call(
             "RepresentationWithin".to_string(),
             vec![subject_arg, tol_arg],
             Type::Bool,
+        )
+    }
+
+    #[test]
+    fn extract_tolerance_bindings_returns_single_binding_for_one_representation_within() {
+        let constraint_expr = representation_within_constraint(
+            "Bracket",
+            1e-6,
+            DimensionVector::LENGTH,
         );
 
         let purpose = CompiledPurposeBuilder::new("manufacturing")
@@ -126,5 +134,76 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].subject_entity, "MyDesign");
         assert_eq!(bindings[0].si_tolerance, 1e-6);
+    }
+
+    #[test]
+    fn extract_tolerance_bindings_skips_non_tolerance_constraints() {
+        // (a) UserFunctionCall("AllParamsDetermined", [...]) — wrong function name.
+        let all_params_determined = CompiledExpr::user_function_call(
+            "AllParamsDetermined".to_string(),
+            vec![CompiledExpr::value_ref(
+                ValueCellId::new("subject", "self"),
+                Type::StructureRef("Bracket".to_string()),
+            )],
+            Type::Bool,
+        );
+
+        // (b) BinOp(Gt, ValueRef(...), Literal(Real(0.0))) — wrong outer node kind.
+        let binop_constraint = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(
+                ValueCellId::new("subject", "thickness"),
+                Type::Real,
+            ),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            Type::Bool,
+        );
+
+        // (c) A valid RepresentationWithin.
+        let rep_within = representation_within_constraint(
+            "Bracket",
+            5e-6,
+            DimensionVector::LENGTH,
+        );
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, all_params_determined)
+            .constraint("subject", 1, None, binop_constraint)
+            .constraint("subject", 2, None, rep_within)
+            .build();
+
+        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+        assert_eq!(
+            bindings.len(),
+            1,
+            "only the RepresentationWithin constraint should yield a binding"
+        );
+        assert_eq!(bindings[0].subject_entity, "MyDesign");
+        assert_eq!(bindings[0].si_tolerance, 5e-6);
+    }
+
+    #[test]
+    fn extract_tolerance_bindings_skips_representation_within_with_non_length_dimension() {
+        // RepresentationWithin whose 2nd arg is a *dimensionless* literal —
+        // must be silently skipped (returns empty).
+        let constraint_expr = representation_within_constraint(
+            "Bracket",
+            1.0,
+            DimensionVector::DIMENSIONLESS,
+        );
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, constraint_expr)
+            .build();
+
+        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+        assert!(
+            bindings.is_empty(),
+            "non-LENGTH dimension on tolerance arg must not yield a binding"
+        );
     }
 }
