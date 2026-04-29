@@ -16,8 +16,9 @@ use reify_types::{
 use reify_types::{Diagnostic, DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData,
-    SourceSpanInfo, ValueData, format_determinacy, format_freshness, format_value,
+    ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
+    MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
+    format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -482,6 +483,67 @@ impl EngineSession {
             files,
             tessellation_diagnostics,
         })
+    }
+
+    /// Return one `MechanismDescriptor` per mechanism cell in the loaded module.
+    ///
+    /// A cell is included when its post-eval value is a `Value::Map` with
+    /// `kind = "mechanism"` and **no** `error` key (errored mechanisms are
+    /// filtered out — their `bodies` list may be incomplete and their joint
+    /// indices are unreliable).
+    ///
+    /// Returns an empty vec when:
+    /// - no module is loaded (`compiled` is `None`), or
+    /// - the loaded module contains no valid mechanism cells.
+    ///
+    /// Joint extraction and AST-based driving-param resolution are added in
+    /// subsequent steps (steps 5–12 of the task plan).
+    pub fn get_mechanism_descriptors(&self) -> Vec<MechanismDescriptor> {
+        let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
+            (Some(c), Some(k)) => (c, k),
+            _ => return Vec::new(),
+        };
+
+        let mut descriptors = Vec::new();
+
+        for template in &compiled.templates {
+            for cell in &template.value_cells {
+                let val = check.values.get_or_undef(&cell.id);
+
+                // Check that the value is a mechanism Map with no error field.
+                let map = match &val {
+                    Value::Map(m) => m,
+                    _ => continue,
+                };
+
+                let kind_val = map.get(&Value::String("kind".to_string()));
+                if kind_val != Some(&Value::String("mechanism".to_string())) {
+                    continue;
+                }
+
+                // Filter out errored mechanisms (closed-chain etc.).
+                if map.contains_key(&Value::String("error".to_string())) {
+                    continue;
+                }
+
+                // Count bodies for the descriptor (bodies_count).
+                let bodies_count = match map.get(&Value::String("bodies".to_string())) {
+                    Some(Value::List(bodies)) => bodies.len(),
+                    _ => 0,
+                };
+
+                descriptors.push(MechanismDescriptor {
+                    cell_id: cell.id.to_string(),
+                    entity_path: cell.id.entity.clone(),
+                    name: cell.id.member.clone(),
+                    bodies_count,
+                    // Joint extraction added in steps 5–6.
+                    joints: Vec::new(),
+                });
+            }
+        }
+
+        descriptors
     }
 
     /// Return the hierarchical entity tree for the currently loaded module.
