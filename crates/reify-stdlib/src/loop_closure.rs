@@ -186,6 +186,66 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
     twist_map_to_array(&result)
 }
 
+/// Compute the chain Jacobian by finite difference: one twist column per
+/// free index.
+///
+/// For each `i ∈ free_indices`, perturbs `values[i]` by `±eps`, evaluates
+/// `chain_transform` at both perturbed values, and computes
+/// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
+/// the central-difference column.  This is symmetric-error O(ε²) and works
+/// for ALL joint kinds the chain contains (the analytic per-joint accessor
+/// is plumbed separately in [`per_joint_jacobian_local`]).
+///
+/// Returns `None` if `eps <= 0`, any free index is out of range, the
+/// `chain.len() != values.len()`, or any `chain_transform` along the way
+/// produces `None`.
+pub fn chain_jacobian_fd(
+    chain: &[Value],
+    values: &[f64],
+    free_indices: &[usize],
+    eps: f64,
+) -> Option<Vec<[f64; 6]>> {
+    if !(eps > 0.0) || !eps.is_finite() {
+        return None;
+    }
+    if chain.len() != values.len() {
+        return None;
+    }
+    let n = chain.len();
+    let mut cols: Vec<[f64; 6]> = Vec::with_capacity(free_indices.len());
+    for &i in free_indices {
+        if i >= n {
+            return None;
+        }
+        let mut plus = values.to_vec();
+        plus[i] += eps;
+        let mut minus = values.to_vec();
+        minus[i] -= eps;
+        let t_plus = chain_transform(chain, &plus)?;
+        let t_minus = chain_transform(chain, &minus)?;
+        let t_minus_inv = eval_builtin("transform_inverse", &[t_minus]);
+        if t_minus_inv.is_undef() {
+            return None;
+        }
+        let rel = eval_builtin("transform_compose", &[t_minus_inv, t_plus]);
+        if rel.is_undef() {
+            return None;
+        }
+        let twist_map = eval_builtin("transform_log", &[rel]);
+        if twist_map.is_undef() {
+            return None;
+        }
+        let twist = twist_map_to_array(&twist_map)?;
+        let scale = 1.0 / (2.0 * eps);
+        let mut col = [0.0; 6];
+        for k in 0..6 {
+            col[k] = twist[k] * scale;
+        }
+        cols.push(col);
+    }
+    Some(cols)
+}
+
 /// Wrap a raw f64 motion variable in a dimensioned `Value` appropriate for
 /// the joint kind: `Value::length` for prismatic, `Value::angle` for revolute.
 /// Coupling joints delegate to their parent's kind.
