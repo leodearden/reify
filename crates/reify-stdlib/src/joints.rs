@@ -105,12 +105,15 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         // responsibility via composition of `orient_euler` / `orient_axis_angle`
         // and `orient_to_euler` / `orient_to_axis_angle`.
         "spherical" => {
-            // step-2 minimal stub: accepts everything; step-4 adds the
-            // validation surface (arg count, range dimension, bounded).
-            // `first()` keeps this panic-safe on 0-arg calls — step-3's
-            // explicit `is_undef` regression pins drive the validation.
-            let range_angle = args.first().cloned().unwrap_or(Value::Undef);
-            make_spherical(range_angle)
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            // Validate range_angle: bounded, ANGLE-dimensioned. Mirrors the
+            // prismatic / revolute / planar precedent.
+            if validate_range(&args[0], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_spherical(args[0].clone())
         }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
