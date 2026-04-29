@@ -357,6 +357,7 @@ pub enum DiagnosticCode {
     ///   - (optionally, when an originating `source_span` becomes available on
     ///     `TopologyAttribute` in a later task) a secondary label at the
     ///     originating-feature span (`"feature originally produced here"`).
+    ///
     /// Today only the primary label is emitted because `TopologyAttribute` carries
     /// no `source_span` field.
     ///

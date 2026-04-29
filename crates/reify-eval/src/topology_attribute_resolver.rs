@@ -269,12 +269,12 @@ where
         if !seen.insert(id) {
             continue;
         }
-        if let Some(attr) = table.lookup(id) {
-            if predicate(attr) {
-                n += 1;
-                if n == 1 {
-                    found = Some(id);
-                }
+        if let Some(attr) = table.lookup(id)
+            && predicate(attr)
+        {
+            n += 1;
+            if n == 1 {
+                found = Some(id);
             }
         }
     }
