@@ -13,14 +13,48 @@
 //! and `DiagnosticCode::MechanismDuplicateSolid` are reserved in
 //! `reify-types/src/diagnostics.rs` for that future integration).
 
+use std::collections::BTreeMap;
+
 use reify_types::Value;
 
 /// Evaluate a mechanism stdlib function by name.
 ///
 /// Returns `Some(Value)` for known function names (including
 /// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
-pub(crate) fn eval_mechanism(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "mechanism" => {
+            if !args.is_empty() {
+                return Some(Value::Undef);
+            }
+            make_empty_mechanism()
+        }
+        _ => return None,
+    })
+}
+
+/// Build the canonical empty Mechanism `Value::Map`.
+///
+/// Shape (alphabetical key order, matching `BTreeMap` iteration):
+/// - `bodies` → `Value::List(vec![])`
+/// - `joint_parents` → `Value::Map(BTreeMap::new())`
+/// - `kind` → `Value::String("mechanism")`
+/// - `next_id` → `Value::Int(0)`
+///
+/// Parallel to `make_joint`/`make_coupling` in `joints.rs`.
+fn make_empty_mechanism() -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("bodies".to_string()), Value::List(vec![]));
+    m.insert(
+        Value::String("joint_parents".to_string()),
+        Value::Map(BTreeMap::new()),
+    );
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    m.insert(Value::String("next_id".to_string()), Value::Int(0));
+    Value::Map(m)
 }
 
 #[cfg(test)]
