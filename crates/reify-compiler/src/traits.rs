@@ -319,6 +319,7 @@ pub(crate) fn compile_purpose(
                         "let bindings in purpose bodies are not yet supported: '{}'",
                         let_decl.name
                     ))
+                    .with_code(DiagnosticCode::PurposeLetUnsupported)
                     .with_label(DiagnosticLabel::new(
                         let_decl.span,
                         "unsupported in purpose".to_string(),
