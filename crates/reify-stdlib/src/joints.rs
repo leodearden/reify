@@ -402,6 +402,118 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             make_coupling(args[0].clone(), Value::Real(ratio_f64), offset)
         }
+        // ── Coupling specialisations (PRD task 8) ──────────────────────────────
+        //
+        // `screw`, `gear`, and `rack_and_pinion` are thin parameterised wrappers
+        // around `couple()`.  Each computes a dimensionless f64 ratio from its
+        // domain parameters and delegates to `couple(parent, Value::Real(ratio))`.
+        // Parent-kind validation (must be prismatic/revolute, no nested coupling,
+        // etc.) is intentionally delegated to `couple()` — if `couple` returns
+        // `Value::Undef`, the wrapper propagates that Undef unchanged.
+        // See design decisions in the task-2676 plan.json.
+        //
+        // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
+
+        // `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
+        //
+        // `lead` (metres per 2π coupling-input units) is converted to a
+        // dimensionless ratio via `lead_si / (2π)` and delegated to `couple()`.
+        // The canonical use passes a prismatic parent (linear input → scaled linear
+        // output per turn).  Like all coupling specialisations, this wrapper is
+        // dimension-agnostic — `couple()` also accepts a revolute parent, but
+        // angular→angular is not a screw.  Parent-kind validation is intentionally
+        // delegated to `couple()`.
+        // PRD task 8: `Coupling(rotation, translation, ratio = lead / 2π)`.
+        "screw" => {
+            // Arity: exactly 2 args (parent, lead).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Parse lead as a LENGTH value (SI metres).
+            let lead_si = match length_input(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Compute the dimensionless ratio: lead / (2π).
+            let ratio = lead_si / (2.0 * std::f64::consts::PI);
+            // Defense-in-depth: length_input already rejects non-finite inputs,
+            // so this guard should never trigger, but we include it for safety.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
+        // `gear(parent, teeth_a, teeth_b)` — wrap a revolute driving joint as a gear pair.
+        //
+        // Both tooth counts must be `Value::Int` with strictly positive values.
+        // `ratio = -(teeth_b as f64) / (teeth_a as f64)` (negative for external mesh).
+        // f64 precision: integers are represented exactly up to 2^53 ≈ 9×10^15;
+        // all real gear tooth counts are far below this limit.
+        // The canonical use passes a revolute parent (angular input → scaled angular
+        // output).  Like all coupling specialisations, this wrapper is
+        // dimension-agnostic — `couple()` also accepts a prismatic parent, but
+        // linear→linear is not a gear.  Parent-kind validation is intentionally
+        // delegated to `couple()`.
+        // PRD task 8: `Coupling(rotation_a, rotation_b, ratio = -teeth_b / teeth_a)`.
+        "gear" => {
+            // Arity: exactly 3 args (parent, teeth_a, teeth_b).
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Require teeth_a: strictly positive Int (prevents division by zero).
+            let teeth_a = match &args[1] {
+                Value::Int(i) if *i > 0 => *i,
+                _ => return Some(Value::Undef),
+            };
+            // Require teeth_b: strictly positive Int (symmetry + non-physical 0-tooth rejected).
+            let teeth_b = match &args[2] {
+                Value::Int(i) if *i > 0 => *i,
+                _ => return Some(Value::Undef),
+            };
+            // Compute ratio: negative for external mesh (reverses direction).
+            let ratio = -(teeth_b as f64) / (teeth_a as f64);
+            // Both teeth counts are strictly positive finite integers, so ratio is always finite.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
+        // `rack_and_pinion(parent, pitch_radius)` — wrap a prismatic driving joint as a rack-and-pinion.
+        //
+        // `pitch_radius` (metres) becomes the dimensionless coupling ratio directly:
+        // `ratio = pitch_radius_si`.  The canonical use passes a prismatic parent
+        // (linear input → `pitch_radius * linear` output).  Like all coupling
+        // specialisations, this wrapper is dimension-agnostic — `couple()` also accepts
+        // a revolute parent (angular→scaled angular), but that is not a rack-and-pinion.
+        // Note: the coupling motion variable is interpreted as a length under the
+        // current `couple` semantics.  Parent-kind validation is intentionally
+        // delegated to `couple()`.
+        // PRD task 8: `Coupling(rotation, translation, ratio = pitch_radius)`.
+        // Identifier uses underscores because Reify identifiers do not allow hyphens.
+        "rack_and_pinion" => {
+            // Arity: exactly 2 args (parent, pitch_radius).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Parse pitch_radius as a LENGTH value (SI metres).
+            let pitch_radius_si = match length_input(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // ratio = pitch_radius (dimensionless scaling factor for the coupling).
+            let ratio = pitch_radius_si;
+            // Defense-in-depth: length_input already rejects non-finite inputs.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
         "joint_axis" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
@@ -2826,6 +2938,238 @@ mod tests {
             eval_builtin("joint_jacobian", &[Value::Map(outer)]).is_undef(),
             "nested coupling should return Undef"
         );
+    }
+
+    // ── coupling specialisations: shared test helper ─────────────────────────
+
+    /// Assert that `eval_builtin(name, args)` returns `Value::Undef`.
+    ///
+    /// Use this in table-driven validation tests (see `screw_validation_rejections`,
+    /// `gear_validation_rejections`, `rack_and_pinion_validation_rejections`) rather
+    /// than writing one `#[test]` fn per rejection case.
+    fn assert_builtin_undef(name: &str, args: &[Value], label: &str) {
+        assert!(
+            eval_builtin(name, args).is_undef(),
+            "{name}({args:?}) — {label} — should return Undef"
+        );
+    }
+
+    // ── screw constructor: happy path ────────────────────────────────────────
+
+    #[test]
+    fn screw_returns_correct_coupling_and_transform_at_works() {
+        // screw(prismatic-X, lead=1mm) → coupling Map with:
+        //   kind="coupling", parent=prismatic-X, ratio=1e-3/(2π), offset=length(0)
+        // transform_at(result, length(2π)) → translation [1e-3, 0, 0] (one lead per 2π input)
+        let pi = std::f64::consts::PI;
+        let parent = prismatic_x_joint();
+        let lead = Value::length(1e-3); // 1 mm
+        let result = eval_builtin("screw", &[parent.clone(), lead]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("screw: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "screw: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "screw: parent should match the prismatic joint"
+        );
+        let expected_ratio = 1e-3 / (2.0 * pi);
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(expected_ratio)),
+            "screw: ratio should be Value::Real(lead/(2π))"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "screw: default offset for prismatic parent should be Value::length(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, length(2π)) → translation [1e-3, 0, 0]
+        // Math: coupled = (1e-3/(2π)) * 2π + 0 = 1e-3 m, translated along prismatic-X axis.
+        let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
+        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [1e-3, 0.0, 0.0], 1e-12,
+            "screw transform_at: 1mm lead, 2π input → [1e-3, 0, 0]");
+    }
+
+    // ── screw constructor: validation rejections ─────────────────────────────
+
+    #[test]
+    fn screw_validation_rejections() {
+        use std::collections::BTreeMap;
+        use reify_types::DimensionVector;
+        let parent = prismatic_x_joint();
+        let lead = Value::length(1e-3);
+        let coupling_parent = eval_builtin("screw", &[parent.clone(), lead.clone()]);
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
+        let cases: Vec<(Vec<Value>, &str)> = vec![
+            (vec![], "0 args"),
+            (vec![parent.clone()], "1 arg"),
+            (vec![parent.clone(), lead.clone(), Value::Real(0.0)], "3 args"),
+            (vec![Value::Real(1.0), lead.clone()], "non-Map parent"),
+            (vec![coupling_parent, lead.clone()], "coupling parent (delegated to couple())"),
+            (vec![Value::Map(no_kind), lead.clone()], "Map parent missing 'kind'"),
+            (vec![parent.clone(), Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }], "MASS-dimensioned lead"),
+            (vec![parent.clone(), Value::Real(f64::NAN)], "NaN lead"),
+            (vec![parent.clone(), Value::Real(f64::INFINITY)], "Inf lead"),
+            (vec![parent, Value::String("bad".to_string())], "String lead"),
+        ];
+        for (args, label) in &cases {
+            assert_builtin_undef("screw", args, label);
+        }
+    }
+
+    // ── gear constructor: happy path ─────────────────────────────────────────
+
+    #[test]
+    fn gear_returns_correct_coupling_and_transform_at_works() {
+        // gear(revolute-Z, teeth_a=20, teeth_b=30) → coupling Map with:
+        //   kind="coupling", parent=revolute-Z, ratio=-(30/20)=-1.5, offset=angle(0)
+        // transform_at(result, angle(π/3)) → coupled angle = -1.5 * π/3 = -π/2
+        //   → rotation = (cos(-π/4), 0, 0, sin(-π/4))
+        let pi = std::f64::consts::PI;
+        let parent = revolute_z_joint();
+        let result = eval_builtin("gear", &[parent.clone(), Value::Int(20), Value::Int(30)]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("gear: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "gear: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "gear: parent should match the revolute joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(-30.0 / 20.0)),
+            "gear: ratio should be Value::Real(-teeth_b/teeth_a) = -1.5"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::angle(0.0)),
+            "gear: default offset for revolute parent should be Value::angle(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, angle(π/3))
+        // Math: coupled = -1.5 * (π/3) = -π/2 rad about Z-axis
+        //   → rotation quaternion for -π/2 about Z = (cos(-π/4), 0, 0, sin(-π/4))
+        let xform = eval_builtin("transform_at", &[result, Value::angle(pi / 3.0)]);
+        let cos_q = (-pi / 4.0).cos();
+        let sin_q = (-pi / 4.0).sin();
+        assert_transform_approx(&xform, (cos_q, 0.0, 0.0, sin_q), [0.0, 0.0, 0.0], 1e-12,
+            "gear transform_at: 20:30 ratio, π/3 input → -π/2 rotation about Z");
+    }
+
+    // ── gear constructor: validation rejections ──────────────────────────────
+
+    #[test]
+    fn gear_validation_rejections() {
+        use reify_types::DimensionVector;
+        let parent = revolute_z_joint();
+        let ta = Value::Int(20);
+        let tb = Value::Int(30);
+        let coupling_parent = eval_builtin("gear", &[parent.clone(), ta.clone(), tb.clone()]);
+        let cases: Vec<(Vec<Value>, &str)> = vec![
+            (vec![], "0 args"),
+            (vec![parent.clone()], "1 arg"),
+            (vec![parent.clone(), ta.clone()], "2 args"),
+            (vec![parent.clone(), ta.clone(), tb.clone(), Value::Real(0.0)], "4 args"),
+            (vec![Value::Real(1.0), ta.clone(), tb.clone()], "non-Map parent"),
+            (vec![coupling_parent, ta.clone(), tb.clone()], "coupling parent (delegated to couple())"),
+            (vec![parent.clone(), Value::Int(0), tb.clone()], "teeth_a=0 (division by zero)"),
+            (vec![parent.clone(), Value::Int(-5), tb.clone()], "negative teeth_a"),
+            (vec![parent.clone(), ta.clone(), Value::Int(0)], "teeth_b=0 (degenerate)"),
+            (vec![parent.clone(), ta.clone(), Value::Int(-3)], "negative teeth_b"),
+            (vec![parent.clone(), Value::Real(20.0), tb.clone()], "Real teeth_a (Int-only contract)"),
+            (vec![parent.clone(), ta.clone(), Value::Real(30.0)], "Real teeth_b (Int-only contract)"),
+            (vec![parent.clone(), Value::Scalar { si_value: 20.0, dimension: DimensionVector::DIMENSIONLESS }, tb.clone()], "Scalar teeth_a (Int-only contract)"),
+            (vec![parent, Value::String("bad".to_string()), tb], "String teeth_a"),
+        ];
+        for (args, label) in &cases {
+            assert_builtin_undef("gear", args, label);
+        }
+    }
+
+    // ── rack_and_pinion constructor: happy path ───────────────────────────────
+
+    #[test]
+    fn rack_and_pinion_returns_correct_coupling_and_transform_at_works() {
+        // rack_and_pinion(prismatic-X, pitch_radius=10mm) → coupling Map with:
+        //   kind="coupling", parent=prismatic-X, ratio=0.01, offset=length(0)
+        // transform_at(result, length(2π)) → coupled length = 0.01 * 2π = 0.02π m
+        //   → translation [0.02π, 0, 0], identity rotation
+        let pi = std::f64::consts::PI;
+        let parent = prismatic_x_joint();
+        let pitch_radius = Value::length(0.01); // 10 mm
+        let result = eval_builtin("rack_and_pinion", &[parent.clone(), pitch_radius]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("rack_and_pinion: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "rack_and_pinion: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "rack_and_pinion: parent should match the prismatic joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(0.01)),
+            "rack_and_pinion: ratio should be Value::Real(pitch_radius_si)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "rack_and_pinion: default offset for prismatic parent should be Value::length(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, length(2π))
+        // Math: coupled = 0.01 * 2π + 0 = 0.02π m, translated along prismatic-X axis.
+        let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
+        let expected_x = 0.01 * 2.0 * pi;
+        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [expected_x, 0.0, 0.0], 1e-12,
+            "rack_and_pinion transform_at: 10mm pitch, 2π input → 0.02π translation");
+    }
+
+    // ── rack_and_pinion constructor: validation rejections ───────────────────
+
+    #[test]
+    fn rack_and_pinion_validation_rejections() {
+        use std::collections::BTreeMap;
+        use reify_types::DimensionVector;
+        let parent = prismatic_x_joint();
+        let pr = Value::length(0.01);
+        let coupling_parent = eval_builtin("rack_and_pinion", &[parent.clone(), pr.clone()]);
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
+        let cases: Vec<(Vec<Value>, &str)> = vec![
+            (vec![], "0 args"),
+            (vec![parent.clone()], "1 arg"),
+            (vec![parent.clone(), pr.clone(), Value::Real(0.0)], "3 args"),
+            (vec![Value::Real(1.0), pr.clone()], "non-Map parent"),
+            (vec![coupling_parent, pr.clone()], "coupling parent (delegated to couple())"),
+            (vec![Value::Map(no_kind), pr.clone()], "Map parent missing 'kind'"),
+            (vec![parent.clone(), Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }], "MASS-dimensioned pitch_radius"),
+            (vec![parent.clone(), Value::Real(f64::NAN)], "NaN pitch_radius"),
+            (vec![parent.clone(), Value::Real(f64::INFINITY)], "Inf pitch_radius"),
+            (vec![parent, Value::String("bad".to_string())], "String pitch_radius"),
+        ];
+        for (args, label) in &cases {
+            assert_builtin_undef("rack_and_pinion", args, label);
+        }
     }
 
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────

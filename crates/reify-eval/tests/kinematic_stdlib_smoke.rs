@@ -54,6 +54,17 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
 ///   `sj_euler_back`  = `orient_to_euler("xyz", q_euler_in)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
 ///   `sj_aa_back`     = `orient_to_axis_angle(q_euler_in)` → Map { angle, axis } (axis-angle facade)
+///   `screw_joint`    = `screw(prism, 1mm)` → coupling Map { kind="coupling", ratio=1mm/(2π) }
+///   `screw_xform`    = `transform_at(screw_joint, 6.283185307179586)` (2π rad-equivalent input)
+///                     → Transform { translation=[1mm,0,0], rotation=identity }
+///   `screw_jac`      = `joint_jacobian(screw_joint)` → Map { angular=[0,0,0], linear=[1mm/(2π),0,0] }
+///   `gear_joint`     = `gear(rev, 20, 30)` → coupling Map { kind="coupling", ratio=−1.5 }
+///   `gear_xform`     = `transform_at(gear_joint, 1.0471975511965976)` (π/3 rad)
+///                     → Transform { rotation=(cos(−π/4),0,0,sin(−π/4)), translation=0 }
+///   `gear_jac`       = `joint_jacobian(gear_joint)` → Map { angular=[0,0,−1.5], linear=[0,0,0] }
+///   `rp_joint`       = `rack_and_pinion(prism, 10mm)` → coupling Map { kind="coupling", ratio=0.01 }
+///   `rp_xform`       = `transform_at(rp_joint, 6.283185307179586)` → Transform { translation=[0.02π,0,0] }
+///   `rp_jac`         = `joint_jacobian(rp_joint)` → Map { angular=[0,0,0], linear=[0.01,0,0] }
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
     let r_id       = orient_identity()
@@ -91,6 +102,18 @@ structure def Kinematic {
     let sj_xform_euler = transform_at(sj, q_euler_in)
     let sj_euler_back  = orient_to_euler("xyz", q_euler_in)
     let sj_aa_back     = orient_to_axis_angle(q_euler_in)
+
+    let screw_joint  = screw(prism, 1mm)
+    let screw_xform  = transform_at(screw_joint, 6.283185307179586)
+    let screw_jac    = joint_jacobian(screw_joint)
+
+    let gear_joint   = gear(rev, 20, 30)
+    let gear_xform   = transform_at(gear_joint, 1.0471975511965976)
+    let gear_jac     = joint_jacobian(gear_joint)
+
+    let rp_joint     = rack_and_pinion(prism, 10mm)
+    let rp_xform     = transform_at(rp_joint, 6.283185307179586)
+    let rp_jac       = joint_jacobian(rp_joint)
 }
 "#;
 
@@ -669,5 +692,128 @@ fn kinematic_stdlib_smoke_e2e() {
     assert!(
         pos_diff < 1e-12 || neg_diff < 1e-12,
         "sj_aa_back: axis-angle round-trip failed; reconstructed ±({recon_w}, {recon_x}, {recon_y}, {recon_z}), expected ({qei_w}, {qei_x}, {qei_y}, {qei_z})"
+    );
+
+    // ── Coupling specialisations: screw, gear, rack_and_pinion (task 2676) ─
+    let pi = std::f64::consts::PI;
+
+    // screw_joint = screw(prism, 1mm) → coupling Map with kind="coupling" (4 keys)
+    let screw_joint = get_value(v, "screw_joint");
+    let screw_map = match screw_joint {
+        Value::Map(m) => m,
+        other => panic!("screw_joint: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        screw_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("coupling".to_string())),
+        "screw_joint: kind should be 'coupling'"
+    );
+    assert_eq!(screw_map.len(), 4, "screw_joint: Map should have exactly 4 keys (kind/parent/ratio/offset)");
+
+    // screw_xform = transform_at(screw_joint, 2π) → translation [1e-3, 0, 0] LENGTH, identity rotation
+    // Math: ratio = 1e-3/(2π); coupled = ratio * 2π = 1e-3 m along prismatic-X axis.
+    let screw_xform = get_value(v, "screw_xform");
+    let (sx_rot, sx_trans) = match screw_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("screw_xform: expected Transform, got {other:?}"),
+    };
+    assert_orientation_close(sx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "screw_xform rotation");
+    assert_vec3_close(sx_trans, [1e-3, 0.0, 0.0], 1e-12, "screw_xform translation");
+    assert_vec3_dim(sx_trans, DimensionVector::LENGTH, "screw_xform translation dim");
+
+    // screw_jac = joint_jacobian(screw_joint) → linear = [ratio, 0, 0] = [1e-3/(2π), 0, 0], angular = [0,0,0]
+    let screw_jac = get_value(v, "screw_jac");
+    let screw_ratio = 1e-3 / (2.0 * pi);
+    assert_vec3_close(
+        map_vec3(screw_jac, "angular", "screw_jac.angular"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "screw_jac.angular",
+    );
+    assert_vec3_close(
+        map_vec3(screw_jac, "linear", "screw_jac.linear"),
+        [screw_ratio, 0.0, 0.0],
+        1e-15,
+        "screw_jac.linear",
+    );
+
+    // gear_joint = gear(rev, 20, 30) → coupling Map with kind="coupling" (4 keys)
+    let gear_joint = get_value(v, "gear_joint");
+    let gear_map = match gear_joint {
+        Value::Map(m) => m,
+        other => panic!("gear_joint: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        gear_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("coupling".to_string())),
+        "gear_joint: kind should be 'coupling'"
+    );
+    assert_eq!(gear_map.len(), 4, "gear_joint: Map should have exactly 4 keys");
+
+    // gear_xform = transform_at(gear_joint, π/3) → coupled = -1.5 * π/3 = -π/2 about Z
+    //   rotation = (cos(-π/4), 0, 0, sin(-π/4)), zero translation
+    let gear_xform = get_value(v, "gear_xform");
+    let (gx_rot, gx_trans) = match gear_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("gear_xform: expected Transform, got {other:?}"),
+    };
+    let gear_cos = (-pi / 4.0).cos();
+    let gear_sin = (-pi / 4.0).sin();
+    assert_orientation_close(gx_rot, (gear_cos, 0.0, 0.0, gear_sin), 1e-12, "gear_xform rotation");
+    assert_vec3_close(gx_trans, [0.0, 0.0, 0.0], 1e-12, "gear_xform translation");
+
+    // gear_jac = joint_jacobian(gear_joint) → angular = [0, 0, ratio] = [0, 0, -1.5], linear = [0,0,0]
+    let gear_jac = get_value(v, "gear_jac");
+    assert_vec3_close(
+        map_vec3(gear_jac, "angular", "gear_jac.angular"),
+        [0.0, 0.0, -1.5],
+        1e-12,
+        "gear_jac.angular",
+    );
+    assert_vec3_close(
+        map_vec3(gear_jac, "linear", "gear_jac.linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "gear_jac.linear",
+    );
+
+    // rp_joint = rack_and_pinion(prism, 10mm) → coupling Map with kind="coupling" (4 keys)
+    let rp_joint = get_value(v, "rp_joint");
+    let rp_map = match rp_joint {
+        Value::Map(m) => m,
+        other => panic!("rp_joint: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        rp_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("coupling".to_string())),
+        "rp_joint: kind should be 'coupling'"
+    );
+    assert_eq!(rp_map.len(), 4, "rp_joint: Map should have exactly 4 keys");
+
+    // rp_xform = transform_at(rp_joint, 2π) → coupled = 0.01 * 2π = 0.02π m along prismatic-X
+    //   translation [0.02π, 0, 0] LENGTH, identity rotation
+    let rp_xform = get_value(v, "rp_xform");
+    let (rx_rot, rx_trans) = match rp_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("rp_xform: expected Transform, got {other:?}"),
+    };
+    assert_orientation_close(rx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "rp_xform rotation");
+    let rp_expected_x = 0.01 * 2.0 * pi;
+    assert_vec3_close(rx_trans, [rp_expected_x, 0.0, 0.0], 1e-12, "rp_xform translation");
+    assert_vec3_dim(rx_trans, DimensionVector::LENGTH, "rp_xform translation dim");
+
+    // rp_jac = joint_jacobian(rp_joint) → linear = [0.01, 0, 0], angular = [0,0,0]
+    let rp_jac = get_value(v, "rp_jac");
+    assert_vec3_close(
+        map_vec3(rp_jac, "angular", "rp_jac.angular"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "rp_jac.angular",
+    );
+    assert_vec3_close(
+        map_vec3(rp_jac, "linear", "rp_jac.linear"),
+        [0.01, 0.0, 0.0],
+        1e-12,
+        "rp_jac.linear",
     );
 }
