@@ -850,4 +850,50 @@ mod tests {
         )
         .is_undef());
     }
+
+    // ── Errored-mechanism short-circuit ────────────────────────────────────
+
+    fn axis_y_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    /// `snapshot()` on an errored Mechanism returns `Value::Undef` —
+    /// not a partial Snapshot of the pre-error bodies list.  Mirrors
+    /// `body_id_of_on_errored_mechanism_returns_undef` in mechanism.rs:
+    /// a user who chains `snapshot()` onto an errored mechanism must
+    /// reckon with the error before getting a plausible-looking
+    /// Snapshot back.
+    #[test]
+    fn snapshot_on_errored_mechanism_returns_undef() {
+        // Build an errored mechanism via parent-conflict — same recipe as
+        // mechanism.rs::body_id_of_on_errored_mechanism_returns_undef.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_b, j_x, j_b]);
+        // Sanity: the setup actually produced an errored mechanism.
+        match &errored {
+            Value::Map(m) => {
+                assert_eq!(
+                    m.get(&Value::String("error".to_string())),
+                    Some(&Value::String("closed_chain".to_string())),
+                    "setup precondition: errored mechanism has error='closed_chain'"
+                );
+            }
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        }
+
+        // snapshot() on the errored mechanism must yield Undef even
+        // though the pre-error bodies list contains a fully-formed
+        // body record.
+        assert!(
+            eval_builtin("snapshot", &[errored, Value::List(vec![])]).is_undef(),
+            "snapshot() on errored mechanism must yield Undef"
+        );
+    }
 }
