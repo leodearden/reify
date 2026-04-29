@@ -264,3 +264,45 @@ fn filter_only_violated_constraints_are_recorded_in_rejection() {
     );
     let _ = cnid_1; // Documents that constraint 1 exists but must not appear in rejected.
 }
+
+// ─── step-13: input order is preserved (not re-sorted by Phase B) ─────────
+
+/// Phase B must preserve the input order of candidates in both `accepted`
+/// and `rejected`. Phase A supplies candidates in alphabetical order but
+/// Phase B must not re-sort them — it trusts Phase A's guarantee and
+/// iterates in input order.
+///
+/// This test supplies a deliberately unsorted slice ["Charlie", "Alpha", "Bravo"]
+/// (as if a caller bypassed Phase A's sort) and asserts that Phase B
+/// preserves the order verbatim rather than re-sorting alphabetically.
+///
+/// Practical implication: when Phase A feeds Phase B in alphabetical order,
+/// the output vecs are also alphabetical — the invariant threads through
+/// both phases.
+#[test]
+fn filter_preserves_input_order_in_both_accepted_and_rejected() {
+    // No constraints → all candidates are vacuously accepted.
+    let template = TopologyTemplateBuilder::new("T").build();
+    let checker = MockConstraintChecker::new(); // default Satisfied
+    let functions: &[CompiledFunction] = &[];
+
+    let candidates = vec![
+        "Charlie".to_string(),
+        "Alpha".to_string(),
+        "Bravo".to_string(),
+    ];
+    let result = filter_feasible_candidates(&candidates, &template, &checker, functions);
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Feasible {
+            accepted: vec![
+                "Charlie".to_string(),
+                "Alpha".to_string(),
+                "Bravo".to_string(),
+            ],
+            rejected: vec![],
+        },
+        "Phase B must NOT re-sort candidates; input order must be preserved verbatim"
+    );
+}
