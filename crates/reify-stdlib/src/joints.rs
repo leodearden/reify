@@ -2740,6 +2740,34 @@ mod tests {
         );
     }
 
+    // ── joint_jacobian for fixed ─────────────────────────────────────────────
+
+    /// `joint_jacobian(fixed_joint)` returns a zero-twist Map.
+    ///
+    /// Design decision: returns `Map { angular: [0,0,0], linear: [0,0,0] }` to
+    /// preserve the uniform single-column shape across all joint kinds (rather
+    /// than returning a 6×0 empty-column list). Callers can read `.angular`/
+    /// `.linear` keys without dispatching on shape.
+    #[test]
+    fn joint_jacobian_fixed_returns_zero_twist() {
+        let fj = eval_builtin("fixed", &[]);
+        let result = eval_builtin("joint_jacobian", &[fj]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("joint_jacobian(fixed): expected Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("angular".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "angular twist column should be [0, 0, 0]"
+        );
+        assert_eq!(
+            map.get(&Value::String("linear".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "linear twist column should be [0, 0, 0]"
+        );
+    }
+
     // ── transform_at for fixed ───────────────────────────────────────────────
 
     /// `transform_at(fixed_joint, any_value)` returns the identity Transform.
