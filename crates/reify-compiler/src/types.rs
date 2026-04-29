@@ -307,6 +307,95 @@ impl std::fmt::Display for EntityKind {
     }
 }
 
+/// A captured per-element body template for a statement-form `forall` over
+/// a deferred-count collection sub (task 2629; PRD criterion 7 second-half).
+///
+/// Stored on `TopologyTemplate.forall_templates` at compile time when
+/// `resolve_forall_elements` cannot statically resolve the collection sub's
+/// count (count cell missing or non-literal). The runtime
+/// `Engine::edit_param` collection-count phase walks these templates whenever
+/// a count cell becomes known and emits per-element constraints/connections
+/// by rewriting `coll_sub[0]` placeholder cell IDs to `coll_sub[i]`.
+///
+/// **Hash stability:** `TopologyTemplate.content_hash` does NOT include
+/// `forall_templates` — captures here are an internal runtime detail that
+/// must not change the cache key for existing compile-time-resolvable
+/// foralls. See `TopologyTemplateBuilder::build` for the comment.
+#[derive(Debug, Clone)]
+pub struct CompiledForallTemplate {
+    /// The `forall v in ...:` bound variable name (e.g. "v").
+    pub variable: String,
+    /// The owning structure entity name (e.g. "S"). Used as the parent for
+    /// scoped child cell IDs at runtime: `format!("{parent}.{sub}[{i}]")`.
+    pub parent_entity: String,
+    /// The collection sub-component name (e.g. "vents") on which this
+    /// `forall` iterates.
+    pub collection_sub_name: String,
+    /// The count cell ValueCellId (e.g. `S.__count_vents`) whose value
+    /// determines the number of per-element emissions.
+    pub count_cell: ValueCellId,
+    /// Source span anchored at the original `forall` declaration; used for
+    /// per-element diagnostic provenance at runtime.
+    pub span: SourceSpan,
+    /// The per-element body shape — Constraint or Connect.
+    pub body: CompiledForallBody,
+}
+
+/// The body shape of a captured forall template (task 2629).
+///
+/// Currently only `Constraint` is captured. The compile-time deferred-Connect
+/// arm in `forall_elaborate.rs` emits an info diagnostic and returns early
+/// without pushing — so no Connect template ever reaches the runtime in this
+/// task. Likewise the `Instantiation` and `Chain` source-level shapes retain
+/// compile-time silent-skip semantics — see `forall_elaborate.rs` info
+/// diagnostics.
+///
+/// **Future scope — task 2690:** the planned `Connect` variant should carry
+/// the substituted left/right port-name templates (e.g. `"coll[0].out"` and
+/// `"rest.in"`), the `ConnectOp` operator, an optional explicit
+/// `connector_type` name, the substituted-and-compiled connect parameters,
+/// and the port mappings on the connector type. Re-adding it should be done
+/// together with (a) the producer in `forall_elaborate.rs`'s
+/// deferred-Connect arm and (b) the consumer in `engine_edit.rs`'s
+/// re-emission loop, so the variant is never instantiated without the
+/// runtime path that drives it.
+#[derive(Debug, Clone)]
+pub enum CompiledForallBody {
+    /// Per-element constraint body: `forall v in coll: constraint <expr>`.
+    ///
+    /// `body_expr` is the body constraint expression with `v` substituted to
+    /// `coll[0]` and run through `compile_expr` once at compile time. At
+    /// runtime, `map_value_refs` rewrites every cell ID whose entity equals
+    /// `format!("{parent}.{sub}[0]")` to `format!("{parent}.{sub}[{i}]")` and
+    /// the resulting expression becomes the per-element constraint's `expr`.
+    ///
+    /// **Where-clause-bearing bodies are NOT captured here** (task 2629 step-24,
+    /// reviewer-flagged): the runtime engine has no guarded-group plumbing
+    /// for per-element where clauses, so deferred-count forall bodies with
+    /// a `where` clause are treated as future scope alongside
+    /// `Instantiation` / `Chain`. See `forall_elaborate.rs`'s
+    /// `Deferred / ForallConstraintBody::Constraint` arm — it emits an info
+    /// diagnostic and returns early without pushing a template. Re-adding
+    /// where-clause support here MUST also wire guarded-group emission in
+    /// `engine_edit.rs`.
+    Constraint {
+        /// Compiled body expression with placeholder cells (entity == `<parent>.<sub>[0]`).
+        ///
+        /// **Semantic divergence vs. the resolved (non-deferred) path**
+        /// (reviewer flag, esc-2629-25 #2): in the resolved path, a body
+        /// containing an explicit `coll[0]` reference stays as `coll[0]` for
+        /// every iteration. Here, the runtime rewriter in `engine_edit.rs`
+        /// matches every cell whose entity equals `<parent>.<sub>[0]`, so a
+        /// user-written `coll[0]` ref inside the body is *also* rewritten to
+        /// `coll[i]` for each `i`. This is vanishingly rare in practice (the
+        /// bound variable `v` is the only natural way to reference an element
+        /// inside a `forall v in coll` body), but a real divergence — pin a
+        /// test if a use case appears, or migrate to a sentinel placeholder
+        /// entity that never collides with user-written index expressions.
+        body_expr: CompiledExpr,
+    },
+}
+
 /// A topology template — compiled from a StructureDef or OccurrenceDef.
 /// Contains all the value cells, constraints, and realizations.
 #[derive(Debug, Clone)]
@@ -369,6 +458,20 @@ pub struct TopologyTemplate {
     /// `#[cfg(test)]`) so integration tests in `crates/reify-compiler/tests/`
     /// can access it — integration tests compile the library *without* cfg(test).
     pub match_arm_groups: Vec<GuardedDeclGroup>,
+    /// Captured per-element body templates for statement-form `forall` over
+    /// deferred-count collection subs (task 2629; PRD criterion 7 second-half).
+    ///
+    /// Empty for templates with no `forall` statements over deferred-count
+    /// collections. Populated by `forall_elaborate::elaborate_forall_constraint`
+    /// / `elaborate_forall_connect` when the collection's count cannot be
+    /// statically resolved at compile time.
+    ///
+    /// **Hash stability:** intentionally NOT mixed into `content_hash`; the
+    /// `compile_structure_inner` hash and the `TopologyTemplateBuilder.build`
+    /// hash both omit this field so cache keys are stable across the addition
+    /// of this runtime-only metadata. Consumers that need a fingerprint that
+    /// varies with these templates must hash them externally.
+    pub forall_templates: Vec<CompiledForallTemplate>,
 }
 
 impl TopologyTemplate {

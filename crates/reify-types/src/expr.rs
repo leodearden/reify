@@ -409,6 +409,212 @@ impl CompiledExpr {
         }
     }
 
+    /// Rewrite every `ValueRef` cell ID in this expression tree by applying
+    /// `f`, returning a fresh `CompiledExpr` with recomputed `content_hash`
+    /// values on every rebuilt node. (Task 2629 — runtime forall re-elaboration.)
+    ///
+    /// Unlike `remap_entity` and `remap_cell`, which mutate cell IDs in place
+    /// and leave ancestor `content_hash` values stale, `map_value_refs` rebuilds
+    /// each node via the existing `value_ref`/`binop`/etc. constructors so that
+    /// downstream hash-based caching (e.g. the `EvaluationCache`) sees a
+    /// structurally fresh expression. This is the contract the runtime
+    /// per-element forall emission relies on.
+    ///
+    /// Variant coverage MUST match `walk()` arm-for-arm — adding a new
+    /// `CompiledExprKind` variant should fail to compile here so the new
+    /// variant is forced through this transform's hash-rebuilding path.
+    ///
+    /// On `Literal` and other leaf nodes (`OptionNone`, `MetaAccess`,
+    /// `DeterminacyPredicate` w/o ValueRef cell rewrite, `PurposeReflectiveAggregation`),
+    /// the transform is clone-only and reuses the original `content_hash`.
+    pub fn map_value_refs(self, f: &mut impl FnMut(ValueCellId) -> ValueCellId) -> CompiledExpr {
+        let result_type = self.result_type.clone();
+        match self.kind {
+            CompiledExprKind::Literal(_) | CompiledExprKind::OptionNone => {
+                // Leaf: nothing to rewrite, preserve hash.
+                CompiledExpr {
+                    kind: self.kind,
+                    result_type,
+                    content_hash: self.content_hash,
+                }
+            }
+            CompiledExprKind::ValueRef(id) => {
+                let new_id = f(id);
+                CompiledExpr::value_ref(new_id, result_type)
+            }
+            CompiledExprKind::BinOp { op, left, right } => {
+                let new_left = left.map_value_refs(f);
+                let new_right = right.map_value_refs(f);
+                CompiledExpr::binop(op, new_left, new_right, result_type)
+            }
+            CompiledExprKind::UnOp { op, operand } => {
+                let new_operand = operand.map_value_refs(f);
+                CompiledExpr::unop(op, new_operand, result_type)
+            }
+            CompiledExprKind::FunctionCall { function, args } => {
+                let new_args: Vec<CompiledExpr> =
+                    args.into_iter().map(|a| a.map_value_refs(f)).collect();
+                // FunctionCall has no public constructor; rebuild manually with
+                // a fresh content hash. Mirror compile_expr's combine order:
+                // qualified_name + each arg hash.
+                let mut content_hash =
+                    ContentHash::of(&[TAG_FUNCTION_CALL]).combine(ContentHash::of_str(&function.qualified_name));
+                for a in &new_args {
+                    content_hash = content_hash.combine(a.content_hash);
+                }
+                CompiledExpr {
+                    kind: CompiledExprKind::FunctionCall {
+                        function,
+                        args: new_args,
+                    },
+                    result_type,
+                    content_hash,
+                }
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let new_cond = condition.map_value_refs(f);
+                let new_then = then_branch.map_value_refs(f);
+                let new_else = else_branch.map_value_refs(f);
+                let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
+                    .combine(new_cond.content_hash)
+                    .combine(new_then.content_hash)
+                    .combine(new_else.content_hash);
+                CompiledExpr {
+                    kind: CompiledExprKind::Conditional {
+                        condition: Box::new(new_cond),
+                        then_branch: Box::new(new_then),
+                        else_branch: Box::new(new_else),
+                    },
+                    result_type,
+                    content_hash,
+                }
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                let new_disc = discriminant.map_value_refs(f);
+                let new_arms: Vec<CompiledMatchArm> = arms
+                    .into_iter()
+                    .map(|arm| CompiledMatchArm {
+                        patterns: arm.patterns,
+                        body: arm.body.map_value_refs(f),
+                    })
+                    .collect();
+                CompiledExpr::match_expr(new_disc, new_arms, result_type)
+            }
+            CompiledExprKind::UserFunctionCall { function_name, args } => {
+                let new_args: Vec<CompiledExpr> =
+                    args.into_iter().map(|a| a.map_value_refs(f)).collect();
+                CompiledExpr::user_function_call(function_name, new_args, result_type)
+            }
+            CompiledExprKind::Lambda {
+                params,
+                param_ids,
+                body,
+                captures,
+            } => {
+                let new_param_ids: Vec<ValueCellId> =
+                    param_ids.into_iter().map(&mut *f).collect();
+                let new_body = body.map_value_refs(f);
+                let new_captures: Vec<ValueCellId> =
+                    captures.into_iter().map(&mut *f).collect();
+                CompiledExpr::lambda(params, new_param_ids, new_body, new_captures, result_type)
+            }
+            CompiledExprKind::ListLiteral(elements) => {
+                let new_elements: Vec<CompiledExpr> =
+                    elements.into_iter().map(|e| e.map_value_refs(f)).collect();
+                CompiledExpr::list_literal(new_elements, result_type)
+            }
+            CompiledExprKind::ReflectiveCellList(elements) => {
+                let new_elements: Vec<CompiledExpr> =
+                    elements.into_iter().map(|e| e.map_value_refs(f)).collect();
+                CompiledExpr::reflective_cell_list(new_elements, result_type)
+            }
+            CompiledExprKind::SetLiteral(elements) => {
+                let new_elements: Vec<CompiledExpr> =
+                    elements.into_iter().map(|e| e.map_value_refs(f)).collect();
+                CompiledExpr::set_literal(new_elements, result_type)
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                let new_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
+                    .into_iter()
+                    .map(|(k, v)| (k.map_value_refs(f), v.map_value_refs(f)))
+                    .collect();
+                CompiledExpr::map_literal(new_entries, result_type)
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                let new_obj = object.map_value_refs(f);
+                let new_idx = index.map_value_refs(f);
+                CompiledExpr::index_access(new_obj, new_idx, result_type)
+            }
+            CompiledExprKind::MethodCall { object, method, args } => {
+                let new_obj = object.map_value_refs(f);
+                let new_args: Vec<CompiledExpr> =
+                    args.into_iter().map(|a| a.map_value_refs(f)).collect();
+                CompiledExpr::method_call(new_obj, method, new_args, result_type)
+            }
+            CompiledExprKind::Quantifier {
+                kind,
+                variable,
+                variable_id,
+                collection,
+                predicate,
+            } => {
+                let new_var_id = f(variable_id);
+                let new_coll = collection.map_value_refs(f);
+                let new_pred = predicate.map_value_refs(f);
+                CompiledExpr::quantifier(kind, variable, new_var_id, new_coll, new_pred)
+            }
+            CompiledExprKind::OptionSome(inner) => {
+                let new_inner = inner.map_value_refs(f);
+                CompiledExpr::option_some(new_inner, result_type)
+            }
+            CompiledExprKind::MetaAccess { entity, key } => {
+                // Leaf — entity/key strings are unchanged by ValueRef rewrites.
+                CompiledExpr::meta_access(entity, key)
+            }
+            CompiledExprKind::DeterminacyPredicate { kind, cell } => {
+                let new_cell = f(cell);
+                CompiledExpr::determinacy_predicate(kind, new_cell)
+            }
+            CompiledExprKind::RangeConstructor {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                let new_lower = lower.map(|b| (*b).map_value_refs(f));
+                let new_upper = upper.map(|b| (*b).map_value_refs(f));
+                CompiledExpr::range_constructor(
+                    new_lower,
+                    new_upper,
+                    lower_inclusive,
+                    upper_inclusive,
+                    result_type,
+                )
+            }
+            CompiledExprKind::AdHocSelector {
+                base,
+                selector_kind,
+                args,
+            } => {
+                let new_base = base.map_value_refs(f);
+                let new_args: Vec<CompiledExpr> =
+                    args.into_iter().map(|a| a.map_value_refs(f)).collect();
+                CompiledExpr::ad_hoc_selector(new_base, selector_kind, new_args)
+            }
+            CompiledExprKind::PurposeReflectiveAggregation {
+                param_name,
+                query_kind,
+            } => {
+                // Leaf — placeholder carries no cells until activation expands it.
+                CompiledExpr::purpose_reflective_aggregation(param_name, query_kind, result_type)
+            }
+        }
+    }
+
     /// Create a unary operation expression.
     pub fn unop(op: UnOp, operand: CompiledExpr, result_type: Type) -> Self {
         let content_hash = ContentHash::of(&[TAG_UN_OP, op as u8]).combine(operand.content_hash);
@@ -1972,6 +2178,119 @@ mod tests {
     }
 
     // ── end task-2552 tests ───────────────────────────────────────────────────
+
+    // ── task-2629 step-1 tests ────────────────────────────────────────────
+
+    /// task-2629 step-1: `map_value_refs` rewrites every `ValueRef` cell ID
+    /// matching the predicate, recomputing `content_hash` on every node it
+    /// rewrites — distinct from `remap_cell` (which mutates in place and
+    /// leaves stale ancestor hashes).
+    ///
+    /// Builds `BinOp(Lt, ValueRef("S.vents[0]","mass"), Literal(50kg))`,
+    /// rewrites `S.vents[0]` → `S.vents[2]`, and asserts the resulting
+    /// expr is `BinOp(Lt, ValueRef("S.vents[2]","mass"), Literal(50kg))`
+    /// with a fresh content_hash that differs from the input.
+    ///
+    /// RED before step-2: `map_value_refs` does not yet exist.
+    #[test]
+    fn map_value_refs_rewrites_nested_value_ref_and_recomputes_hash() {
+        let from_id = ValueCellId::new("S.vents[0]", "mass");
+        let to_id = ValueCellId::new("S.vents[2]", "mass");
+        let mass_ty = Type::Scalar {
+            dimension: crate::DimensionVector::MASS,
+        };
+
+        let lhs = CompiledExpr::value_ref(from_id.clone(), mass_ty.clone());
+        let rhs = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 50.0,
+                dimension: crate::DimensionVector::MASS,
+            },
+            mass_ty.clone(),
+        );
+        let original = CompiledExpr::binop(BinOp::Lt, lhs, rhs, Type::Bool);
+        let original_hash = original.content_hash;
+
+        let rewritten = original.map_value_refs(&mut |id| {
+            if id.entity == "S.vents[0]" {
+                ValueCellId::new("S.vents[2]", id.member)
+            } else {
+                id
+            }
+        });
+
+        // Top-level shape preserved.
+        assert!(
+            matches!(&rewritten.kind, CompiledExprKind::BinOp { op: BinOp::Lt, .. }),
+            "rewritten expr must remain BinOp(Lt, ...)"
+        );
+        match &rewritten.kind {
+            CompiledExprKind::BinOp { left, right, .. } => {
+                match &left.kind {
+                    CompiledExprKind::ValueRef(id) => {
+                        assert_eq!(*id, to_id, "left ValueRef must be rewritten to S.vents[2].mass");
+                    }
+                    other => panic!("expected left ValueRef, got {other:?}"),
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(_) => {}
+                    other => panic!("expected right Literal, got {other:?}"),
+                }
+            }
+            other => panic!("expected BinOp, got {other:?}"),
+        }
+        assert_eq!(rewritten.result_type, Type::Bool);
+
+        // The content_hash was recomputed (differs from the input).
+        assert_ne!(
+            rewritten.content_hash, original_hash,
+            "content_hash must differ after rewrite"
+        );
+
+        // Reproducibility: two equivalent rewrites produce equal hashes.
+        let lhs2 = CompiledExpr::value_ref(from_id.clone(), mass_ty.clone());
+        let rhs2 = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 50.0,
+                dimension: crate::DimensionVector::MASS,
+            },
+            mass_ty,
+        );
+        let original2 = CompiledExpr::binop(BinOp::Lt, lhs2, rhs2, Type::Bool);
+        let rewritten2 = original2.map_value_refs(&mut |id| {
+            if id.entity == "S.vents[0]" {
+                ValueCellId::new("S.vents[2]", id.member)
+            } else {
+                id
+            }
+        });
+        assert_eq!(
+            rewritten.content_hash, rewritten2.content_hash,
+            "two equivalent rewrites must yield identical hashes"
+        );
+    }
+
+    /// task-2629 step-1: `map_value_refs` is a no-op (clone-only) on Literal
+    /// nodes — it simply rebuilds the literal node with its existing hash.
+    ///
+    /// RED before step-2.
+    #[test]
+    fn map_value_refs_noop_on_literal() {
+        let original = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let original_hash = original.content_hash;
+        // Identity transform on cells; should still yield the same hash.
+        let rewritten = original.map_value_refs(&mut |id| id);
+        match &rewritten.kind {
+            CompiledExprKind::Literal(Value::Int(n)) => assert_eq!(*n, 42_i64),
+            other => panic!("expected Literal(Int(42)), got {other:?}"),
+        }
+        assert_eq!(
+            rewritten.content_hash, original_hash,
+            "identity rewrite on Literal must preserve content_hash"
+        );
+    }
+
+    // ── end task-2629 step-1 tests ───────────────────────────────────────
 
     /// step-3 (task-2289): structurally-equal placeholders share content_hash;
     /// structurally-different placeholders (different `query_kind`) differ.

@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use reify_compiler::{
-    CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, EntityKind, RealizationDecl,
-    SolverHint, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    CompiledConstraint, CompiledForallTemplate, CompiledGeometryOp, CompiledGuardedGroup,
+    EntityKind, RealizationDecl, SolverHint, SubComponentDecl, TopologyTemplate, ValueCellDecl,
+    ValueCellKind,
 };
 use reify_syntax;
 use reify_types::{
@@ -28,6 +29,7 @@ pub struct TopologyTemplateBuilder {
     is_recursive: bool,
     annotations: Vec<reify_types::Annotation>,
     pragmas: Vec<reify_syntax::Pragma>,
+    forall_templates: Vec<CompiledForallTemplate>,
 }
 
 impl TopologyTemplateBuilder {
@@ -49,7 +51,18 @@ impl TopologyTemplateBuilder {
             is_recursive: false,
             annotations: Vec::new(),
             pragmas: Vec::new(),
+            forall_templates: Vec::new(),
         }
+    }
+
+    /// Add a captured `CompiledForallTemplate` to the builder (task 2629).
+    ///
+    /// Used by hand-built fixtures exercising the runtime forall re-elaboration
+    /// path. Production builds populate `forall_templates` via
+    /// `forall_elaborate.rs` automatically.
+    pub fn forall_template(mut self, ft: CompiledForallTemplate) -> Self {
+        self.forall_templates.push(ft);
+        self
     }
 
     /// Push a single annotation onto this builder.
@@ -412,6 +425,10 @@ impl TopologyTemplateBuilder {
             annotations: self.annotations,
             pragmas: self.pragmas,
             match_arm_groups: vec![],
+            // task 2629: builder-side forall_templates aren't mixed into
+            // content_hash above — mirroring the production-side intentional
+            // omission so cache keys are stable across the runtime-only field.
+            forall_templates: self.forall_templates,
         }
     }
 }

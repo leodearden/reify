@@ -21,10 +21,14 @@
 //!     `IndexAccess { object: Ident(name), index: NumberLiteral(i) }`.
 //!
 //! Anything else (non-iterable, undef count, multi-hop indirection) emits
-//! zero decls. Re-elaboration on count change is out of scope for this task
-//! and is documented as future SchemaNode-style work.
+//! zero decls. Re-elaboration on count change for deferred-count collection
+//! subs (task 2629; PRD criterion 7 second-half) is performed by
+//! `Engine::edit_param`'s collection count phase
+//! (`crates/reify-eval/src/engine_edit.rs` ~1392-1528), driven by the
+//! `forall_templates: Vec<CompiledForallTemplate>` captured here on
+//! `TopologyTemplate.forall_templates`.
 //!
-//! ## PRD criteria 6 and 7 (first-half) contract
+//! ## PRD criteria 6 and 7 contract
 //!
 //! **Criterion 6 — empty collection:** any collection that resolves to zero
 //! elements (a `ListLiteral([])` or a count-cell with value `0`) produces
@@ -34,14 +38,40 @@
 //! `elaborate_forall_constraint` and `elaborate_forall_connect`; code that
 //! must only run per-element MUST stay inside those loops.
 //!
-//! **Criterion 7 first-half — undef count:** a collection sub whose count
-//! cell is missing or non-literal returns `None` from
-//! `resolve_forall_elements`. All callers early-return on `None`, emitting
-//! zero decls and no diagnostics. Re-elaboration when the count later
-//! becomes known is future SchemaNode work (see TODO comments in tests).
+//! **Criterion 7 first-half — undef count, compile time:** a collection sub
+//! whose count cell is missing or non-literal returns
+//! `ResolveForallOutcome::Deferred` from `resolve_forall_elements`. The
+//! callers emit zero decls and no diagnostics, and (task 2629) capture a
+//! `CompiledForallTemplate` describing the per-element body so the runtime
+//! can re-elaborate when the count later becomes known.
+//!
+//! **Criterion 7 second-half — runtime re-elaboration:** wired in
+//! `engine_edit.rs` per the link above. Only the `Constraint` body shape
+//! is supported there. `Connect` (tracked by task 2690), `Instantiation`,
+//! and `Chain` body shapes retain compile-time silent-skip semantics and
+//! emit an info diagnostic noting the follow-up task.
 
 use super::*;
 use std::collections::HashMap;
+
+/// Outcome of resolving the collection expression of a statement-form `forall`.
+///
+/// Distinguishes the four shapes that downstream callers handle differently
+/// (task 2629):
+///   * `Resolved(elements)` — count is statically known; iterate the elements.
+///   * `Deferred { count_cell, sub_name }` — count is not yet known (PRD
+///     criterion 7 second-half); capture a runtime template and emit zero
+///     compile-time decls.
+///   * `Skip` — non-iterable / type error (diagnostic already emitted, or
+///     anti-cascade): emit zero decls.
+pub(crate) enum ResolveForallOutcome {
+    Resolved(Vec<reify_syntax::Expr>),
+    Deferred {
+        count_cell: ValueCellId,
+        sub_name: String,
+    },
+    Skip,
+}
 
 /// Resolve the collection expression of a `forall` decl to a Vec of
 /// per-element replacement ASTs.
@@ -79,59 +109,65 @@ fn resolve_forall_elements(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Vec<reify_syntax::Expr>> {
+) -> ResolveForallOutcome {
     use reify_syntax::{Expr, ExprKind};
 
     match &collection.kind {
-        ExprKind::ListLiteral(items) => Some(items.clone()),
+        ExprKind::ListLiteral(items) => ResolveForallOutcome::Resolved(items.clone()),
         ExprKind::Ident(name) => {
             // Try to resolve as a collection sub first.
             if let Some(sub) = sub_components
                 .iter()
                 .find(|s| s.name == *name && s.is_collection)
             {
-                // PRD criterion 7 first-half: if count is not yet determined
-                // (cell missing, non-literal default, or multi-hop indirection),
-                // the `?` returns `None` — defer silently, emit zero decls, no
-                // diagnostic. Re-elaboration on count change is future SchemaNode work.
-                let count = sub
+                let count_opt = sub
                     .count_cell
                     .as_ref()
-                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id))?;
-                let coll_span = collection.span;
-                // PRD criterion 6 — count-cell-zero path: when `count == 0`,
-                // `(0..0).map(...).collect()` produces `Some(empty Vec)`.
-                // The caller then iterates zero times and emits no decls — the
-                // same no-op semantics as the `ListLiteral([])` path above.
-                // Both paths share this callsite's iteration, so the contract
-                // holds for both criterion-6 shapes in a single place.
-                return Some(
-                    (0..count)
-                        .map(|i| Expr {
-                            kind: ExprKind::IndexAccess {
-                                object: Box::new(Expr {
-                                    kind: ExprKind::Ident(name.clone()),
-                                    span: coll_span,
-                                }),
-                                index: Box::new(Expr {
-                                    kind: ExprKind::NumberLiteral(i as f64),
-                                    span: coll_span,
-                                }),
-                            },
-                            span: coll_span,
-                        })
-                        .collect(),
-                );
+                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
+                if let Some(count) = count_opt {
+                    let coll_span = collection.span;
+                    // PRD criterion 6 — count-cell-zero path: when `count == 0`,
+                    // `(0..0).map(...).collect()` produces an empty Vec — the
+                    // caller iterates zero times and emits no decls.
+                    return ResolveForallOutcome::Resolved(
+                        (0..count)
+                            .map(|i| Expr {
+                                kind: ExprKind::IndexAccess {
+                                    object: Box::new(Expr {
+                                        kind: ExprKind::Ident(name.clone()),
+                                        span: coll_span,
+                                    }),
+                                    index: Box::new(Expr {
+                                        kind: ExprKind::NumberLiteral(i as f64),
+                                        span: coll_span,
+                                    }),
+                                },
+                                span: coll_span,
+                            })
+                            .collect(),
+                    );
+                }
+                // PRD criterion 7 second-half: count cell exists but is not
+                // statically resolvable. Defer to runtime; capture a template
+                // and emit zero compile-time decls.
+                if let Some(count_cell) = sub.count_cell.as_ref() {
+                    return ResolveForallOutcome::Deferred {
+                        count_cell: count_cell.clone(),
+                        sub_name: name.clone(),
+                    };
+                }
+                // Collection sub without a count cell at all — silent skip.
+                return ResolveForallOutcome::Skip;
             }
             // Ident doesn't refer to a collection sub — fall through to the
             // type-check path below so a List<T>-typed param defers silently
             // and a non-collection ident emits a non-iterable diagnostic.
             diagnose_non_iterable_or_skip(collection, scope, enum_defs, functions, diagnostics);
-            None
+            ResolveForallOutcome::Skip
         }
         _ => {
             diagnose_non_iterable_or_skip(collection, scope, enum_defs, functions, diagnostics);
-            None
+            ResolveForallOutcome::Skip
         }
     }
 }
@@ -234,15 +270,15 @@ pub(crate) fn elaborate_forall_constraint(
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut std::collections::HashSet<ValueCellId>,
     guard_index: &mut u32,
+    forall_templates_out: &mut Vec<CompiledForallTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_syntax::ForallConstraintBody;
 
-    // Resolve the collection expression to a Vec of per-element replacements.
-    // The shared helper handles all four cases: ListLiteral, Ident-as-
-    // collection-sub, deferred (silently skip), and non-iterable (emit a
-    // diagnostic). See `resolve_forall_elements` for full semantics.
-    let Some(elements) = resolve_forall_elements(
+    // Resolve the collection expression. The shared helper now distinguishes
+    // four shapes: Resolved (iterate elements), Deferred (capture runtime
+    // template), and Skip (non-iterable / silent skip).
+    let outcome = resolve_forall_elements(
         &decl.collection,
         sub_components,
         value_cells,
@@ -250,8 +286,89 @@ pub(crate) fn elaborate_forall_constraint(
         enum_defs,
         functions,
         diagnostics,
-    ) else {
-        return;
+    );
+    let elements = match outcome {
+        ResolveForallOutcome::Resolved(elements) => elements,
+        ResolveForallOutcome::Deferred {
+            count_cell,
+            sub_name,
+        } => {
+            // task 2629: capture a runtime template for `Constraint` body
+            // shapes; `Instantiation` body retains compile-time silent skip
+            // and emits an info diagnostic.
+            match &decl.body {
+                ForallConstraintBody::Constraint(body_constraint) => {
+                    // task 2629 step-24 (reviewer-flagged): a deferred-count
+                    // forall whose body has a `where` clause cannot be safely
+                    // captured for runtime re-emission — the runtime engine
+                    // has no guarded-group plumbing for per-element where
+                    // clauses, so capturing here would silently drop the
+                    // guard at re-emission time. Treat where-clause-bearing
+                    // bodies as "future scope" alongside Instantiation/Chain:
+                    // emit an info diagnostic and skip capture.
+                    if body_constraint.where_clause.is_some() {
+                        diagnostics.push(
+                            Diagnostic::info(
+                                "forall constraint with where-clause over deferred-count \
+                                 collections will not re-elaborate at runtime \
+                                 (task 2629 future scope)",
+                            )
+                            .with_label(DiagnosticLabel::new(
+                                decl.span,
+                                "deferred-count forall with where-clause",
+                            )),
+                        );
+                        return;
+                    }
+                    // Substitute v -> sub_name[0] inside the body, then
+                    // compile to CompiledExpr once at compile time. The
+                    // runtime engine rewrites cell IDs [0] -> [i] per
+                    // emission via map_value_refs.
+                    let coll_span = decl.collection.span;
+                    let placeholder = reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::IndexAccess {
+                            object: Box::new(reify_syntax::Expr {
+                                kind: reify_syntax::ExprKind::Ident(sub_name.clone()),
+                                span: coll_span,
+                            }),
+                            index: Box::new(reify_syntax::Expr {
+                                kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                                span: coll_span,
+                            }),
+                        },
+                        span: coll_span,
+                    };
+                    let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+                    bindings.insert(decl.variable.clone(), placeholder);
+
+                    let substituted_body =
+                        substitute_expr(&body_constraint.expr, &bindings);
+                    let body_expr = compile_expr(
+                        &substituted_body,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                    );
+                    forall_templates_out.push(CompiledForallTemplate {
+                        variable: decl.variable.clone(),
+                        parent_entity: entity_name.to_string(),
+                        collection_sub_name: sub_name,
+                        count_cell,
+                        span: decl.span,
+                        body: CompiledForallBody::Constraint { body_expr },
+                    });
+                }
+                ForallConstraintBody::Instantiation(_) => {
+                    diagnostics.push(Diagnostic::info(
+                        "forall constraint-instantiation over deferred-count collections \
+                         will not re-elaborate at runtime (task 2629 future scope)",
+                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall")));
+                }
+            }
+            return;
+        }
+        ResolveForallOutcome::Skip => return,
     };
 
     for (i, element) in elements.iter().enumerate() {
@@ -399,25 +516,15 @@ pub(crate) fn elaborate_forall_connect(
     connections: &mut Vec<CompiledConnection>,
     sub_components: &mut Vec<SubComponentDecl>,
     connector_index: &mut u32,
+    _forall_templates_out: &mut Vec<CompiledForallTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_syntax::ForallConnectBody;
 
     // Resolve the collection expression via the shared helper. See
-    // `resolve_forall_elements` for the four-case semantics: ListLiteral,
-    // Ident-as-collection-sub, deferred (silently skip), and non-iterable
-    // (emit diagnostic).
-    //
-    // `None` means one of two things:
-    //   * PRD criterion 7 first-half: collection count not yet determined —
-    //     emit zero connections (no diagnostic). Re-elaboration on count
-    //     change is future SchemaNode work.
-    //   * Non-iterable collection expression: a diagnostic was already emitted
-    //     by `resolve_forall_elements`; skip connection emission to avoid
-    //     cascading errors.
-    // Both cases return early here; the per-element loop below only runs when
-    // a concrete, statically-known set of elements was resolved.
-    let Some(elements) = resolve_forall_elements(
+    // `resolve_forall_elements` for the three-case semantics: Resolved,
+    // Deferred (task 2629 — capture runtime template), and Skip.
+    let outcome = resolve_forall_elements(
         &decl.collection,
         sub_components,
         value_cells,
@@ -425,8 +532,33 @@ pub(crate) fn elaborate_forall_connect(
         enum_defs,
         functions,
         diagnostics,
-    ) else {
-        return; // PRD criterion 7 first-half: defer silently, or non-iterable (diagnostic already emitted).
+    );
+    let elements = match outcome {
+        ResolveForallOutcome::Resolved(elements) => elements,
+        ResolveForallOutcome::Deferred { .. } => {
+            // task 2629: runtime re-elaboration of forall-connect over
+            // deferred-count collections is out of scope here. Both `Connect`
+            // and `Chain` body shapes retain compile-time silent-skip
+            // semantics and emit an info diagnostic naming the follow-up.
+            // The `Connect` arm is tracked by task 2690; see the resolution
+            // of esc-2629-15 / esc-2629-22 for the scope decision.
+            match &decl.body {
+                ForallConnectBody::Connect(_) => {
+                    diagnostics.push(Diagnostic::info(
+                        "forall connect over deferred-count collections will not re-elaborate \
+                         at runtime (task 2690 future scope)",
+                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall connect")));
+                }
+                ForallConnectBody::Chain(_) => {
+                    diagnostics.push(Diagnostic::info(
+                        "forall chain over deferred-count collections will not re-elaborate \
+                         at runtime (task 2629 future scope)",
+                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall chain")));
+                }
+            }
+            return;
+        }
+        ResolveForallOutcome::Skip => return,
     };
 
     // Build the read-only `ConnectContext` once. The accumulator is rebuilt

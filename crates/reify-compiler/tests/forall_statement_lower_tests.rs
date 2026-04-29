@@ -357,24 +357,35 @@ structure S {
     );
 }
 
-/// `forall v in vents: ...` over a collection sub *without* a count
-/// constraint should emit zero CompiledConstraints and zero errors. Pins
-/// PRD criterion 7's "no decls when count is undef" half — at compile
-/// time we cannot statically resolve the count, so we defer to a future
-/// SchemaNode-style abstraction (out of scope for task 2364).
+/// `forall v in vents: ...` over a collection sub whose count cell exists
+/// but is not statically resolvable (count constraint references an
+/// undefaulted Int param) emits zero per-element CompiledConstraints AND
+/// populates a `CompiledForallTemplate` capturing the deferred body so the
+/// runtime re-elaboration phase can emit per-element constraints once the
+/// count becomes known. Pins PRD criterion 7's compile-time half.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, this
-/// test should be updated to assert that the constraints are emitted
-/// once the count becomes known at graph-build time. For now we only
-/// pin the silent-skip half of the criterion.
+/// The runtime re-elaboration *constraint-arm* is implemented in task 2629;
+/// see `crates/reify-eval/tests/forall_runtime_re_elaboration.rs::
+/// edit_param_count_undef_to_known_emits_per_element_forall_constraints`
+/// for the post-edit_param coverage. The runtime *connect-arm* is tracked
+/// in follow-up task **2690** (depends on 2629; needs
+/// `EvaluationGraph::connections` plumbing + connect-body re-emission).
 #[test]
 fn forall_constraint_over_undef_count_collection_sub_emits_no_decls_no_error() {
+    // Fixture pins the deferred (count-cell-exists-but-undef) path: `n`
+    // has no default, `constraint vents.count == n` synthesises the
+    // `__count_vents` count cell, which is initially Undef so the
+    // `Deferred` branch in `resolve_forall_elements` is taken (not the
+    // `Skip` branch — which fires only when the collection sub has no
+    // count cell at all).
     let source = r#"
 structure Vent {
     param mass : Scalar = 10kg
 }
 structure S {
     sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
     forall v in vents: constraint v.mass < 50kg
 }
 "#;
@@ -406,6 +417,496 @@ structure S {
         forall_constraints_count, 0,
         "expected zero forall@* constraints when count is undef, got {}",
         forall_constraints_count
+    );
+
+    // task 2629 step-18: pin that the deferred forall body IS captured into
+    // `template.forall_templates` even though zero `forall@*` CompiledConstraints
+    // are emitted at compile time. The runtime re-elaboration block in
+    // `engine_edit.rs` reads this Vec to drive per-element emissions on
+    // count-becomes-known transitions.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly one CompiledForallTemplate captured for the deferred forall, got {}",
+        template.forall_templates.len()
+    );
+}
+
+/// task-2629 step-3: when `forall v in <coll_sub>` is compiled over a
+/// collection sub whose count is undef, the compiler produces zero per-element
+/// constraints (preserves PRD criterion 7 first-half) AND populates a
+/// `CompiledForallTemplate` capturing the per-element body so the runtime
+/// re-elaboration phase (engine_edit) can emit per-element constraints once
+/// the count becomes known.
+///
+/// Pins:
+/// (a) zero `forall@*`-labelled constraints in `template.constraints`;
+/// (b) `template.forall_templates.len() == 1`;
+/// (c) the entry's metadata: `variable == "v"`, `parent_entity == "S"`,
+///     `collection_sub_name == "vents"`, `count_cell == ValueCellId::new("S","__count_vents")`;
+/// (d) the entry's `body` is `CompiledForallBody::Constraint` whose
+///     `body_expr` references `S.vents[0].mass` (the canonical placeholder
+///     element, rewritten at runtime to `S.vents[i].mass` per emission).
+///
+/// The fixture uses `param n: Int` with no default + `constraint vents.count == n`
+/// so the synthesized `__count_vents` cell exists but evaluates to undef
+/// (matching the runtime entry-point in `engine_edit::edit_param`'s
+/// collection-count phase).
+///
+/// RED before step-4 (types do not yet exist) and step-5 (capture path
+/// not yet wired through `forall_elaborate.rs`).
+#[test]
+fn compile_time_forall_template_populated_for_undef_count_constraint() {
+    use reify_compiler::CompiledForallBody;
+    use reify_types::ValueCellId;
+
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for undef-count forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (a) Zero `forall@*` constraints in this template — the compile-time
+    //     silent-skip half of PRD criterion 7 is preserved.
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef, got {}",
+        forall_constraints_count
+    );
+
+    // (b) Exactly one captured forall template.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 forall template, got {}",
+        template.forall_templates.len()
+    );
+
+    let ft = &template.forall_templates[0];
+
+    // (c) Metadata.
+    assert_eq!(ft.variable, "v");
+    assert_eq!(ft.parent_entity, "S");
+    assert_eq!(ft.collection_sub_name, "vents");
+    assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
+
+    // (d) Body shape: Constraint with body_expr referencing S.vents[0].mass.
+    // The match is exhaustive on the single live variant; if task 2690 (or any
+    // future task) re-adds a sibling variant to `CompiledForallBody`, this
+    // match will fail to compile and the test will be forced to spell out the
+    // expected discriminant explicitly.
+    let CompiledForallBody::Constraint { body_expr } = &ft.body;
+    // The body should reference S.vents[0].mass somewhere in its expression
+    // tree. Walk the expr and confirm.
+    let mut found_vent_mass = false;
+    body_expr.walk(&mut |node| {
+        if let CompiledExprKind::ValueRef(id) = &node.kind
+            && id.entity == "S.vents[0]"
+            && id.member == "mass"
+        {
+            found_vent_mass = true;
+        }
+    });
+    assert!(
+        found_vent_mass,
+        "body_expr must reference S.vents[0].mass; got {:?}",
+        body_expr.kind
+    );
+}
+
+/// task 2629 step-23: `forall v in <coll_sub>: constraint <body> where <cond>`
+/// over a deferred-count collection sub must NOT capture a runtime template
+/// (the runtime engine has no guarded-group plumbing for per-element where
+/// clauses), and must emit a `Diagnostic::info` flagging the limitation so
+/// it is discoverable.
+///
+/// The reviewer's preferred Option (a) treatment: deferred + where-clause is
+/// in the same "future scope" bucket as Instantiation and Chain.
+///
+/// Pins:
+/// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
+/// (b) Zero `forall@*`-labelled CompiledConstraints in `template.constraints`
+///     (preserves the silent-skip-on-deferred contract).
+/// (c) `template.forall_templates.is_empty()` — the where-clause case must
+///     NOT push a `CompiledForallTemplate`, otherwise the runtime would
+///     silently emit guard-less per-element constraints (the reviewer's
+///     exact concern).
+/// (d) Exactly one `Diagnostic::info` whose message contains both
+///     "where-clause" and "deferred-count" — pins a stable substring so
+///     future refactors can't silently regress to capture.
+///
+/// The fixture matches the existing
+/// `forall_constraint_over_undef_count_collection_sub_emits_no_decls_no_error`
+/// shape, but adds a `where v.hot` body where-clause to drive the new path.
+///
+/// RED before step-24: today the deferred-Constraint arm captures a template
+/// with `where_expr: Some(...)` and the runtime would silently drop the
+/// guard at re-emission time.
+#[test]
+fn forall_constraint_with_where_clause_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
+ {
+    use reify_types::Severity;
+
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+    param hot : Bool = false
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: constraint v.mass < 50kg where v.hot
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors — info diagnostics must not surface as errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall with where clause, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero `forall@*`-labelled CompiledConstraints — silent-skip preserved.
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef and body has \
+         a where-clause, got {}",
+        forall_constraints_count
+    );
+
+    // (c) NO captured template — the where-clause case must not push.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         with where-clause (would drop guard at runtime), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic flagging the limitation, with a stable
+    //     substring pin.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("where-clause") && d.message.contains("deferred-count"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'where-clause' and \
+         'deferred-count' for the deferred-count forall with where clause, \
+         got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// task 2629 amendment (reviewer suggestion 1): the deferred-count
+/// info-diagnostic contract for the `Instantiation` body shape — sibling
+/// to the where-clause case — must also be pinned. Without this test, a
+/// future refactor could accidentally start pushing a
+/// `CompiledForallTemplate` for a `forall v in <coll_sub>: constraint
+/// SomeDef(...)` over a deferred-count collection, and the runtime would
+/// silently emit per-element constraints with the wrong `inst_idx`
+/// allocation (or no inst_idx at all).
+///
+/// Pins:
+/// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
+/// (b) Zero `forall@*`-labelled CompiledConstraints in `template.constraints`.
+/// (c) `template.forall_templates.is_empty()` — the Instantiation body
+///     must NOT push a runtime template (task 2690 / future scope).
+/// (d) Exactly one `Diagnostic::info` mentioning the limitation, with a
+///     stable substring tying it to the future-scope task.
+#[test]
+fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
+ {
+    use reify_types::Severity;
+
+    let source = r#"
+constraint def MinThreshold {
+    param value : Scalar
+    value > 0
+}
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: constraint MinThreshold(value: v.mass)
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall inst body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero `forall@*`-labelled CompiledConstraints — no per-element
+    //     emissions at compile time for a deferred-count Instantiation body.
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@") || s.contains(":forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef and body is \
+         a constraint-inst, got {}",
+        forall_constraints_count
+    );
+
+    // (c) NO runtime template captured.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         with constraint-inst body (Instantiation is task 2690 future scope), \
+         got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic with stable substring "future scope".
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("constraint-instantiation"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+         'constraint-instantiation' for the deferred-count forall with inst \
+         body, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// task 2629 amendment (reviewer suggestion 1): the deferred-count
+/// info-diagnostic contract for the `forall v in <coll_sub>: connect ...`
+/// body shape (Connect) must be pinned. The Connect arm is tracked by
+/// follow-up task 2690 — no template captured at compile time, info
+/// diagnostic emitted so the limitation is discoverable.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero CompiledConnections (deferred-count → silent-skip).
+/// (c) `template.forall_templates.is_empty()` — Connect body never
+///     captures a runtime template in this task.
+/// (d) Exactly one `Diagnostic::info` mentioning task 2690 future scope.
+#[test]
+fn forall_connect_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
+    use reify_types::Severity;
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections — silent-skip preserved at compile time.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) NO runtime template captured.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         connect (task 2690 future scope), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic, with the 2690 substring tying the
+    //     limitation to the follow-up task.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("forall connect"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+         'forall connect' for the deferred-count forall connect, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// task 2629 amendment (reviewer suggestion 1): the deferred-count
+/// info-diagnostic contract for the `forall v in <coll_sub>: chain ...`
+/// body shape (Chain) must be pinned. The Chain arm retains compile-time
+/// silent-skip semantics; an info diagnostic flags the limitation.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero CompiledConnections (deferred-count → silent-skip).
+/// (c) `template.forall_templates.is_empty()` — Chain body never
+///     captures a runtime template.
+/// (d) Exactly one `Diagnostic::info` mentioning the future-scope task.
+#[test]
+fn forall_chain_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
+    use reify_types::Severity;
+
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 1mm }
+    port c : in T { param d : Length = 1mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: chain v.a -> v.b -> v.c
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall chain body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections — silent-skip preserved at compile time.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) NO runtime template captured.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         chain (future scope), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic mentioning future scope and chain.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("forall chain"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+         'forall chain' for the deferred-count forall chain, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
     );
 }
 

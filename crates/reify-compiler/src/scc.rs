@@ -320,6 +320,7 @@ mod tests {
             annotations: vec![],
             pragmas: vec![],
             match_arm_groups: vec![],
+            forall_templates: vec![],
         }
     }
 

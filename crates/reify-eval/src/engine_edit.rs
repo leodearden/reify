@@ -28,7 +28,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{CompiledFunction, CompiledModule};
+use reify_compiler::{CompiledForallBody, CompiledFunction, CompiledModule};
 use reify_types::{
     AutoParam, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic, PersistentMap,
     RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
@@ -38,7 +38,7 @@ use reify_types::{
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
-use crate::graph::{EvaluationGraph, GuardedGroupInfo};
+use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -1392,8 +1392,45 @@ impl Engine {
         // ── Collection count re-elaboration phase ─────────────────────
         // If any structure_controlling cell is a collection count cell and
         // its value changed, add/remove instances to match the new count.
+        //
+        // Task 2629 hooks forall statement-form runtime re-elaboration into
+        // this same loop body (see the inner `task 2629: forall runtime
+        // re-elaboration` block below). The compile-time deferral contract
+        // for forall over deferred-count collections is anchored in
+        // `reify-compiler/src/forall_elaborate.rs`'s module docstring; that
+        // contract names this engine_edit hook point explicitly.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
+            // Hoisted out of the per-col_sub loop: cloning every iteration
+            // would deep-copy each template's `CompiledExpr` body once per
+            // collection sub even when most subs are unaffected (reviewer
+            // perf flag, esc-2629-25 #1).
+            let forall_templates = new_snapshot.graph.forall_templates.clone();
+
+            // Strict ledger/templates alignment. Templates today come from a
+            // stable CompiledModule (resize is only ever a grow), but if a
+            // future swap shortens `graph.forall_templates`, stale ledger
+            // entries beyond the new template count would otherwise persist
+            // forever, holding `ConstraintNodeId`s that have been removed from
+            // `graph.constraints` (or worse, IDs reused by unrelated
+            // constraints). Drain the tail back into the graph + cache before
+            // truncating the ledger so realignment is observable as a node
+            // removal rather than a silent leak (reviewer robustness flag,
+            // esc-2629-25 #5).
+            if new_snapshot.forall_emitted.len() > forall_templates.len() {
+                let drained: Vec<Vec<ConstraintNodeId>> = new_snapshot
+                    .forall_emitted
+                    .drain(forall_templates.len()..)
+                    .collect();
+                for stale_id in drained.iter().flatten() {
+                    new_snapshot.graph.constraints.remove(stale_id);
+                    self.cache.invalidate(&NodeId::Constraint(stale_id.clone()));
+                }
+            }
+            new_snapshot
+                .forall_emitted
+                .resize_with(forall_templates.len(), Vec::new);
+
             for col_sub in &collection_subs {
                 let new_count_val = values
                     .get(&col_sub.count_cell)
@@ -1514,6 +1551,117 @@ impl Engine {
                         member_list_id,
                         (member_list_val, DeterminacyState::Determined),
                     );
+                }
+
+                // ── task 2629: forall runtime re-elaboration ──────────────
+                // For each `CompiledForallTemplate` whose `count_cell` matches
+                // this collection sub, drain prior per-element emissions
+                // (removing them from `graph.constraints` and invalidating
+                // the cache) and emit fresh per-element constraints by
+                // rewriting `<parent>.<sub>[0]` placeholder cell IDs to
+                // `<parent>.<sub>[i]` for `i ∈ 0..new_count`.
+                //
+                // Hook point named in `forall_elaborate.rs`'s contract block.
+                // ConnectBody re-emission is reserved for follow-up task 2690.
+                //
+                // `forall_templates` and the ledger were hoisted + realigned
+                // above the outer collection_subs loop; the loop body only
+                // reads `forall_templates` and `&mut`s `forall_emitted`.
+                debug_assert_eq!(
+                    new_snapshot.forall_emitted.len(),
+                    forall_templates.len(),
+                    "forall_emitted ledger length must match forall_templates length"
+                );
+                for (t_idx, t) in forall_templates.iter().enumerate() {
+                    if t.count_cell != col_sub.count_cell {
+                        continue;
+                    }
+
+                    // (1) Drain prior emissions for this template.
+                    let prior = std::mem::take(&mut new_snapshot.forall_emitted[t_idx]);
+                    for old_id in &prior {
+                        new_snapshot.graph.constraints.remove(old_id);
+                        // Mirrors task 2184's per-instance cache invalidation
+                        // (line 1449 above): a subsequent re-emission must
+                        // evaluate freshly rather than return a stale entry.
+                        // Pinned by `forall_runtime_re_elaboration::
+                        // edit_param_count_change_invalidates_prior_forall_constraint_cache`
+                        // (task 2629 step-14): a synthetic NodeCache entry
+                        // injected for a soon-to-be-removed forall constraint
+                        // id is observed cleared after the count decrease.
+                        self.cache.invalidate(&NodeId::Constraint(old_id.clone()));
+                    }
+
+                    // (2) Emit fresh per-element constraints for the new count.
+                    //     For Undef → 0 transitions, `new_count` is 0 and the
+                    //     loop body runs zero times — prior emissions are
+                    //     still cleared above.
+                    let mut fresh_ids: Vec<ConstraintNodeId> = Vec::new();
+                    // The match is exhaustive on the single live variant. The
+                    // Connect body shape is reserved for follow-up task 2690
+                    // (it will re-add the variant alongside the runtime arm).
+                    // Adding a new `CompiledForallBody` variant will cause
+                    // this match to fail to compile, forcing an explicit
+                    // decision rather than a silent drop.
+                    match &t.body {
+                        CompiledForallBody::Constraint { body_expr } => {
+                            let placeholder_entity =
+                                format!("{}.{}[0]", t.parent_entity, t.collection_sub_name);
+                            // Include `t_idx` so two foralls sharing the same
+                            // `(variable, parent_entity, collection_sub_name)` triple —
+                            // e.g. two separate `forall v in vents: constraint <expr1>` /
+                            // `forall v in vents: constraint <expr2>` decls in the same
+                            // structure — produce distinct ConstraintNodeIds. Without
+                            // this disambiguator, the second template's emissions
+                            // silently overwrite the first's in `graph.constraints`,
+                            // and the first template's `forall_emitted` ledger holds
+                            // IDs that are also owned by the second template,
+                            // breaking drain-on-decrease. Pinned by
+                            // `forall_runtime_re_elaboration::
+                            // edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constraint_ids`
+                            // (task 2629 step-25). Compile-time elaboration of the
+                            // same source through `elaborate_forall_constraint`'s
+                            // resolved arm uses a per-decl/per-element guard_index /
+                            // decl-position counter that disambiguates this case;
+                            // this runtime path mirrors that with `t_idx`.
+                            let cnid_entity = format!(
+                                "forall:{}@{}.{}#{}",
+                                t.variable, t.parent_entity, t.collection_sub_name, t_idx,
+                            );
+
+                            for i in 0..new_count {
+                                let target_entity = format!(
+                                    "{}.{}[{}]",
+                                    t.parent_entity, t.collection_sub_name, i
+                                );
+                                let rewritten =
+                                    body_expr.clone().map_value_refs(&mut |id| {
+                                        if id.entity == placeholder_entity {
+                                            ValueCellId::new(&target_entity, &id.member)
+                                        } else {
+                                            id
+                                        }
+                                    });
+
+                                let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
+                                let id_hash = ContentHash::of_str(&format!("{}", cnid));
+                                let label = format!("forall@{}[{}]", t.variable, i);
+                                let node = ConstraintNodeData {
+                                    id: cnid.clone(),
+                                    label: Some(label),
+                                    expr: rewritten.clone(),
+                                    content_hash: id_hash.combine(rewritten.content_hash),
+                                    optimized_target: None,
+                                };
+                                new_snapshot
+                                    .graph
+                                    .constraints
+                                    .insert(cnid.clone(), node);
+                                fresh_ids.push(cnid);
+                            }
+                        }
+                    }
+                    new_snapshot.forall_emitted[t_idx] = fresh_ids;
                 }
 
                 // Recompute topology fingerprint to reflect count change

@@ -2,8 +2,8 @@
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance, Value,
-    ValueCellId, VersionId,
+    ConstraintNodeId, ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance,
+    Value, ValueCellId, VersionId,
 };
 
 use crate::graph::EvaluationGraph;
@@ -21,6 +21,18 @@ pub struct Snapshot {
     pub values: PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     pub topology_fingerprint: ContentHash,
     pub provenance: SnapshotProvenance,
+    /// task 2629 — per-template ledger of `ConstraintNodeId`s and
+    /// `ConstraintNodeId`s emitted by the runtime forall re-elaboration
+    /// pass in `engine_edit::edit_param` for each `forall_template` in the
+    /// graph. Indexed in lockstep with `graph.forall_templates`. Entries
+    /// here are added when a deferred-count `forall` becomes known
+    /// (Undef → Int(N)) and drained on count change so that prior per-element
+    /// constraints are removed from `graph.constraints` before the
+    /// fresh emission. An explicit ledger is preferred over label-scanning
+    /// (`label.starts_with("forall@")`) because user-labelled constraints
+    /// could collide with that prefix; the parallel-array shape mirrors
+    /// `Engine::active_purposes` (`HashMap<purpose_name, Vec<ConstraintNodeId>>`).
+    pub forall_emitted: Vec<Vec<ConstraintNodeId>>,
 }
 
 impl Snapshot {
@@ -45,6 +57,8 @@ impl Snapshot {
             values.insert(id.clone(), (Value::Undef, det));
         }
 
+        let forall_emitted = vec![Vec::new(); graph.forall_templates.len()];
+
         Snapshot {
             id: SnapshotId(0),
             version: VersionId(0),
@@ -52,6 +66,7 @@ impl Snapshot {
             values,
             topology_fingerprint,
             provenance: SnapshotProvenance::Initial,
+            forall_emitted,
         }
     }
 }
@@ -75,6 +90,7 @@ mod tests {
             values,
             topology_fingerprint: fingerprint,
             provenance: SnapshotProvenance::Initial,
+            forall_emitted: Vec::new(),
         };
 
         assert_eq!(snap.id, SnapshotId(0));
