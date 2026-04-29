@@ -68,6 +68,33 @@ pub(crate) fn deactivate_if_not_auto(
     }
 }
 
+/// Rewrite `<sub_name>[0]` → `<sub_name>[i]` in a flat port-name template.
+///
+/// Used by the forall-Connect runtime re-emission path (task 2690) to
+/// substitute the captured placeholder element index into each per-element
+/// `CompiledConnection`'s `left_port` / `right_port`.
+///
+/// # Substring-rewrite divergence
+///
+/// The compile-time placeholder element shape is `<sub>[0]` for the deferred
+/// capture path, mirroring the Constraint-arm's
+/// `<parent>.<sub>[0]` cell-id rewrite (see `engine_edit.rs` Constraint arm
+/// and `types.rs::CompiledForallBody::Constraint` docstring at lines 386-394).
+/// This substring-based rewrite has the same edge-case divergence vs. the
+/// resolved (non-deferred) Connect path: a user-written `coll[0]` reference
+/// in a connect body will be rewritten too, even when the user intended the
+/// literal index. The compile-time error path in `connect.rs::resolve_port_name`
+/// would have caught a malformed port name on the captured `[0]` placeholder
+/// at compile time; once captured, this helper trusts the template verbatim.
+///
+/// The substring is anchored on `sub_name` (not just `[0]`) to reduce the
+/// risk of accidentally rewriting a literal `[0]` elsewhere in the port name.
+pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -> String {
+    let placeholder = format!("{}[0]", sub_name);
+    let target = format!("{}[{}]", sub_name, i);
+    template.replace(&placeholder, &target)
+}
+
 /// Re-elaborate the active and inactive branches of a single guarded group
 /// given the already-computed guard value.
 ///
@@ -1659,8 +1686,10 @@ impl Engine {
                             //     and `connector_sub`/`frame_constraint`
                             //     auto-creation are out of scope for this
                             //     task (per the task's "Out of scope" list).
-                            let placeholder_token =
-                                format!("{}[0]", t.collection_sub_name);
+                            // Port-name `<sub>[0]` → `<sub>[i]` rewrite is
+                            // factored into `rewrite_port_placeholder` (top
+                            // of file); see its docstring for the
+                            // substring-rewrite edge-case discussion.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
                                 t.variable,
@@ -1670,14 +1699,16 @@ impl Engine {
                             );
 
                             for i in 0..new_count {
-                                let target_token = format!(
-                                    "{}[{}]",
-                                    t.collection_sub_name, i
+                                let rewritten_left = rewrite_port_placeholder(
+                                    left_port_template,
+                                    &t.collection_sub_name,
+                                    i,
                                 );
-                                let rewritten_left = left_port_template
-                                    .replace(&placeholder_token, &target_token);
-                                let rewritten_right = right_port_template
-                                    .replace(&placeholder_token, &target_token);
+                                let rewritten_right = rewrite_port_placeholder(
+                                    right_port_template,
+                                    &t.collection_sub_name,
+                                    i,
+                                );
 
                                 let cnid =
                                     ConstraintNodeId::new(&cnid_entity, i as u32);
