@@ -443,7 +443,9 @@ pub struct Engine {
     /// **Sole init site:** `Engine::with_prelude` in `engine_admin.rs`
     /// (`panic_on_eval_cells: std::collections::HashSet::new()`). Any future
     /// `Engine` constructor must add the same cfg-gated field initialiser, or
-    /// production builds will fail to compile due to a missing struct field.
+    /// test and `test-instrumentation`-feature builds will fail to compile due
+    /// to a missing struct field initialiser; production builds will compile
+    /// but the test hook will be silently absent there too.
     #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
 }
