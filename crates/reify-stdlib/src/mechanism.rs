@@ -107,4 +107,40 @@ mod tests {
         assert!(eval_builtin("mechanism", &[Value::Int(0), Value::Int(1)]).is_undef());
         assert!(eval_builtin("mechanism", &[Value::Real(1.0)]).is_undef());
     }
+
+    // ── world() sentinel: happy path ───────────────────────────────────────
+
+    /// `world()` returns the world-frame sentinel as a `Value::Map` with the
+    /// single key `kind = "world"`. This singleton-shape Map is the implicit
+    /// ground-frame root of every Mechanism DAG and the default `parent`
+    /// argument when omitted from a `body()` call (see docs/reify-stdlib-
+    /// reference.md §13.2 and the design-decisions block in plan.json).
+    #[test]
+    fn world_returns_singleton_shape_map() {
+        let result = eval_builtin("world", &[]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("world".to_string())),
+            "kind field should be 'world'"
+        );
+        assert_eq!(
+            map.len(),
+            1,
+            "world sentinel should have exactly one key (kind), got {} keys",
+            map.len()
+        );
+    }
+
+    /// `world(...)` with any non-zero arg count returns `Value::Undef`.
+    #[test]
+    fn world_with_args_returns_undef() {
+        assert!(eval_builtin("world", &[Value::Int(0)]).is_undef());
+        assert!(eval_builtin("world", &[Value::Int(0), Value::Int(1)]).is_undef());
+        assert!(eval_builtin("world", &[Value::Real(1.0)]).is_undef());
+    }
 }
