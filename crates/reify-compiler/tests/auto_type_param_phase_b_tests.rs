@@ -36,30 +36,29 @@ use reify_compiler::auto_type_param::*;
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
 use reify_types::{CompiledExpr, CompiledFunction, ConstraintNodeId, Satisfaction, Value};
 
-// ─── step-1: empty input returns FeasibilityResult::Empty ─────────────────
+// ─── step-1: empty input is a precondition violation (debug_assert!) ─────────
 
-/// When `candidates` is empty, `filter_feasible_candidates` must return
-/// `FeasibilityResult::Empty { rejected: vec![] }` without invoking the
-/// constraint checker at all.
+/// Passing an empty `candidates` slice to `filter_feasible_candidates` is a
+/// caller bug per the function's documented precondition. Phase A's
+/// [`CandidateEnumeration::Found`] arm guarantees ≥1 candidate, so in normal
+/// usage this precondition is always satisfied. The `debug_assert!` exists to
+/// catch bypass-Phase-A misuse (e.g., wiring a hand-constructed empty slice
+/// directly to Phase B).
 ///
-/// The `MockConstraintChecker` is configured with `Satisfaction::Violated` as
-/// default — if the loop body were accidentally called for zero iterations,
-/// any real invocation would surface via the checker's per-id routing and
-/// would produce a non-empty rejected list. Using the Violated default makes
-/// accidental invocations observable even without explicit call-count tracking.
+/// The `#[cfg(debug_assertions)]` gate skips this test in release builds where
+/// `debug_assert!` is a no-op, avoiding spurious test failures in optimized
+/// profiles. In debug builds (the default for `cargo test`), the assert fires
+/// and the `#[should_panic(expected = ...)]` attribute pins the exact message
+/// substring so that any future weakening or removal of the assert fails loudly.
 #[test]
-fn filter_returns_empty_for_empty_candidates_input() {
+#[cfg(debug_assertions)]
+#[should_panic(expected = "filter_feasible_candidates: candidates slice must be non-empty")]
+fn filter_panics_on_empty_candidates_input() {
     let template = TopologyTemplateBuilder::new("Bearing").build();
     let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
     let functions: &[CompiledFunction] = &[];
 
-    let result = filter_feasible_candidates(&[], &template, &checker, functions);
-
-    assert!(
-        matches!(result, FeasibilityResult::Empty { ref rejected } if rejected.is_empty()),
-        "expected FeasibilityResult::Empty {{ rejected: [] }} for empty candidates input, got: {:?}",
-        result
-    );
+    let _ = filter_feasible_candidates(&[], &template, &checker, functions);
 }
 
 // ─── step-3: no constraints → vacuous feasibility ─────────────────────────
