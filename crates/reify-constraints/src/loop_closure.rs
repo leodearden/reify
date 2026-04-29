@@ -166,12 +166,24 @@ const DIVERGENCE_LIMIT: usize = 3;
 /// (mirroring the `transform_log` / `joint_jacobian` Map shape).  We aggregate
 /// across loops with L2-norm so a multi-loop residual collapses to two
 /// scalars: `(angular_norm, linear_norm)`.
+///
+/// Malformed-input contract: if `r.len()` is not a multiple of 6, the
+/// trailing partial chunk is split by index — first 3 entries contribute to
+/// the angular norm, remaining ≤2 to the linear norm.  This is a degraded
+/// best-effort guard so a caller bug doesn't panic in release; in dev a
+/// `debug_assert!` will catch the misuse loudly.  Pinned by
+/// `position_rotation_norms_partial_chunk_partitions_by_index` below.
 fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
+    debug_assert!(
+        r.len().is_multiple_of(6),
+        "residual length {} is not a multiple of 6 — caller is misusing the stacked-twist contract",
+        r.len()
+    );
     let mut ang2 = 0.0;
     let mut lin2 = 0.0;
     for chunk in r.chunks(6) {
         // chunk may be shorter than 6 only on malformed input — guard so we
-        // don't panic in release on caller errors.
+        // don't panic in release on caller errors.  See doc above.
         for (i, v) in chunk.iter().enumerate() {
             if i < 3 {
                 ang2 += v * v;
@@ -680,6 +692,98 @@ mod tests {
         }
     }
 
+    // ── position_rotation_norms partial-chunk contract (suggestion 3) ──
+
+    /// Documented best-effort behavior on malformed input: the trailing
+    /// partial chunk is split by index — first 3 entries contribute to
+    /// `ang2`, remaining (up to 2) to `lin2`.  Test runs only in release
+    /// since debug_assert! would panic on the misuse.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn position_rotation_norms_partial_chunk_partitions_by_index() {
+        // 8-element residual: full 6-chunk + 2-element partial.  The
+        // partial's indices 0..2 are angular, so both go to ang2.
+        let r = [3.0_f64, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 12.0];
+        let (ang, lin) = super::position_rotation_norms(&r);
+        // ang2 = 3² + 4² + 5² + 12² = 9 + 16 + 25 + 144 = 194 → sqrt ≈ 13.9284
+        assert!((ang - 194.0_f64.sqrt()).abs() < 1e-12);
+        // lin2 = 0 → 0
+        assert!(lin.abs() < 1e-12);
+
+        // 10-element residual: full 6-chunk + 4-element partial.  Indices
+        // 0..2 angular, index 3 linear.
+        let r2 = [0.0_f64; 6]
+            .iter()
+            .copied()
+            .chain([1.0, 2.0, 3.0, 4.0])
+            .collect::<Vec<f64>>();
+        let (ang2, lin2) = super::position_rotation_norms(&r2);
+        // ang² = 1 + 4 + 9 = 14 → sqrt ≈ 3.7417
+        assert!((ang2 - 14.0_f64.sqrt()).abs() < 1e-12);
+        // lin² = 16 → 4
+        assert!((lin2 - 4.0).abs() < 1e-12);
+    }
+
+    /// Empty residual must collapse to zero norms.
+    #[test]
+    fn position_rotation_norms_empty_residual_returns_zero() {
+        let (ang, lin) = super::position_rotation_norms(&[]);
+        assert_eq!(ang, 0.0);
+        assert_eq!(lin, 0.0);
+    }
+
+    /// In dev (debug_assertions on), partial-chunk input must panic
+    /// loudly — this catches caller bugs at the source.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "not a multiple of 6")]
+    fn position_rotation_norms_partial_chunk_panics_in_dev() {
+        let r = vec![1.0, 2.0, 3.0]; // length 3, not multiple of 6
+        let _ = super::position_rotation_norms(&r);
+    }
+
+    // ── Non-linear convergence (suggestion 4) ───────────────────────────
+
+    #[test]
+    fn newton_solve_quadratic_converges_via_multiple_iters() {
+        // r(x) = x[0]^2 - 4, J = 2*x[0].  True roots ±2.  Starting from
+        // x = 5 the linear case from before would solve in 1 iter; the
+        // quadratic requires several Newton steps.  Catches sign-errors
+        // and ordering bugs in the Jacobian assembly that the linear
+        // tests can't surface.
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-9,
+            tol_rot_rad: 1e-9,
+            max_iters: 50,
+            ..NewtonConfig::default()
+        };
+        let closure = |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            assert_eq!(x.len(), 1);
+            let r = vec![0.0, 0.0, 0.0, x[0] * x[0] - 4.0, 0.0, 0.0];
+            let j = vec![vec![0.0, 0.0, 0.0, 2.0 * x[0], 0.0, 0.0]];
+            Some((r, j))
+        };
+        let outcome = newton_solve(vec![5.0], closure, &cfg);
+        match outcome {
+            NewtonOutcome::Converged { x, iters, residual_norm } => {
+                assert!(
+                    (x[0] - 2.0).abs() < 1e-6,
+                    "expected x≈2.0, got {}",
+                    x[0]
+                );
+                assert!(
+                    iters >= 2,
+                    "non-linear case must require multiple Newton iters; got iters={iters}"
+                );
+                assert!(
+                    residual_norm < 1e-9,
+                    "expected residual_norm < 1e-9 at convergence, got {residual_norm}"
+                );
+            }
+            other => panic!("expected Converged on quadratic, got {other:?}"),
+        }
+    }
+
     // ── Residual-consistency invariant (suggestion 1) ───────────────────
 
     #[test]
@@ -788,6 +892,10 @@ mod tests {
         Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
     }
 
+    fn axis_z() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
     fn length_range(lo: f64, up: f64) -> Value {
         Value::Range {
             lower: Some(Box::new(Value::length(lo))),
@@ -797,8 +905,24 @@ mod tests {
         }
     }
 
+    fn angle_range(lo: f64, up: f64) -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::angle(lo))),
+            upper: Some(Box::new(Value::angle(up))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
     fn prismatic_x_0_to_1() -> Value {
         eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)])
+    }
+
+    fn revolute_z_0_to_pi() -> Value {
+        eval_builtin(
+            "revolute",
+            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
+        )
     }
 
     #[test]
@@ -983,6 +1107,71 @@ mod tests {
             }
             other => panic!(
                 "linear above tol must NOT converge even when angular below tol; got {other:?}"
+            ),
+        }
+    }
+
+    // ── Non-linear loop closure (suggestion 4) ──────────────────────────
+
+    #[test]
+    fn solve_loop_closure_revolute_then_prismatic_converges_with_rotation() {
+        // chain = [revolute_z, prismatic_x] — non-commuting composition:
+        // the prismatic translation happens in the rotated frame, so the
+        // SE(3) residual is genuinely non-linear in the free vars.
+        // chain_a fixed at (θ=π/3, t=0.5) → end-effector at
+        //   T = R_z(π/3) · Trans_x(0.5) → translation (0.25, 0.433, 0).
+        // chain_b free at (θ, t) starting from (0.0, 0.0).  Solver must
+        // recover (π/3, 0.5).  Newton with FD Jacobian should still
+        // converge but on a residual whose linear/angular parts are
+        // *both* non-trivial — this exercises sign-/ordering-bugs in the
+        // Jacobian assembly that single-prismatic tests cannot.
+        let chain_a = vec![revolute_z_0_to_pi(), prismatic_x_0_to_1()];
+        let theta_a = std::f64::consts::PI / 3.0;
+        let vals_a = vec![theta_a, 0.5];
+        let chain_b = vec![revolute_z_0_to_pi(), prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0, 0.0];
+        let free_b = vec![0, 1];
+        let strategy = StartStrategy::WarmStart(vec![0.1, 0.1]);
+        // Generous max_iters; tight tol so we exercise convergence rate.
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-8,
+            tol_rot_rad: 1e-8,
+            max_iters: 50,
+            ..NewtonConfig::default()
+        };
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        match outcome {
+            NewtonOutcome::Converged { x, iters: _, residual_norm } => {
+                assert_eq!(x.len(), 2);
+                // Rotation about z must match.
+                assert!(
+                    (x[0] - theta_a).abs() < 1e-5,
+                    "expected θ ≈ {theta_a}, got {}",
+                    x[0]
+                );
+                // Prismatic length must match.
+                assert!(
+                    (x[1] - 0.5).abs() < 1e-5,
+                    "expected t ≈ 0.5, got {}",
+                    x[1]
+                );
+                assert!(
+                    residual_norm < 1e-6,
+                    "expected tight residual after convergence, got {residual_norm}"
+                );
+            }
+            other => panic!(
+                "expected Converged on revolute+prismatic loop closure, got {other:?}"
             ),
         }
     }
