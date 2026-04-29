@@ -526,12 +526,13 @@ structure S {
 /// `CompiledGuardedGroup`s. Each group's guard_expr must be a
 /// `BinOp::Gt` whose left is `ValueRef(S.vents[i].mass)` and whose right
 /// is `ValueRef(S.threshold)` — proving that the bound variable `v` is
-/// substituted inside `wc.condition` at `forall_elaborate.rs:290-293`
-/// (`substitute_expr(&wc.condition, &bindings)`). A regression that
-/// dropped the substitution call would leave `v.mass` unresolved and
-/// either fail to compile or produce a wrong ValueRef, neither of which
-/// the existing `where heavy` test (which does not reference `v`) would
-/// catch. Briefing item 4 (guard composition) gap-fill.
+/// substituted inside `wc.condition` by `substitute_expr` in the
+/// `ForallConstraintBody::Constraint` where-clause branch of
+/// `elaborate_forall_constraint`. A regression that dropped that
+/// `substitute_expr` call would leave `v.mass` unresolved and either
+/// fail to compile or produce a wrong ValueRef, neither of which the
+/// existing `where heavy` test (which does not reference `v`) would catch.
+/// Briefing item 4 (guard composition) gap-fill.
 #[test]
 fn forall_constraint_body_where_clause_referencing_bound_var_substitutes_per_element() {
     let source = r#"

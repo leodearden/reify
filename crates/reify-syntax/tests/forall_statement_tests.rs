@@ -368,6 +368,11 @@ structure S {
 /// parser-disambiguation gap-fill).
 #[test]
 fn parse_forall_constraint_with_body_where_clause() {
+    // NOTE: `vents` is intentionally undeclared here. The syntax-level parser
+    // does not perform identifier resolution, so `vents` parses as a bare
+    // `Ident` collection expression without error. The purpose of this test is
+    // to pin the body where-clause `Some` shape, not to exercise declaration
+    // checking — which belongs in compiler-level tests.
     let source = r#"
 structure S {
     param active : Bool = true
