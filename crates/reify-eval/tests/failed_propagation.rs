@@ -129,8 +129,10 @@ fn forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event() {
 /// leaves unpinned; together the two tests form the complete
 /// set → eval → Failed → remove → re-eval → recovered contract.
 ///
-/// See arch §9.1 and plan #2555 for the cfg-gating rationale; this test
-/// pins the public-API contract that the refactor must preserve.
+/// This test pins the recovery semantics (`Failed` cache entry → re-eval
+/// after `remove_panic_on_eval` → `Final` + `Real(1.0)`) for the public
+/// test-instrumentation API, independent of how the underlying
+/// `panic_on_eval_cells` storage is gated. See arch §9.1.
 ///
 /// Assertions:
 ///   (a) After `set_panic_on_eval(b)` and the first `eval`, freshness(b)
