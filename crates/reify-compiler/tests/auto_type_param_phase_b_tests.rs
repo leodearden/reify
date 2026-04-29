@@ -306,3 +306,47 @@ fn filter_preserves_input_order_in_both_accepted_and_rejected() {
         "Phase B must NOT re-sort candidates; input order must be preserved verbatim"
     );
 }
+
+// ─── step-15: all candidates rejected preserves order in rejected vec ─────
+
+/// Realistic multi-candidate scenario: all three candidates are rejected
+/// (default-Violated mock) and the `rejected` Vec preserves input order
+/// ["A", "B", "C"]. Pins that:
+/// 1. Every candidate is processed (no short-circuit after first rejection).
+/// 2. The `rejected` Vec preserves input alphabetical order.
+/// 3. The constraint violated id appears in each RejectedCandidate.
+#[test]
+fn filter_partitions_mixed_candidates_into_accepted_and_rejected() {
+    let cnid = ConstraintNodeId::new("T", 0);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("T")
+        .constraint("T", 0, None, expr)
+        .build();
+    // Default Violated: all candidates are rejected.
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+
+    let candidates = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+    let result = filter_feasible_candidates(&candidates, &template, &checker, functions);
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Empty {
+            rejected: vec![
+                RejectedCandidate {
+                    name: "A".to_string(),
+                    violated_constraints: vec![cnid.clone()],
+                },
+                RejectedCandidate {
+                    name: "B".to_string(),
+                    violated_constraints: vec![cnid.clone()],
+                },
+                RejectedCandidate {
+                    name: "C".to_string(),
+                    violated_constraints: vec![cnid.clone()],
+                },
+            ],
+        },
+        "all candidates rejected: rejected vec must contain all three in input order"
+    );
+}
