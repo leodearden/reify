@@ -832,6 +832,46 @@ fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
 }
 
 #[test]
+fn resolve_driving_params_emits_debug_for_param_checked_match() {
+    // Step 6 RED: SNAPSHOT_PARAM_BIND_SOURCE has bind(y_axis, y_pos) where
+    // y_pos is a Param.  After step-7's impl, resolve_driving_params_from_ast
+    // must emit exactly one DEBUG event when a Param-checked match resolves.
+    // Currently emits none → RED.
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_gui::engine")
+        .build();
+
+    let descriptors = tracing::subscriber::with_default(subscriber, || {
+        session.get_mechanism_descriptors()
+    });
+
+    // Sanity: the match path must have actually executed.
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+    assert_eq!(
+        m1_desc.joints[0].driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving param should be resolved; got {:?}",
+        m1_desc.joints[0].driving_param_cell_id
+    );
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event for the resolved param match; got {}",
+        debug_count
+    );
+}
+
+#[test]
 fn set_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
