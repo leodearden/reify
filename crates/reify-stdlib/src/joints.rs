@@ -414,12 +414,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         //
         // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
 
-        /// `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
-        ///
-        /// `lead` (metres per 2π coupling-input units) is converted to a
-        /// dimensionless ratio via `lead_si / (2π)` and delegated to `couple()`.
-        /// Parent validation (must be prismatic/revolute, no nested coupling) is
-        /// owned by `couple()`.  PRD task 8: `Coupling(rotation, translation, ratio = lead / 2π)`.
+        // `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
+        //
+        // `lead` (metres per 2π coupling-input units) is converted to a
+        // dimensionless ratio via `lead_si / (2π)` and delegated to `couple()`.
+        // Parent validation (must be prismatic/revolute, no nested coupling) is
+        // owned by `couple()`.  PRD task 8: `Coupling(rotation, translation, ratio = lead / 2π)`.
         "screw" => {
             // Arity: exactly 2 args (parent, lead).
             if args.len() != 2 {
@@ -441,12 +441,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
 
-        /// `gear(parent, teeth_a, teeth_b)` — wrap a revolute driving joint as a gear pair.
-        ///
-        /// Both tooth counts must be `Value::Int` with strictly positive values.
-        /// `ratio = -(teeth_b as f64) / (teeth_a as f64)` (negative for external mesh).
-        /// Parent validation is owned by `couple()`.
-        /// PRD task 8: `Coupling(rotation_a, rotation_b, ratio = -teeth_b / teeth_a)`.
+        // `gear(parent, teeth_a, teeth_b)` — wrap a revolute driving joint as a gear pair.
+        //
+        // Both tooth counts must be `Value::Int` with strictly positive values.
+        // `ratio = -(teeth_b as f64) / (teeth_a as f64)` (negative for external mesh).
+        // Parent validation is owned by `couple()`.
+        // PRD task 8: `Coupling(rotation_a, rotation_b, ratio = -teeth_b / teeth_a)`.
         "gear" => {
             // Arity: exactly 3 args (parent, teeth_a, teeth_b).
             if args.len() != 3 {
@@ -472,12 +472,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
 
-        /// `rack_and_pinion(parent, pitch_radius)` — wrap a revolute driving joint as a rack-and-pinion.
-        ///
-        /// `pitch_radius` (metres) becomes the dimensionless coupling ratio directly.
-        /// Parent validation is owned by `couple()`.
-        /// PRD task 8: `Coupling(rotation, translation, ratio = pitch_radius)`.
-        /// Identifier uses underscores because Reify identifiers do not allow hyphens.
+        // `rack_and_pinion(parent, pitch_radius)` — wrap a revolute driving joint as a rack-and-pinion.
+        //
+        // `pitch_radius` (metres) becomes the dimensionless coupling ratio directly.
+        // Parent validation is owned by `couple()`.
+        // PRD task 8: `Coupling(rotation, translation, ratio = pitch_radius)`.
+        // Identifier uses underscores because Reify identifiers do not allow hyphens.
         "rack_and_pinion" => {
             // Arity: exactly 2 args (parent, pitch_radius).
             if args.len() != 2 {
