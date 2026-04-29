@@ -239,4 +239,80 @@ mod tests {
             "bodies field should be an empty List"
         );
     }
+
+    // ── Single-body FK (parent = world) ───────────────────────────────────
+
+    /// Decompose a `Value::Transform` into (rotation_quaternion, translation_si)
+    /// for assertion purposes. Mirrors the test-side decompose pattern in
+    /// `geometry.rs::tests`.
+    fn decompose_transform_for_assert(t: &Value) -> ((f64, f64, f64, f64), [f64; 3]) {
+        let (rot, trans) = match t {
+            Value::Transform {
+                rotation,
+                translation,
+            } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("expected Value::Transform, got {:?}", other),
+        };
+        let (rw, rx, ry, rz) = match rot {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("expected Value::Orientation, got {:?}", other),
+        };
+        let comps = match trans {
+            Value::Vector(c) if c.len() == 3 => c,
+            other => panic!("expected Value::Vector len=3, got {:?}", other),
+        };
+        let read = |v: &Value| -> f64 {
+            match v {
+                Value::Real(r) => *r,
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected numeric component, got {:?}", other),
+            }
+        };
+        ((rw, rx, ry, rz), [read(&comps[0]), read(&comps[1]), read(&comps[2])])
+    }
+
+    /// Simplest non-empty FK case: one body at a prismatic joint along +X
+    /// (range 0..1m), parent=world, identity pose. Bind the joint to 2 mm.
+    /// The body's `world_transform` should have translation (0.002, 0, 0)
+    /// and identity rotation.
+    #[test]
+    fn snapshot_single_body_world_parent_records_bound_joint_transform() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, j.clone()]);
+
+        let v = Value::length(0.002);
+        let binding = eval_builtin("bind", &[j, v]);
+
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![binding])]);
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+
+        // bodies list has one record
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected snapshot bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 1, "snapshot bodies should have exactly one record");
+
+        // Body record's world_transform: translation (0.002, 0, 0), identity rotation.
+        let body = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("expected snapshot body record Map, got {:?}", other),
+        };
+        let wt = body
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body record must carry a world_transform field");
+        let ((rw, rx, ry, rz), [tx, ty, tz]) = decompose_transform_for_assert(wt);
+        assert!((rw - 1.0).abs() < 1e-12, "rotation w should be 1.0, got {}", rw);
+        assert!(rx.abs() < 1e-12, "rotation x should be 0, got {}", rx);
+        assert!(ry.abs() < 1e-12, "rotation y should be 0, got {}", ry);
+        assert!(rz.abs() < 1e-12, "rotation z should be 0, got {}", rz);
+        assert!((tx - 0.002).abs() < 1e-12, "tx should be 0.002 m, got {}", tx);
+        assert!(ty.abs() < 1e-12, "ty should be 0, got {}", ty);
+        assert!(tz.abs() < 1e-12, "tz should be 0, got {}", tz);
+    }
 }
