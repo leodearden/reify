@@ -195,6 +195,11 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // Project each body record's `id` field into a flat List.
             // A missing `id` (defense-in-depth — well-formed snapshots
             // always carry one) collapses the whole call to Undef.
+            // Likewise non-Int ids are rejected: the documented return
+            // type is `List<Int>`, and a non-Int id can only arise
+            // from a hand-built snapshot Map that bypassed `snapshot()`
+            // — surface that as Undef rather than silently violating
+            // the type contract.
             let mut ids = Vec::with_capacity(snap_bodies.len());
             for body in snap_bodies {
                 let body_map = match body {
@@ -202,8 +207,8 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                     _ => return Some(Value::Undef),
                 };
                 match body_map.get(&Value::String("id".to_string())) {
-                    Some(v) => ids.push(v.clone()),
-                    None => return Some(Value::Undef),
+                    Some(v) if matches!(v, Value::Int(_)) => ids.push(v.clone()),
+                    _ => return Some(Value::Undef),
                 }
             }
             Value::List(ids)
