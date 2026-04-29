@@ -385,6 +385,51 @@ pub enum DiagnosticCode {
     /// also shadows a purpose param, both diagnostics fire at the same span — see
     /// `shadowing_warning_tests.rs::purpose_body_let_shadow_coexists_with_unsupported_let_error_intentional`.
     PurposeLetUnsupported,
+    /// Origin: `crates/reify-stdlib/src/mechanism.rs` (task 2528 — `mechanism().body(...)`
+    /// builder). Reserved for the closed-chain detector that rejects mechanisms whose
+    /// joint-parent graph has a conflict (joint J recorded with two different parents)
+    /// or a cycle (DFS reaches J again before reaching the world sentinel).
+    ///
+    /// Canonical message form:
+    /// `"closed kinematic chain detected: joint '<J>' has conflicting parents"` (conflict case)
+    /// or `"closed kinematic chain detected: cyclic joint-parent path"` (cycle case).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_KINEMATIC_CLOSED_CHAIN`
+    /// (see `docs/prds/kinematic-constraints.md` task 3 and
+    /// `docs/reify-stdlib-reference.md` §13.2).
+    ///
+    /// TODO: wired by the snapshot/eval-pipeline integration in the task family covering
+    /// 2585+. The v0.1 mechanism builder records the error condition (and both joint
+    /// paths) on the returned Mechanism `Value::Map` (`error`, `error_path1`,
+    /// `error_path2`, `error_message` fields); a follow-on integration translates the
+    /// errored Map into a real `Diagnostic` carrying this code via
+    /// `EvalResult.diagnostics`. The variant is reserved now so that downstream tooling
+    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
+    /// moment the diagnostic is emitted, with no further enum churn at integration time.
+    KinematicClosedChain,
+    /// Origin: `crates/reify-stdlib/src/mechanism.rs` (task 2528 — `mechanism().body(...)`
+    /// builder). Reserved for the duplicate-solid detector that rejects a `body()` call
+    /// whose `solid` argument equals (by structural `Value::Eq`) the `solid` of an
+    /// already-recorded body in the same Mechanism.
+    ///
+    /// Canonical message form:
+    /// `"duplicate solid in mechanism: solid already bound to body <id>"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_MECHANISM_DUPLICATE_SOLID`
+    /// (see `docs/prds/kinematic-constraints.md` task 3 and
+    /// `docs/reify-stdlib-reference.md` §13.2). Note: v0.1 detects duplicates by
+    /// structural `Value::Eq` rather than by referential identity (the docs spec) —
+    /// a code-comment in `mechanism.rs` documents the gap; the docs note will be
+    /// updated in the follow-on docs task (2538).
+    ///
+    /// TODO: wired by the snapshot/eval-pipeline integration in the task family covering
+    /// 2585+. The v0.1 mechanism builder records the error condition on the returned
+    /// Mechanism `Value::Map` (`error`, `error_message` fields); a follow-on integration
+    /// translates the errored Map into a real `Diagnostic` carrying this code via
+    /// `EvalResult.diagnostics`. The variant is reserved now so that downstream tooling
+    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
+    /// moment the diagnostic is emitted, with no further enum churn at integration time.
+    MechanismDuplicateSolid,
 }
 
 /// A diagnostic message with location and optional labels.
