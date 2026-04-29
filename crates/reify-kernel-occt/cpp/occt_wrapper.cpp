@@ -1362,9 +1362,12 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
             all_faces.push_back(TopoDS::Face(ex.Current()));
         }
         for (auto idx : face_indices) {
-            if (idx < all_faces.size()) {
-                faces_to_remove.Append(all_faces[idx]);
+            if (idx >= all_faces.size()) {
+                throw std::runtime_error(
+                    "shell_shape: face index " + std::to_string(idx) +
+                    " out of range (shape has " + std::to_string(all_faces.size()) + " faces)");
             }
+            faces_to_remove.Append(all_faces[idx]);
         }
         BRepOffsetAPI_MakeThickSolid maker;
         maker.MakeThickSolidByJoin(shape.shape, faces_to_remove, thickness, 1e-3);
