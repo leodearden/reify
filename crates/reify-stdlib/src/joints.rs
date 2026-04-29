@@ -3441,6 +3441,36 @@ mod tests {
         }
     }
 
+    // ── spherical constructor: happy path (step-1) ────────────────────────────
+
+    #[test]
+    fn spherical_returns_map_with_correct_fields() {
+        let range_angle = angle_range_0_to_pi();
+        let result = eval_builtin("spherical", &[range_angle.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("spherical".to_string())),
+            "kind field should be 'spherical'"
+        );
+        assert_eq!(
+            map.get(&Value::String("range_angle".to_string())),
+            Some(&range_angle),
+            "range_angle field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            2,
+            "spherical joint Map should have exactly 2 keys (kind, range_angle), got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+    }
+
     // ── JOINT_KINDS membership regression pin (step-15) ──────────────────────
     //
     // Asserts that `"planar"` is a member of `JOINT_KINDS` so that:
