@@ -2573,4 +2573,40 @@ mod tests {
             "Map with kind='not_a_joint' should not be a joint value"
         );
     }
+
+    /// Guard against silent drift between `JOINT_KINDS` and the per-kind `match`
+    /// arms in `transform_at`.  For every kind in `JOINT_KINDS`, build a minimal
+    /// well-formed joint value and assert that `transform_at` does NOT return
+    /// `Value::Undef`.
+    ///
+    /// Two failure modes are caught:
+    /// 1. A new kind is added to `JOINT_KINDS` without a fixture here → the `_`
+    ///    arm panics with a remediation message.
+    /// 2. A fixture exists but `transform_at` has no dispatch arm for the kind →
+    ///    the `is_undef` assertion fails.
+    #[test]
+    fn transform_at_dispatches_for_every_joint_kind() {
+        for &kind in JOINT_KINDS {
+            let (joint, value_arg) = match kind {
+                "prismatic" => (prismatic_x_joint(), Value::length(0.0)),
+                "revolute"  => (revolute_z_joint(),  Value::angle(0.0)),
+                "coupling"  => (
+                    eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]),
+                    Value::length(0.0),
+                ),
+                _ => panic!(
+                    "JOINT_KINDS contains '{kind}' but the dispatch test has no fixture; \
+                     add a minimal well-formed fixture for this kind and confirm \
+                     `transform_at` has a matching dispatch arm"
+                ),
+            };
+            let result = eval_builtin("transform_at", &[joint, value_arg]);
+            assert!(
+                !result.is_undef(),
+                "transform_at(kind='{kind}', minimal-well-formed-input) returned Undef. \
+                 Either add a dispatch arm in transform_at for kind='{kind}', \
+                 or remove '{kind}' from JOINT_KINDS."
+            );
+        }
+    }
 }
