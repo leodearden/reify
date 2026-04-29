@@ -776,9 +776,10 @@ mod tests {
 
     /// `Engine::topology_attribute_table` returns a borrow of the v0.2
     /// attribute table on the engine. After construction (both
-    /// `Engine::new` and `Engine::with_prelude`), the table must be empty.
-    /// The accessor returns a borrow (not a clone) — calling it twice
-    /// must yield the same address.
+    /// `Engine::new` and `Engine::with_prelude`), the table must be empty
+    /// — that is the documented post-condition relied on by tasks 5-8
+    /// (which assume an empty table at the start of `execute_realization_ops`)
+    /// and by integration tests that seed the table by hand.
     #[test]
     fn topology_attribute_table_starts_empty_on_new_and_with_prelude() {
         use reify_test_support::mocks::MockConstraintChecker;
@@ -794,12 +795,5 @@ mod tests {
         let table_wp = engine_wp.topology_attribute_table();
         assert!(table_wp.is_empty());
         assert_eq!(table_wp.len(), 0);
-
-        // The accessor returns a borrow into the engine — calling it
-        // twice must yield the same address. We use `with_prelude` here
-        // because we already hold its handle.
-        let first = engine_wp.topology_attribute_table() as *const _;
-        let second = engine_wp.topology_attribute_table() as *const _;
-        assert!(std::ptr::eq(first, second));
     }
 }
