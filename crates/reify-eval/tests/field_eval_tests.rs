@@ -1494,3 +1494,125 @@ structure S {
         oob_warnings[0].message
     );
 }
+
+/// RBF interpolation on a Sampled field is deferred post-v0.1: it falls back
+/// to Linear and emits exactly one `W_INTERPOLATION_DEFERRED` warning.
+///
+/// Pinned by task 2341 step-17. The `interp::resolve_method` returns the
+/// deferral diagnostic whenever the user asks for `Rbf` or `Kriging`; the
+/// `sampled::sample_at_point` helper forwards `InterpolationResult.diagnostics`
+/// into `ctx.diagnostics`, which the runtime sink then drains into
+/// `EvalResult.diagnostics`.
+///
+/// Fallback proof: at the linear midpoint `0.5m` of `[0.0m, 2.0m]` data
+/// `[0.0, 1.0, 2.0]`, Linear yields `0.5` — the test asserts that exact value
+/// to confirm RBF dispatched through the Linear path, not some unimplemented
+/// RBF kernel.
+#[test]
+fn sample_sampled_field_with_rbf_emits_interpolation_deferred_warning_and_falls_back_to_linear() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Rbf" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // (a) At least one InterpolationDeferred warning is emitted.
+    let deferred_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::InterpolationDeferred)
+        })
+        .collect();
+    assert!(
+        !deferred_warnings.is_empty(),
+        "expected at least one W_INTERPOLATION_DEFERRED warning, got diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    // (b) Fallback proof: RBF dispatched through the Linear path, so the
+    // sample at 0.5m of [0.0, 1.0, 2.0] equals 0.5 (linear midpoint).
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 0.5).abs() < 1e-12,
+            "RBF→Linear fallback at 0.5m expected 0.5 (linear midpoint), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.5).abs() < 1e-12,
+            "RBF→Linear fallback at 0.5m expected 0.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(0.5), got: {:?}", other),
+    }
+}
+
+/// Kriging interpolation on a Sampled field is deferred post-v0.1: it falls
+/// back to Linear and emits exactly one `W_INTERPOLATION_DEFERRED` warning.
+/// Companion to the RBF test above; same dispatch contract.
+#[test]
+fn sample_sampled_field_with_kriging_emits_interpolation_deferred_warning_and_falls_back_to_linear()
+{
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Kriging" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let deferred_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::InterpolationDeferred)
+        })
+        .collect();
+    assert!(
+        !deferred_warnings.is_empty(),
+        "expected at least one W_INTERPOLATION_DEFERRED warning, got diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 0.5).abs() < 1e-12,
+            "Kriging→Linear fallback at 0.5m expected 0.5 (linear midpoint), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.5).abs() < 1e-12,
+            "Kriging→Linear fallback at 0.5m expected 0.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(0.5), got: {:?}", other),
+    }
+}
