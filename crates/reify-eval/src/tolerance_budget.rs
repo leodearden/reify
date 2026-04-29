@@ -58,6 +58,30 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
+    #[should_panic(expected = "requested_tol must be finite and non-negative")]
+    fn tol_nan_panics_in_debug() {
+        // NaN is not finite — debug_assert in step-9 will catch it.
+        per_stage_tolerance(f64::NAN, 2);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "requested_tol must be finite and non-negative")]
+    fn tol_infinite_panics_in_debug() {
+        // +inf is not finite — debug_assert in step-9 will catch it.
+        per_stage_tolerance(f64::INFINITY, 2);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "requested_tol must be finite and non-negative")]
+    fn tol_negative_panics_in_debug() {
+        // Negative tolerance is not physically meaningful.
+        per_stage_tolerance(-1e-3, 2);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
     #[should_panic(expected = "n_stages must be")]
     fn n_stages_zero_panics_in_debug() {
         // n_stages=0 is a programmer error (1/0 = inf, tol^inf is nonsense).
