@@ -346,45 +346,18 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{
+        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m,
+        planar_xy_joint,
+    };
     use reify_types::Value;
 
-    // ── Test fixtures ────────────────────────────────────────────────────
-
-    fn axis_x() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn axis_z() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn length_range(lo: f64, up: f64) -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(lo))),
-            upper: Some(Box::new(Value::length(up))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
-
-    fn angle_range(lo: f64, up: f64) -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(lo))),
-            upper: Some(Box::new(Value::angle(up))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
-
     fn prismatic_x() -> Value {
-        eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)])
+        eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()])
     }
 
     fn revolute_z() -> Value {
-        eval_builtin(
-            "revolute",
-            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
-        )
+        eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()])
     }
 
     /// Extract the translation Vector3 from a Transform; helper for tests.
@@ -545,24 +518,26 @@ mod tests {
 
     #[test]
     fn joint_range_midpoint_prismatic_0_to_1m() {
-        let j = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
         assert!((mid - 0.5).abs() < 1e-12);
     }
 
     #[test]
     fn joint_range_midpoint_prismatic_neg_to_pos() {
-        let j = eval_builtin("prismatic", &[axis_x(), length_range(-2.0, 2.0)]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), Value::Range {
+            lower: Some(Box::new(Value::length(-2.0))),
+            upper: Some(Box::new(Value::length(2.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }]);
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
         assert!(mid.abs() < 1e-12);
     }
 
     #[test]
     fn joint_range_midpoint_revolute_0_to_pi() {
-        let j = eval_builtin(
-            "revolute",
-            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
-        );
+        let j = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
         assert!((mid - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
     }
@@ -572,8 +547,13 @@ mod tests {
         let j = eval_builtin(
             "revolute",
             &[
-                axis_z(),
-                angle_range(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+                axis_z_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::angle(-std::f64::consts::FRAC_PI_2))),
+                    upper: Some(Box::new(Value::angle(std::f64::consts::FRAC_PI_2))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
             ],
         );
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
@@ -582,10 +562,7 @@ mod tests {
 
     #[test]
     fn joint_range_midpoint_coupling_delegates_to_parent() {
-        let parent = eval_builtin(
-            "revolute",
-            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
-        );
+        let parent = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
         let mid = super::joint_range_midpoint(&coupling).expect("midpoint");
         assert!(
@@ -630,7 +607,7 @@ mod tests {
 
     #[test]
     fn per_joint_jacobian_local_prismatic_x_unit() {
-        let j = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let col = super::per_joint_jacobian_local(&j).expect("col");
         // [ω; v]: angular zero, linear = unit X
         assert!(col[0].abs() < 1e-12);
@@ -645,7 +622,7 @@ mod tests {
     fn per_joint_jacobian_local_prismatic_unnormalized_axis() {
         // axis [3, 4, 0] has magnitude 5; normalized → [0.6, 0.8, 0]
         let axis = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
-        let j = eval_builtin("prismatic", &[axis, length_range(0.0, 1.0)]);
+        let j = eval_builtin("prismatic", &[axis, length_range_0_to_1m()]);
         let col = super::per_joint_jacobian_local(&j).expect("col");
         assert!(col[0].abs() < 1e-12);
         assert!(col[1].abs() < 1e-12);
@@ -657,10 +634,7 @@ mod tests {
 
     #[test]
     fn per_joint_jacobian_local_revolute_z() {
-        let j = eval_builtin(
-            "revolute",
-            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
-        );
+        let j = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let col = super::per_joint_jacobian_local(&j).expect("col");
         // angular = unit Z, linear zero
         assert!(col[0].abs() < 1e-12);
@@ -673,10 +647,7 @@ mod tests {
 
     #[test]
     fn per_joint_jacobian_local_coupling_revolute_ratio_2() {
-        let parent = eval_builtin(
-            "revolute",
-            &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
-        );
+        let parent = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
         let col = super::per_joint_jacobian_local(&coupling).expect("col");
         // ratio * parent_jac = ratio * [0,0,1, 0,0,0] = [0,0,2, 0,0,0]
@@ -972,23 +943,6 @@ mod tests {
     }
 
     // ── planar joint pin tests ────────────────────────────────────────────
-
-    fn axis_y() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
-
-    fn planar_xy_joint() -> Value {
-        eval_builtin(
-            "planar",
-            &[
-                axis_x(),
-                axis_y(),
-                length_range(0.0, 1.0),
-                length_range(0.0, 1.0),
-                angle_range(0.0, std::f64::consts::PI),
-            ],
-        )
-    }
 
     /// `joint_range_midpoint` returns `None` for a planar joint.
     ///
