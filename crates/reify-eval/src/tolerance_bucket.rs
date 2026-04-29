@@ -136,6 +136,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bucket_evicts_loosest_when_capacity_exceeded() {
+        let mut bucket = ToleranceBucket::<&str>::new();
+        // Insert 6 successively-tightening tolerances. Each is strictly tighter than
+        // the previous, so all 6 inserts succeed (no existing entry satisfies the new one).
+        let tols = [1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125];
+        let tags = ["v1", "v2", "v3", "v4", "v5", "v6"];
+        for (i, (&tol, &tag)) in tols.iter().zip(tags.iter()).enumerate() {
+            let result = bucket.insert(tol, tag);
+            assert!(result, "insert #{i} must succeed for tol={tol}");
+        }
+        // After 6 inserts, eviction must have kept len at SOFT_CAPACITY (5).
+        assert_eq!(bucket.len(), SOFT_CAPACITY, "bucket len must equal SOFT_CAPACITY after overflow");
+        // The loosest entry "v1" (1.0) must have been evicted.
+        // The next-loosest "v2" (0.5) is now the loosest in the bucket.
+        // lookup(2.0): loosest satisfying should be 0.5 = "v2" (not "v1").
+        assert_eq!(bucket.lookup(2.0), Some(&"v2"), "v1 (1.0) should be evicted; loosest is now v2 (0.5)");
+        assert_eq!(bucket.lookup(0.6), Some(&"v2"), "0.5 <= 0.6, so v2 is loosest satisfying");
+        assert_eq!(bucket.lookup(1.0), Some(&"v2"), "no entry at 1.0 after eviction; loosest <= 1.0 is 0.5 = v2");
+    }
+
+    #[test]
     fn empty_bucket_has_no_hits() {
         let bucket = ToleranceBucket::<u32>::new();
         assert_eq!(bucket.len(), 0);
