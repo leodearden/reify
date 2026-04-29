@@ -39,6 +39,19 @@ pub struct ToleranceBinding {
 /// Non-matching constraints are silently skipped — this matches the PRD's
 /// "activate dormant infrastructure" posture: a constraint that doesn't
 /// match the recognised shape simply contributes no tolerance.
+///
+/// # Validation gates
+///
+/// 1. **Outer shape:** top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
+/// 2. **Subject (arg0):** `ValueRef` whose `result_type` is `StructureRef(_)` AND whose
+///    `ValueCellId.entity` matches one of `purpose.params[*].name` (the "bare-purpose-param"
+///    contract). A `ValueRef` to a non-param entity is rejected even if it happens to be
+///    typed `StructureRef(_)`, so a hypothetical second purpose param or an unrelated
+///    structure reference doesn't silently bind a tolerance to `bound_entity_ref`.
+/// 3. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension == LENGTH, si_value })`
+///    where `si_value.is_finite()`. Non-finite values (NaN, ±Inf) have no semantics for a
+///    tolerance — and worse, NaN would propagate into the scope and stick (NaN comparisons
+///    always evaluate false, so `merge_with_min` could never displace it with a real value).
 pub fn extract_tolerance_bindings(
     purpose: &CompiledPurpose,
     bound_entity_ref: &str,
@@ -60,16 +73,36 @@ pub fn extract_tolerance_bindings(
             continue;
         }
 
-        // arg0 must be a ValueRef whose result_type is StructureRef(_).
+        // arg0 must be a ValueRef whose result_type is StructureRef(_) AND whose
+        // entity matches one of the purpose's param names. The entity check is
+        // what enforces the "bare-purpose-param subject" contract documented at
+        // the module level — without it, a `RepresentationWithin(<unrelated
+        // StructureRef ValueRef>, tol)` would silently bind a tolerance to
+        // `bound_entity_ref` even though the constraint's subject is not the
+        // purpose's bound parameter. Today's compiler emits no such shape, but
+        // matching the documented contract prevents surprises when a real
+        // producer comes online.
         let subject_arg = &args[0];
-        if !matches!(subject_arg.kind, CompiledExprKind::ValueRef(_)) {
-            continue;
-        }
+        let subject_cell_id = match &subject_arg.kind {
+            CompiledExprKind::ValueRef(id) => id,
+            _ => continue,
+        };
         if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
             continue;
         }
+        if !purpose
+            .params
+            .iter()
+            .any(|p| p.name == subject_cell_id.entity)
+        {
+            continue;
+        }
 
-        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. }).
+        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. }) AND
+        // its `si_value` must be finite. NaN/±Inf would propagate into the
+        // scope and stick — `merge_with_min` uses `tol < *cur` which is always
+        // false when either side is NaN, so a stale NaN could never be
+        // displaced by a real value.
         let tol_arg = &args[1];
         let si_value = match &tol_arg.kind {
             CompiledExprKind::Literal(Value::Scalar {
@@ -78,6 +111,9 @@ pub fn extract_tolerance_bindings(
             }) if *dimension == DimensionVector::LENGTH => *si_value,
             _ => continue,
         };
+        if !si_value.is_finite() {
+            continue;
+        }
 
         bindings.push(ToleranceBinding {
             subject_entity: bound_entity_ref.to_string(),
@@ -166,13 +202,20 @@ mod tests {
     /// Build the canonical `RepresentationWithin(<ValueRef typed
     /// StructureRef>, <Literal Scalar(LENGTH)>)` shape that
     /// `extract_tolerance_bindings` is expected to recognise.
+    ///
+    /// `subject_param_name` is used as the `ValueCellId.entity` of the
+    /// subject `ValueRef`, so the produced fixture binds to the purpose's
+    /// actual parameter (the matcher rejects `ValueRef`s whose entity does
+    /// not appear in `purpose.params`). Tests that want to exercise the
+    /// rejection branch can pass a non-param name here directly.
     fn representation_within_constraint(
+        subject_param_name: &str,
         subject_kind: &str,
         si_value: f64,
         dimension: DimensionVector,
     ) -> CompiledExpr {
         let subject_arg = CompiledExpr::value_ref(
-            ValueCellId::new("subject", "self"),
+            ValueCellId::new(subject_param_name, "self"),
             Type::StructureRef(subject_kind.to_string()),
         );
         let tol_arg = CompiledExpr::literal(
@@ -189,6 +232,7 @@ mod tests {
     #[test]
     fn extract_tolerance_bindings_returns_single_binding_for_one_representation_within() {
         let constraint_expr = representation_within_constraint(
+            "subject",
             "Bracket",
             1e-6,
             DimensionVector::LENGTH,
@@ -231,6 +275,7 @@ mod tests {
 
         // (c) A valid RepresentationWithin.
         let rep_within = representation_within_constraint(
+            "subject",
             "Bracket",
             5e-6,
             DimensionVector::LENGTH,
@@ -259,6 +304,7 @@ mod tests {
         // RepresentationWithin whose 2nd arg is a *dimensionless* literal —
         // must be silently skipped (returns empty).
         let constraint_expr = representation_within_constraint(
+            "subject",
             "Bracket",
             1.0,
             DimensionVector::DIMENSIONLESS,
@@ -275,6 +321,66 @@ mod tests {
             bindings.is_empty(),
             "non-LENGTH dimension on tolerance arg must not yield a binding"
         );
+    }
+
+    #[test]
+    fn extract_tolerance_bindings_rejects_value_ref_to_non_purpose_param() {
+        // Reviewer issue #1 (amend): the matcher's contract is
+        // `RepresentationWithin(<bare-purpose-param>, <length-literal>)` —
+        // a ValueRef whose entity is not one of the purpose's params must
+        // be rejected, even if its result_type is StructureRef(_) (which
+        // would otherwise pass the type-tag gate). Without this gate, a
+        // hypothetical `RepresentationWithin(<unrelated StructureRef>, tol)`
+        // would silently bind a tolerance to `bound_entity_ref` even though
+        // the constraint's subject is not the bound parameter.
+        let constraint_expr = representation_within_constraint(
+            "not_a_param", // entity name that does NOT appear in purpose.params
+            "Bracket",
+            1e-6,
+            DimensionVector::LENGTH,
+        );
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, constraint_expr)
+            .build();
+
+        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+        assert!(
+            bindings.is_empty(),
+            "ValueRef whose entity is not a purpose param must be rejected \
+             even if it is typed StructureRef(_)"
+        );
+    }
+
+    #[test]
+    fn extract_tolerance_bindings_rejects_non_finite_tolerance_literals() {
+        // Reviewer issue #2 (amend): NaN / ±Inf tolerances have no semantics
+        // and would propagate into the scope. Worse, NaN comparisons always
+        // evaluate false, so `merge_with_min` could never displace a stale
+        // NaN with a real finite value. Reject at extraction time.
+        for bad_value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let constraint_expr = representation_within_constraint(
+                "subject",
+                "Bracket",
+                bad_value,
+                DimensionVector::LENGTH,
+            );
+
+            let purpose = CompiledPurposeBuilder::new("manufacturing")
+                .param("subject", "Structure")
+                .constraint("subject", 0, None, constraint_expr)
+                .build();
+
+            let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+            assert!(
+                bindings.is_empty(),
+                "non-finite tolerance literal {:?} must be rejected",
+                bad_value
+            );
+        }
     }
 
     #[test]
