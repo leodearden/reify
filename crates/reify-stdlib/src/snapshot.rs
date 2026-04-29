@@ -715,22 +715,8 @@ fn make_binding(joint: Value, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::Value;
-
-    // ── Joint fixtures (mirror the joints.rs test fixtures) ───────────────
-
-    fn axis_x_unit() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn length_range_0_to_1m() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(0.0))),
-            upper: Some(Box::new(Value::length(1.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── bind(joint, value): happy path ────────────────────────────────────
 
@@ -914,19 +900,6 @@ mod tests {
     }
 
     // ── Analytic two-link chain (multi-level parent walk) ─────────────────
-
-    fn axis_z_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn angle_range_0_to_pi() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(0.0))),
-            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     fn length_range_0_to_2m() -> Value {
         Value::Range {
@@ -1210,10 +1183,6 @@ mod tests {
     }
 
     // ── Errored-mechanism short-circuit ────────────────────────────────────
-
-    fn axis_y_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
 
     /// `snapshot()` on an errored Mechanism returns `Value::Undef` —
     /// not a partial Snapshot of the pre-error bodies list.  Mirrors
@@ -1857,19 +1826,6 @@ mod tests {
     }
 
     // ── planar joint pin tests ────────────────────────────────────────────
-
-    fn planar_xy_joint() -> Value {
-        eval_builtin(
-            "planar",
-            &[
-                axis_x_unit(),
-                axis_y_unit(),
-                length_range_0_to_1m(),
-                length_range_0_to_1m(),
-                angle_range_0_to_pi(),
-            ],
-        )
-    }
 
     /// `snapshot(mech_with_unbound_planar, [])` returns Undef.
     ///
