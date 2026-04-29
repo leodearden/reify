@@ -2225,13 +2225,18 @@ fn compile_match_arm_decl_group(
     }
 
     // Register the assembled cluster in the dedicated scope map.
-    scope.register_match_arm_group(
-        &logical_name,
-        GuardedDeclGroup {
-            name: logical_name.clone(),
-            arms: group_arms,
-        },
-    );
+    // If group_arms is empty, every arm was rejected (e.g. all Param/Let),
+    // so no cluster should be exposed on TopologyTemplate::match_arm_groups —
+    // an empty cluster is a latent footgun for downstream consumers (task 2373).
+    if !group_arms.is_empty() {
+        scope.register_match_arm_group(
+            &logical_name,
+            GuardedDeclGroup {
+                name: logical_name.clone(),
+                arms: group_arms,
+            },
+        );
+    }
 }
 
 /// Extract the shared logical name from an arm's `MemberDecl`.
