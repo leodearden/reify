@@ -429,13 +429,24 @@ pub fn solve_loop_closure(
     strategy: &StartStrategy,
     config: &NewtonConfig,
 ) -> NewtonOutcome {
-    // Validate free_b indices against chain_b — strategy-independent invariant.
+    // Validate free_b indices against both chain_b and vals_b_initial —
+    // strategy-independent invariant: every free index must address a valid
+    // joint AND a valid initial value.
     for &i in free_b {
         if i >= chain_b.len() {
             let reason = format!(
                 "free_b index {} out of range (chain_b len {})",
                 i,
                 chain_b.len()
+            );
+            tracing::warn!("solve_loop_closure: {reason}");
+            return NewtonOutcome::InvalidInput { reason };
+        }
+        if i >= vals_b_initial.len() {
+            let reason = format!(
+                "free_b index {} out of range (vals_b_initial len {})",
+                i,
+                vals_b_initial.len()
             );
             tracing::warn!("solve_loop_closure: {reason}");
             return NewtonOutcome::InvalidInput { reason };
