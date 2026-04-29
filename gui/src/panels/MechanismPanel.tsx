@@ -40,6 +40,37 @@ function currentSiToDisplay(si: number | null, kind: string): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// Inverse display→SI helpers (used by onScrubLocal so mechanismStore
+// receives SI values and its equality check with current_value_si fires)
+// ---------------------------------------------------------------------------
+
+/** Convert millimetres to SI metres. */
+function mmToM(display: number): number {
+  return display / 1000;
+}
+
+/** Convert degrees to SI radians. */
+function degToRad(display: number): number {
+  return display * (Math.PI / 180);
+}
+
+/**
+ * Convert a slider display-unit value back to SI for `onScrubLocal`.
+ *
+ * @param displayValue - Value in display units (mm for prismatic, deg for revolute).
+ * @param kind         - Joint kind string.
+ * @returns SI value: metres for prismatic, radians for revolute, identity otherwise.
+ *
+ * Contract: the returned value uses the same units as `JointDescriptor.current_value_si`,
+ * enabling `mechanismStore.refresh()` to clear optimistic overrides via equality check.
+ */
+function displayToSi(displayValue: number, kind: string): number {
+  if (kind === 'prismatic') return mmToM(displayValue);
+  if (kind === 'revolute') return degToRad(displayValue);
+  return displayValue;
+}
+
+// ---------------------------------------------------------------------------
 // JointRow component
 // ---------------------------------------------------------------------------
 
@@ -97,11 +128,16 @@ const JointRow: Component<JointRowProps> = (props) => {
     const displayValue = Number(input.value);
     setSliderValue(displayValue);
 
-    // Notify the store for optimistic UI update
+    // Convert display value → SI before notifying the store so that
+    // mechanismStore.setOptimistic receives the same units as
+    // JointDescriptor.current_value_si, enabling refresh()'s equality
+    // check to clear the override once the backend confirms the value.
+    const valueSi = displayToSi(displayValue, kind());
     const param = drivingParam();
-    props.onScrubLocal(param, joint().joint_index, displayValue);
+    props.onScrubLocal(param, joint().joint_index, valueSi);
 
     // Schedule the actual set_parameter IPC call via RAF coalescing
+    // (display units are correct here — the backend parser reads "400mm" / "90deg")
     scheduleSetParameter(displayValue);
   }
 
@@ -202,7 +238,11 @@ export interface MechanismPanelProps {
   onSetParameter: (cellId: string, value: string) => void;
   /**
    * Called on every slider input for optimistic UI updates.
+   *
    * `cellId` is the mechanism's cell_id (not the joint's driving param).
+   * `valueSi` is in SI units (m for prismatic, rad for revolute) and matches
+   * `JointDescriptor.current_value_si`'s units, so that `mechanismStore.refresh()`
+   * can clear the optimistic override once the backend confirms the parameter value.
    */
   onScrubLocal: (cellId: string | null, jointIndex: number, valueSi: number) => void;
 }
