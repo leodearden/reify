@@ -806,10 +806,12 @@ fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
         .load_from_source(EMPTY_BIND_SNAPSHOT_SOURCE, "kinematic")
         .expect("load empty-bind-list source");
 
+    // Filter on the specific submodule target so this assertion remains valid
+    // even if other debug! calls are added elsewhere in reify_gui::engine.
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::DEBUG)
         .count_level(tracing::Level::WARN)
-        .target_prefix("reify_gui::engine")
+        .target_prefix("reify_gui::engine::snapshot_bind_pairs")
         .build();
 
     tracing::subscriber::with_default(subscriber, || {
@@ -821,12 +823,13 @@ fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
 
     assert_eq!(
         debug_count, 1,
-        "expected exactly 1 DEBUG event for the zero-pair snapshot; got {}",
+        "expected exactly 1 DEBUG event at target reify_gui::engine::snapshot_bind_pairs \
+         for the zero-pair snapshot; got {}",
         debug_count
     );
     assert_eq!(
         warn_count, 0,
-        "expected 0 WARN events; got {}",
+        "expected 0 WARN events at target reify_gui::engine::snapshot_bind_pairs; got {}",
         warn_count
     );
 }
@@ -842,9 +845,11 @@ fn resolve_driving_params_emits_debug_for_param_checked_match() {
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
 
+    // Filter on the specific submodule target so this assertion remains valid
+    // even if other debug! calls are added elsewhere in reify_gui::engine.
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::DEBUG)
-        .target_prefix("reify_gui::engine")
+        .target_prefix("reify_gui::engine::param_resolution")
         .build();
 
     let descriptors = tracing::subscriber::with_default(subscriber, || {
@@ -866,7 +871,8 @@ fn resolve_driving_params_emits_debug_for_param_checked_match() {
     let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
     assert_eq!(
         debug_count, 1,
-        "expected exactly 1 DEBUG event for the resolved param match; got {}",
+        "expected exactly 1 DEBUG event at target reify_gui::engine::param_resolution \
+         for the resolved param match; got {}",
         debug_count
     );
 }

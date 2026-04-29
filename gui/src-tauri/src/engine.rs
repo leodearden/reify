@@ -524,7 +524,11 @@ impl EngineSession {
         //
         // When `parsed_cache` is `None` (test-injection without a full parse/compile
         // cycle), the consumed-idents set is empty and every mechanism cell passes —
-        // preserving the pre-filter behaviour for legacy test helpers.
+        // preserving the pre-filter behaviour for legacy test helpers.  A WARN event
+        // is emitted in this case so a future regression that accidentally drops
+        // `parsed_cache` (e.g. a load path that forgets to populate it alongside
+        // `compiled`) is surfaced immediately rather than silently re-emitting
+        // intermediate mechanism cells to the UI.
         //
         // Errored mechanisms (closed-chain etc.) are suppressed via the `error` key
         // check below.
@@ -535,6 +539,13 @@ impl EngineSession {
                 if let Some(parsed) = self.parsed_cache.as_ref() {
                     collect_consumed_mechanism_idents(parsed, &template.name)
                 } else {
+                    tracing::warn!(
+                        target: "reify_gui::engine",
+                        template = %template.name,
+                        "parsed_cache is None while compiled is Some; \
+                         terminal-mechanism filter inactive — intermediate mechanism \
+                         cells may appear in descriptors"
+                    );
                     HashSet::new()
                 };
 
@@ -1294,7 +1305,7 @@ fn resolve_driving_params_from_ast(
                         // Fires AFTER the Param check has passed and
                         // driving_param_cell_id has been populated.
                         tracing::debug!(
-                            target: "reify_gui::engine",
+                            target: "reify_gui::engine::param_resolution",
                             structure = %structure_name,
                             joint = %joint_cell_name,
                             param_cell = %param_cell_id_str,
@@ -1313,12 +1324,68 @@ fn resolve_driving_params_from_ast(
     }
 }
 
+/// Generic recursive AST walker that visits every `FunctionCall` node in
+/// `expr` and invokes `on_call(name, args)` for each one.
+///
+/// Recurses into `FunctionCall` (all args), `BinOp` (both operands), `UnOp`
+/// (operand), `Conditional` (condition/then/else), and `ListLiteral` (all
+/// elements).  Other variants — `MapLiteral`, `SetLiteral`, `Match`,
+/// `MemberAccess`, `IndexAccess`, and leaf nodes — are currently not recursed;
+/// widen this list **here** to fix all callers at once.
+///
+/// # Motivation
+///
+/// `collect_snapshot_bind_pairs` and `collect_consumed_mechanism_idents` both
+/// need to walk the same subset of `ExprKind` variants and previously each
+/// carried an identical ~25-line recursion body.  `walk_function_calls`
+/// centralises that skeleton so a third AST-driven feature can register its
+/// match logic via the callback without duplicating the traversal again.
+fn walk_function_calls(
+    expr: &reify_syntax::Expr,
+    on_call: &mut dyn FnMut(&str, &Vec<reify_syntax::Expr>),
+) {
+    use reify_syntax::ExprKind;
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args } => {
+            on_call(name, args);
+            // Recurse into all args so nested calls are also visited.
+            for arg in args {
+                walk_function_calls(arg, on_call);
+            }
+        }
+        ExprKind::BinOp { left, right, .. } => {
+            walk_function_calls(left, on_call);
+            walk_function_calls(right, on_call);
+        }
+        ExprKind::UnOp { operand, .. } => {
+            walk_function_calls(operand, on_call);
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            walk_function_calls(condition, on_call);
+            walk_function_calls(then_branch, on_call);
+            walk_function_calls(else_branch, on_call);
+        }
+        ExprKind::ListLiteral(elems) => {
+            for elem in elems {
+                walk_function_calls(elem, on_call);
+            }
+        }
+        // Leaf nodes and other compound variants (MapLiteral, SetLiteral,
+        // Match, MemberAccess, IndexAccess) are not recursed; widen here if
+        // a future feature needs coverage.
+        _ => {}
+    }
+}
+
 /// Recursively search `expr` for `snapshot(mech_expr, [bind(joint, value), …])`.
 /// For each `bind(Ident(joint_name), Ident(value_name))` append
 /// `(joint_name, value_name)` to `pairs`.
 ///
-/// Recurses into `FunctionCall`, `BinOp`, `UnOp`, `Conditional`, and
-/// `ListLiteral` sub-expressions.  Other leaf variants have no sub-expressions.
+/// Delegates all AST recursion to [`walk_function_calls`].
 ///
 /// **Name-shadowing caveat:** matching is by textual function name only.  A
 /// user-defined function named `snapshot` or `bind` in the same module would
@@ -1329,86 +1396,58 @@ fn resolve_driving_params_from_ast(
 /// **Telemetry:** when a `name == "snapshot"` call with `args.len() >= 2` is
 /// found but contributes *zero* bind pairs (empty list or no valid
 /// `bind(Ident, Ident)` entries), a `tracing::debug!` event is emitted at
-/// target `"reify_gui::engine"`.  This surfaces potential user-shadowed
-/// `snapshot` functions or malformed bind lists that would otherwise silently
-/// produce no driving-param resolutions.
+/// target `"reify_gui::engine::snapshot_bind_pairs"`.  This surfaces potential
+/// user-shadowed `snapshot` functions or malformed bind lists that would
+/// otherwise silently produce no driving-param resolutions.
 fn collect_snapshot_bind_pairs(
     expr: &reify_syntax::Expr,
     pairs: &mut Vec<(String, String)>,
 ) {
     use reify_syntax::ExprKind;
-    match &expr.kind {
-        ExprKind::FunctionCall { name, args } => {
-            if name == "snapshot" && args.len() >= 2 {
-                // Snapshot the pair count before processing so we can detect
-                // whether this snapshot() call contributed any bind pairs.
-                let pairs_before = pairs.len();
+    walk_function_calls(expr, &mut |name, args| {
+        if name != "snapshot" || args.len() < 2 {
+            return;
+        }
+        // Snapshot the pair count before processing so we can detect
+        // whether this snapshot() call contributed any bind pairs.
+        let pairs_before = pairs.len();
 
-                // Extract bind() entries from the second argument (the bindings list).
-                if let ExprKind::ListLiteral(elems) = &args[1].kind {
-                    for elem in elems {
-                        let (bind_name, bind_args) = match &elem.kind {
-                            ExprKind::FunctionCall { name, args } => (name, args),
-                            _ => continue,
-                        };
-                        if bind_name != "bind" || bind_args.len() != 2 {
-                            continue;
-                        }
-                        let joint_ident = match &bind_args[0].kind {
-                            ExprKind::Ident(s) => s.clone(),
-                            _ => continue,
-                        };
-                        let value_ident = match &bind_args[1].kind {
-                            ExprKind::Ident(s) => s.clone(),
-                            _ => continue, // literal or complex expr → not a param ref
-                        };
-                        pairs.push((joint_ident, value_ident));
-                    }
-                }
-
-                // Telemetry: surface zero-contribution snapshots.  Fires when:
-                // (a) args[1] is not a ListLiteral, or
-                // (b) the list had no valid bind(Ident, Ident) entries.
-                // Helps operators distinguish stdlib snapshot/bind from any
-                // user-defined function that shadows the same name.
-                if pairs.len() == pairs_before {
-                    tracing::debug!(
-                        target: "reify_gui::engine",
-                        arg_count = args.len(),
-                        "snapshot() textual match contributed zero bind pairs \
-                         (potential user-shadowed snapshot or malformed bind list)"
-                    );
-                }
-            }
-            // Recurse into all args regardless (snapshot may be nested).
-            for arg in args {
-                collect_snapshot_bind_pairs(arg, pairs);
-            }
-        }
-        ExprKind::BinOp { left, right, .. } => {
-            collect_snapshot_bind_pairs(left, pairs);
-            collect_snapshot_bind_pairs(right, pairs);
-        }
-        ExprKind::UnOp { operand, .. } => {
-            collect_snapshot_bind_pairs(operand, pairs);
-        }
-        ExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_snapshot_bind_pairs(condition, pairs);
-            collect_snapshot_bind_pairs(then_branch, pairs);
-            collect_snapshot_bind_pairs(else_branch, pairs);
-        }
-        ExprKind::ListLiteral(elems) => {
+        // Extract bind() entries from the second argument (the bindings list).
+        if let ExprKind::ListLiteral(elems) = &args[1].kind {
             for elem in elems {
-                collect_snapshot_bind_pairs(elem, pairs);
+                let (bind_name, bind_args) = match &elem.kind {
+                    ExprKind::FunctionCall { name, args } => (name, args),
+                    _ => continue,
+                };
+                if bind_name != "bind" || bind_args.len() != 2 {
+                    continue;
+                }
+                let joint_ident = match &bind_args[0].kind {
+                    ExprKind::Ident(s) => s.clone(),
+                    _ => continue,
+                };
+                let value_ident = match &bind_args[1].kind {
+                    ExprKind::Ident(s) => s.clone(),
+                    _ => continue, // literal or complex expr → not a param ref
+                };
+                pairs.push((joint_ident, value_ident));
             }
         }
-        // Leaf nodes (Ident, literals, etc.) have no sub-expressions to recurse.
-        _ => {}
-    }
+
+        // Telemetry: surface zero-contribution snapshots.  Fires when:
+        // (a) args[1] is not a ListLiteral, or
+        // (b) the list had no valid bind(Ident, Ident) entries.
+        // Helps operators distinguish stdlib snapshot/bind from any
+        // user-defined function that shadows the same name.
+        if pairs.len() == pairs_before {
+            tracing::debug!(
+                target: "reify_gui::engine::snapshot_bind_pairs",
+                arg_count = args.len(),
+                "snapshot() textual match contributed zero bind pairs \
+                 (potential user-shadowed snapshot or malformed bind list)"
+            );
+        }
+    });
 }
 
 // ---- terminal-mechanism filter helpers ----------------------------------------
@@ -1417,8 +1456,8 @@ fn collect_snapshot_bind_pairs(
 /// argument) by any `body()` call within the named structure.
 ///
 /// Walks every `MemberDecl::Let` expression in the first structure whose name
-/// matches `structure_name`, then delegates to `collect_body_first_args` for
-/// the recursive AST search.
+/// matches `structure_name` and delegates the per-expression AST traversal to
+/// [`walk_function_calls`].
 ///
 /// The returned set is used by `get_mechanism_descriptors` to skip intermediate
 /// mechanism cells — only the terminal cell (not consumed by any `body()` call)
@@ -1432,6 +1471,7 @@ fn collect_consumed_mechanism_idents(
     parsed: &reify_syntax::ParsedModule,
     structure_name: &str,
 ) -> HashSet<String> {
+    use reify_syntax::ExprKind;
     let mut consumed = HashSet::new();
 
     for decl in &parsed.declarations {
@@ -1445,60 +1485,21 @@ fn collect_consumed_mechanism_idents(
                 reify_syntax::MemberDecl::Let(l) => &l.value,
                 _ => continue,
             };
-            collect_body_first_args(expr, &mut consumed);
+            walk_function_calls(expr, &mut |name, args| {
+                if name == "body" {
+                    if let Some(first_arg) = args.first() {
+                        if let ExprKind::Ident(s) = &first_arg.kind {
+                            consumed.insert(s.clone());
+                        }
+                    }
+                }
+            });
         }
         // Stop at the first matching structure; names are unique within a module.
         break;
     }
 
     consumed
-}
-
-/// Recursively search `expr` for `body(mech_in, …)` calls and record the
-/// first argument when it is a bare `Ident`.
-///
-/// Mirrors the recursion shape of `collect_snapshot_bind_pairs`.
-fn collect_body_first_args(
-    expr: &reify_syntax::Expr,
-    consumed: &mut HashSet<String>,
-) {
-    use reify_syntax::ExprKind;
-    match &expr.kind {
-        ExprKind::FunctionCall { name, args } => {
-            if name == "body" && !args.is_empty()
-                && let ExprKind::Ident(s) = &args[0].kind
-            {
-                consumed.insert(s.clone());
-            }
-            // Recurse into all args regardless (body may be nested).
-            for arg in args {
-                collect_body_first_args(arg, consumed);
-            }
-        }
-        ExprKind::BinOp { left, right, .. } => {
-            collect_body_first_args(left, consumed);
-            collect_body_first_args(right, consumed);
-        }
-        ExprKind::UnOp { operand, .. } => {
-            collect_body_first_args(operand, consumed);
-        }
-        ExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_body_first_args(condition, consumed);
-            collect_body_first_args(then_branch, consumed);
-            collect_body_first_args(else_branch, consumed);
-        }
-        ExprKind::ListLiteral(elems) => {
-            for elem in elems {
-                collect_body_first_args(elem, consumed);
-            }
-        }
-        // Leaf nodes (Ident, literals, etc.) have no sub-expressions to recurse.
-        _ => {}
-    }
 }
 
 // ---- build_preview_gui_state -------------------------------------------------
