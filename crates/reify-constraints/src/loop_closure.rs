@@ -678,6 +678,119 @@ mod tests {
         }
     }
 
+    // ── Tolerance plumbing tests (step-19) ──────────────────────────────
+
+    #[test]
+    fn solve_loop_closure_loose_position_tol_converges_quickly() {
+        // chain_a fixed at 0.5m; chain_b's free var starts at 0.499m.
+        // Initial residual ~1mm in linear x. With a loose 1e-3 m tolerance,
+        // we should converge ~immediately (Newton solves the linear case
+        // in 1 iter to machine precision anyway).
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.499];
+        let free_b = vec![0];
+        let strategy = StartStrategy::WarmStart(vec![0.499]);
+        let cfg_loose = NewtonConfig {
+            tol_pos_m: 1e-3,
+            tol_rot_rad: 1e-3,
+            max_iters: 100,
+        };
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg_loose,
+        );
+        match outcome {
+            NewtonOutcome::Converged { residual_norm, .. } => {
+                assert!(
+                    residual_norm < 1e-3,
+                    "residual_norm should be below loose tol 1e-3, got {residual_norm}"
+                );
+            }
+            other => panic!("expected Converged with loose tol, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_loop_closure_tight_tol_still_converges() {
+        // Same starting point, but tight 1e-9 tolerance. Linear case →
+        // Newton finds the root in 1 step regardless of tol.
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.499];
+        let free_b = vec![0];
+        let strategy = StartStrategy::WarmStart(vec![0.499]);
+        let cfg_tight = NewtonConfig {
+            tol_pos_m: 1e-9,
+            tol_rot_rad: 1e-9,
+            max_iters: 100,
+        };
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg_tight,
+        );
+        match outcome {
+            NewtonOutcome::Converged { residual_norm, .. } => {
+                assert!(
+                    residual_norm < 1e-9,
+                    "residual_norm should be below tight tol 1e-9, got {residual_norm}"
+                );
+            }
+            other => panic!("expected Converged with tight tol, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newton_solve_split_tolerance_rotational_below_linear_above_not_converged() {
+        // Build a contrived residual closure where:
+        //   linear residual = 1e-2 (above tol_pos_m = 1e-3)
+        //   angular residual = 1e-5 (below tol_rot_rad = 1e-3)
+        // Convergence rule MUST require BOTH to be below their respective
+        // tolerances — so this should NOT report Converged, even though one
+        // sub-norm is below tol.
+        // We use max_iters=0 so we cleanly exit with NotConverged at the
+        // initial residual (without taking a Newton step that would change
+        // the analysis).
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-3,
+            tol_rot_rad: 1e-3,
+            max_iters: 0,
+        };
+        let closure = |_x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            // [ω_x, ω_y, ω_z, v_x, v_y, v_z]
+            let r = vec![1e-5, 0.0, 0.0, 1e-2, 0.0, 0.0];
+            let j = vec![vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0]];
+            Some((r, j))
+        };
+        let outcome = newton_solve(vec![0.0], closure, &cfg);
+        match outcome {
+            NewtonOutcome::NotConverged { residual_norm, .. } => {
+                // residual_norm = sqrt((1e-5)^2 + (1e-2)^2) ≈ 1e-2
+                assert!(
+                    (residual_norm - 1e-2).abs() < 1e-7,
+                    "expected residual_norm ≈ 1e-2, got {residual_norm}"
+                );
+            }
+            other => panic!(
+                "linear above tol must NOT converge even when angular below tol; got {other:?}"
+            ),
+        }
+    }
+
     #[test]
     fn solve_loop_closure_warm_start_converges_single_prismatic() {
         // chain_a fixed at 0.5m; chain_b's free var should converge there.
