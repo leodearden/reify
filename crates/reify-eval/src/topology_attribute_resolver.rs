@@ -111,8 +111,8 @@ pub fn resolve_unique_by_attribute(
     table: &TopologyAttributeTable,
     candidates: &[GeometryHandleId],
     query: &AttributeQuery,
-    _selector_span: SourceSpan,
-    _diagnostics: &mut Vec<Diagnostic>,
+    selector_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
     // Imported-geometry fallback pre-pass (step-8). Per PRD line 68: if
     // NONE of the supplied candidates carry an attribute entry, the result
@@ -159,6 +159,21 @@ pub fn resolve_unique_by_attribute(
             return AttributeResolution::Resolved(found.unwrap());
         }
     }
+    // Zero-match diagnostic emission (step-10). At least one candidate
+    // carries an entry (the fallback pre-pass already eliminated the
+    // imported-geometry case) but no branch produced a unique match. The
+    // multi-match user_label early-return above bypasses this on purpose;
+    // step-12 will refactor it to share this emission point with a
+    // count-aware message.
+    diagnostics.push(
+        Diagnostic::warning(
+            "topology-attribute selector matched 0 sub-shapes \
+             (expected exactly 1; topology may have changed)"
+                .to_string(),
+        )
+        .with_code(DiagnosticCode::TopologyAttributeStale)
+        .with_label(DiagnosticLabel::new(selector_span, "selector call")),
+    );
     AttributeResolution::Unresolved
 }
 
