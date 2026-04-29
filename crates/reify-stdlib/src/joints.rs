@@ -846,7 +846,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::Value;
+    use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
 
     fn axis_x_unit() -> Value {
@@ -3233,6 +3233,49 @@ mod tests {
             1e-12,
             "planar non-axis-aligned X translation",
         );
+    }
+
+    // ── transform_at on planar: invalid motion-var validation (step-11) ─────
+
+    #[test]
+    fn transform_at_planar_invalid_motion_var_returns_undef() {
+        let joint = planar_xy_joint();
+
+        // Mass-dimensioned scalar (wrong dimension for any element)
+        let mass_scalar = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+
+        let cases: &[(&str, Value)] = &[
+            // (a) wrong List length
+            ("List of 2",   Value::List(vec![Value::length(0.0), Value::length(0.0)])),
+            ("List of 4",   Value::List(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0), Value::Real(0.0)])),
+            ("List of 0",   Value::List(vec![])),
+            // (b) wrong container type
+            ("bare Real",   Value::Real(0.0)),
+            ("Vector(3)",   Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0)])),
+            ("bare Map",    Value::Map(Default::default())),
+            // (c) wrong dimension: element 0 is Angle (should be Length)
+            ("elem[0] is Angle",   Value::List(vec![Value::angle(0.0), Value::length(0.0), Value::angle(0.0)])),
+            // (d) wrong dimension: element 2 is Length (should be Angle)
+            ("elem[2] is Length",  Value::List(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)])),
+            // (e) wrong dimension: mass-typed element
+            ("elem[0] mass",       Value::List(vec![mass_scalar.clone(), Value::length(0.0), Value::angle(0.0)])),
+            ("elem[1] mass",       Value::List(vec![Value::length(0.0), mass_scalar.clone(), Value::angle(0.0)])),
+            ("elem[2] mass",       Value::List(vec![Value::length(0.0), Value::length(0.0), mass_scalar.clone()])),
+            // (f) Undef element propagates Undef result
+            ("elem[0] Undef",      Value::List(vec![Value::Undef, Value::length(0.0), Value::angle(0.0)])),
+            ("elem[1] Undef",      Value::List(vec![Value::length(0.0), Value::Undef, Value::angle(0.0)])),
+            ("elem[2] Undef",      Value::List(vec![Value::length(0.0), Value::length(0.0), Value::Undef])),
+        ];
+
+        for (label, motion_vars) in cases {
+            assert!(
+                eval_builtin("transform_at", &[joint.clone(), motion_vars.clone()]).is_undef(),
+                "transform_at(planar, {label}) should return Undef but didn't"
+            );
+        }
     }
 
     // ── planar constructor: validation surface (step-3) ───────────────────────
