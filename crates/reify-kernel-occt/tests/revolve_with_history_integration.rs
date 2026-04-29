@@ -230,35 +230,39 @@ fn full_revolve_with_history_reports_no_caps() {
         history.end_cap_face_indices
     );
 
-    // (c) face_generated: under FULL revolution, OCCT's
-    // `BRepPrimAPI_MakeRevol::Generated(edge)` reliably reports only the
-    // edges PARALLEL to the rotation axis (the 2 axial edges of the rect),
-    // because they generate truly new lateral cylindrical surfaces. The
-    // edges PERPENDICULAR to the axis (the 2 radial edges) sweep into flat
-    // annular disk faces that close up with the swept solid; OCCT does
-    // not return those faces from `Generated()` under angle == 2π
-    // (verified empirically against OCCT 7.5.x bundled with FreeCAD).
-    //
-    // The result solid still contains all 4 lateral faces (`extract_faces`
-    // returns 4 faces below) — the 2 unaccounted faces simply lack
-    // provenance metadata. Selector stability for those faces is a
-    // follow-up: future work can synthesize provenance via a post-pass
-    // that matches result faces to profile edges by orientation, or
-    // (preferred) by upgrading to OCCT's BRepTools_History interface
-    // which returns more complete records than the legacy MakeShape API.
-    //
-    // We therefore assert ≥2 (the axial cylindrical surfaces), which is
-    // OCCT's reliable contract for full revolution. The PARTIAL case
-    // (test above) asserts the stronger ≥4 guarantee that holds when
-    // angle ∈ (0, 2π).
+    // (c) face_generated: the rect profile has 4 edges — 2 axial (parallel
+    // to Z, reported by OCCT's Generated() for cylindrical surfaces) and
+    // 2 radial (perpendicular to Z, synthesized by the C++ post-pass in
+    // make_revolve_with_history for annular-disk surfaces, task 2636).
+    // Every profile edge produces exactly one face_generated record.
     assert!(
-        history.face_generated.len() >= 2,
-        "expected ≥2 generated faces (2 axial profile edges → 2 cylindrical \
-         revolved faces under full revolution; see test comment for the \
-         radial-edge gap), got {} ({:?})",
+        history.face_generated.len() >= 4,
+        "expected ≥4 generated faces (4 rect profile edges → 4 lateral faces: \
+         2 cylindrical from axial edges via OCCT Generated(), \
+         2 annular-disk from radial edges via C++ synthesis post-pass), \
+         got {} ({:?})",
         history.face_generated.len(),
         history.face_generated
     );
+
+    // Edge-coverage: every profile edge index {0, 1, 2, 3} must appear as
+    // a parent_subshape_index in at least one face_generated record.
+    {
+        use std::collections::HashSet;
+        let covered: HashSet<u32> = history
+            .face_generated
+            .iter()
+            .map(|r| r.parent_subshape_index)
+            .collect();
+        for expected_edge in 0u32..4 {
+            assert!(
+                covered.contains(&expected_edge),
+                "profile edge {} has no face_generated record; covered = {:?}",
+                expected_edge,
+                covered
+            );
+        }
+    }
 
     // (d) Result-side indices must be within the result face/edge maps.
     let result_faces = kernel
