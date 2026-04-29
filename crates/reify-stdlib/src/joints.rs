@@ -2893,6 +2893,16 @@ mod tests {
         Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
     }
 
+    fn planar_xy_joint() -> Value {
+        eval_builtin("planar", &[
+            axis_x_unit(),
+            axis_y_unit(),
+            length_range_0_to_1m(),
+            length_range_0_to_1m(),
+            angle_range_0_to_pi(),
+        ])
+    }
+
     // ── planar constructor: happy path (step-1) ───────────────────────────────
 
     #[test]
@@ -2953,6 +2963,83 @@ mod tests {
              got keys: {:?}",
             map.keys().collect::<Vec<_>>()
         );
+    }
+
+    // ── planar constructor: validation surface (step-3) ───────────────────────
+
+    #[test]
+    fn planar_invalid_args_returns_undef() {
+        // Axis helpers for validation cases
+        let ax = axis_x_unit();  // [1, 0, 0]
+        let ay = axis_y_unit();  // [0, 1, 0]
+        let rx = length_range_0_to_1m();
+        let ry = length_range_0_to_1m();
+        let rt = angle_range_0_to_pi();
+
+        // Wrong dimensioned axis (LENGTH-typed Vector3)
+        let length_axis = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        // 2-component axis
+        let axis2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        // Non-vector axis
+        let non_vec = Value::Real(1.0);
+        // Zero axis
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        // NaN axis
+        let nan_axis = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        // Non-perpendicular: axis_y = [1,1,0] — dot with [1,0,0] = 1/√2 ≠ 0
+        let non_perp_y = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        // Parallel: axis_y = axis_x = [1,0,0]
+        let parallel_y = axis_x_unit();
+        // Angle-dimensioned range where LENGTH expected
+        let angle_range = angle_range_0_to_pi();
+        // Length-dimensioned range where ANGLE expected
+        let length_range = length_range_0_to_1m();
+        // Unbounded range
+        let unbounded = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+
+        let cases: &[(&str, &[Value])] = &[
+            // (a) wrong arg counts
+            ("0 args",  &[]),
+            ("1 arg",   &[ax.clone()]),
+            ("4 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone()]),
+            ("6 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone(), Value::Real(0.0)]),
+            // (b) axis_x invalid variants
+            ("axis_x: bare Real",          &[non_vec.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_x: 2-component",        &[axis2.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_x: LENGTH-dimensioned", &[length_axis.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_x: zero",               &[zero_axis.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_x: NaN",                &[nan_axis.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            // (c) axis_y invalid variants (axis_x valid = [1,0,0])
+            ("axis_y: bare Real",          &[ax.clone(), non_vec.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_y: 2-component",        &[ax.clone(), axis2.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_y: LENGTH-dimensioned", &[ax.clone(), length_axis.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_y: zero",               &[ax.clone(), zero_axis.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            ("axis_y: NaN",                &[ax.clone(), nan_axis.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            // (d) non-perpendicular axes
+            ("non-perpendicular axes",     &[ax.clone(), non_perp_y.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            // (e) parallel axes (degenerate + fails perpendicularity)
+            ("parallel axes (axis_y = axis_x)", &[ax.clone(), parallel_y.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            // (f) range_x wrong dimension
+            ("range_x: Angle-dimensioned", &[ax.clone(), ay.clone(), angle_range.clone(), ry.clone(), rt.clone()]),
+            // (g) range_y wrong dimension
+            ("range_y: Angle-dimensioned", &[ax.clone(), ay.clone(), rx.clone(), angle_range.clone(), rt.clone()]),
+            // (h) range_theta wrong dimension
+            ("range_theta: Length-dimensioned", &[ax.clone(), ay.clone(), rx.clone(), ry.clone(), length_range.clone()]),
+            // (i) unbounded range
+            ("range_x: unbounded",         &[ax.clone(), ay.clone(), unbounded.clone(), ry.clone(), rt.clone()]),
+        ];
+
+        for (label, args) in cases {
+            assert!(
+                eval_builtin("planar", args).is_undef(),
+                "planar({label}) should return Undef but didn't"
+            );
+        }
     }
 
 }
