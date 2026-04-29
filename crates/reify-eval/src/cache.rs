@@ -3530,5 +3530,16 @@ mod tests {
             let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
             assert_agree!(store, &trace, sr, g, "one-Pending");
         }
+
+        // Row 3: Failed input (exercises §9.2 carve-out — most likely divergence point)
+        {
+            let mut store = make_store(Freshness::Final, Freshness::Final);
+            store.mark_failed(
+                &NodeId::Value(b_id.clone()),
+                reify_types::ErrorRef::new("x"),
+            );
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "one-Failed");
+        }
     }
 }
