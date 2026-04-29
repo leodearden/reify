@@ -101,10 +101,8 @@ fn resolve_forall_elements(
                     .count_cell
                     .as_ref()
                     .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
-                let count = match count_opt {
-                    Some(n) => n,
-                    None => return None, // PRD criterion 7 first-half: count not yet determined.
-                };
+                // PRD criterion 7 first-half: count not yet determined — defer silently.
+                let count = count_opt?;
                 let coll_span = collection.span;
                 // PRD criterion 6 — count-cell-zero path: when `count == 0`,
                 // `(0..0).map(...).collect()` produces `Some(empty Vec)`.
