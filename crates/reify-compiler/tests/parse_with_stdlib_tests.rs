@@ -132,8 +132,8 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     expected.sort();
     assert_eq!(
         enum_accesses, expected,
-        "expected exactly the prelude EnumAccess entries (sorted), got: {:?}",
-        enum_accesses
+        "expected exactly the prelude EnumAccess entries (sorted), got: {:?}, expected: {:?}",
+        enum_accesses, expected
     );
 
     // (c) Zero error-severity diagnostics from compile_with_stdlib.
