@@ -902,4 +902,38 @@ mod tests {
         };
         assert!(eval_builtin("sweep", &[m, j, no_upper, n]).is_undef());
     }
+
+    // ── sweep_grid(m, []): empty-dims semantic ────────────────────────────
+
+    /// `sweep_grid(m, [])` returns a `Value::List` containing a single
+    /// snapshot — the all-midpoints snapshot — because the product of an
+    /// empty set of dim cardinalities is 1, and the implicit binding
+    /// list is empty so every joint falls back to its range midpoint via
+    /// `snapshot()`'s existing fallback. Pins the empty-grid semantic
+    /// per design notes in plan.json.
+    #[test]
+    fn sweep_grid_empty_dims_returns_single_all_midpoint_snapshot() {
+        let (m, _j) = make_one_body_prismatic_mechanism();
+        let result = eval_builtin("sweep_grid", &[m, Value::List(vec![])]);
+        let list = match result {
+            Value::List(l) => l,
+            other => panic!("expected Value::List, got {:?}", other),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "sweep_grid(m, []) should yield a single all-midpoints snapshot"
+        );
+
+        // The single snapshot has body 0 at the joint's range midpoint:
+        // range 0..1m → midpoint 0.5m on +X axis.
+        let [tx, ty, tz] = body_0_translation(&list[0]);
+        assert!(
+            (tx - 0.5).abs() < 1e-12,
+            "single all-midpoints snapshot body translation x should be 0.5 (midpoint of 0..1m), got {}",
+            tx
+        );
+        assert!(ty.abs() < 1e-12, "y should be 0, got {}", ty);
+        assert!(tz.abs() < 1e-12, "z should be 0, got {}", tz);
+    }
 }
