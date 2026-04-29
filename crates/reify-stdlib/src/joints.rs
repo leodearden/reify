@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::{tensor_components_f64, trig_input};
 use crate::orientation::normalize_quaternion;
@@ -246,16 +246,30 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 // (a unit quaternion). Per PRD task 4 design decision, the user
                 // constructs the quaternion via `orient_axis_angle` /
                 // `orient_euler` / `orient_quaternion` before calling
-                // `transform_at`; the spherical arm renormalises as
-                // defence-in-depth. step-6 stub: returns identity regardless of
-                // the second arg (modulo Undef propagation). Step-8 fills in
-                // the real quaternion path.
+                // `transform_at`; the spherical arm renormalises via
+                // `normalize_quaternion` as defence-in-depth against hand-built
+                // `Value::Orientation` carrying non-unit components. The result
+                // is `Value::Transform { rotation = normalised_q, translation = 0 }`.
+                //
+                // Non-`Value::Orientation` inputs (Undef, Real, Vector, List,
+                // bare Map, etc.) fall through to Undef. The same Undef applies
+                // when `quaternion_is_finite` rejects NaN/Inf components or
+                // `normalize_quaternion` rejects a zero-norm quaternion (the
+                // latter is documented at orientation.rs:560).
                 "spherical" => {
-                    if matches!(&args[1], Value::Undef) {
+                    let (w, x, y, z) = match &args[1] {
+                        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                        _ => return Some(Value::Undef),
+                    };
+                    if !quaternion_is_finite(w, x, y, z) {
                         return Some(Value::Undef);
                     }
+                    let rotation = match normalize_quaternion(w, x, y, z) {
+                        Some(q) => q,
+                        None => return Some(Value::Undef),
+                    };
                     Value::Transform {
-                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        rotation: Box::new(rotation),
                         translation: Box::new(Value::Vector(vec![
                             Value::length(0.0),
                             Value::length(0.0),
