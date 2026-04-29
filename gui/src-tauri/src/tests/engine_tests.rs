@@ -135,6 +135,43 @@ fn set_parameter_changes_width() {
     assert_eq!(width.unit, "mm");
 }
 
+// ---- get_mechanism_descriptors tests (steps 3, 5, 7, 9, 11, 23) -----------
+
+/// Helper: create a fresh empty EngineSession.
+fn make_session() -> EngineSession {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+#[test]
+fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
+    let session = make_session();
+    let descriptors = session.get_mechanism_descriptors();
+    assert!(
+        descriptors.is_empty(),
+        "expected empty descriptor list when no module is loaded, got {:?}",
+        descriptors
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket");
+
+    let descriptors = session.get_mechanism_descriptors();
+    assert!(
+        descriptors.is_empty(),
+        "bracket has no mechanisms; expected empty list, got {:?}",
+        descriptors
+    );
+}
+
 #[test]
 fn set_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
