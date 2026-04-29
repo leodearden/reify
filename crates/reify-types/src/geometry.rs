@@ -549,11 +549,59 @@ impl fmt::Display for BooleanOpParentsError {
 
 impl std::error::Error for BooleanOpParentsError {}
 
+/// Per-op attribute-history record returned by
+/// [`GeometryKernel::execute_with_history`].
+///
+/// Each variant carries the kernel-specific records needed by the
+/// `reify_eval` propagation helpers to seed `TopologyAttributeTable`
+/// entries for the result handles. `None` is the default for kernels
+/// that do not override `execute_with_history` and for ops that do not
+/// produce per-op attribute history (primitives, transforms, etc.).
+///
+/// Open for extension — task 5b adds `Sweep`/`Loft`, tasks 6-8 add
+/// primitive/local/boolean variants. Consumers must pattern-match
+/// exhaustively (no `Other(_)` escape hatch) so the dispatch site
+/// surfaces missing variants at compile time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeHistory {
+    /// No history available (default-impl path; non-attributable op).
+    None,
+    /// Records produced by `BRepPrimAPI_MakePrism` for `GeometryOp::Extrude`.
+    Extrude(SweepOpHistoryRecords),
+    /// Records produced by `BRepPrimAPI_MakeRevol` for `GeometryOp::Revolve`.
+    Revolve(SweepOpHistoryRecords),
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
     /// Execute a geometry operation, returning a handle to the result.
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError>;
+
+    /// Execute a geometry operation, returning the result handle paired with
+    /// any per-op attribute-history records the kernel produces.
+    ///
+    /// The default implementation forwards to `execute(op)` and returns
+    /// `AttributeHistory::None`, so non-overriding kernels (mocks,
+    /// non-OCCT backends) compile and behave identically to today's
+    /// `execute`-only path. Overriding kernels (e.g. `OcctKernelHandle`,
+    /// task 5a) return `AttributeHistory::Extrude` /
+    /// `AttributeHistory::Revolve` for ops where they have history records;
+    /// the engine's dispatch site (`Engine::execute_realization_ops`)
+    /// matches on the returned variant to seed `TopologyAttributeTable`
+    /// entries.
+    ///
+    /// This is intentionally additive (rather than replacing `execute`) so
+    /// the existing `execute(&op)` call sites can continue to use it
+    /// without acquiring an unwanted `AttributeHistory` they would
+    /// immediately discard.
+    fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        let handle = self.execute(op)?;
+        Ok((handle, AttributeHistory::None))
+    }
 
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
