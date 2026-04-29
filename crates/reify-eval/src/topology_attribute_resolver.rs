@@ -1265,4 +1265,76 @@ mod tests {
             diag.message
         );
     }
+
+    /// Pins the `windows(2).all(distinct)` predicate in `try_cluster_after_split`
+    /// for the **partially-duplicate** `[A, A, B]` mod_history cluster explicitly
+    /// called out in the function docstring.
+    ///
+    /// `windows(2)` yields pairs `(A, A)` and `(A, B)`. The first pair has
+    /// equal `mod_history` → `all(distinct)` returns `false` → the cluster is
+    /// rejected → the resolver falls through to `Unresolved` with the canonical
+    /// "matched N sub-shapes" diagnostic.
+    ///
+    /// A regression that weakened the predicate to a first/last-only comparison
+    /// (`cluster[0].mod_history != cluster.last().mod_history`) would evaluate
+    /// A vs B, find them distinct, and incorrectly return `AmbiguousAfterSplit`
+    /// with the "split children" message — silently breaking this case while
+    /// still passing the existing uniformly-identical-mod_history tests.
+    ///
+    /// Contrast with:
+    /// - `resolve_returns_ambiguous_after_split_when_role_idx_match_clusters_on_parent_key`
+    ///   (positive case): ALL `mod_history` values distinct → `AmbiguousAfterSplit`.
+    /// - `resolve_keeps_unresolved_when_matches_share_parent_key_and_mod_history`
+    ///   (negative case): ALL `mod_history` values identical → `Unresolved`.
+    /// This test: PARTIALLY duplicate `[A, A, B]` → must also yield `Unresolved`.
+    #[test]
+    fn resolve_keeps_unresolved_when_partial_duplicate_mod_history() {
+        let mut table = TopologyAttributeTable::default();
+        // A = split_index 0, B = split_index 1; pattern is [A, A, B].
+        // The (A, A) window has equal mod_history, so all(distinct) → false.
+        let mod_entry_a = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 0,
+        }];
+        let mod_entry_b = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 1,
+        }];
+        let mut h60 = attr(Role::Side, 0, None);
+        h60.mod_history = mod_entry_a.clone(); // A
+        let mut h61 = attr(Role::Side, 0, None);
+        h61.mod_history = mod_entry_a; // A (duplicate)
+        let mut h62 = attr(Role::Side, 0, None);
+        h62.mod_history = mod_entry_b; // B
+        table.record(h(60), h60);
+        table.record(h(61), h61);
+        table.record(h(62), h62);
+        let candidates = [h(60), h(61), h(62)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(
+            result,
+            AttributeResolution::Unresolved,
+            "partial-duplicate [A,A,B] mod_history → Unresolved, not AmbiguousAfterSplit"
+        );
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 3 sub-shapes"),
+            "message should contain 'matched 3 sub-shapes' (canonical sub-form), got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("split children"),
+            "partial-duplicate case must NOT use the split-children sub-form, got: {}",
+            diag.message
+        );
+    }
 }
