@@ -3397,4 +3397,22 @@ mod tests {
         }
     }
 
+    // ── JOINT_KINDS membership regression pin (step-15) ──────────────────────
+    //
+    // Asserts that `"planar"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts planar joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests (`transform_at_dispatches_for_every_joint_kind`
+    //     and `joint_jacobian_dispatches_for_every_joint_kind`) iterate over the planar kind.
+    //
+    // This test fails until step-16 appends `"planar"` to `JOINT_KINDS`.
+    #[test]
+    fn joint_kinds_includes_planar() {
+        assert!(
+            JOINT_KINDS.contains(&"planar"),
+            "\"planar\" must be in JOINT_KINDS so that is_joint_value accepts planar joints \
+             and the dispatch-coverage tests exercise the planar arms in transform_at and \
+             joint_jacobian_value. Add \"planar\" to the JOINT_KINDS const."
+        );
+    }
+
 }
