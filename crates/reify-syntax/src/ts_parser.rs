@@ -3570,16 +3570,21 @@ mod tests {
     }
 
     /// (d) Regression guard for the `HashSet<&'a str>` borrow-through contract
-    /// (task 2558).  Pins three invariants simultaneously:
+    /// (task 2558).  Pins two invariants:
     ///
-    /// 1. `&[&'static str]` API surface: the `static PRELUDE` slice has element
-    ///    type `&'static str`, exercising the tightened parameter type.
-    /// 2. Same prelude slice can be reused across TWO parse calls without
-    ///    re-allocating Strings — the OnceLock memoisation in `parse_with_stdlib`
-    ///    is sound only if the parser itself doesn't re-allocate per call.
-    /// 3. Mixed-source resolution: in the second call a source-declared enum
+    /// 1. Functional correctness when the same `static` prelude slice is reused
+    ///    across two consecutive `parse_with_prelude_enums` calls
+    ///    (lifetime-mixing regression: both calls must resolve correctly without
+    ///    interference from a prior call's internal state).
+    /// 2. Mixed-source resolution: in the second call a source-declared enum
     ///    (`SourceEnum`) and a prelude-supplied enum (`PreludeEnumB`) must BOTH
     ///    lower to `EnumAccess` in the same parse.
+    ///
+    /// Note: the `&[&'static str]` API-surface constraint is enforced by the
+    /// compiler — a non-`'static` borrow at a call site will not compile.  This
+    /// test does not add dedicated coverage for that property (the compiler is
+    /// the authoritative check).  The no-allocation guarantee is a manual
+    /// profiling check (per task description), not encoded here.
     #[test]
     fn parse_with_prelude_enums_borrows_static_names_across_calls() {
         static PRELUDE: &[&str] = &["PreludeEnumA", "PreludeEnumB"];
