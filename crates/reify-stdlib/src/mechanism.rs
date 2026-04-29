@@ -1047,6 +1047,47 @@ mod tests {
         );
     }
 
+    // ── duplicate-solid detection ────────────────────────────────────────
+
+    /// `body()` calls that try to insert the same solid value twice
+    /// produce an errored Mechanism Map with `error="duplicate_solid"`
+    /// and a non-empty `error_message`.
+    ///
+    /// v0.1 detects duplicates by **structural** `Value` equality —
+    /// the docs §13.2 spec says "by referential identity" but Reify's
+    /// Value model only exposes structural equality (a clone is
+    /// `Value::Eq` to its source). Tracked in the design-decisions
+    /// section of plan.json. The follow-on docs task (#2538) will
+    /// reconcile the spec wording with the v0.1 implementation.
+    #[test]
+    fn duplicate_solid_emits_error() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid = Value::String("solidA".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid.clone(), j_a]);
+        // Reuse `solid` (same Value::String, structurally equal) — the
+        // builder must reject this as a duplicate.
+        let m2 = eval_builtin("body", &[m1, solid, j_b]);
+
+        let map = match m2 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("duplicate_solid".to_string())),
+            "error field should be 'duplicate_solid'"
+        );
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(s)) => {
+                assert!(!s.is_empty(), "error_message should be non-empty");
+            }
+            other => panic!("expected error_message String, got {:?}", other),
+        }
+    }
+
     // ── body_id_of() lookup ──────────────────────────────────────────────
 
     /// `body_id_of(m, solid)` returns `Int(body.id)` for the first body
