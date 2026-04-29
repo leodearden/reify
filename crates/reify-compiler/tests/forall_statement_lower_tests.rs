@@ -843,6 +843,15 @@ structure def S {
     assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
 
     // (e) Body shape: Connect with substituted port-name templates.
+    //
+    // The fixture deliberately uses the simple form (no `via T(args...)`,
+    // no explicit port-mappings) so this single test pins:
+    //   * `params.is_empty()`,
+    //   * `port_mappings.is_empty()`,
+    //   * `connector_type.is_none()`.
+    // A richer fixture exercising connector params is left as future
+    // coverage; the per-element substitution path is shared with the
+    // resolved (non-deferred) Connect arm, which is already tested.
     match &ft.body {
         CompiledForallBody::Connect {
             left_port_template,
