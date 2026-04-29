@@ -1,4 +1,6 @@
-//! Phase A of the `auto` type-parameter resolution algorithm.
+//! Phases A and B of the `auto` type-parameter resolution algorithm.
+//!
+//! # Phase A — Candidate Enumeration
 //!
 //! Implements the **candidate enumeration** step described in
 //! `docs/prds/auto-type-param-resolution.md` and `docs/reify-language-spec.md`
@@ -9,25 +11,52 @@
 //! [`reify_types::DiagnosticCode::AutoTypeParamPoolOverflow`] error is emitted
 //! and the (alphabetically-first) capped list is returned to the caller.
 //!
-//! # Scope
+//! # Phase B — Per-Candidate Feasibility Filter
 //!
-//! Phase A is delivered as a **pure utility module**: the parser does not yet
-//! accept `auto: TraitName` syntax inside `type_arg_list`
+//! Filters the candidates produced by Phase A down to those that do not
+//! provably falsify any of the parameterized template's **top-level
+//! (unguarded) constraints**. Public surface:
+//!
+//! - [`filter_feasible_candidates`] — core filter function.
+//! - [`FeasibilityResult`] — two-arm result enum (`Empty` / `Feasible`).
+//! - [`RejectedCandidate`] — candidate name + the violated constraint ids.
+//!
+//! Feasibility predicate (architecture §2.5 monotonic-feasible):
+//! `feasible(c) ≡ satisfaction != Violated`. Both `Satisfied` and
+//! `Indeterminate` count as feasible; only `Violated` causes rejection.
+//!
+//! Explicit scope cuts for Phase B:
+//! 1. **Top-level constraints only.** `template.constraints` is checked;
+//!    guarded-group constraints are NOT collected here (that lives in
+//!    `reify-eval`; guard-aware filtering is a follow-up task).
+//! 2. **No type-substitution mechanics.** With an empty `ValueMap`, the
+//!    candidate name does not yet vary constraint outcomes. A future task
+//!    will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
+//!    and supply per-candidate resolved defaults.
+//! 3. **Monotonic `Indeterminate = feasible`.** Per architecture §2.5,
+//!    `Undef` cells produce `Indeterminate` — this is NOT a rejection signal.
+//!    Adding values can only flip `Indeterminate → Satisfied/Violated`, never
+//!    the reverse, preserving the architecture's monotonicity guarantee.
+//!
+//! # Common Scope
+//!
+//! Both phases are delivered as **pure utility modules**: the parser does not
+//! yet accept `auto: TraitName` syntax inside `type_arg_list`
 //! (`tree-sitter-reify/grammar.js:601-605` only permits `$.type_expr`), so
 //! end-to-end source-level resolution is impossible until a follow-up parser
-//! task lands the new syntax. This module's [`enumerate_candidates`] function
-//! and [`CandidateEnumeration`] result enum are unit-tested against
-//! compiler-built `template_registry`/`trait_registry` registries; a future
-//! task will wire them into the compile pipeline once the parser/AST learn
-//! `auto:` in type-arg position.
+//! task lands the new syntax. Functions in this module are unit-tested against
+//! compiler-built registries; a future task will wire them into the compile
+//! pipeline once the parser/AST learn `auto:` in type-arg position.
 //!
-//! Phases B (per-candidate feasibility filter), C (selection logic /
-//! strict-vs-free), and D (topology trigger) are explicitly deferred to
-//! follow-up tasks.
+//! Phases C (selection logic / strict-vs-free) and D (topology trigger) are
+//! explicitly deferred to follow-up tasks.
 
 use std::collections::HashMap;
 
-use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_types::{
+    CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId, Diagnostic,
+    DiagnosticCode, DiagnosticLabel, SourceSpan,
+};
 
 use crate::entity::satisfies_trait_bound;
 use crate::types::{CompiledTrait, TopologyTemplate};
@@ -181,5 +210,186 @@ pub fn enumerate_candidates(
         CandidateEnumeration::Overflow(collected)
     } else {
         CandidateEnumeration::Found(collected)
+    }
+}
+
+// ─── Phase B: per-candidate feasibility filter ────────────────────────────
+
+/// A candidate that was rejected by Phase B's feasibility filter.
+///
+/// Carries the candidate's name and the `ConstraintNodeId`s of every
+/// constraint whose result was [`reify_types::Satisfaction::Violated`].
+/// Only violated constraints are recorded here — `Satisfied` and
+/// `Indeterminate` results do not appear in this list (architecture §2.5
+/// monotonic-feasible: undef does not falsify).
+///
+/// Future Phase C can use this record to surface an
+/// `E_AUTO_TYPE_PARAM_NO_CANDIDATE` diagnostic with per-candidate
+/// rejection reasons, or re-run the checker for richer diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedCandidate {
+    /// The name of the candidate (FQN, as produced by Phase A).
+    pub name: String,
+    /// The constraint node ids whose satisfaction was `Violated` for this
+    /// candidate. Non-empty by construction (a candidate that has zero
+    /// violated constraints is accepted, not rejected).
+    pub violated_constraints: Vec<ConstraintNodeId>,
+}
+
+/// The result of [`filter_feasible_candidates`].
+///
+/// Two arms map to two downstream actions for Phase C (selection):
+/// - [`FeasibilityResult::Empty`] → all candidates were rejected; selection
+///   phase will emit `E_AUTO_TYPE_PARAM_NO_CANDIDATE` with the rejection
+///   reasons from the `rejected` Vec. **No** diagnostic is emitted by
+///   `filter_feasible_candidates` itself.
+/// - [`FeasibilityResult::Feasible`] → at least one candidate survived;
+///   `accepted.len()` drives Phase C's 0 / 1 / ≥2 dispatch.
+///
+/// The shape mirrors Phase A's [`CandidateEnumeration`] (Empty vs. Found)
+/// intentionally. Both `accepted` and `rejected` preserve the input
+/// (alphabetical) order from Phase A.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeasibilityResult {
+    /// Every candidate was rejected. Selection phase will emit
+    /// `E_AUTO_TYPE_PARAM_NO_CANDIDATE`; this function emits no diagnostic.
+    Empty {
+        /// The rejected candidates in input order, each paired with the
+        /// violated constraint ids that caused rejection.
+        rejected: Vec<RejectedCandidate>,
+    },
+    /// At least one candidate is feasible. `accepted.len()` drives Phase C.
+    Feasible {
+        /// Candidates that passed the feasibility filter, in input order.
+        accepted: Vec<String>,
+        /// Candidates that did not pass, in input order, paired with the
+        /// violated constraint ids.
+        rejected: Vec<RejectedCandidate>,
+    },
+}
+
+/// Phase B of `auto:` type-parameter resolution: filter the candidates
+/// produced by Phase A's [`enumerate_candidates`] down to those that do
+/// not provably falsify any of the parameterized template's top-level
+/// constraints.
+///
+/// # Feasibility predicate
+///
+/// For each candidate a [`ConstraintInput`] is built with:
+/// - `constraints`: the template's top-level (unguarded) constraints,
+///   one entry per [`crate::types::CompiledConstraint`].
+/// - `values`: an empty [`reify_types::ValueMap`] (every cell `Undef`).
+/// - `functions`: the supplied compiled functions.
+/// - `determinacy`: `None`.
+///
+/// Then `constraint_checker.check(&input)` is called. A candidate is
+/// **accepted** iff every result has
+/// `satisfaction != `[`reify_types::Satisfaction::Violated`]`
+/// (i.e., both `Satisfied` and `Indeterminate` count as feasible —
+/// architecture §2.5: "undef does not falsify"). A candidate is
+/// **rejected** when at least one result is `Violated`; the violated
+/// constraint node ids are recorded in the [`RejectedCandidate`] entry.
+///
+/// # Scope (explicit deferrals)
+///
+/// - **Top-level constraints only.** `template.constraints` is checked;
+///   guarded-group constraints (`template.guarded_groups[*].constraints`)
+///   are NOT visited here. Guard-aware filtering belongs to the eval-side
+///   pipeline and is deferred to a follow-up task.
+/// - **No type-substitution mechanics.** With an empty `ValueMap`, the
+///   candidate name does not yet vary constraint outcomes. A future task
+///   will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
+///   in value-cell types and supply per-candidate resolved defaults.
+/// - **No parser/AST integration.** Same as Phase A — pure utility function.
+///
+/// # Preconditions
+///
+/// Callers are expected to supply a **non-empty** `candidates` slice. Phase A's
+/// [`CandidateEnumeration::Found`] arm guarantees 1..=[`MAX_AUTO_TYPE_PARAM_CANDIDATES`]
+/// entries, so in normal usage this is always satisfied. Passing an empty slice
+/// is handled gracefully — the function returns `FeasibilityResult::Empty { rejected: [] }`
+/// immediately without invoking the checker — but this degenerate case has no
+/// semantic meaning for the selection phase and callers should avoid it.
+///
+/// # Determinism
+///
+/// Input order is preserved in both `accepted` and `rejected`; callers are
+/// expected to supply candidates in alphabetical order (as Phase A does),
+/// so the output vectors inherit that alphabetical ordering.
+///
+/// # Satisfaction → feasibility mapping
+///
+/// The three-arm `Satisfaction` enum maps to two feasibility outcomes:
+///
+/// | `Satisfaction` arm   | Feasibility verdict | Why                                   |
+/// |----------------------|---------------------|---------------------------------------|
+/// | `Satisfied`          | **Feasible**        | Constraint is provably satisfied      |
+/// | `Indeterminate`      | **Feasible**        | Undef does not falsify (arch §2.5)    |
+/// | `Violated`           | **Infeasible**      | Constraint is provably falsified      |
+///
+/// Only `Violated` appears in [`RejectedCandidate::violated_constraints`];
+/// `Satisfied` and `Indeterminate` ids are never recorded there.
+pub fn filter_feasible_candidates(
+    candidates: &[String],
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+) -> FeasibilityResult {
+    use reify_types::{Satisfaction, ValueMap};
+
+    if candidates.is_empty() {
+        return FeasibilityResult::Empty {
+            rejected: Vec::new(),
+        };
+    }
+
+    let empty_values = ValueMap::new();
+
+    // Build the template's constraint list once — it does not change across
+    // candidates in Phase B.  When the deferred type-substitution pass lands
+    // (substituting Type::TypeParam(T) → Type::StructureRef(candidate)), this
+    // will need to move back inside the loop with per-candidate ValueMap setup.
+    let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        parameterized_template
+            .constraints
+            .iter()
+            .map(|c| (c.id.clone(), &c.expr))
+            .collect();
+
+    let mut accepted: Vec<String> = Vec::new();
+    let mut rejected: Vec<RejectedCandidate> = Vec::new();
+
+    for candidate in candidates {
+        let input = ConstraintInput {
+            constraints: constraints_template.clone(),
+            values: &empty_values,
+            functions,
+            determinacy: None,
+        };
+
+        let results = constraint_checker.check(&input);
+
+        // Collect only the ids that are Violated — Satisfied and
+        // Indeterminate both pass the feasibility predicate.
+        let violated: Vec<ConstraintNodeId> = results
+            .into_iter()
+            .filter(|r| r.satisfaction == Satisfaction::Violated)
+            .map(|r| r.id)
+            .collect();
+
+        if violated.is_empty() {
+            accepted.push(candidate.clone());
+        } else {
+            rejected.push(RejectedCandidate {
+                name: candidate.clone(),
+                violated_constraints: violated,
+            });
+        }
+    }
+
+    if accepted.is_empty() {
+        FeasibilityResult::Empty { rejected }
+    } else {
+        FeasibilityResult::Feasible { accepted, rejected }
     }
 }
