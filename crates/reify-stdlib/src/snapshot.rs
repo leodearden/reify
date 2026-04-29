@@ -66,6 +66,16 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             {
                 return Some(Value::Undef);
             }
+            // Errored-mechanism short-circuit (mirrors `body_id_of`'s
+            // arm in mechanism.rs): a user who chains `snapshot()`
+            // onto an errored mechanism must reckon with the error
+            // before getting a plausible-looking Snapshot back.
+            // Layered AFTER the kind validation so a non-mechanism
+            // Map carrying an unrelated `error` key still hits the
+            // mechanism-kind guard above, not this short-circuit.
+            if mech_map.contains_key(&Value::String("error".to_string())) {
+                return Some(Value::Undef);
+            }
             // Bindings argument: must be a List, and every entry
             // must be a binding Map (kind="binding" with present
             // `joint`/`value` fields).  Whole-call rejection on any
