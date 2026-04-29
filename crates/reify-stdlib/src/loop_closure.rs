@@ -808,4 +808,89 @@ mod tests {
         let chain = vec![Value::Map(m)];
         assert!(super::chain_transform(&chain, &[0.5]).is_none());
     }
+
+    // ── fixed-joint chain integration tests ─────────────────────────────
+
+    fn fixed_joint() -> Value {
+        eval_builtin("fixed", &[])
+    }
+
+    /// A chain containing only a fixed joint must produce the identity
+    /// Transform — a fixed joint contributes no translation or rotation.
+    #[test]
+    fn chain_transform_single_fixed_joint_returns_identity() {
+        let chain = vec![fixed_joint()];
+        let result = super::chain_transform(&chain, &[0.0])
+            .expect("chain_transform must return Some for a fixed joint");
+        let trans = translation_xyz(&result);
+        assert!(
+            trans[0].abs() < 1e-12 && trans[1].abs() < 1e-12 && trans[2].abs() < 1e-12,
+            "expected zero translation, got {trans:?}"
+        );
+        let (w, x, y, z) = rotation_wxyz(&result);
+        assert!(
+            (w - 1.0).abs() < 1e-12,
+            "expected w ≈ 1.0 (identity rotation), got {w}"
+        );
+        assert!(
+            x.abs() < 1e-12 && y.abs() < 1e-12 && z.abs() < 1e-12,
+            "expected x,y,z ≈ 0 (identity rotation), got {x},{y},{z}"
+        );
+    }
+
+    /// A fixed joint mid-chain contributes identity: the net translation must
+    /// equal the sum of the two prismatic joints on either side of it.
+    #[test]
+    fn chain_transform_fixed_joint_in_middle_acts_as_identity_contribution() {
+        // [prismatic_x @ 0.3m, fixed, prismatic_x @ 0.5m]
+        // Expected: total translation_x ≈ 0.8m, no rotation.
+        let chain = vec![prismatic_x(), fixed_joint(), prismatic_x()];
+        let result = super::chain_transform(&chain, &[0.3, 0.0, 0.5])
+            .expect("chain_transform must return Some with fixed joint in the middle");
+        let trans = translation_xyz(&result);
+        assert!(
+            (trans[0] - 0.8).abs() < 1e-12,
+            "expected translation_x = 0.8, got {}",
+            trans[0]
+        );
+        assert!(trans[1].abs() < 1e-12);
+        assert!(trans[2].abs() < 1e-12);
+    }
+
+    /// A fixed joint in the chain but NOT in free_indices must not prevent
+    /// chain_jacobian_fd from assembling the other (free) columns.
+    #[test]
+    fn chain_jacobian_fd_with_fixed_joint_outside_free_indices() {
+        // chain = [prismatic_x, fixed, revolute_z]
+        // free_indices = [0, 2] (the two DOF joints — fixed at index 1 is not free)
+        let chain = vec![prismatic_x(), fixed_joint(), revolute_z()];
+        let cols = super::chain_jacobian_fd(&chain, &[0.5, 0.0, 0.0], &[0, 2], 1e-6)
+            .expect("chain_jacobian_fd must return Some when fixed joint is not in free_indices");
+        assert_eq!(cols.len(), 2, "expected 2 columns for 2 free indices");
+        for col in &cols {
+            for v in col.iter() {
+                assert!(v.is_finite(), "expected all column entries to be finite, got {col:?}");
+            }
+        }
+    }
+
+    /// A fixed joint listed in free_indices must produce a zero-twist column —
+    /// perturbing its (inert) motion variable never reaches transform_at and
+    /// T_plus == T_minus == identity, so the central-difference quotient is 0.
+    #[test]
+    fn chain_jacobian_fd_with_fixed_joint_in_free_indices_yields_zero_column() {
+        let chain = vec![fixed_joint()];
+        let cols = super::chain_jacobian_fd(&chain, &[0.0], &[0], 1e-6)
+            .expect("chain_jacobian_fd must return Some for a fixed-only chain");
+        assert_eq!(cols.len(), 1, "expected 1 column");
+        let col = cols[0];
+        for (k, &v) in col.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-10,
+                "expected zero-twist column entry [{}], got {}",
+                k,
+                v
+            );
+        }
+    }
 }
