@@ -208,7 +208,19 @@ pub fn compute_diagnostics_with_state(
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 
-    // Generate explicit diagnostics for constraint violations with source spans
+    // Generate explicit diagnostics for constraint violations with source spans.
+    //
+    // Per-element forall provenance (PRD criterion 10,
+    // docs/prds/forall-statement-form.md:45): when a constraint originates from a
+    // `forall` statement, `crates/reify-compiler/src/forall_elaborate.rs` emits one
+    // `CompiledConstraint` per element with `label = Some("forall@<var>[<idx>]")`
+    // (e.g. `forall@v[0]`).  That label propagates unchanged through
+    // `ConstraintCheckEntry.label` and surfaces verbatim in the LSP diagnostic
+    // message via the `Some(label)` branch below — the resulting message is
+    // `"constraint violated: forall@v[<idx>]"`.  No parsing or reformatting of the
+    // label is required; the index is the per-element provenance carrier.
+    // Regression-lock: `forall_per_element_constraint_violation_surfaces_element_index`
+    // (this file) pins this contract end-to-end.
     for entry in &check_result.constraint_results {
         if entry.satisfaction == Satisfaction::Violated {
             let msg = match &entry.label {
