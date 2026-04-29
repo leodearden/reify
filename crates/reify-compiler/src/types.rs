@@ -343,23 +343,22 @@ pub struct CompiledForallTemplate {
 
 /// The body shape of a captured forall template (task 2629).
 ///
-/// In task 2629 only the `Constraint` body shape is actually captured at
-/// compile time and re-emitted at runtime. The `Connect` variant is reserved
-/// for follow-up task 2690, which will wire `EvaluationGraph::connections`
-/// and the runtime emission path; until then `forall_elaborate.rs`'s
-/// deferred-Connect arm emits an info diagnostic and skips capture, so no
-/// `CompiledForallBody::Connect` instances reach the runtime. The
-/// `Instantiation` and `Chain` source-level shapes retain compile-time
-/// silent-skip semantics — see `forall_elaborate.rs` info diagnostics.
-//
-// `large_enum_variant` allow: the `Constraint` variant carries a `CompiledExpr`
-// (~352 bytes) while `Connect` is far smaller (~121 bytes). Boxing `body_expr`
-// to satisfy the lint would impose a heap indirection on every per-element
-// runtime re-emission, which is the hot path. The enum is held in a
-// `Vec<CompiledForallTemplate>` whose count is bounded by the number of
-// `forall` decls in the source (typically O(1) per structure), so the
-// per-instance memory cost is dwarfed by per-element constraint emission.
-#[allow(clippy::large_enum_variant)]
+/// Currently only `Constraint` is captured. The compile-time deferred-Connect
+/// arm in `forall_elaborate.rs` emits an info diagnostic and returns early
+/// without pushing — so no Connect template ever reaches the runtime in this
+/// task. Likewise the `Instantiation` and `Chain` source-level shapes retain
+/// compile-time silent-skip semantics — see `forall_elaborate.rs` info
+/// diagnostics.
+///
+/// **Future scope — task 2690:** the planned `Connect` variant should carry
+/// the substituted left/right port-name templates (e.g. `"coll[0].out"` and
+/// `"rest.in"`), the `ConnectOp` operator, an optional explicit
+/// `connector_type` name, the substituted-and-compiled connect parameters,
+/// and the port mappings on the connector type. Re-adding it should be done
+/// together with (a) the producer in `forall_elaborate.rs`'s
+/// deferred-Connect arm and (b) the consumer in `engine_edit.rs`'s
+/// re-emission loop, so the variant is never instantiated without the
+/// runtime path that drives it.
 #[derive(Debug, Clone)]
 pub enum CompiledForallBody {
     /// Per-element constraint body: `forall v in coll: constraint <expr>`.
@@ -382,28 +381,6 @@ pub enum CompiledForallBody {
     Constraint {
         /// Compiled body expression with placeholder cells (entity == `<parent>.<sub>[0]`).
         body_expr: CompiledExpr,
-    },
-    /// Per-element connection body: `forall v in coll: connect <l> <op> <r>`.
-    ///
-    /// **Reserved for task 2690.** Task 2629's deferred-Connect arm in
-    /// `forall_elaborate.rs` does not currently push this variant — it emits
-    /// an info diagnostic and returns early — because runtime re-emission
-    /// requires a `connections` field on `EvaluationGraph` that does not yet
-    /// exist. The variant and field shapes are kept here so 2690 only needs
-    /// to (a) re-enable the capture path and (b) implement the runtime arm.
-    Connect {
-        /// The substituted left port-name template (e.g. "coll[0].out").
-        left_port_template: String,
-        /// The substituted right port-name template (e.g. "rest.in").
-        right_port_template: String,
-        /// The connect operator: `Forward` (`->`) or `Bidirect` (`<->`).
-        operator: reify_syntax::ConnectOp,
-        /// Optional explicit connector-type name (e.g. `Some("RigidLink")`).
-        connector_type: Option<String>,
-        /// Connect parameters (substituted, compiled): `(name, value_expr)` pairs.
-        params: Vec<(String, CompiledExpr)>,
-        /// Port mappings on the connector type (e.g. `[("a", "left"), ("b", "right")]`).
-        port_mappings: Vec<(String, String)>,
     },
 }
 

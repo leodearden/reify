@@ -519,30 +519,27 @@ structure S {
     assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
 
     // (d) Body shape: Constraint with body_expr referencing S.vents[0].mass.
-    match &ft.body {
-        CompiledForallBody::Constraint { body_expr, .. } => {
-            // The body should reference S.vents[0].mass somewhere in its
-            // expression tree. Walk the expr and confirm.
-            let mut found_vent_mass = false;
-            body_expr.walk(&mut |node| {
-                if let CompiledExprKind::ValueRef(id) = &node.kind
-                    && id.entity == "S.vents[0]"
-                    && id.member == "mass"
-                {
-                    found_vent_mass = true;
-                }
-            });
-            assert!(
-                found_vent_mass,
-                "body_expr must reference S.vents[0].mass; got {:?}",
-                body_expr.kind
-            );
+    // The match is exhaustive on the single live variant; if task 2690 (or any
+    // future task) re-adds a sibling variant to `CompiledForallBody`, this
+    // match will fail to compile and the test will be forced to spell out the
+    // expected discriminant explicitly.
+    let CompiledForallBody::Constraint { body_expr } = &ft.body;
+    // The body should reference S.vents[0].mass somewhere in its expression
+    // tree. Walk the expr and confirm.
+    let mut found_vent_mass = false;
+    body_expr.walk(&mut |node| {
+        if let CompiledExprKind::ValueRef(id) = &node.kind
+            && id.entity == "S.vents[0]"
+            && id.member == "mass"
+        {
+            found_vent_mass = true;
         }
-        other => panic!(
-            "expected CompiledForallBody::Constraint, got {:?}",
-            std::mem::discriminant(other)
-        ),
-    }
+    });
+    assert!(
+        found_vent_mass,
+        "body_expr must reference S.vents[0].mass; got {:?}",
+        body_expr.kind
+    );
 }
 
 /// task 2629 step-23: `forall v in <coll_sub>: constraint <body> where <cond>`

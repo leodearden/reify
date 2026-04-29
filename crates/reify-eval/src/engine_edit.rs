@@ -1539,6 +1539,18 @@ impl Engine {
                         .forall_emitted
                         .resize(forall_templates.len(), Vec::new());
                 }
+                // The ledger and the templates must stay aligned. Templates
+                // come from a stable CompiledModule today (so the resize
+                // above only ever grows the ledger, never shrinks it), but
+                // a future code path that swaps `graph.forall_templates`
+                // for a shorter Vec (partial recompile, snapshot fork from
+                // a different module) would silently leak ledger entries
+                // for departed templates without this tripwire.
+                debug_assert_eq!(
+                    new_snapshot.forall_emitted.len(),
+                    forall_templates.len(),
+                    "forall_emitted ledger length must match forall_templates length"
+                );
                 for (t_idx, t) in forall_templates.iter().enumerate() {
                     if t.count_cell != col_sub.count_cell {
                         continue;
@@ -1564,6 +1576,12 @@ impl Engine {
                     //     loop body runs zero times — prior emissions are
                     //     still cleared above.
                     let mut fresh_ids: Vec<ConstraintNodeId> = Vec::new();
+                    // The match is exhaustive on the single live variant. The
+                    // Connect body shape is reserved for follow-up task 2690
+                    // (it will re-add the variant alongside the runtime arm).
+                    // Adding a new `CompiledForallBody` variant will cause
+                    // this match to fail to compile, forcing an explicit
+                    // decision rather than a silent drop.
                     match &t.body {
                         CompiledForallBody::Constraint { body_expr } => {
                             let placeholder_entity =
@@ -1620,18 +1638,6 @@ impl Engine {
                                     .insert(cnid.clone(), node);
                                 fresh_ids.push(cnid);
                             }
-                        }
-                        CompiledForallBody::Connect { .. } => {
-                            // Unreachable in 2629: the compile-time deferred
-                            // arm in `forall_elaborate.rs` no longer captures
-                            // Connect templates (it emits an info diagnostic
-                            // and skips). Runtime re-emission of forall-connect
-                            // is tracked by task 2690.
-                            debug_assert!(
-                                false,
-                                "forall Connect runtime re-emission is task 2690; \
-                                 deferred-Connect captures should not exist in 2629"
-                            );
                         }
                     }
                     new_snapshot.forall_emitted[t_idx] = fresh_ids;
