@@ -20,7 +20,7 @@
 
 #![cfg(has_occt)]
 
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
+use reify_kernel_occt::{ffi, OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{GeometryHandleId, GeometryQuery, Value};
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
@@ -605,6 +605,16 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         history.unmatched_radial_edge_count,
         history.face_generated
     );
+
+    // (viii) No duplicate parent_subshape_index values after post-sort/dedup.
+    assert_eq!(
+        history.duplicate_parent_subshape_index_count,
+        0,
+        "full revolve of triangle profile must report 0 duplicate parent_subshape_index, \
+         got {} (face_generated = {:?})",
+        history.duplicate_parent_subshape_index_count,
+        history.face_generated
+    );
 }
 
 /// Selector-stability: the stable-sort in `make_revolve_with_history` guarantees
@@ -713,7 +723,7 @@ fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
 
     // Bottom edge: p1=(15mm,0,0) → p2=(25mm,0,2e-8). Δx=10mm, Δz=2e-8m.
     // |dot(edge_dir, +Z)| ≈ 2e-8 / 0.01 = 2e-6 (just over DIR_TOL=1e-6).
@@ -764,5 +774,74 @@ fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
          increment unmatched_radial_edge_count; counter={}, face_generated.len()={}",
         history.unmatched_radial_edge_count,
         history.face_generated.len()
+    );
+}
+
+/// Post-sort dedup fixture test: verifies that `revolve_synthesis_post_sort_for_test`
+/// (a) drops duplicate `parent_subshape_index` records (keeping the first under
+/// stable sort), (b) increments `duplicate_count` for each drop, and (c) leaves
+/// well-formed (no-duplicate) input unchanged.
+///
+/// The fixture exercises the dedup logic extracted into
+/// `revolve_synthesis_post_sort_and_dedup` (step-6) without needing real OCCT
+/// geometry — input is a synthetic flat `Vec<u32>` in the same
+/// `(parent_index, parent_subshape_index, result_subshape_index)` layout used
+/// by `face_generated`.
+///
+/// Two sub-tests:
+///  1. Input with one deliberate duplicate: sorted, dedup'd, count == 1.
+///  2. Unsorted no-duplicate input: stable-sorted by parent_subshape_index,
+///     count == 0.
+#[test]
+fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    // --- Sub-test 1: one deliberate duplicate ---
+    // Input: three records, two of which share parent_subshape_index=1.
+    // After stable-sort by parent_subshape_index the order is already correct
+    // (0, 1, 100), (0, 1, 200), (0, 2, 300). The dedup pass drops the second
+    // parent_subshape_index=1 record (result=200, the later one under stable
+    // sort) and keeps (result=100, the earlier one).
+    let input_dup: Vec<u32> = vec![
+        /* rec0: parent=0, subshape=1, result=100 */ 0, 1, 100,
+        /* rec1: parent=0, subshape=1, result=200 */ 0, 1, 200, // duplicate
+        /* rec2: parent=0, subshape=2, result=300 */ 0, 2, 300,
+    ];
+    let result_dup = ffi::ffi::revolve_synthesis_post_sort_for_test(&input_dup);
+    assert_eq!(
+        result_dup.duplicate_count,
+        1,
+        "exactly one duplicate must be dropped; got duplicate_count={}",
+        result_dup.duplicate_count
+    );
+    assert_eq!(
+        result_dup.output.as_slice(),
+        &[0_u32, 1, 100, 0, 2, 300],
+        "dedup must keep the first occurrence (result=100), drop the second (result=200), \
+         and preserve the non-duplicate (parent_subshape_index=2, result=300)"
+    );
+
+    // --- Sub-test 2: well-formed (no-duplicate) unsorted input ---
+    // Input: three records in reverse parent_subshape_index order.
+    // After stable-sort: order becomes parent_subshape_index 0 < 1 < 2.
+    // No duplicates → dedup drops nothing, count == 0.
+    let input_ok: Vec<u32> = vec![
+        /* rec0: parent=0, subshape=2, result=300 */ 0, 2, 300,
+        /* rec1: parent=0, subshape=0, result=100 */ 0, 0, 100,
+        /* rec2: parent=0, subshape=1, result=200 */ 0, 1, 200,
+    ];
+    let result_ok = ffi::ffi::revolve_synthesis_post_sort_for_test(&input_ok);
+    assert_eq!(
+        result_ok.duplicate_count,
+        0,
+        "no-duplicate input must report duplicate_count=0; got {}",
+        result_ok.duplicate_count
+    );
+    assert_eq!(
+        result_ok.output.as_slice(),
+        &[0_u32, 0, 100, 0, 1, 200, 0, 2, 300],
+        "stable-sort must reorder by parent_subshape_index (0 < 1 < 2)"
     );
 }
