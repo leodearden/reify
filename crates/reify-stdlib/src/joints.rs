@@ -41,6 +41,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // `joint_axis` returns this raw value — see its doc-comment.
             make_joint("revolute", args[0].clone(), args[1].clone())
         }
+        // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
+        // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
+        //
+        // No axis or range: the joint has no motion variable, no 1D direction to
+        // translate/rotate along, and no range to constrain. The resulting Map has
+        // a single field `{ "kind": "fixed" }`, mirroring the `world` sentinel shape.
+        "fixed" => {
+            if !args.is_empty() {
+                return Some(Value::Undef);
+            }
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("kind".to_string()), Value::String("fixed".to_string()));
+            Value::Map(m)
+        }
         "transform_at" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
