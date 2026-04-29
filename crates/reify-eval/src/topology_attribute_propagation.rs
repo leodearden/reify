@@ -127,11 +127,8 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     let mut face_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
     let mut edge_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
 
-    let mut face_ctx = SplitContext {
-        feature_id: splitting_feature_id,
-        child_counts: &face_child_counts,
-        split_counters: &mut face_split_counters,
-    };
+    let mut face_ctx =
+        SplitContext::new(splitting_feature_id, &face_child_counts, &mut face_split_counters);
     // Faces: Modified ∪ Generated.
     for record in history
         .face_modified
@@ -148,11 +145,8 @@ pub fn propagate_attributes_via_brepalgoapi_history(
         )?;
     }
 
-    let mut edge_ctx = SplitContext {
-        feature_id: splitting_feature_id,
-        child_counts: &edge_child_counts,
-        split_counters: &mut edge_split_counters,
-    };
+    let mut edge_ctx =
+        SplitContext::new(splitting_feature_id, &edge_child_counts, &mut edge_split_counters);
     // Edges: Modified ∪ Generated.
     for record in history
         .edge_modified
@@ -214,6 +208,30 @@ fn count_children_per_parent(
     counts
 }
 
+/// Bundles the three split-related inputs threaded through `propagate_one`
+/// and `maybe_append_split_entry` per geometry kind (faces vs edges).
+///
+/// - `feature_id`: stamped onto each new `ModEntry` appended on a split.
+/// - `child_counts`: maps `(parent_index, parent_subshape_index)` → count of
+///   same-kind result children; count > 1 identifies a split parent.
+/// - `split_counters`: accumulates the per-parent `split_index` across the
+///   Modified ∪ Generated record stream so each sibling gets a distinct index.
+struct SplitContext<'a> {
+    feature_id: &'a FeatureId,
+    child_counts: &'a HashMap<(u8, u32), usize>,
+    split_counters: &'a mut HashMap<(u8, u32), u32>,
+}
+
+impl<'a> SplitContext<'a> {
+    fn new(
+        feature_id: &'a FeatureId,
+        child_counts: &'a HashMap<(u8, u32), usize>,
+        split_counters: &'a mut HashMap<(u8, u32), u32>,
+    ) -> Self {
+        Self { feature_id, child_counts, split_counters }
+    }
+}
+
 /// If the parent at `(parent_index, parent_subshape_index)` has more than
 /// one same-kind result child (count > 1), append a fresh
 /// `ModEntry { splitting_feature_id, split_index }` to `attr` and bump
@@ -243,20 +261,6 @@ fn maybe_append_split_entry(
         });
         *split_index += 1;
     }
-}
-
-/// Bundles the three split-related inputs threaded through `propagate_one`
-/// and `maybe_append_split_entry` per geometry kind (faces vs edges).
-///
-/// - `feature_id`: stamped onto each new `ModEntry` appended on a split.
-/// - `child_counts`: maps `(parent_index, parent_subshape_index)` → count of
-///   same-kind result children; count > 1 identifies a split parent.
-/// - `split_counters`: accumulates the per-parent `split_index` across the
-///   Modified ∪ Generated record stream so each sibling gets a distinct index.
-struct SplitContext<'a> {
-    feature_id: &'a FeatureId,
-    child_counts: &'a HashMap<(u8, u32), usize>,
-    split_counters: &'a mut HashMap<(u8, u32), u32>,
 }
 
 /// Look up the parent attribute via `record.parent_index` /
