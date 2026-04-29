@@ -89,6 +89,10 @@ pub enum StartStrategy {
 /// hitting tolerance.  `Singular` — the Gauss-Newton normal-equations matrix
 /// hit the min-pivot threshold (rank-deficient Jacobian); reported separately
 /// so callers can emit the PRD's `W_KINEMATIC_SINGULARITY` warning class.
+/// `InvalidInput` — caller-supplied inputs failed validation (length
+/// mismatch, out-of-range index, missing joint range for `Midpoint`); kept
+/// distinct from `NotConverged` so callers can tell "solver couldn't reach
+/// tol" from "you gave me bad inputs".
 #[derive(Debug, Clone)]
 pub enum NewtonOutcome {
     /// Solver reached tolerance.
@@ -100,19 +104,30 @@ pub enum NewtonOutcome {
         /// Combined residual norm (sqrt(linear² + angular²)) at convergence.
         residual_norm: f64,
     },
-    /// Solver hit `max_iters` without reaching tolerance.
+    /// Solver hit `max_iters` without reaching tolerance.  `x` and
+    /// `residual_norm` correspond to the same iterate: `residual_norm` is
+    /// the combined norm of `r(x)` at the returned `x`.
     NotConverged {
         /// Free-variable values at the last iteration.
         x: Vec<f64>,
-        /// Combined residual norm at the last iteration.
+        /// Combined residual norm at the last iteration (same iterate as `x`).
         residual_norm: f64,
     },
-    /// Solver detected a rank-deficient Jacobian (min-pivot < 1e-12).
+    /// Solver detected a rank-deficient Jacobian (min-pivot below
+    /// [`NewtonConfig::singularity_pivot_eps`]).
     Singular {
         /// Free-variable values at the iteration where singularity was detected.
         x: Vec<f64>,
         /// Number of completed iterations before singularity.
         iters: usize,
+    },
+    /// Caller-supplied inputs failed validation (e.g. `WarmStart` length
+    /// mismatch, `free_b` index out of range, `Midpoint` for a joint with
+    /// no range).  Distinct from `NotConverged` so the contract is explicit.
+    InvalidInput {
+        /// Human-readable diagnostic; suitable for `tracing::warn!` or test
+        /// assertions but not a stable API string.
+        reason: String,
     },
 }
 
@@ -335,15 +350,13 @@ pub fn solve_loop_closure(
     let x0: Vec<f64> = match strategy {
         StartStrategy::WarmStart(v) => {
             if v.len() != free_b.len() {
-                tracing::warn!(
-                    "solve_loop_closure: WarmStart length {} != free_b length {}",
+                let reason = format!(
+                    "WarmStart length {} != free_b length {}",
                     v.len(),
                     free_b.len()
                 );
-                return NewtonOutcome::NotConverged {
-                    x: vec![],
-                    residual_norm: f64::INFINITY,
-                };
+                tracing::warn!("solve_loop_closure: {reason}");
+                return NewtonOutcome::InvalidInput { reason };
             }
             v.clone()
         }
@@ -351,26 +364,22 @@ pub fn solve_loop_closure(
             let mut out = Vec::with_capacity(free_b.len());
             for &i in free_b {
                 if i >= chain_b.len() {
-                    tracing::warn!(
-                        "solve_loop_closure: free_b index {} out of range (chain_b len {})",
+                    let reason = format!(
+                        "free_b index {} out of range (chain_b len {})",
                         i,
                         chain_b.len()
                     );
-                    return NewtonOutcome::NotConverged {
-                        x: vec![],
-                        residual_norm: f64::INFINITY,
-                    };
+                    tracing::warn!("solve_loop_closure: {reason}");
+                    return NewtonOutcome::InvalidInput { reason };
                 }
                 match reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]) {
                     Some(m) => out.push(m),
                     None => {
-                        tracing::warn!(
-                            "solve_loop_closure: joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
+                        let reason = format!(
+                            "joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
                         );
-                        return NewtonOutcome::NotConverged {
-                            x: vec![],
-                            residual_norm: f64::INFINITY,
-                        };
+                        tracing::warn!("solve_loop_closure: {reason}");
+                        return NewtonOutcome::InvalidInput { reason };
                     }
                 }
             }
@@ -464,6 +473,9 @@ mod tests {
         let _sing = NewtonOutcome::Singular {
             x: vec![1.0],
             iters: 2,
+        };
+        let _bad = NewtonOutcome::InvalidInput {
+            reason: "bad".to_string(),
         };
     }
 
@@ -808,6 +820,113 @@ mod tests {
             other => panic!(
                 "linear above tol must NOT converge even when angular below tol; got {other:?}"
             ),
+        }
+    }
+
+    // ── InvalidInput contract tests (suggestion 7) ──────────────────────
+
+    #[test]
+    fn solve_loop_closure_warm_start_length_mismatch_returns_invalid_input() {
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0];
+        let free_b = vec![0];
+        // WarmStart length 2 ≠ free_b length 1.
+        let strategy = StartStrategy::WarmStart(vec![0.0, 0.1]);
+        let cfg = NewtonConfig::default();
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+        match outcome {
+            NewtonOutcome::InvalidInput { reason } => {
+                assert!(
+                    reason.contains("WarmStart length"),
+                    "expected reason to mention WarmStart length, got {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_loop_closure_midpoint_free_b_out_of_range_returns_invalid_input() {
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0];
+        // free_b index 5 is out of range for chain_b of length 1.
+        let free_b = vec![5];
+        let strategy = StartStrategy::Midpoint;
+        let cfg = NewtonConfig::default();
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+        match outcome {
+            NewtonOutcome::InvalidInput { reason } => {
+                assert!(
+                    reason.contains("out of range"),
+                    "expected reason to mention out-of-range index, got {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_loop_closure_midpoint_missing_range_returns_invalid_input() {
+        // A revolute Map without a range field — joint_range_midpoint → None.
+        // Build a malformed Map directly.
+        let mut bad_joint_map = std::collections::BTreeMap::new();
+        bad_joint_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        bad_joint_map.insert(
+            Value::String("axis".to_string()),
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+        );
+        // No "range" key.
+        let bad_joint = Value::Map(bad_joint_map);
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![bad_joint];
+        let vals_b_initial = vec![0.0];
+        let free_b = vec![0];
+        let strategy = StartStrategy::Midpoint;
+        let cfg = NewtonConfig::default();
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+        match outcome {
+            NewtonOutcome::InvalidInput { reason } => {
+                assert!(
+                    reason.contains("joint_range_midpoint"),
+                    "expected reason to mention joint_range_midpoint, got {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
         }
     }
 
