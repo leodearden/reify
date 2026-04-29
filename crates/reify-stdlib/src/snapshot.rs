@@ -1717,4 +1717,63 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         assert!(eval_builtin("center_of_mass", &[m0]).is_undef());
     }
+
+    // ── Counter-mass-balance COM stationarity (PRD task 6 acceptance) ─────
+    //
+    // Scenario: a head body on j_x and a counter-mass body on j_cm where
+    // j_cm = couple(j_x, ratio=-1).  As j_x sweeps from 0 to 0.5 m, the
+    // head moves +v while the counter-mass moves -v, so the system COM
+    // (uniform density) stays at the origin.
+    //
+    // Only j_x is bound — j_cm derives its motion from the coupling.  This
+    // exercises `value_for`'s coupling-tracks-parent semantics: when a
+    // coupling joint isn't directly bound, look up the parent's bound
+    // value rather than falling back to the parent's range midpoint.
+
+    /// Counter-mass-balance acceptance (PRD task 6): for each of 11
+    /// evenly-spaced bindings of j_x in 0..0.5 m, the system COM must
+    /// remain at the world origin within 1e-9 tolerance.
+    #[test]
+    fn center_of_mass_counter_mass_balance_stationarity() {
+        let j_x = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(0.5))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_cm = eval_builtin("couple", &[j_x.clone(), Value::Real(-1.0)]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("head".to_string()), j_x.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("counter".to_string()), j_cm.clone()],
+        );
+
+        // Sweep 11 evenly-spaced positions in 0..0.5 m.
+        for k in 0..11 {
+            let v = 0.5 * (k as f64) / 10.0;
+            let bind_x = eval_builtin("bind", &[j_x.clone(), Value::length(v)]);
+            let s = eval_builtin("snapshot", &[m2.clone(), Value::List(vec![bind_x])]);
+            let com = eval_builtin("center_of_mass", &[s]);
+            let [cx, cy, cz] = decompose_point3_length_for_assert(&com);
+            assert!(
+                cx.abs() < 1e-9,
+                "counter-balance COM.x should be 0 at v={}, got {}",
+                v,
+                cx
+            );
+            assert!(cy.abs() < 1e-9, "COM.y should be 0 at v={}, got {}", v, cy);
+            assert!(cz.abs() < 1e-9, "COM.z should be 0 at v={}, got {}", v, cz);
+        }
+    }
 }
