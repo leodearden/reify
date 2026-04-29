@@ -187,6 +187,14 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
         // for "fixed", so chain_transform/chain_jacobian_fd handle fixed
         // joints in the chain without special-casing at the call site.
         "fixed" => None,
+        // 3-DOF planar joint: no single-scalar midpoint to compute.
+        // Planar's free-variable space is 3-dimensional (x_length, y_length,
+        // theta_angle), so there is no single f64 midpoint to seed. Callers
+        // building initial-guess vectors should skip planar joints just as
+        // they skip fixed joints. Supporting planar's multi-DOF midpoint
+        // requires the refactor scheduled in PRD v0.2 kinematic task 2
+        // (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+        "planar" => None,
         _ => None,
     }
 }
