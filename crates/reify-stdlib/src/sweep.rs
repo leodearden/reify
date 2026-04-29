@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 
 use reify_types::{DimensionVector, Value};
 
+use crate::eval_builtin;
+
 /// Evaluate a sweep stdlib function by name.
 ///
 /// Returns `Some(Value)` for known function names (including
@@ -92,9 +94,53 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             if steps == 0 {
                 return Some(Value::List(vec![]));
             }
-            // steps >= 1 cases are wired in later steps (1 → step-14,
-            // >=2 → step-8). For now anything >0 yields Undef.
-            Value::Undef
+            // steps == 1 is wired in step-14; for now it falls through
+            // to the >=2 arm where (steps - 1) == 0 would divide by
+            // zero — so guard with Undef.
+            if steps == 1 {
+                return Some(Value::Undef);
+            }
+            // Range bounds in SI units; validation above guarantees
+            // both are present and finite.
+            let (lo_si, up_si) = match &args[2] {
+                Value::Range {
+                    lower: Some(lo),
+                    upper: Some(up),
+                    ..
+                } => match (lo.as_f64(), up.as_f64()) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => return Some(Value::Undef),
+                },
+                _ => return Some(Value::Undef),
+            };
+            // Linearly-interpolated motion values, evenly spaced from
+            // range.lower (i=0) to range.upper (i=steps-1). Each
+            // interpolated f64 is wrapped back into a dimensioned
+            // Value::length / Value::angle per joint kind, then bound
+            // and passed to snapshot() — keeping the FK walk and
+            // unbound-joint midpoint fallback in one place.
+            let mut snapshots = Vec::with_capacity(steps as usize);
+            for i in 0..steps {
+                let t = (i as f64) / ((steps - 1) as f64);
+                let v_si = lo_si + t * (up_si - lo_si);
+                let wrapped = match wrap_value_for_driving_joint(&args[1], v_si) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+                let binding = eval_builtin("bind", &[args[1].clone(), wrapped]);
+                if binding.is_undef() {
+                    return Some(Value::Undef);
+                }
+                let snap = eval_builtin(
+                    "snapshot",
+                    &[args[0].clone(), Value::List(vec![binding])],
+                );
+                if snap.is_undef() {
+                    return Some(Value::Undef);
+                }
+                snapshots.push(snap);
+            }
+            Value::List(snapshots)
         }
         _ => return None,
     })
@@ -124,6 +170,38 @@ fn driving_joint_kind(v: &Value) -> Option<DimensionVector> {
             "revolute" => Some(DimensionVector::ANGLE),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// Wrap an interpolated f64 (in SI units) back into a dimensioned
+/// `Value` based on the driving joint's kind.
+///
+/// - `prismatic` → `Value::length(v_si)` (metres)
+/// - `revolute`  → `Value::angle(v_si)`  (radians)
+///
+/// Returns `None` for any other shape (coupling, fixed, world, non-Map).
+/// Couplings and fixed joints never reach this helper because
+/// `driving_joint_kind` rejects them upstream — the `None` branch is
+/// pure defense-in-depth.
+///
+/// Mirrors `wrap_midpoint_for_joint` in snapshot.rs (the `prismatic` and
+/// `revolute` arms specifically); the coupling arm is omitted because
+/// couplings are rejected at the `dim`/`sweep` boundary by
+/// `driving_joint_kind`.  A future refactor could promote both helpers
+/// to a shared `stdlib/helpers.rs` utility — see snapshot.rs:597-599.
+fn wrap_value_for_driving_joint(joint: &Value, v_si: f64) -> Option<Value> {
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match kind {
+        "prismatic" => Some(Value::length(v_si)),
+        "revolute" => Some(Value::angle(v_si)),
         _ => None,
     }
 }
