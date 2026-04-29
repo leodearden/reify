@@ -249,7 +249,6 @@ fn maybe_append_split_entry(
 /// cloned attribute's `mod_history` before recording it.
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any index is out of range.
-#[allow(clippy::too_many_arguments)] // each arg threads a needed input; alternatives bundle them into a context struct only the caller would build
 fn propagate_one(
     table: &mut TopologyAttributeTable,
     parent_handles: &[&[GeometryHandleId]],
