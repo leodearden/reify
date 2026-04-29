@@ -2,16 +2,18 @@
 //! (PRD docs/prds/v0_2/persistent-naming-v2.md decomposition-plan task 6).
 //!
 //! These tests bypass the engine wire-up: they spawn an `OcctKernelHandle`,
-//! build a primitive via `GeometryOp`, and call
-//! [`reify_eval::seed_primitive_attributes`] directly. The contract under
-//! test is that for each primitive, the seeder records one
-//! `TopologyAttribute` per emitted face/edge with the expected
-//! `(role, local_index)` distribution. The Engine-level pipeline tests live
-//! in `topology_attribute_primitives_e2e.rs`.
+//! build a primitive via `GeometryOp`, pre-extract face/edge handles, and
+//! call [`reify_eval::seed_primitive_attributes`] directly. The contract
+//! under test is that for each primitive, the seeder records one
+//! `TopologyAttribute` per face/edge with the expected
+//! `(role, local_index)` distribution. The Engine-level pipeline tests
+//! live in `topology_attribute_primitives_e2e.rs`.
 //!
-//! Sibling pattern: `topology_attribute_e2e.rs`. Same `OCCT_AVAILABLE` gate,
-//! same `BOX_SIDE_M = 10e-3` constant, same "extract face/edge handle
-//! vectors ONCE and reuse" discipline.
+//! Sibling pattern: `topology_attribute_e2e.rs`. Same `OCCT_AVAILABLE`
+//! gate, same `BOX_SIDE_M = 10e-3` constant, same "extract face/edge
+//! handle vectors ONCE and reuse" discipline (each `extract_*` allocates
+//! fresh kernel handle ids, so the test must reuse the same vectors for
+//! both seeding and lookup).
 
 use std::collections::HashSet;
 
@@ -65,16 +67,23 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
         return;
     }
 
-    let kernel = OcctKernelHandle::spawn();
+    let mut kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&box_op())
         .expect("box should build")
         .id;
 
-    // Pre-extract ONCE: extract_faces allocates fresh handles on every call.
+    // Pre-extract face/edge handles ONCE — extract_* allocates fresh ids
+    // on each call, so we must reuse these vectors for both seeding and
+    // lookup. Edges are extracted here as well so the seeder receives the
+    // shape its public signature expects, even though step-1 only checks
+    // face entries (edges are step-7's contract pin).
     let face_handles = kernel
         .extract_faces(box_id)
         .expect("extract_faces(box) should succeed");
+    let edge_handles = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges(box) should succeed");
     assert_eq!(
         face_handles.len(),
         6,
@@ -83,26 +92,22 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
 
     let feature_id = body_realization_feature_id();
     let mut table = TopologyAttributeTable::default();
-    let mut kernel_for_seed = kernel;
     seed_primitive_attributes(
         &mut table,
-        &mut kernel_for_seed,
-        box_id,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
         &feature_id,
         &box_op(),
     )
     .expect("seed_primitive_attributes for a 10mm box should succeed");
 
-    // After step-1 (faces only) the table should hold exactly 6 entries.
-    // (Step-7 will extend the seeder to also walk edges; this test pins the
-    // face-only contract.)
-    let face_entry_count = face_handles
-        .iter()
-        .filter(|id| table.lookup(**id).is_some())
-        .count();
+    // After step-1 (faces only) the table should hold exactly 6 entries —
+    // edges-only seeding lands in step-8 and is pinned in step-7's test.
     assert_eq!(
-        face_entry_count, 6,
-        "all 6 box faces must have a TopologyAttribute entry"
+        table.len(),
+        6,
+        "step-1 contract: exactly 6 face entries (no edges yet)"
     );
 
     let mut local_indices: HashSet<u32> = HashSet::new();
@@ -143,7 +148,7 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
         );
     }
 
-    // Round-trip: each value in {0..6} appears exactly once across the 6 faces.
+    // Round-trip: each value in 0..6 appears exactly once across the 6 faces.
     let mut sorted: Vec<u32> = local_indices.into_iter().collect();
     sorted.sort_unstable();
     assert_eq!(
@@ -152,9 +157,9 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
         "box face local_indices must be a permutation of 0..6"
     );
 
-    // Touch the imports we'll use later so the test compiles cleanly when
-    // sphere/cylinder helpers are added (and so a future step-3 doesn't have
-    // to rewrite the imports block). No-op assertions.
+    // Touch the imports we'll use in step-3/5/7 so the test compiles cleanly
+    // when sphere/cylinder helpers are added (and so a future step doesn't
+    // have to rewrite the imports block). No-op assertions.
     let _cyl = cylinder_op();
     let _sph = sphere_op();
     let _: CapKind = CapKind::Top;
