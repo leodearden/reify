@@ -459,36 +459,8 @@ fn make_sweep_dim(joint: Value, range: Value, steps: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::Value;
-
-    // ── Joint / range fixtures (mirror the per-module duplication
-    //    convention noted in snapshot.rs:597-599). ────────────────────────
-
-    fn axis_x_unit() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn axis_z_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn length_range_0_to_1m() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(0.0))),
-            upper: Some(Box::new(Value::length(1.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
-
-    fn angle_range_0_to_pi() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(0.0))),
-            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── dim(joint, range, steps): happy path ─────────────────────────────
 
@@ -804,10 +776,6 @@ mod tests {
     }
 
     // ── Errored-mechanism short-circuit ───────────────────────────────────
-
-    fn axis_y_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
 
     /// `sweep()` on an errored Mechanism returns `Value::Undef` — not a
     /// partial List of pre-error snapshots. Mirrors
@@ -1143,10 +1111,6 @@ mod tests {
 
     // ── sweep_grid(): headline acceptance test (PRD task 5) ───────────────
 
-    fn axis_y_unit_grid() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
-
     /// Headline acceptance test (PRD task 5, grid case): 2×3 grid sweep
     /// over a 2-body chain. Body A at `j_x = prismatic(+X, 0..1m)`
     /// (parent=world), body B at `j_y = prismatic(+Y, 0..1m)`
@@ -1165,7 +1129,7 @@ mod tests {
     #[test]
     fn sweep_grid_two_by_three_lexicographic_order() {
         let j_x = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_y = eval_builtin("prismatic", &[axis_y_unit_grid(), length_range_0_to_1m()]);
+        let j_y = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
         let solid_a = Value::String("a".to_string());
         let solid_b = Value::String("b".to_string());
 
@@ -1463,19 +1427,6 @@ mod tests {
     }
 
     // ── planar joint pin tests ────────────────────────────────────────────
-
-    fn planar_xy_joint() -> Value {
-        eval_builtin(
-            "planar",
-            &[
-                axis_x_unit(),
-                axis_y_unit(),
-                length_range_0_to_1m(),
-                length_range_0_to_1m(),
-                angle_range_0_to_pi(),
-            ],
-        )
-    }
 
     /// `dim(planar_joint, range, steps)` returns Undef.
     ///
