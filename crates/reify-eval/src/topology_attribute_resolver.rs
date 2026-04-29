@@ -225,9 +225,24 @@ pub fn resolve_unique_by_attribute(
             0 => last_count = Some(0),
             // Multi-match: explicitly do NOT fall through. The role/idx
             // branch is skipped so an authored label collision is not
-            // silently converted to a role-based match. Emit the
-            // count-aware stale diagnostic and surface the ambiguity.
+            // silently converted to a role-based match.
+            //
+            // Try the parent-key clustering check first (task #2653): a
+            // labelled face that gets split inherits the same user_label
+            // on every child, so a user_label multi-match where all
+            // matched candidates share `(feature_id, role, local_index,
+            // user_label)` is a split, surfaced via AmbiguousAfterSplit.
+            // Otherwise (mixed parent-keys = genuine label collision)
+            // fall through to Unresolved with the count-aware diagnostic.
             _ => {
+                let matches = collect_matches(table, candidates, |attr| {
+                    attr.user_label.as_deref() == Some(label) && feature_id_filter(attr)
+                });
+                if let Some(resolution) =
+                    try_cluster_after_split(table, &matches, selector_span, diagnostics)
+                {
+                    return resolution;
+                }
                 emit_attribute_stale_diagnostic(selector_span, n, diagnostics);
                 return AttributeResolution::Unresolved;
             }
@@ -577,19 +592,31 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
-    /// step-11 — multi-match unresolved diagnostic.
+    /// Multi-match with MIXED parent-keys → Unresolved + count-aware
+    /// diagnostic (genuine ambiguity, not a split).
     ///
-    /// Two candidates carry the same `(role, local_index)`. The role/idx
-    /// query matches BOTH, so the resolver returns Unresolved with a
-    /// TopologyAttributeStale Warning whose message contains "matched 2
-    /// sub-shapes". (The v0.2 invariant that splits go to mod_history
-    /// rather than reusing local_index is enforced by the populator; the
-    /// resolver still defends against degenerate inputs.)
+    /// Two candidates carry the same `(role, local_index)` but originate
+    /// from DIFFERENT features ("Boss" vs "Slot"). The role/idx query
+    /// matches both, but the parent-keys disagree on `feature_id`, so
+    /// `try_cluster_after_split` returns None and the resolver falls
+    /// through to Unresolved with the canonical "matched 2 sub-shapes"
+    /// message form (NOT the new "split children" sub-form, which is
+    /// reserved for parent-key-clustered matches per task #2653).
+    ///
+    /// The v0.2 invariant that splits go to mod_history rather than
+    /// reusing local_index is enforced by the populator; the resolver
+    /// still defends against degenerate inputs by emitting the
+    /// genuine-ambiguity diagnostic for distinct-parent multi-match
+    /// (PRD line 64).
     #[test]
     fn unresolved_with_diagnostic_when_multi_match() {
+        let boss = FeatureId::new("Boss");
+        let slot = FeatureId::new("Slot");
         let mut table = TopologyAttributeTable::default();
-        table.record(h(60), attr(Role::Side, 0, None));
-        table.record(h(61), attr(Role::Side, 0, None));
+        // Distinct feature_ids on the two matched candidates → mixed
+        // parent-keys → cluster check fails → Unresolved.
+        table.record(h(60), attr_for(boss, Role::Side, 0, None));
+        table.record(h(61), attr_for(slot, Role::Side, 0, None));
         let candidates = [h(60), h(61)];
         let query = AttributeQuery {
             user_label: None,
@@ -606,6 +633,11 @@ mod tests {
         assert!(
             diag.message.contains("matched 2 sub-shapes"),
             "message should contain 'matched 2 sub-shapes', got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("split children"),
+            "mixed-parent multi-match must NOT use the split-children sub-form, got: {}",
             diag.message
         );
     }
