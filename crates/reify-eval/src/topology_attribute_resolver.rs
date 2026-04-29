@@ -592,4 +592,105 @@ mod tests {
             diag.message
         );
     }
+
+    /// step-15 — defensive edge cases.
+    ///
+    /// (a) Empty candidate slice + populated table → FallbackToComputed.
+    ///     No supplied candidate carries an entry by definition; the
+    ///     resolver routes through computed selectors.
+    ///
+    /// (b) All-None query on populated candidates → Unresolved with the
+    ///     zero-match diagnostic. A query with no constraints matches
+    ///     nothing by definition; this defends against accidental
+    ///     "match-everything" semantics.
+    ///
+    /// (c) Duplicate candidate ids → Resolved. The resolver must
+    ///     deduplicate before counting matches so a misbehaving extractor
+    ///     that returned the same handle three times still yields
+    ///     `Resolved(handle)`, mirroring `resolve_unique_by_tag`'s
+    ///     defense-in-depth `HashSet::insert` discipline.
+    #[test]
+    fn edge_cases() {
+        // (a) Empty candidate slice + populated table.
+        let mut table_a = TopologyAttributeTable::default();
+        table_a.record(h(80), attr(Role::Side, 0, None));
+        let candidates_a: [GeometryHandleId; 0] = [];
+        let query_a = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result_a = resolve_unique_by_attribute(
+            &table_a,
+            &candidates_a,
+            &query_a,
+            span(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_a,
+            AttributeResolution::FallbackToComputed,
+            "empty candidates → FallbackToComputed"
+        );
+        assert!(diagnostics.is_empty());
+
+        // (b) All-None query on populated candidates.
+        let mut table_b = TopologyAttributeTable::default();
+        table_b.record(h(81), attr(Role::Side, 0, Some("anything")));
+        let candidates_b = [h(81)];
+        let query_b = AttributeQuery {
+            user_label: None,
+            role_and_index: None,
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result_b = resolve_unique_by_attribute(
+            &table_b,
+            &candidates_b,
+            &query_b,
+            span(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_b,
+            AttributeResolution::Unresolved,
+            "all-None query → Unresolved (no constraint matches nothing)"
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::TopologyAttributeStale)
+        );
+        assert!(
+            diagnostics[0].message.contains("matched 0 sub-shapes"),
+            "message should contain 'matched 0 sub-shapes', got: {}",
+            diagnostics[0].message
+        );
+
+        // (c) Duplicate candidate ids → Resolved (dedup before counting).
+        let mut table_c = TopologyAttributeTable::default();
+        table_c.record(h(80), attr(Role::Side, 0, None));
+        // h(80) repeated three times.
+        let candidates_c = [h(80), h(80), h(80)];
+        let query_c = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result_c = resolve_unique_by_attribute(
+            &table_c,
+            &candidates_c,
+            &query_c,
+            span(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_c,
+            AttributeResolution::Resolved(h(80)),
+            "duplicate candidates → resolver dedups, single match"
+        );
+        assert!(diagnostics.is_empty());
+    }
 }
