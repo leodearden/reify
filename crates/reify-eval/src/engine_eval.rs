@@ -1,5 +1,6 @@
 // Split from lib.rs (task 2032) — eval methods.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::panic;
 use std::sync::Arc;
@@ -894,6 +895,15 @@ impl Engine {
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
 
+        // Runtime diagnostics sink (task 2341 step-16): collects warnings
+        // emitted by `reify_expr::eval_expr` during user-expression
+        // evaluation — primarily `W_FIELD_OUT_OF_BOUNDS` from sampled-field
+        // OOB queries and `W_INTERPOLATION_DEFERRED` from RBF/Kriging
+        // fallback. Wired into every `EvalContext` constructed below via
+        // `.with_runtime_diagnostics(&runtime_sink)`. Drained into
+        // `diagnostics` immediately before returning.
+        let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+
         // Reset per-call test-instrumentation counters. These are always-present
         // fields (no cfg-gate) so the resets need no conditional compilation.
         self.last_param_override_type_kind_rejections = 0;
@@ -1174,6 +1184,7 @@ impl Engine {
                     &functions,
                     &meta_map,
                     &mut diagnostics,
+                    &runtime_sink,
                 );
             }
 
@@ -1457,6 +1468,7 @@ impl Engine {
                     &functions,
                     &meta_map,
                     &mut diagnostics,
+                    &runtime_sink,
                 );
             }
         }
@@ -1602,6 +1614,7 @@ impl Engine {
                             &functions,
                             &meta_map,
                             &mut diagnostics,
+                            &runtime_sink,
                         );
                     }
                     SolveResult::Infeasible {
@@ -1699,6 +1712,12 @@ impl Engine {
         });
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
+
+        // Drain runtime diagnostics (task 2341 step-16) into the result
+        // diagnostics vec. The sink was populated by `eval_expr` calls
+        // above whenever sampled-field OOB queries or RBF/Kriging
+        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        diagnostics.append(&mut runtime_sink.borrow_mut());
 
         EvalResult {
             values,
@@ -2283,6 +2302,7 @@ impl Engine {
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
         let (let_cells, mut let_traces, sorted_lets) = detect_let_cycle(template, diagnostics);
 
@@ -2407,8 +2427,9 @@ impl Engine {
             // `if force_panic { panic!(…) }` branch are both
             // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
             // are absent in production builds.
-            let eval_ctx =
-                eval_ctx_with_meta(values, functions, meta_map).with_determinacy(&snapshot.values);
+            let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
+                .with_determinacy(&snapshot.values)
+                .with_runtime_diagnostics(runtime_sink);
             let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 #[cfg(any(test, feature = "test-instrumentation"))]
                 if force_panic {
