@@ -749,6 +749,15 @@ pub(crate) fn compile_entity(
     // and `MinWall#1[0]` for two distinct instantiations of MinWall). Scoped
     // per-entity so labels are stable and locally-interpretable (see task 845).
     let mut constraint_inst_counts: HashMap<String, usize> = HashMap::new();
+    // Defer statement-form forall elaboration until after the main second-pass
+    // loop completes — `sub_components` and `value_cells` (count cells included)
+    // are populated in source order, but a `constraint <sub>.count == n` member
+    // can appear before or after the `sub` declaration it pairs with (see
+    // `compile_count_constraint_before_sub_declaration` in collection_sub_tests).
+    // Processing forall in source order would race with that population.
+    // Task 2364: per-element elaboration moved to a deferred sub-pass below.
+    let mut pending_forall_constraint: Vec<&reify_syntax::ForallConstraintDecl> = Vec::new();
+    let mut pending_forall_connect: Vec<&reify_syntax::ForallConnectDecl> = Vec::new();
     for member in structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -1453,28 +1462,16 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::ForallConnect(f) => {
-                // TODO(task 2364): per-element elaboration not yet implemented.
-                diagnostics.push(
-                    Diagnostic::error(
-                        "statement-form forall (connect/chain) not yet elaborated",
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        f.span,
-                        "not yet elaborated — see task 2364",
-                    )),
-                );
+                // Defer to the post-loop forall elaboration sub-pass — see the
+                // `pending_forall_*` declarations above and the dispatch loop
+                // after the main second pass. Sub-components and count cells
+                // need to be fully populated before we can resolve element
+                // counts (task 2364).
+                pending_forall_connect.push(f);
             }
             reify_syntax::MemberDecl::ForallConstraint(f) => {
-                // TODO(task 2364): per-element elaboration not yet implemented.
-                diagnostics.push(
-                    Diagnostic::error(
-                        "statement-form forall (constraint) not yet elaborated",
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        f.span,
-                        "not yet elaborated — see task 2364",
-                    )),
-                );
+                // Defer to the post-loop forall elaboration sub-pass (task 2364).
+                pending_forall_constraint.push(f);
             }
             reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
                 // Compile each arm's guard and register a GuardedDeclGroup cluster
@@ -1497,6 +1494,51 @@ pub(crate) fn compile_entity(
                 );
             }
         }
+    }
+
+    // Deferred forall elaboration sub-pass (task 2364, spec §5.4).
+    // Now that `sub_components` and `value_cells` (count cells included) are
+    // fully populated, expand each `forall` statement-form into per-element
+    // CompiledConstraints / CompiledConnections. Convert `constraint_inst_counts`
+    // to a u32-valued map for the helpers; the existing `usize` map is kept for
+    // the original ConstraintInst arm and will share the same counter once
+    // step-14 refactors that arm into a shared helper.
+    for f in &pending_forall_constraint {
+        elaborate_forall_constraint(
+            f,
+            entity_name,
+            &mut scope,
+            enum_defs,
+            functions,
+            constraint_def_registry,
+            &value_cells,
+            &sub_components,
+            &mut constraints,
+            &mut constraint_index,
+            &mut constraint_inst_counts,
+            &mut guarded_groups,
+            &mut structure_controlling,
+            &mut guard_index,
+            diagnostics,
+        );
+    }
+    for f in &pending_forall_connect {
+        elaborate_forall_connect(
+            f,
+            entity_name,
+            &ports,
+            &scope,
+            enum_defs,
+            functions,
+            trait_registry,
+            &value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &mut connections,
+            &mut sub_components,
+            &mut connector_index,
+            diagnostics,
+        );
     }
 
     // Third pass: compile geometry let bindings into realizations.
