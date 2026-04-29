@@ -164,3 +164,102 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
     let _sph = sphere_op();
     let _: CapKind = CapKind::Top;
 }
+
+// ─── step-3: Cylinder → 1×Cap(Top) + 1×Cap(Bottom) + 1×Side ───────────────────
+
+#[test]
+fn seed_primitive_attributes_cylinder_classifies_cap_top_cap_bottom_and_side() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let cyl_id = kernel
+        .execute(&cylinder_op())
+        .expect("cylinder should build")
+        .id;
+
+    let face_handles = kernel
+        .extract_faces(cyl_id)
+        .expect("extract_faces(cylinder) should succeed");
+    let edge_handles = kernel
+        .extract_edges(cyl_id)
+        .expect("extract_edges(cylinder) should succeed");
+
+    // OCCT emits exactly 3 faces for a cylinder: side + top cap + bottom cap.
+    assert_eq!(
+        face_handles.len(),
+        3,
+        "a 5mm-r / 10mm-h cylinder should have exactly 3 faces (side + 2 caps)"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &feature_id,
+        &cylinder_op(),
+    )
+    .expect("seed_primitive_attributes for a cylinder should succeed");
+
+    // Step-3 contract: faces only — exactly 3 entries, one per face. (Edges
+    // are step-7's contract.)
+    assert_eq!(
+        table.len(),
+        3,
+        "step-3 contract: exactly 3 face entries (no edges yet)"
+    );
+
+    let mut cap_top_count = 0;
+    let mut cap_bottom_count = 0;
+    let mut side_count = 0;
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table.lookup(face_id).unwrap_or_else(|| {
+            panic!(
+                "cylinder face #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, face_id
+            )
+        });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "cylinder face #{idx} feature_id should equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.local_index, 0,
+            "cylinder face #{idx}: each role has exactly one occurrence, so local_index must be 0"
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "cylinder face #{idx} user_label should be None per task-1 invariant"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "cylinder face #{idx} mod_history should be empty per task-1 invariant"
+        );
+        match attr.role {
+            Role::Cap(CapKind::Top) => cap_top_count += 1,
+            Role::Cap(CapKind::Bottom) => cap_bottom_count += 1,
+            Role::Side => side_count += 1,
+            other => panic!(
+                "cylinder face #{idx} role should be Cap(Top|Bottom) or Side, got {:?}",
+                other
+            ),
+        }
+    }
+    assert_eq!(
+        cap_top_count, 1,
+        "exactly one cylinder face must be classified Role::Cap(CapKind::Top), got {cap_top_count}"
+    );
+    assert_eq!(
+        cap_bottom_count, 1,
+        "exactly one cylinder face must be classified Role::Cap(CapKind::Bottom), got {cap_bottom_count}"
+    );
+    assert_eq!(
+        side_count, 1,
+        "exactly one cylinder face must be classified Role::Side, got {side_count}"
+    );
+}
