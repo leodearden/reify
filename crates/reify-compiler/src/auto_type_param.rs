@@ -281,6 +281,19 @@ pub enum FeasibilityResult {
 /// Input order is preserved in both `accepted` and `rejected`; callers are
 /// expected to supply candidates in alphabetical order (as Phase A does),
 /// so the output vectors inherit that alphabetical ordering.
+///
+/// # Satisfaction → feasibility mapping
+///
+/// The three-arm `Satisfaction` enum maps to two feasibility outcomes:
+///
+/// | `Satisfaction` arm   | Feasibility verdict | Why                                   |
+/// |----------------------|---------------------|---------------------------------------|
+/// | `Satisfied`          | **Feasible**        | Constraint is provably satisfied      |
+/// | `Indeterminate`      | **Feasible**        | Undef does not falsify (arch §2.5)    |
+/// | `Violated`           | **Infeasible**      | Constraint is provably falsified      |
+///
+/// Only `Violated` appears in [`RejectedCandidate::violated_constraints`];
+/// `Satisfied` and `Indeterminate` ids are never recorded there.
 pub fn filter_feasible_candidates(
     candidates: &[String],
     parameterized_template: &TopologyTemplate,
