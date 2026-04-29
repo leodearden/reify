@@ -8,8 +8,9 @@ use std::time::Instant;
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, ErrorRef, FIELD_ENTITY_PREFIX,
-    Freshness, PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult,
-    Value, ValueCellId, ValueMap, VersionId,
+    Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField,
+    SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Type, Value, ValueCellId,
+    ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -572,9 +573,18 @@ fn eval_guarded_group_param_cell(
 ///
 /// Both `Analytical` and `Composed` sources evaluate the lambda expression
 /// once against the current eval context, producing a `Value::Lambda` whose
-/// captures are taken from the supplied `values` map. `Sampled` and
-/// `Imported` fields produce a placeholder `Value::Undef` lambda — neither
-/// kind has a callable lambda body to evaluate at this point.
+/// captures are taken from the supplied `values` map.
+///
+/// `Sampled` fields (task 2341, Option B 5-key surface): each compiled
+/// config expression (`grid` / `bounds` / `spacing` / `interpolation` /
+/// `data`) is evaluated against the current context, the resulting
+/// `Value`s are parsed into a `SampledField`, and that `SampledField` is
+/// wrapped as `Arc::new(Value::SampledField(sf))`. On any parse failure
+/// the field's lambda becomes `Arc::new(Value::Undef)` — a poisoned
+/// no-op that produces `Undef` at every sample point.
+///
+/// `Imported` fields produce a placeholder `Value::Undef` lambda — they
+/// have no callable lambda body to evaluate at this point.
 pub(crate) fn elaborate_field(
     field: &reify_compiler::CompiledField,
     values: &ValueMap,
@@ -588,8 +598,14 @@ pub(crate) fn elaborate_field(
             let val = reify_expr::eval_expr(expr, &ctx);
             Arc::new(val)
         }
-        reify_compiler::CompiledFieldSource::Sampled { .. }
-        | reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
+        reify_compiler::CompiledFieldSource::Sampled { config } => {
+            let ctx = eval_ctx_with_meta(values, functions, meta_map);
+            match build_sampled_field(&field.name, config, &field.codomain_type, &ctx) {
+                Some(sf) => Arc::new(Value::SampledField(sf)),
+                None => Arc::new(Value::Undef),
+            }
+        }
+        reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
     };
 
     let source_kind = match &field.source {
@@ -611,6 +627,224 @@ pub(crate) fn elaborate_field(
         source: source_kind,
         lambda: lambda_value,
     }
+}
+
+/// Look up a config entry by key.  `compile_field` validated that all five
+/// required keys are present, so a missing key here would indicate a bug
+/// upstream — the helper returns `None` rather than panicking so callers
+/// can degrade gracefully.
+fn lookup_config<'a>(
+    config: &'a [(String, reify_types::CompiledExpr)],
+    key: &str,
+) -> Option<&'a reify_types::CompiledExpr> {
+    config.iter().find(|(k, _)| k == key).map(|(_, e)| e)
+}
+
+/// Build a runtime `SampledField` from the five-key compiled config. Returns
+/// `None` if any key is missing or any value fails to parse — caller wraps
+/// `None` as `Arc::new(Value::Undef)` (poisoned no-op).
+///
+/// Parsers (Option B per esc-2341-149):
+/// * `grid` — `Value::String` matching `"RegularGrid1"|"RegularGrid2"|"RegularGrid3"`
+/// * `bounds` — `Value::BoundingBox` with `Point3` corners; per-axis count is
+///   `1`/`2`/`3` for `Regular1D`/`2D`/`3D` (the parser projects extra
+///   z/y components for lower-dimensional fields, matching how `bbox(...)`
+///   today only constructs 3D bounding boxes).
+/// * `spacing` — `Value::Scalar { Length }` for `Regular1D`; `Value::List` of
+///   `N` Length scalars for higher dimensions.
+/// * `interpolation` — `Value::String` matching one of `"Linear"`,
+///   `"NearestNeighbor"`, `"Cubic"`, `"Rbf"`, `"Kriging"`.
+/// * `data` — `Value::List` whose elements are `Value::Real` or
+///   `Value::Scalar` (codomain-dimensioned); flattened into row-major SI.
+fn build_sampled_field(
+    name: &str,
+    config: &[(String, reify_types::CompiledExpr)],
+    codomain: &Type,
+    ctx: &reify_expr::EvalContext<'_>,
+) -> Option<SampledField> {
+    let grid_expr = lookup_config(config, "grid")?;
+    let bounds_expr = lookup_config(config, "bounds")?;
+    let spacing_expr = lookup_config(config, "spacing")?;
+    let interp_expr = lookup_config(config, "interpolation")?;
+    let data_expr = lookup_config(config, "data")?;
+
+    let grid_val = reify_expr::eval_expr(grid_expr, ctx);
+    let bounds_val = reify_expr::eval_expr(bounds_expr, ctx);
+    let spacing_val = reify_expr::eval_expr(spacing_expr, ctx);
+    let interp_val = reify_expr::eval_expr(interp_expr, ctx);
+    let data_val = reify_expr::eval_expr(data_expr, ctx);
+
+    let kind = parse_grid_kind(&grid_val)?;
+    let (bounds_min, bounds_max) = parse_bounds(&bounds_val, kind)?;
+    let spacing = parse_spacing(&spacing_val, kind)?;
+    let interpolation = parse_interpolation(&interp_val)?;
+    let data = parse_data(&data_val, codomain)?;
+
+    let axis_grids = (0..bounds_min.len())
+        .map(|i| linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]))
+        .collect();
+
+    Some(SampledField {
+        name: name.to_string(),
+        kind,
+        bounds_min,
+        bounds_max,
+        spacing,
+        axis_grids,
+        interpolation,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    })
+}
+
+/// Map a `grid = …` value to the spatial-grid kind tag.  Accepts
+/// `Value::String` matching `"RegularGrid1"|"RegularGrid2"|"RegularGrid3"`
+/// (case-sensitive).
+fn parse_grid_kind(grid_val: &Value) -> Option<SampledGridKind> {
+    match grid_val {
+        Value::String(s) => match s.as_str() {
+            "RegularGrid1" => Some(SampledGridKind::Regular1D),
+            "RegularGrid2" => Some(SampledGridKind::Regular2D),
+            "RegularGrid3" => Some(SampledGridKind::Regular3D),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Map a `bounds = …` value (a `Value::BoundingBox`) to `(bounds_min, bounds_max)`
+/// per-axis SI coordinates.  For `Regular1D`/`2D`, projects extra components
+/// of the 3-component `Point3` corners.
+fn parse_bounds(
+    bounds_val: &Value,
+    kind: SampledGridKind,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    let (min_pt, max_pt) = match bounds_val {
+        Value::BoundingBox { min, max } => (min.as_ref(), max.as_ref()),
+        _ => return None,
+    };
+    let axis_count = match kind {
+        SampledGridKind::Regular1D => 1,
+        SampledGridKind::Regular2D => 2,
+        SampledGridKind::Regular3D => 3,
+    };
+    let min_axes = extract_point_axes(min_pt, axis_count)?;
+    let max_axes = extract_point_axes(max_pt, axis_count)?;
+    Some((min_axes, max_axes))
+}
+
+/// Extract the first `axis_count` SI scalar coordinates from a `Value::Point`.
+/// Each component must be a `Value::Scalar` (returns its `si_value`) or
+/// `Value::Real` (returned as-is; bare-Real points are dimensionless).
+fn extract_point_axes(point: &Value, axis_count: usize) -> Option<Vec<f64>> {
+    let items = match point {
+        Value::Point(items) => items,
+        _ => return None,
+    };
+    if items.len() < axis_count {
+        return None;
+    }
+    let mut axes = Vec::with_capacity(axis_count);
+    for item in items.iter().take(axis_count) {
+        match item {
+            Value::Scalar { si_value, .. } => axes.push(*si_value),
+            Value::Real(v) => axes.push(*v),
+            _ => return None,
+        }
+    }
+    Some(axes)
+}
+
+/// Map a `spacing = …` value to per-axis SI scalars. `Regular1D` accepts
+/// a `Value::Scalar` (Length-dimensioned); higher dimensions accept a
+/// `Value::List` of `N` length scalars.
+fn parse_spacing(spacing_val: &Value, kind: SampledGridKind) -> Option<Vec<f64>> {
+    match kind {
+        SampledGridKind::Regular1D => match spacing_val {
+            Value::Scalar { si_value, .. } => Some(vec![*si_value]),
+            Value::Real(v) => Some(vec![*v]),
+            _ => None,
+        },
+        SampledGridKind::Regular2D | SampledGridKind::Regular3D => {
+            let n = if matches!(kind, SampledGridKind::Regular2D) {
+                2
+            } else {
+                3
+            };
+            let items = match spacing_val {
+                Value::List(items) => items,
+                _ => return None,
+            };
+            if items.len() != n {
+                return None;
+            }
+            let mut spacing = Vec::with_capacity(n);
+            for item in items {
+                match item {
+                    Value::Scalar { si_value, .. } => spacing.push(*si_value),
+                    Value::Real(v) => spacing.push(*v),
+                    _ => return None,
+                }
+            }
+            Some(spacing)
+        }
+    }
+}
+
+/// Map an `interpolation = …` value to the language-level kind tag.
+fn parse_interpolation(interp_val: &Value) -> Option<InterpolationKind> {
+    match interp_val {
+        Value::String(s) => match s.as_str() {
+            "Linear" => Some(InterpolationKind::Linear),
+            "NearestNeighbor" => Some(InterpolationKind::NearestNeighbor),
+            "Cubic" => Some(InterpolationKind::Cubic),
+            "Rbf" => Some(InterpolationKind::Rbf),
+            "Kriging" => Some(InterpolationKind::Kriging),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Map a `data = …` value to a flat row-major `Vec<f64>` in SI units.
+/// Accepts a `Value::List` whose elements are `Value::Real`, `Value::Int`
+/// (whole-number literals like `0.0` may collapse to `Int` per
+/// `expr.rs:257-258`), or codomain-dimensioned `Value::Scalar`.
+fn parse_data(data_val: &Value, _codomain: &Type) -> Option<Vec<f64>> {
+    let items = match data_val {
+        Value::List(items) => items,
+        _ => return None,
+    };
+    let mut data = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::Real(v) => data.push(*v),
+            Value::Int(n) => data.push(*n as f64),
+            Value::Scalar { si_value, .. } => data.push(*si_value),
+            _ => return None,
+        }
+    }
+    Some(data)
+}
+
+/// Inclusive linspace from `start` to `stop` with step `spacing`.  Produces
+/// `[start, start+spacing, …, stop]` (or as close as `floor((stop-start)/spacing)`
+/// admits).  Returns `[start]` for non-positive spans (degenerate-but-valid).
+fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
+    if spacing <= 0.0 || !spacing.is_finite() || !start.is_finite() || !stop.is_finite() {
+        return vec![start];
+    }
+    let span = stop - start;
+    if span < 0.0 {
+        return vec![start];
+    }
+    // Round to nearest integer to avoid floating-point cliff effects on
+    // exact-fit cases (e.g. (2.0 - 0.0) / 1.0 → 1.999… instead of 2).
+    let n_intervals = (span / spacing).round() as usize;
+    let count = n_intervals + 1;
+    (0..count)
+        .map(|i| start + (i as f64) * spacing)
+        .collect()
 }
 
 impl Engine {
