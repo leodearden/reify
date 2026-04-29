@@ -3013,6 +3013,12 @@ mod tests {
         // After canonicalization (flip sign so nw > 0), nx becomes −small, so
         // ω = (2·nx, 0, 0) = (−2·small, 0, 0). Verify the sign (ang[0] < 0)
         // and the magnitude (|ang[0]| ≈ 2·small ≈ 2e-10).
+        // Note: small = 1e-10 > EPS = 1e-12, so this test deliberately stays
+        // in the atan2 branch of transform_log — the Taylor branch (v_norm < EPS)
+        // is exercised by the negated-identity test above where v_norm = 0.
+        // ω ≈ 2·nx is the leading-order result of the atan2 formula
+        // (angle = 2·atan2(v_norm, nw); scale = angle/v_norm → 2 as nw → 1),
+        // not the Taylor approximation.
         assert!(
             ang[0] < 0.0,
             "angular[0] = {}, expected negative after canonicalization-driven sign flip",

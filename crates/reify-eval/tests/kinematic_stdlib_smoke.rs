@@ -221,10 +221,12 @@ fn kinematic_stdlib_smoke_e2e() {
     // that the named-function path and the operator path stay in sync —
     // it lives at the eval-pipeline level because reify-expr's eval_mul
     // is private to that crate and not callable from reify-stdlib unit
-    // tests. FP-tolerant comparison (tol 1e-12) instead of bit-exact Value
-    // equality so the guard survives extension to non-identity rotations
-    // or translations that trigger different rounding paths in
-    // compose-via-operator vs compose-via-named-function.
+    // tests. For the current source (identity rotation, [1mm,0,0]
+    // translation), both code paths produce bit-identical f64s, so the
+    // 1e-15 tolerance is effectively as tight as bit-exact while keeping
+    // the component-wise style consistent with the rest of this test.
+    // Tighten further or revert to assert_eq! if either path begins
+    // producing non-identical results for these specific inputs.
     let t_co_op = get_value(v, "t_composed_op");
     let (t_co_op_rot, t_co_op_trans) = match t_co_op {
         Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
@@ -249,13 +251,13 @@ fn kinematic_stdlib_smoke_e2e() {
     assert_orientation_close(
         t_co_op_rot,
         exp_rot,
-        1e-12,
+        1e-15,
         "t_composed_op rotation matches t_composed",
     );
     assert_vec3_close(
         t_co_op_trans,
         exp_trans,
-        1e-12,
+        1e-15,
         "t_composed_op translation matches t_composed",
     );
 
