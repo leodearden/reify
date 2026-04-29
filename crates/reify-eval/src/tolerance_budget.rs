@@ -130,12 +130,20 @@ mod tests {
         //
         // Closed-form check: per_stage(tol, N)^N ≈ tol * 0.8^N within float-eps,
         // and that composed value is strictly < tol for tol > 0 and N ≥ 1.
-        let float_eps = 1e-10;
-        for &tol in &[1e-3_f64, 1e-2_f64] {
+        //
+        // The tol slice spans the < 1 / ≥ 1 regime boundary noted in the module
+        // doc: per-stage values may exceed requested_tol when requested_tol < 1,
+        // but the safety property (composed < tol) still holds for all tol > 0.
+        for &tol in &[1e-3_f64, 1e-2_f64, 1.0_f64, 10.0_f64] {
             for &n in &[1_usize, 2, 3, 5] {
                 let per_stage = per_stage_tolerance(tol, n);
                 let composed = per_stage.powi(n as i32);
                 let expected_composed = tol * 0.8_f64.powi(n as i32);
+                // Relative-or-absolute hybrid epsilon: stays tight for small tol
+                // while remaining meaningful for tol ≥ 1 (e.g. tol=10, N=5
+                // gives expected_composed ≈ 3.27, so a fixed 1e-10 bound would
+                // be gratuitously loose there).
+                let float_eps = expected_composed.abs() * 1e-12 + 1e-12;
                 assert!(
                     (composed - expected_composed).abs() < float_eps,
                     "per_stage({tol},{n})^{n} = {composed} should ≈ tol*0.8^N = {expected_composed}"
