@@ -1298,6 +1298,90 @@ structure S {
     }
 }
 
+/// 2D bilinear interpolation at the centroid of a 2×2 grid.
+///
+/// Grid nodes (axis-0 outer, row-major):
+/// `f(0,0)=0`, `f(0,1)=1`, `f(1,0)=2`, `f(1,1)=3`
+/// Bilinear at `(0.5, 0.5)` is the average of all four corners = `1.5`.
+#[test]
+fn sample_sampled_field_2d_linear_interpolation_returns_expected_value() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid2" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 1.0m, 0.0m)) spacing = [1.0m, 1.0m] interpolation = "Linear" data = [0.0, 1.0, 2.0, 3.0] } }
+
+structure S {
+    let val = sample(f, point2(0.5m, 0.5m))
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 1.5).abs() < 1e-12,
+            "sample(f, point2(0.5m, 0.5m)) expected 1.5 (bilinear centroid), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 1.5).abs() < 1e-12,
+            "sample(f, point2(0.5m, 0.5m)) expected 1.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(1.5), got: {:?}", other),
+    }
+}
+
+/// 3D trilinear interpolation at the centroid of a 2×2×2 grid.
+///
+/// Data `[0..7]` flattened row-major (axis-0 outer, axis-2 inner): the
+/// eight corners of the unit cube hold values `0..=7`. Trilinear at
+/// `(0.5, 0.5, 0.5)` is the average of all corners = `28/8 = 3.5`.
+#[test]
+fn sample_sampled_field_3d_linear_interpolation_returns_expected_value() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid3" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 1.0m, 1.0m)) spacing = [1.0m, 1.0m, 1.0m] interpolation = "Linear" data = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0] } }
+
+structure S {
+    let val = sample(f, point3(0.5m, 0.5m, 0.5m))
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 3.5).abs() < 1e-12,
+            "sample(f, point3(0.5m,0.5m,0.5m)) expected 3.5 (trilinear centroid), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 3.5).abs() < 1e-12,
+            "sample(f, point3(0.5m,0.5m,0.5m)) expected 3.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(3.5), got: {:?}", other),
+    }
+}
+
 /// Exact-on-node sample. `sample(f, 1.0m)` should return the data value
 /// at the midpoint node, i.e. `1.0`.
 #[test]
