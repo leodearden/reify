@@ -1,4 +1,4 @@
-import { type Component, For, Show, createSignal } from 'solid-js';
+import { type Component, For, Show, createSignal, createEffect } from 'solid-js';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
 import styles from './MechanismPanel.module.css';
 
@@ -79,6 +79,17 @@ interface JointRowProps {
   onSetParameter: (cellId: string, value: string) => void;
   onScrubLocal: (cellId: string | null, jointIndex: number, valueSi: number) => void;
   mechanismCellId: string;
+  /**
+   * Returns the effective SI value for this joint (optimistic override from
+   * mechanismStore, falling back to joint.current_value_si when no override is
+   * active).  When provided, the slider syncs to this value reactively so that
+   * external changes (e.g. PropertyEditor set_parameter, MCP scrub) are
+   * reflected without the user having to reload the panel.
+   *
+   * When omitted (e.g. in unit tests), the slider retains its local signal and
+   * only updates on mount.
+   */
+  effectiveValueSi?: () => number | null;
 }
 
 const JointRow: Component<JointRowProps> = (props) => {
@@ -102,6 +113,18 @@ const JointRow: Component<JointRowProps> = (props) => {
   };
 
   const [sliderValue, setSliderValue] = createSignal(initialDisplay());
+
+  // Sync slider with external state changes (e.g. PropertyEditor edits,
+  // MCP set_parameter, or mechanismStore optimistic-override updates).
+  // When effectiveValueSi is provided it is a reactive accessor — the effect
+  // re-runs whenever its value changes.  When the accessor is absent (tests)
+  // the effect only runs once on mount and never again.
+  createEffect(() => {
+    const eff = props.effectiveValueSi?.() ?? joint().current_value_si;
+    if (eff === null || eff === undefined) return;
+    const disp = siToDisplay(eff, kind());
+    if (disp !== null) setSliderValue(disp);
+  });
 
   // RAF coalescing: one pending setParameter per joint slot
   let pendingValue: number | null = null;
@@ -200,6 +223,7 @@ interface MechanismSectionProps {
   descriptor: MechanismDescriptor;
   onSetParameter: (cellId: string, value: string) => void;
   onScrubLocal: (cellId: string | null, jointIndex: number, valueSi: number) => void;
+  getEffectiveValueSi: (cellId: string, jointIndex: number, fallback: number | null) => number | null;
 }
 
 const MechanismSection: Component<MechanismSectionProps> = (props) => {
@@ -219,6 +243,13 @@ const MechanismSection: Component<MechanismSectionProps> = (props) => {
                 props.onScrubLocal(props.descriptor.cell_id, jointIndex, valueSi)
               }
               mechanismCellId={props.descriptor.cell_id}
+              effectiveValueSi={() =>
+                props.getEffectiveValueSi(
+                  props.descriptor.cell_id,
+                  joint.joint_index,
+                  joint.current_value_si,
+                )
+              }
             />
           )}
         </For>
@@ -232,7 +263,14 @@ const MechanismSection: Component<MechanismSectionProps> = (props) => {
 // ---------------------------------------------------------------------------
 
 export interface MechanismPanelProps {
-  /** Mechanism descriptors from the backend (filtered: no errored mechanisms). */
+  /**
+   * Mechanism descriptors from the backend (filtered: no errored mechanisms).
+   *
+   * NOTE: The backend returns one descriptor per mechanism *cell*, including
+   * intermediate builder results (e.g. m0, m1, m2 from a `body()` chain).
+   * All non-errored cells are rendered here.  Consumers that want to display
+   * only the "final" (largest) mechanism should pre-filter this array.
+   */
   descriptors: MechanismDescriptor[];
   /** Called when a slider value is committed (RAF-coalesced). */
   onSetParameter: (cellId: string, value: string) => void;
@@ -245,9 +283,27 @@ export interface MechanismPanelProps {
    * can clear the optimistic override once the backend confirms the parameter value.
    */
   onScrubLocal: (cellId: string | null, jointIndex: number, valueSi: number) => void;
+  /**
+   * Optional: returns the effective SI value for a joint, preferring an
+   * optimistic override (in-flight scrub) over the descriptor's
+   * `current_value_si`.  Provide `mechanismStore.getEffectiveValueSi` in
+   * production so that the slider stays in sync with external parameter
+   * changes (PropertyEditor, MCP) and with the optimistic-override store.
+   *
+   * When omitted, JointRow only uses its local `createSignal` — instant
+   * feedback on user input still works, but external changes won't be
+   * reflected until the descriptor object itself is replaced.
+   */
+  getEffectiveValueSi?: (cellId: string, jointIndex: number, fallback: number | null) => number | null;
 }
 
 export const MechanismPanel: Component<MechanismPanelProps> = (props) => {
+  // Default: identity fallback (no optimistic store wired).
+  const effectiveFn = (cellId: string, jointIndex: number, fallback: number | null) =>
+    props.getEffectiveValueSi
+      ? props.getEffectiveValueSi(cellId, jointIndex, fallback)
+      : fallback;
+
   return (
     <div class={styles.panel} data-testid="mechanism-panel">
       <Show
@@ -262,6 +318,7 @@ export const MechanismPanel: Component<MechanismPanelProps> = (props) => {
               descriptor={descriptor}
               onSetParameter={props.onSetParameter}
               onScrubLocal={props.onScrubLocal}
+              getEffectiveValueSi={effectiveFn}
             />
           )}
         </For>

@@ -1125,6 +1125,7 @@ const App: Component = () => {
                   onScrubLocal={(cellId, jointIndex, valueSi) =>
                     mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
                   }
+                  getEffectiveValueSi={mechanismStore.getEffectiveValueSi}
                 />
               </Show>
               <Show when={chatOpen()}>

@@ -53,13 +53,20 @@ export function createMechanismStore(deps: MechanismStoreDeps) {
     const newDescriptors = await deps.getMechanismDescriptors();
 
     // Build a set of keys to clear: overrides that have been "committed"
-    // (i.e. the backend's current_value_si now matches the optimistic value).
+    // (i.e. the backend's current_value_si is within tolerance of the optimistic
+    // value — strict === is avoided because the JS display→SI conversion
+    // (e.g. 90deg → 90 * π/180) may not bit-match the Rust-side parse of "90deg").
     const toDelete: string[] = [];
     for (const desc of newDescriptors) {
       for (const joint of desc.joints) {
         const key = `${desc.cell_id}:${joint.joint_index}`;
         const override = state.optimistic[key];
-        if (override !== undefined && joint.current_value_si === override) {
+        if (
+          override !== undefined &&
+          joint.current_value_si !== null &&
+          Math.abs(joint.current_value_si - override) <=
+            1e-9 * (1 + Math.abs(override))
+        ) {
           toDelete.push(key);
         }
       }
