@@ -24,6 +24,7 @@ pub mod snapshot;
 pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod topology_attribute_propagation;
+pub mod topology_attribute_resolver;
 pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
