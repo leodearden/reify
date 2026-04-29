@@ -2574,37 +2574,76 @@ mod tests {
         );
     }
 
+    /// Minimal well-formed `(joint, value_arg)` fixture for each kind in `JOINT_KINDS`.
+    ///
+    /// Shared by `transform_at_dispatches_for_every_joint_kind` and
+    /// `joint_jacobian_dispatches_for_every_joint_kind` so there is exactly one
+    /// `_ => panic!` remediation site to update when a new kind is added to
+    /// `JOINT_KINDS`.
+    ///
+    /// `value_arg` is the motion-variable input for `transform_at`; it is unused
+    /// by `joint_jacobian` (which is a constant w.r.t. the motion variable).
+    fn joint_kind_minimal_fixture(kind: &str) -> (Value, Value) {
+        match kind {
+            "prismatic" => (prismatic_x_joint(), Value::length(0.0)),
+            "revolute"  => (revolute_z_joint(),  Value::angle(0.0)),
+            "coupling"  => (
+                eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]),
+                Value::length(0.0),
+            ),
+            _ => panic!(
+                "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
+                 add a minimal well-formed fixture here and confirm that both \
+                 `transform_at` and `joint_jacobian_value` have matching dispatch arms"
+            ),
+        }
+    }
+
     /// Guard against silent drift between `JOINT_KINDS` and the per-kind `match`
     /// arms in `transform_at`.  For every kind in `JOINT_KINDS`, build a minimal
     /// well-formed joint value and assert that `transform_at` does NOT return
     /// `Value::Undef`.
     ///
     /// Two failure modes are caught:
-    /// 1. A new kind is added to `JOINT_KINDS` without a fixture here → the `_`
-    ///    arm panics with a remediation message.
+    /// 1. A new kind is added to `JOINT_KINDS` without a fixture in
+    ///    `joint_kind_minimal_fixture` → the `_` arm panics with a remediation
+    ///    message.
     /// 2. A fixture exists but `transform_at` has no dispatch arm for the kind →
     ///    the `is_undef` assertion fails.
     #[test]
     fn transform_at_dispatches_for_every_joint_kind() {
         for &kind in JOINT_KINDS {
-            let (joint, value_arg) = match kind {
-                "prismatic" => (prismatic_x_joint(), Value::length(0.0)),
-                "revolute"  => (revolute_z_joint(),  Value::angle(0.0)),
-                "coupling"  => (
-                    eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]),
-                    Value::length(0.0),
-                ),
-                _ => panic!(
-                    "JOINT_KINDS contains '{kind}' but the dispatch test has no fixture; \
-                     add a minimal well-formed fixture for this kind and confirm \
-                     `transform_at` has a matching dispatch arm"
-                ),
-            };
+            let (joint, value_arg) = joint_kind_minimal_fixture(kind);
             let result = eval_builtin("transform_at", &[joint, value_arg]);
             assert!(
                 !result.is_undef(),
                 "transform_at(kind='{kind}', minimal-well-formed-input) returned Undef. \
                  Either add a dispatch arm in transform_at for kind='{kind}', \
+                 or remove '{kind}' from JOINT_KINDS."
+            );
+        }
+    }
+
+    /// Guard against silent drift between `JOINT_KINDS` and the per-kind `match`
+    /// arms in `joint_jacobian_value`.  Mirrors
+    /// `transform_at_dispatches_for_every_joint_kind` but calls `joint_jacobian`
+    /// (which takes only the joint, no motion-variable argument).
+    ///
+    /// Two failure modes are caught:
+    /// 1. A new kind is added to `JOINT_KINDS` without a fixture in
+    ///    `joint_kind_minimal_fixture` → the `_` arm panics with a remediation
+    ///    message.
+    /// 2. A fixture exists but `joint_jacobian_value` has no dispatch arm for
+    ///    the kind → the `is_undef` assertion fails.
+    #[test]
+    fn joint_jacobian_dispatches_for_every_joint_kind() {
+        for &kind in JOINT_KINDS {
+            let (joint, _value_arg) = joint_kind_minimal_fixture(kind);
+            let result = eval_builtin("joint_jacobian", &[joint]);
+            assert!(
+                !result.is_undef(),
+                "joint_jacobian(kind='{kind}', minimal-well-formed-input) returned Undef. \
+                 Either add a dispatch arm in joint_jacobian_value for kind='{kind}', \
                  or remove '{kind}' from JOINT_KINDS."
             );
         }
