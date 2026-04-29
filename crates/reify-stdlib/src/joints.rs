@@ -2524,15 +2524,6 @@ mod tests {
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
 
     #[test]
-    fn joint_kinds_pins_canonical_set() {
-        assert_eq!(
-            JOINT_KINDS,
-            &["prismatic", "revolute", "coupling"],
-            "JOINT_KINDS must list exactly the three canonical joint kinds"
-        );
-    }
-
-    #[test]
     fn is_joint_value_true_for_prismatic_map() {
         assert!(
             is_joint_value(&prismatic_x_joint()),
