@@ -47,10 +47,10 @@ use reify_types::{
 fn expect_real(
     query_label: &'static str,
     id: GeometryHandleId,
-    value: Value,
+    value: &Value,
 ) -> Result<f64, QueryError> {
     match value {
-        Value::Real(x) => Ok(x),
+        Value::Real(x) => Ok(*x),
         other => Err(QueryError::QueryFailed(format!(
             "{query_label}({:?}) returned non-real value: {:?}",
             id, other
@@ -109,6 +109,38 @@ where
     Ok(values)
 }
 
+/// Filter `ids` to those for which `predicate(id, &value)` returns `true`,
+/// where the value is the kernel's response to `query_ctor(id)`.
+///
+/// Issues a single batched `kernel.query_many` call (via [`query_per_subshape`]),
+/// then applies `predicate` to each `(id, value)` pair in input order.
+/// Errors from `predicate` are propagated immediately via `?`.
+///
+/// `selector_label` is forwarded to `query_per_subshape` and embedded in
+/// any `check_query_many_len` error message, so each caller should pass its
+/// own distinct label (e.g. `"edges_by_length"` vs `"edges_by_length_with_tags"`).
+fn filter_by_value<K, Q, F>(
+    kernel: &K,
+    ids: &[GeometryHandleId],
+    selector_label: &'static str,
+    query_ctor: Q,
+    predicate: F,
+) -> Result<Vec<GeometryHandleId>, QueryError>
+where
+    K: GeometryKernel + ?Sized,
+    Q: Fn(GeometryHandleId) -> GeometryQuery,
+    F: Fn(GeometryHandleId, &Value) -> Result<bool, QueryError>,
+{
+    let values = query_per_subshape(kernel, ids, selector_label, query_ctor)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for (id, value) in ids.iter().zip(values.iter()) {
+        if predicate(*id, value)? {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
+
 /// Record a [`FeatureTag`] in `table` for every id in `ids`.
 ///
 /// Each tag is derived from `parent_tag` with `sub_index` set to the
@@ -157,15 +189,10 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     max_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
-    let values = query_per_subshape(kernel, &edges, "edges_by_length", GeometryQuery::EdgeLength)?;
-    let mut out = Vec::with_capacity(edges.len());
-    for (id, value) in edges.iter().zip(values) {
-        let len = expect_real("EdgeLength", *id, value)?;
-        if len >= min_m && len <= max_m {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+    filter_by_value(kernel, &edges, "edges_by_length", GeometryQuery::EdgeLength, |id, value| {
+        let len = expect_real("EdgeLength", id, value)?;
+        Ok(len >= min_m && len <= max_m)
+    })
 }
 
 /// Return the subset of `extract_edges(parent_handle)` whose length lies in
@@ -201,20 +228,10 @@ pub fn edges_by_length_with_tags<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(parent_handle)?;
     record_subshape_tags(table, &edges, parent_tag);
-    let values = query_per_subshape(
-        kernel,
-        &edges,
-        "edges_by_length_with_tags",
-        GeometryQuery::EdgeLength,
-    )?;
-    let mut out = Vec::with_capacity(edges.len());
-    for (id, value) in edges.iter().zip(values) {
-        let len = expect_real("EdgeLength", *id, value)?;
-        if len >= min_m && len <= max_m {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+    filter_by_value(kernel, &edges, "edges_by_length_with_tags", GeometryQuery::EdgeLength, |id, value| {
+        let len = expect_real("EdgeLength", id, value)?;
+        Ok(len >= min_m && len <= max_m)
+    })
 }
 
 /// Return the subset of `extract_faces(handle)` whose surface area lies in
@@ -239,7 +256,7 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     let faces = kernel.extract_faces(handle)?;
     let values = query_per_subshape(kernel, &faces, "faces_by_area", GeometryQuery::SurfaceArea)?;
     let mut out = Vec::with_capacity(faces.len());
-    for (id, value) in faces.iter().zip(values) {
+    for (id, value) in faces.iter().zip(values.iter()) {
         let area = expect_real("SurfaceArea", *id, value)?;
         if area >= min_m2 && area <= max_m2 {
             out.push(*id);
@@ -290,7 +307,7 @@ pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
         GeometryQuery::SurfaceArea,
     )?;
     let mut out = Vec::with_capacity(faces.len());
-    for (id, value) in faces.iter().zip(values) {
+    for (id, value) in faces.iter().zip(values.iter()) {
         let area = expect_real("SurfaceArea", *id, value)?;
         if area >= min_m2 && area <= max_m2 {
             out.push(*id);
@@ -1234,7 +1251,7 @@ mod tests {
         // Direct sanity test of the helper: a non-Real value yields a
         // QueryFailed whose message names the query label and id.
         let id = GeometryHandleId(701);
-        let err = expect_real("EdgeLength", id, Value::String("not a number".into()))
+        let err = expect_real("EdgeLength", id, &Value::String("not a number".into()))
             .expect_err("expect_real must reject non-Real values");
         match err {
             QueryError::QueryFailed(msg) => {
