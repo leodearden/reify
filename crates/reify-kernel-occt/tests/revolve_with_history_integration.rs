@@ -21,7 +21,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::GeometryQuery;
+use reify_types::{GeometryHandleId, GeometryQuery, Value};
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
 /// `(17.5mm, 0, 0)` so its left edge sits at x=15mm — clear of the z-axis,
@@ -38,6 +38,50 @@ fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::Geome
     kernel
         .make_rect_profile_at_for_test(RECT_WIDTH_M, RECT_HEIGHT_M, RECT_CX_M, 0.0, 0.0)
         .expect("offset rect profile should build")
+}
+
+/// Synthesis-helper face-normal-match tolerance. Mirrors `DIR_TOL` in
+/// `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:568`. The strengthened
+/// assertions in the full-revolve regression tests pin `|n·axis|` against
+/// this same bound so the test fails if the synthesiser ever loosens its
+/// face-normal filter.
+const DIR_TOL: f64 = 1e-6;
+
+/// Parse a `Value::String` formatted by the kernel as
+/// `{"x":..,  "y":..,  "z":..}` (the JSON encoding used by FaceNormal,
+/// EdgeTangent, Centroid) into a 3-tuple of f64. Mirrors the helper of
+/// the same name in `tests/topology_extract_integration.rs:208`.
+fn parse_xyz(v: &Value) -> (f64, f64, f64) {
+    let s = match v {
+        Value::String(s) => s,
+        other => panic!("expected Value::String, got {:?}", other),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(s)
+        .unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
+    let x = parsed["x"].as_f64().expect("missing x");
+    let y = parsed["y"].as_f64().expect("missing y");
+    let z = parsed["z"].as_f64().expect("missing z");
+    (x, y, z)
+}
+
+/// Compute `|(face_normal) · axis_dir|` for the face at `result_faces[face_idx]`.
+///
+/// Shared by both full-revolution normal-axis orientation checks so the
+/// `dot_for` closure does not have to be re-defined inside each test function.
+/// Both tests use `axis_dir = [0.0, 0.0, 1.0]`; the parameter is kept explicit
+/// so the helper remains useful if a future test revolves about a different axis.
+fn face_axis_dot(
+    kernel: &OcctKernelHandle,
+    result_faces: &[GeometryHandleId],
+    face_idx: u32,
+    axis_dir: [f64; 3],
+) -> f64 {
+    let face_id = result_faces[face_idx as usize];
+    let v = kernel
+        .query(&GeometryQuery::FaceNormal(face_id))
+        .expect("FaceNormal query should succeed");
+    let (nx, ny, nz) = parse_xyz(&v);
+    (nx * axis_dir[0] + ny * axis_dir[1] + nz * axis_dir[2]).abs()
 }
 
 /// `BRepPrimAPI_MakeRevol` (PARTIAL — 180°): the test:
@@ -299,6 +343,61 @@ fn full_revolve_with_history_reports_no_caps() {
             result_edge_count
         );
     }
+
+    // (e) Normal-axis orientation, mirroring the triangle regression test
+    //     (full_revolve_triangle_profile_synthesis_regression) — task 2707.
+    //  - Profile edges 0 and 2 (bottom and top of the rect, Δz=0) are radial
+    //    and reach face_generated via the synthesis post-pass; their result
+    //    faces are flat annular disks with |n·axis| >= 1 - DIR_TOL. This pins
+    //    the synthesis matcher's face-normal filter (occt_wrapper.cpp:737-740).
+    //  - Profile edges 1 and 3 (right and left, parallel to Z) are axial and
+    //    reach face_generated via OCCT's Generated() as cylindrical sweeps.
+    //    Cylindrical face normals are exactly perpendicular to the revolution
+    //    axis, so |n·axis| = 0 exactly (up to floating-point). We assert
+    //    dot < DIR_TOL (= 1e-6) rather than the looser < 1 - DIR_TOL; the
+    //    tighter bound makes a degenerate face-normal regression fail loudly
+    //    instead of only catching synthesiser-threshold drift.
+    let axis_dir = [0.0_f64, 0.0, 1.0];
+
+    for radial_edge in [0u32, 2u32] {
+        let rec = history
+            .face_generated
+            .iter()
+            .find(|r| r.parent_subshape_index == radial_edge)
+            .unwrap_or_else(|| {
+                panic!("rect radial edge e{radial_edge} missing from face_generated")
+            });
+        let dot = face_axis_dot(&kernel, &result_faces, rec.result_subshape_index, axis_dir);
+        assert!(
+            dot > 1.0 - DIR_TOL,
+            "synthesised annular-disk face for radial edge e{radial_edge} must \
+             have |face_normal · axis| > 1 - DIR_TOL ({}), got {} (record {:?})",
+            1.0 - DIR_TOL,
+            dot,
+            rec
+        );
+    }
+
+    for axial_edge in [1u32, 3u32] {
+        let rec = history
+            .face_generated
+            .iter()
+            .find(|r| r.parent_subshape_index == axial_edge)
+            .unwrap_or_else(|| {
+                panic!("rect axial edge e{axial_edge} missing from face_generated")
+            });
+        let dot = face_axis_dot(&kernel, &result_faces, rec.result_subshape_index, axis_dir);
+        assert!(
+            dot < DIR_TOL,
+            "OCCT-reported cylindrical face for axial edge e{axial_edge} must \
+             have |face_normal · axis| < DIR_TOL ({DIR_TOL}), got {} (record {:?}); \
+             cylindrical face normals are exactly perpendicular to the axis \
+             (|n·axis| ≈ 0), so a value >= DIR_TOL would indicate a degenerate \
+             normal or the wrong face was selected",
+            dot,
+            rec
+        );
+    }
 }
 
 /// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
@@ -411,6 +510,64 @@ fn full_revolve_triangle_profile_synthesis_regression() {
             "face_generated result_subshape_index {} out of range; result has {} faces",
             r.result_subshape_index,
             result_face_count
+        );
+    }
+
+    // (vi) Normal-axis orientation:
+    //  - The radial edge (parent_subshape_index == 0) sweeps to a flat
+    //    annular-disk face whose normal is (anti-)parallel to the rotation
+    //    axis: |n·axis| >= 1.0 - DIR_TOL. This is exactly the condition the
+    //    synthesis matcher in occt_wrapper.cpp:737-740 enforces; the
+    //    assertion fails if a future regression makes the matcher accept a
+    //    non-disk face.
+    //  - The two slanted edges (parent_subshape_index in {1, 2}) sweep to
+    //    conical frustum faces. The bound is kept as < 1 - DIR_TOL rather
+    //    than being tightened to < DIR_TOL because the half-angle of the cone
+    //    determines the achievable |n·axis| value: e1 goes from (25mm,0,0) to
+    //    (20mm,0,10mm) (Δr=−5mm, Δz=+10mm), giving a slant angle of
+    //    atan(5/10) ≈ 26.6° from the Z-axis and a surface-normal component
+    //    |n·axis| ≈ sin(26.6°) ≈ 0.447. Tightening to DIR_TOL would
+    //    over-constrain to the specific triangle geometry; the synthesiser
+    //    exclusion threshold (1 - DIR_TOL) is sufficient to pin that these
+    //    records came from OCCT's Generated() and not the synthesis path. If
+    //    the exact cone geometry matters, a dedicated geometry test should
+    //    assert it.
+    let axis_dir = [0.0_f64, 0.0, 1.0];
+
+    let radial = history
+        .face_generated
+        .iter()
+        .find(|r| r.parent_subshape_index == 0)
+        .expect("triangle e0 (radial) must produce a face_generated record");
+    let radial_dot = face_axis_dot(&kernel, &result_faces, radial.result_subshape_index, axis_dir);
+    assert!(
+        radial_dot > 1.0 - DIR_TOL,
+        "synthesised annular-disk face for radial edge e0 must have \
+         |face_normal · axis| > 1 - DIR_TOL ({}), got {} (record {:?})",
+        1.0 - DIR_TOL,
+        radial_dot,
+        radial
+    );
+
+    for slanted_idx in [1u32, 2u32] {
+        let rec = history
+            .face_generated
+            .iter()
+            .find(|r| r.parent_subshape_index == slanted_idx)
+            .unwrap_or_else(|| {
+                panic!("triangle slanted edge e{slanted_idx} missing from face_generated")
+            });
+        let slanted_dot =
+            face_axis_dot(&kernel, &result_faces, rec.result_subshape_index, axis_dir);
+        assert!(
+            slanted_dot < 1.0 - DIR_TOL,
+            "OCCT-reported conical face for slanted edge e{slanted_idx} must have \
+             |face_normal · axis| < 1 - DIR_TOL ({}), got {} (record {:?}); \
+             value >= 1 - DIR_TOL would indicate this record came from the \
+             synthesis path rather than OCCT's Generated()",
+            1.0 - DIR_TOL,
+            slanted_dot,
+            rec
         );
     }
 }
