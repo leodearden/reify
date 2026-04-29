@@ -1568,9 +1568,26 @@ impl Engine {
                         CompiledForallBody::Constraint { body_expr } => {
                             let placeholder_entity =
                                 format!("{}.{}[0]", t.parent_entity, t.collection_sub_name);
+                            // Include `t_idx` so two foralls sharing the same
+                            // `(variable, parent_entity, collection_sub_name)` triple —
+                            // e.g. two separate `forall v in vents: constraint <expr1>` /
+                            // `forall v in vents: constraint <expr2>` decls in the same
+                            // structure — produce distinct ConstraintNodeIds. Without
+                            // this disambiguator, the second template's emissions
+                            // silently overwrite the first's in `graph.constraints`,
+                            // and the first template's `forall_emitted` ledger holds
+                            // IDs that are also owned by the second template,
+                            // breaking drain-on-decrease. Pinned by
+                            // `forall_runtime_re_elaboration::
+                            // edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constraint_ids`
+                            // (task 2629 step-25). Compile-time elaboration of the
+                            // same source through `elaborate_forall_constraint`'s
+                            // resolved arm uses a per-decl/per-element guard_index /
+                            // decl-position counter that disambiguates this case;
+                            // this runtime path mirrors that with `t_idx`.
                             let cnid_entity = format!(
-                                "forall:{}@{}.{}",
-                                t.variable, t.parent_entity, t.collection_sub_name,
+                                "forall:{}@{}.{}#{}",
+                                t.variable, t.parent_entity, t.collection_sub_name, t_idx,
                             );
 
                             for i in 0..new_count {
