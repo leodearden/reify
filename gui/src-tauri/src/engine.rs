@@ -543,6 +543,15 @@ impl EngineSession {
             }
         }
 
+        // Step-12: best-effort AST traversal to resolve driving param cell ids.
+        // Walks snapshot(mech, [bind(joint_ident, param_ident), …]) calls in the
+        // cached parsed declarations.  Only the canonical form — both arguments to
+        // bind() are bare identifiers and the value side is a Param cell — is
+        // resolved; all other forms leave driving_param_cell_id = None.
+        if let Some(parsed) = self.parsed_cache.as_ref() {
+            resolve_driving_params_from_ast(&mut descriptors, parsed, check, compiled);
+        }
+
         descriptors
     }
 
@@ -1122,6 +1131,198 @@ fn scalar_to_f64(val: &Value) -> Option<f64> {
         Value::Real(f) => Some(*f),
         Value::Int(i) => Some(*i as f64),
         _ => None,
+    }
+}
+
+// ---- driving-param resolution (step-12) ----------------------------------------
+
+/// Walk the parsed declarations looking for `snapshot(mech, [bind(joint, param), …])`
+/// invocations and populate `driving_param_cell_id` on the matching joint descriptor.
+///
+/// Only the canonical form is resolved:
+/// - Both arguments to `bind()` must be bare identifiers (`Ident`).
+/// - The value-side identifier must refer to a `Param` cell in the same structure.
+///
+/// Joints whose binding expression is a literal or a complex sub-expression remain
+/// with `driving_param_cell_id = None` (read-only in the slider panel).
+///
+/// This is best-effort — it does not trace through renamed aliases or across
+/// structure boundaries.  The `parsed_cache` is the already-parsed AST from
+/// `EngineSession::parsed_cache`, so no additional parse cost is incurred.
+fn resolve_driving_params_from_ast(
+    descriptors: &mut Vec<MechanismDescriptor>,
+    parsed: &reify_syntax::ParsedModule,
+    check: &CheckResult,
+    compiled: &CompiledModule,
+) {
+    for decl in &parsed.declarations {
+        let structure = match decl {
+            reify_syntax::Declaration::Structure(s) => s,
+            _ => continue,
+        };
+        let structure_name = &structure.name;
+
+        // Find the compiled template for this structure.
+        let template = match compiled.templates.iter().find(|t| t.name == *structure_name) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Collect (joint_ident, value_ident) pairs from all snapshot() calls.
+        let mut bind_pairs: Vec<(String, String)> = Vec::new();
+        for member in &structure.members {
+            let expr = match member {
+                reify_syntax::MemberDecl::Let(l) => &l.value,
+                _ => continue,
+            };
+            collect_snapshot_bind_pairs(expr, &mut bind_pairs);
+        }
+
+        // Resolve each pair.
+        for (joint_cell_name, value_cell_name) in bind_pairs {
+            // The value side must be a Param cell (not a Let or Auto).
+            let is_param = template.value_cells.iter().any(|c| {
+                c.id.member == value_cell_name
+                    && matches!(c.kind, ValueCellKind::Param)
+            });
+            if !is_param {
+                continue;
+            }
+
+            // Look up the joint Map value by cell id.
+            let joint_cell_id = ValueCellId::new(structure_name, &joint_cell_name);
+            let joint_val = check.values.get_or_undef(&joint_cell_id);
+            if matches!(joint_val, Value::Undef) {
+                continue;
+            }
+
+            let param_cell_id_str = format!("{}.{}", structure_name, value_cell_name);
+
+            // Scan descriptors from this structure and find the matching joint slot.
+            for desc in descriptors.iter_mut() {
+                if desc.entity_path != *structure_name {
+                    continue;
+                }
+
+                // Re-look up the mechanism Map to reconstruct joint ordering.
+                let (mech_entity, mech_member) = {
+                    let mut it = desc.cell_id.splitn(2, '.');
+                    match (it.next(), it.next()) {
+                        (Some(e), Some(m)) => (e.to_string(), m.to_string()),
+                        _ => continue,
+                    }
+                };
+                let mech_val = check.values.get_or_undef(
+                    &ValueCellId::new(&mech_entity, &mech_member),
+                );
+                let mech_map = match &mech_val {
+                    Value::Map(m) => m,
+                    _ => continue,
+                };
+                let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+                    Some(Value::List(b)) => b,
+                    _ => continue,
+                };
+
+                // Rebuild seen_joints in the same order as extract_joints_from_mechanism.
+                let mut seen_joints: Vec<Value> = Vec::new();
+                for body in bodies {
+                    let body_map = match body {
+                        Value::Map(b) => b,
+                        _ => continue,
+                    };
+                    let j = match body_map.get(&Value::String("at".to_string())) {
+                        Some(v) => v.clone(),
+                        None => continue,
+                    };
+                    if is_world_sentinel(&j) {
+                        continue;
+                    }
+                    if !seen_joints.iter().any(|s| s == &j) {
+                        seen_joints.push(j);
+                    }
+                }
+
+                // Find which joint_index this cell's value corresponds to.
+                let joint_index = match seen_joints.iter().position(|j| j == &joint_val) {
+                    Some(idx) => idx,
+                    None => continue,
+                };
+
+                if let Some(jd) = desc.joints.get_mut(joint_index) {
+                    if jd.driving_param_cell_id.is_none() {
+                        jd.driving_param_cell_id = Some(param_cell_id_str.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Recursively search `expr` for `snapshot(mech_expr, [bind(joint, value), …])`.
+/// For each `bind(Ident(joint_name), Ident(value_name))` append
+/// `(joint_name, value_name)` to `pairs`.
+///
+/// Recurses into `FunctionCall`, `BinOp`, `UnOp`, `Conditional`, and
+/// `ListLiteral` sub-expressions.  Other leaf variants have no sub-expressions.
+fn collect_snapshot_bind_pairs(
+    expr: &reify_syntax::Expr,
+    pairs: &mut Vec<(String, String)>,
+) {
+    use reify_syntax::ExprKind;
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args } => {
+            if name == "snapshot" && args.len() >= 2 {
+                // Extract bind() entries from the second argument (the bindings list).
+                if let ExprKind::ListLiteral(elems) = &args[1].kind {
+                    for elem in elems {
+                        let (bind_name, bind_args) = match &elem.kind {
+                            ExprKind::FunctionCall { name, args } => (name, args),
+                            _ => continue,
+                        };
+                        if bind_name != "bind" || bind_args.len() != 2 {
+                            continue;
+                        }
+                        let joint_ident = match &bind_args[0].kind {
+                            ExprKind::Ident(s) => s.clone(),
+                            _ => continue,
+                        };
+                        let value_ident = match &bind_args[1].kind {
+                            ExprKind::Ident(s) => s.clone(),
+                            _ => continue, // literal or complex expr → not a param ref
+                        };
+                        pairs.push((joint_ident, value_ident));
+                    }
+                }
+            }
+            // Recurse into all args regardless (snapshot may be nested).
+            for arg in args {
+                collect_snapshot_bind_pairs(arg, pairs);
+            }
+        }
+        ExprKind::BinOp { left, right, .. } => {
+            collect_snapshot_bind_pairs(left, pairs);
+            collect_snapshot_bind_pairs(right, pairs);
+        }
+        ExprKind::UnOp { operand, .. } => {
+            collect_snapshot_bind_pairs(operand, pairs);
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_snapshot_bind_pairs(condition, pairs);
+            collect_snapshot_bind_pairs(then_branch, pairs);
+            collect_snapshot_bind_pairs(else_branch, pairs);
+        }
+        ExprKind::ListLiteral(elems) => {
+            for elem in elems {
+                collect_snapshot_bind_pairs(elem, pairs);
+            }
+        }
+        // Leaf nodes (Ident, literals, etc.) have no sub-expressions to recurse.
+        _ => {}
     }
 }
 
