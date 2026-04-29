@@ -530,7 +530,7 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// runtime slice membership, so those arms **must be kept in sync with
 /// this constant** when a new kind is added.
 /// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling"];
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`] (`"prismatic"`, `"revolute"`,
@@ -2654,6 +2654,9 @@ mod tests {
                     (coupling_r, Value::angle(0.0)),
                 ]
             }
+            // 0-DOF fixed joint: any second arg is accepted (design decision: ignored).
+            // Value::Real(0.0) chosen to match the minimal-value style of the other arms.
+            "fixed" => vec![(eval_builtin("fixed", &[]), Value::Real(0.0))],
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
                  add a minimal well-formed fixture here and confirm that both \
