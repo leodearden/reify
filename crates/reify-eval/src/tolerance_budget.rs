@@ -37,6 +37,10 @@ pub const SAFETY_FACTOR: f64 = 0.8;
 /// In debug builds, panics if `n_stages == 0` or if `requested_tol` is not
 /// finite and non-negative.  Both checks compile out in release builds.
 pub fn per_stage_tolerance(requested_tol: f64, n_stages: usize) -> f64 {
+    debug_assert!(
+        n_stages > 0,
+        "tolerance_budget: n_stages must be ≥ 1, got {n_stages}"
+    );
     requested_tol.powf(1.0 / n_stages as f64) * SAFETY_FACTOR
 }
 
