@@ -80,6 +80,8 @@ struct BBox;
 struct TessResult;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+/// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
+struct RevolveSynthesisPostSortResult;
 
 // --- Primitive construction ---
 
@@ -189,6 +191,18 @@ uint32_t boolean_op_history_silent_drop_count(const BooleanOpHistory& history);
 /// time because the algorithm's tracking maps are tied to its lifetime —
 /// once it goes out of scope the maps are gone.
 ///
+/// Diagnostic counters (full-revolution only): `unsynthesized_profile_edge_count`
+/// counts non-degenerate, untracked profile edges that did not produce a
+/// `face_generated` record in the synthesis post-pass (see
+/// `synthesize_full_revolution_radial_face_records`). When non-zero, one OCCT
+/// `Message_Warning` is emitted via `Message::DefaultMessenger()`.
+/// `duplicate_parent_subshape_index_count` counts `face_generated` records
+/// dropped by `revolve_synthesis_post_sort_and_dedup` because their
+/// `parent_subshape_index` duplicated the preceding record after stable-sort.
+/// Both counters are zero for well-formed full-revolution inputs and are
+/// always zero for prism operations and partial revolves. Integration tests
+/// should assert both are zero as a regression-grade health check.
+///
 /// `result` owns the swept shape; `sweep_op_history_take_result_shape`
 /// hands it off to the kernel via `std::move`.
 struct SweepOpHistory {
@@ -208,6 +222,23 @@ struct SweepOpHistory {
     /// sweep). For prism this is the swept-end face; for partial revolve
     /// this is the profile rotated by `angle_rad`. Empty for full-2π revolutions.
     std::vector<uint32_t> end_cap_face_indices;
+    /// Count of non-degenerate, untracked profile edges that passed through
+    /// `synthesize_full_revolution_radial_face_records` without producing a
+    /// `face_generated` record. Covers three exit paths: (4) axial-classifier
+    /// (`dot(edge_dir, axis) > 1 - DIR_TOL`), (5) slanted-classifier
+    /// (`dot > DIR_TOL`), and (6) inner face-matching loop fall-through.
+    /// Degenerate edges (null vertices / zero-length) are NOT counted.
+    /// Always 0 for prism operations and for partial revolves; only
+    /// incremented by the full-revolution radial-face synthesis post-pass.
+    /// Zero for well-formed profiles; non-zero indicates a synthesis gap.
+    uint32_t unsynthesized_profile_edge_count = 0;
+    /// Count of `face_generated` records dropped by `revolve_synthesis_
+    /// post_sort_and_dedup` because their `parent_subshape_index` duplicated
+    /// the immediately preceding record's (after stable-sort). Always 0 for
+    /// well-formed profiles; non-zero indicates OCCT emitted a duplicate edge
+    /// report or a synthesis collision occurred. Only incremented by the
+    /// full-revolution radial-face synthesis post-pass.
+    uint32_t duplicate_parent_subshape_index_count = 0;
 };
 
 /// Run `BRepPrimAPI_MakePrism` on `profile` along the direction vector
@@ -252,6 +283,17 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
 /// crates/reify-eval) may treat all face_generated records uniformly —
 /// synthesized records are byte-identical to OCCT-reported ones.
 ///
+/// Synthesis diagnostics: when any non-degenerate, untracked profile edge
+/// fails to produce a `face_generated` record,
+/// `SweepOpHistory::unsynthesized_profile_edge_count` is incremented and one
+/// `Message_Warning` is emitted via
+/// `Message::DefaultMessenger()` summarizing the count. After synthesis, if any
+/// records have a duplicate `parent_subshape_index` after stable-sort, the
+/// duplicate is dropped (first occurrence under stable order wins) and
+/// `SweepOpHistory::duplicate_parent_subshape_index_count` is incremented per
+/// drop. Debug builds additionally assert the post-dedup records are strictly
+/// increasing in `parent_subshape_index`.
+///
 /// Honors the same Shell→Solid + `BRepLib::OrientClosedSolid`
 /// post-processing as `make_revolve` (the result shape may be a Solid
 /// constructed from the algorithm's Shell output).
@@ -285,6 +327,22 @@ rust::Vec<uint32_t> sweep_op_history_edge_generated(const SweepOpHistory& histor
 rust::Vec<uint32_t> sweep_op_history_edge_deleted(const SweepOpHistory& history);
 rust::Vec<uint32_t> sweep_op_history_start_cap_face_indices(const SweepOpHistory& history);
 rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& history);
+/// Count of non-degenerate, untracked profile edges that did not produce a
+/// face_generated record during the full-revolution synthesis post-pass.
+/// Always 0 for prism operations and for partial revolves.
+uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory& history);
+/// Count of face_generated records dropped by the post-sort dedup pass because
+/// their parent_subshape_index duplicated the preceding record (after stable-sort).
+/// Zero for a well-formed full revolve.
+uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history);
+
+/// Test fixture: run `revolve_synthesis_post_sort_and_dedup` on a synthetic flat
+/// `face_generated`-layout input (`parent_index, parent_subshape_index,
+/// result_subshape_index` triples). Returns the deduplicated records and the
+/// count of dropped duplicates. Exposed for unit-testing the dedup logic
+/// without real OCCT geometry.
+RevolveSynthesisPostSortResult revolve_synthesis_post_sort_for_test(
+    rust::Slice<const uint32_t> input);
 
 /// Probe whether `a` and `b` are intersecting (non-positive minimum distance).
 ///

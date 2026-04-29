@@ -24,6 +24,40 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
+// Re-export the result type so callers using the test-fixture wrapper below
+// can name it without reaching into the private bridge module.
+#[cfg(has_occt)]
+pub use ffi::ffi::RevolveSynthesisPostSortResult;
+
+/// Fixture for integration tests: runs only the post-sort/dedup helper on
+/// a synthetic flat-records input, without requiring real OCCT geometry.
+///
+/// Input is a flat buffer of `(parent_index, parent_subshape_index,
+/// result_subshape_index)` triples.  The fixture stable-sorts by
+/// `parent_subshape_index`, drops duplicate records (keeping the first under
+/// the stable sort), and returns the compacted buffer plus the count of
+/// dropped duplicates.
+///
+/// Gated behind the `test-fixtures` feature so this Rust wrapper is not
+/// exposed on the crate's public surface in production builds.
+///
+/// Note: the gate is **Rust-side reachability only**. The underlying
+/// cxx-bridge declaration (`crate::ffi::ffi::revolve_synthesis_post_sort_for_test`)
+/// and its C++ implementation in `cpp/occt_wrapper.cpp` are compiled into
+/// every build of this crate — `cxx::bridge` does not currently support
+/// `cfg`-gating individual `extern "C++"` items without restructuring the
+/// whole bridge module. Removing the symbol from production binaries would
+/// require splitting the bridge into feature-gated sub-modules; the helper
+/// is small (~10 LOC, one std::vector copy) and we have intentionally
+/// accepted the binary cost in exchange for keeping the bridge layout flat.
+///
+/// Integration tests reach this function via the self-dev-dep entry in
+/// `Cargo.toml` (`features = ["test-fixtures"]`).
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPostSortResult {
+    ffi::ffi::revolve_synthesis_post_sort_for_test(input)
+}
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 #[cfg(has_occt)]
@@ -551,6 +585,10 @@ impl OcctKernel {
             let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
                 .into_iter()
                 .collect();
+            let unsynthesized_profile_edge_count =
+                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
+            let duplicate_parent_subshape_index_count =
+                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -565,6 +603,8 @@ impl OcctKernel {
                 edge_deleted,
                 start_cap_face_indices,
                 end_cap_face_indices,
+                unsynthesized_profile_edge_count,
+                duplicate_parent_subshape_index_count,
             };
             (result_shape, records)
         };
@@ -672,6 +712,10 @@ impl OcctKernel {
             let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
                 .into_iter()
                 .collect();
+            let unsynthesized_profile_edge_count =
+                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
+            let duplicate_parent_subshape_index_count =
+                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -686,6 +730,8 @@ impl OcctKernel {
                 edge_deleted,
                 start_cap_face_indices,
                 end_cap_face_indices,
+                unsynthesized_profile_edge_count,
+                duplicate_parent_subshape_index_count,
             };
             (result_shape, records)
         };

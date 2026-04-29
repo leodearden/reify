@@ -103,6 +103,11 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
 
+// OCCT messaging (for synthesis-gap diagnostics)
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <TCollection_ExtendedString.hxx>
+
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -581,6 +586,74 @@ static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
     return gp_Vec(axis.Location(), point).Dot(gp_Vec(axis.Direction()));
 }
 
+/// Stable-sort `face_generated` triples by `parent_subshape_index` (field [1]),
+/// then walk the sorted records and drop any whose `parent_subshape_index`
+/// equals the immediately preceding record's, incrementing `out_duplicate_count`
+/// for each dropped record.
+///
+/// Preserves the `local_index = parent_subshape_index` invariant on surviving
+/// records (drop-duplicates rather than warn-and-keep or throw). In `#ifndef
+/// NDEBUG` builds asserts the post-dedup vector is strictly increasing in
+/// `parent_subshape_index`.
+///
+/// Also used by the FFI fixture `revolve_synthesis_post_sort_for_test` for
+/// unit-testing the dedup logic on synthetic flat input.
+static void revolve_synthesis_post_sort_and_dedup(
+    std::vector<uint32_t>& face_generated,
+    uint32_t& out_duplicate_count) {
+
+    const std::size_t n_recs = face_generated.size() / 3;
+    if (n_recs < 2) return;
+
+    // (1) Stable-sort by parent_subshape_index (element at offset +1 per triple).
+    std::vector<std::size_t> order(n_recs);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(),
+        [&](std::size_t a, std::size_t b) {
+            return face_generated[a * 3 + 1] < face_generated[b * 3 + 1];
+        });
+    std::vector<uint32_t> sorted;
+    sorted.reserve(face_generated.size());
+    for (std::size_t idx : order) {
+        sorted.push_back(face_generated[idx * 3 + 0]);
+        sorted.push_back(face_generated[idx * 3 + 1]);
+        sorted.push_back(face_generated[idx * 3 + 2]);
+    }
+
+    // (2) In-place dedup: compact sorted[], dropping records whose
+    //     parent_subshape_index equals the preceding kept record.
+    //     Gate on write_idx > 0 so prev_parent is only read after being set,
+    //     which remains correct if record 0 is ever skipped by future
+    //     filtering (unlike rec_idx > 0, which would compare against the
+    //     uninitialized-sentinel 0 for position 1 after position 0 is skipped).
+    const std::size_t n_sorted = sorted.size();
+    std::size_t write_idx = 0;
+    uint32_t prev_parent = 0; // value irrelevant; only read when write_idx > 0
+    for (std::size_t i = 0; i < n_sorted; i += 3) {
+        uint32_t cur_parent = sorted[i + 1];
+        if (write_idx > 0 && cur_parent == prev_parent) {
+            ++out_duplicate_count;
+        } else {
+            // Safe: write_idx <= i/3, so destination never aliases unread src.
+            sorted[write_idx * 3 + 0] = sorted[i + 0];
+            sorted[write_idx * 3 + 1] = sorted[i + 1];
+            sorted[write_idx * 3 + 2] = sorted[i + 2];
+            prev_parent = cur_parent;
+            ++write_idx;
+        }
+    }
+    sorted.resize(write_idx * 3);
+
+    // (3) Debug-only: assert strictly increasing parent_subshape_index.
+#ifndef NDEBUG
+    for (std::size_t k = 1; k < write_idx; ++k) {
+        assert(sorted[k * 3 + 1] > sorted[(k - 1) * 3 + 1]);
+    }
+#endif
+
+    face_generated = std::move(sorted);
+}
+
 /// Synthesize `face_generated` records for purely-radial profile edges
 /// in a full-2π revolution.
 ///
@@ -604,16 +677,23 @@ static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
 /// This preserves the `local_index = parent_subshape_index` invariant that
 /// `populate_revolve_attributes` (crates/reify-eval) relies on.
 ///
-/// INVARIANT CAVEAT: `local_index = parent_subshape_index` holds only when
-/// each profile edge index appears exactly once in face_generated. If OCCT's
-/// Generated() reports two records for the same edge (possible in degenerate
-/// sweeps with self-touching profiles), or if a synthesized record collides
-/// with an OCCT-reported one (prevented by the `tracked_parent_edges` guard
-/// but theoretically possible if OCCT partially reports a radial edge), the
-/// stable-sort will place duplicates adjacently but positions will diverge
-/// from parent_subshape_index and populate_revolve_attributes will assign
-/// misaligned local_index values silently. Well-formed CAD profiles (distinct
-/// edges, no self-intersection) are not expected to trigger this path.
+/// SILENT-DROPS: any non-degenerate, untracked profile edge that exits the
+/// synthesis loop without producing a face_generated record (axial path 4,
+/// slanted path 5, or inner matching-loop fall-through path 6) increments
+/// `SweepOpHistory::unsynthesized_profile_edge_count`. After the synthesis loop
+/// completes, if the counter is non-zero, one OCCT `Message_Warning` is
+/// emitted via `Message::DefaultMessenger()` summarising the count. The
+/// warning emission is best-effort (the OCCT messenger contract is not
+/// tested directly; only the counter field is asserted in integration
+/// tests). The counter is surfaced to Rust callers via the
+/// `SweepOpHistoryRecords` field `unsynthesized_profile_edge_count` so
+/// integration tests can assert it is zero for well-formed profiles.
+///
+/// DUPLICATE DETECTION: if `parent_subshape_index` values are not distinct
+/// in face_generated after sorting, duplicates are dropped by the
+/// `revolve_synthesis_post_sort_and_dedup` helper (first occurrence under
+/// stable sort wins) and the count is exposed via
+/// `SweepOpHistory::duplicate_parent_subshape_index_count`.
 ///
 /// MATCHING CAVEAT (same-z radial edges): the face-matching logic is greedy
 /// (first untracked face whose normal is parallel to the axis AND whose
@@ -681,10 +761,14 @@ static void synthesize_full_revolution_radial_face_records(
 
         double dot = std::abs(edge_vec.Dot(axis_dir));
         if (dot > 1.0 - DIR_TOL) {
-            continue; // Axial — OCCT Generated() should have caught this.
+            // Axial — OCCT Generated() should have caught this.
+            ++history.unsynthesized_profile_edge_count;
+            continue;
         }
         if (dot > DIR_TOL) {
-            continue; // Slanted — OCCT reports conical sweeps correctly.
+            // Slanted — OCCT reports conical sweeps correctly.
+            ++history.unsynthesized_profile_edge_count;
+            continue;
         }
 
         // Purely radial edge. Compute its midpoint axial coordinate.
@@ -692,6 +776,7 @@ static void synthesize_full_revolution_radial_face_records(
         double target_axial = compute_axial_coord(midpoint, axis);
 
         // Scan result faces for the matching annular-disk face.
+        bool matched = false;
         for (Standard_Integer j = 1; j <= n_faces; ++j) {
             const uint32_t face_idx_0 = static_cast<uint32_t>(j - 1);
             if (tracked_result_faces.count(face_idx_0)) {
@@ -750,31 +835,34 @@ static void synthesize_full_revolution_radial_face_records(
             history.face_generated.push_back(edge_idx_0);
             history.face_generated.push_back(face_idx_0);
             tracked_result_faces.insert(face_idx_0);
+            matched = true;
             break;
+        }
+        if (!matched) {
+            // Path 6: inner face-matching loop found no candidate.
+            ++history.unsynthesized_profile_edge_count;
         }
     }
 
-    // Stable-sort face_generated in groups of 3 by parent_subshape_index
-    // so synthesized records interleave with OCCT-reported ones in
-    // profile-edge order — preserving local_index = parent_subshape_index.
-    const std::size_t n_recs = history.face_generated.size() / 3;
-    if (n_recs >= 2) {
-        std::vector<std::size_t> order(n_recs);
-        std::iota(order.begin(), order.end(), 0);
-        std::stable_sort(order.begin(), order.end(),
-            [&](std::size_t a, std::size_t b) {
-                return history.face_generated[a * 3 + 1]
-                     < history.face_generated[b * 3 + 1];
-            });
-        std::vector<uint32_t> sorted;
-        sorted.reserve(history.face_generated.size());
-        for (std::size_t idx : order) {
-            sorted.push_back(history.face_generated[idx * 3 + 0]);
-            sorted.push_back(history.face_generated[idx * 3 + 1]);
-            sorted.push_back(history.face_generated[idx * 3 + 2]);
-        }
-        history.face_generated = std::move(sorted);
+    // Emit a single OCCT warning if any profile edges went unsynthesized.
+    if (history.unsynthesized_profile_edge_count > 0) {
+        std::ostringstream oss;
+        oss << "synthesize_full_revolution_radial_face_records: "
+            << history.unsynthesized_profile_edge_count
+            << " unsynthesized profile edge(s) — silent gap in face_generated";
+        Message::DefaultMessenger()->Send(
+            TCollection_ExtendedString(oss.str().c_str()),
+            Message_Warning);
     }
+
+    // Stable-sort face_generated by parent_subshape_index so synthesized
+    // records interleave with OCCT-reported ones in profile-edge order,
+    // then drop any duplicates (keeping the first under stable sort) and
+    // increment duplicate_parent_subshape_index_count per drop.
+    // Preserves the `local_index = parent_subshape_index` invariant that
+    // `populate_revolve_attributes` (crates/reify-eval) relies on.
+    revolve_synthesis_post_sort_and_dedup(
+        history.face_generated, history.duplicate_parent_subshape_index_count);
 }
 
 } // anonymous namespace
@@ -1016,6 +1104,25 @@ rust::Vec<uint32_t> sweep_op_history_start_cap_face_indices(const SweepOpHistory
 
 rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& history) {
     return to_rust_vec(history.end_cap_face_indices);
+}
+
+uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory& history) {
+    return history.unsynthesized_profile_edge_count;
+}
+
+uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history) {
+    return history.duplicate_parent_subshape_index_count;
+}
+
+RevolveSynthesisPostSortResult revolve_synthesis_post_sort_for_test(
+    rust::Slice<const uint32_t> input) {
+    std::vector<uint32_t> buf(input.begin(), input.end());
+    RevolveSynthesisPostSortResult result;
+    revolve_synthesis_post_sort_and_dedup(buf, result.duplicate_count);
+    for (uint32_t v : buf) {
+        result.output.push_back(v);
+    }
+    return result;
 }
 
 bool shapes_intersect(const OcctShape& a, const OcctShape& b) {

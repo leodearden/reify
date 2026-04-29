@@ -58,6 +58,22 @@ pub mod ffi {
         edge_face_map_builds: u32,
     }
 
+    /// Result of `revolve_synthesis_post_sort_for_test`: the deduplicated
+    /// flat record buffer and the count of dropped duplicate records.
+    ///
+    /// Mirrors the `TopologyCacheBuildCounts` compound-return pattern.
+    /// Defined here (in the cxx bridge) so cxx generates matching C++ and
+    /// Rust types automatically.
+    struct RevolveSynthesisPostSortResult {
+        /// Deduplicated flat `(parent_index, parent_subshape_index,
+        /// result_subshape_index)` triples, stable-sorted by
+        /// `parent_subshape_index`, with duplicates removed.
+        output: Vec<u32>,
+        /// Number of records dropped because their `parent_subshape_index`
+        /// equalled the preceding record's (after stable-sort).
+        duplicate_count: u32,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -192,6 +208,19 @@ pub mod ffi {
         fn sweep_op_history_start_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
         /// 0-based result face_map indices of the LastShape() (end) cap faces.
         fn sweep_op_history_end_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
+        /// Count of non-degenerate, untracked profile edges that did not produce a
+        /// face_generated record during the full-revolution synthesis post-pass.
+        /// Always 0 for prism ops and partial revolves; non-zero indicates a gap.
+        fn sweep_op_history_unsynthesized_profile_edge_count(history: &SweepOpHistory) -> u32;
+        /// Count of face_generated records dropped by the post-sort dedup pass
+        /// because their parent_subshape_index duplicated the preceding record.
+        /// Zero for a well-formed sweep.
+        fn sweep_op_history_duplicate_parent_subshape_index_count(history: &SweepOpHistory) -> u32;
+
+        /// Test fixture: run the post-sort/dedup pass on a synthetic flat
+        /// `face_generated`-layout input. Returns the deduplicated triples and the
+        /// count of dropped duplicates. Used to test dedup logic without real OCCT.
+        fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPostSortResult;
 
         /// Probe whether `a` and `b` are intersecting (non-positive minimum distance)
         /// via BRepExtrema_DistShapeShape. Returns true iff dist.Value() <= 0.0.

@@ -1127,6 +1127,49 @@ pub struct SweepOpHistoryRecords {
     /// end). Empty for full-2π revolutions where the start and end
     /// profile coincide and no cap face exists.
     pub end_cap_face_indices: Vec<u32>,
+    /// Count of non-degenerate, untracked profile edges that passed through
+    /// `synthesize_full_revolution_radial_face_records` without producing a
+    /// `face_generated` record. Covers the axial-classifier path (path 4:
+    /// `dot(edge_dir, axis) > 1 − DIR_TOL`), the slanted-classifier path
+    /// (path 5: `dot > DIR_TOL`), and the inner face-matching fall-through
+    /// (path 6: no candidate face passes the normal-parallel + axial-coord
+    /// checks). Degenerate edges are NOT counted. Always 0 for prism ops and
+    /// partial revolves; non-zero indicates a synthesis gap in a full revolve.
+    ///
+    /// **Trace emission:** when non-zero, the C++ synthesis helper emits one
+    /// `Message_Warning` via `Message::DefaultMessenger()` summarising the
+    /// total count (one aggregate message per call, not per edge, so log
+    /// volume is bounded regardless of how many edges are missing).
+    ///
+    /// **Integration test guard:** integration tests for well-formed profiles
+    /// should assert `unsynthesized_profile_edge_count == 0`. The self-consistency
+    /// test `full_revolve_misclassified_radial_edge_counter_best_effort`
+    /// validates the increment path via a synthetic near-axial edge
+    /// (`dot ≈ 2e-6`, just over `DIR_TOL = 1e-6`), using the assertion
+    /// `unsynthesized_profile_edge_count == n_profile_edges − face_generated.len()`
+    /// so the test is agnostic to whether OCCT covers the edge independently.
+    pub unsynthesized_profile_edge_count: u32,
+    /// Count of `face_generated` records dropped by the post-sort dedup pass
+    /// because their `parent_subshape_index` duplicated the immediately
+    /// preceding record (after stable-sort by `parent_subshape_index`).
+    /// Always 0 for well-formed profiles; non-zero indicates OCCT emitted a
+    /// duplicate edge report or a synthesized record collided with an
+    /// OCCT-reported one (the `tracked_parent_edges` guard prevents the
+    /// latter for fully-radial edges but not for partial reports).
+    ///
+    /// **Drop policy:** the first occurrence under stable sort is kept;
+    /// subsequent duplicates are dropped so surviving records are strictly
+    /// increasing in `parent_subshape_index`. This preserves the
+    /// `local_index = parent_subshape_index` invariant that
+    /// `populate_revolve_attributes` relies on. Debug builds additionally
+    /// `assert()` the post-dedup vector is strictly increasing, giving a
+    /// loud signal during local development without crashing release builds.
+    ///
+    /// **Integration test guard:** assert `duplicate_parent_subshape_index_count
+    /// == 0` in happy-path full-revolve tests. The FFI fixture
+    /// `revolve_synthesis_post_sort_for_test` enables white-box testing of
+    /// the dedup logic on synthetic flat inputs without real OCCT geometry.
+    pub duplicate_parent_subshape_index_count: u32,
 }
 
 /// Typed wrapper for the per-parent face/edge handle slices passed to
@@ -2097,6 +2140,8 @@ mod tests {
             }],
             start_cap_face_indices: vec![5, 6],
             end_cap_face_indices: vec![7],
+            unsynthesized_profile_edge_count: 0,
+            duplicate_parent_subshape_index_count: 0,
         };
         assert_eq!(records.face_modified.len(), 1);
         assert_eq!(records.face_generated.len(), 1);
@@ -2123,6 +2168,8 @@ mod tests {
             edge_deleted: Vec::new(),
             start_cap_face_indices: vec![5],
             end_cap_face_indices: vec![6],
+            unsynthesized_profile_edge_count: 0,
+            duplicate_parent_subshape_index_count: 0,
         };
         let cloned = records.clone();
         assert_eq!(records, cloned);
