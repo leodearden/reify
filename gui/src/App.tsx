@@ -15,6 +15,7 @@ import {
   MenuBar,
   DesignTree,
   ViewManageModal,
+  MechanismPanel,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
