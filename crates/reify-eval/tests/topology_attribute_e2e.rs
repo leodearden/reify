@@ -34,8 +34,8 @@ use std::collections::{HashMap, HashSet};
 use reify_eval::propagate_attributes_via_brepalgoapi_history;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    CapKind, FeatureId, GeometryHandleId, GeometryOp, ModEntry, RealizationNodeId, Role,
-    TopologyAttribute, TopologyAttributeTable, Value,
+    BooleanOpParents, CapKind, FeatureId, GeometryHandleId, GeometryOp, ModEntry,
+    RealizationNodeId, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -258,18 +258,16 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     );
 
     // ─── (5) Run propagation ─────────────────────────────────────────
-    // Use slice-of-slices so we can borrow the parent vectors without
-    // cloning. The helper accepts N parents; we pass exactly two for a
-    // binary fuse (`parent_index` 0 == left, 1 == right).
-    let parent_face_handles: [&[GeometryHandleId]; 2] =
-        [&left_face_handles, &right_face_handles];
-    let parent_edge_handles: [&[GeometryHandleId]; 2] =
-        [&left_edge_handles, &right_edge_handles];
+    // BooleanOpParents::Binary documents the binary-fuse expectation:
+    // `parent_index` 0 == left operand, 1 == right operand.
+    let parents = BooleanOpParents::Binary {
+        faces: [&left_face_handles, &right_face_handles],
+        edges: [&left_edge_handles, &right_edge_handles],
+    };
 
     propagate_attributes_via_brepalgoapi_history(
         &mut table,
-        &parent_face_handles,
-        &parent_edge_handles,
+        &parents,
         &result_face_handles,
         &result_edge_handles,
         &history,
@@ -339,10 +337,11 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     // result faces NOT in Modified ∪ Generated have no entry — this
     // pins the "no spurious entries" invariant.
     if !history.face_deleted.is_empty() {
+        let parent_face_slices = parents.face_slices();
         for deleted in history.face_deleted.iter() {
             let parent_idx = deleted.parent_index as usize;
             let parent_subshape_idx = deleted.parent_subshape_index as usize;
-            let parent_handle = parent_face_handles[parent_idx][parent_subshape_idx];
+            let parent_handle = parent_face_slices[parent_idx][parent_subshape_idx];
             assert!(
                 table.lookup(parent_handle).is_some(),
                 "parent face handle for deleted record (parent {}, subshape {}) \
