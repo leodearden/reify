@@ -96,6 +96,195 @@ pub enum NewtonOutcome {
     },
 }
 
+/// Pivot threshold below which the LDLᵀ factor is treated as singular.
+const SINGULARITY_PIVOT_EPS: f64 = 1e-12;
+
+/// Compute split position / rotation residual sub-norms over a stacked twist
+/// residual.
+///
+/// The residual is laid out as `[ω_x, ω_y, ω_z, v_x, v_y, v_z]` per loop
+/// (mirroring the `transform_log` / `joint_jacobian` Map shape).  We aggregate
+/// across loops with L2-norm so a multi-loop residual collapses to two
+/// scalars: `(angular_norm, linear_norm)`.
+fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
+    let mut ang2 = 0.0;
+    let mut lin2 = 0.0;
+    for chunk in r.chunks(6) {
+        // chunk may be shorter than 6 only on malformed input — guard so we
+        // don't panic in release on caller errors.
+        for (i, v) in chunk.iter().enumerate() {
+            if i < 3 {
+                ang2 += v * v;
+            } else {
+                lin2 += v * v;
+            }
+        }
+    }
+    (ang2.sqrt(), lin2.sqrt())
+}
+
+/// Solve `A · x = b` for `x` where `A` is a small dense symmetric (semi-)PD
+/// matrix supplied as `n×n` row-major nested `Vec`, using inlined LDLᵀ
+/// factorisation.
+///
+/// Returns `None` if the min absolute pivot drops below
+/// [`SINGULARITY_PIVOT_EPS`] — that is the signal that the Gauss-Newton
+/// normal-equations matrix `JᵀJ` is rank-deficient.
+fn solve_normal_equations(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = a.len();
+    if n == 0 {
+        return Some(vec![]);
+    }
+    if a.iter().any(|row| row.len() != n) || b.len() != n {
+        return None;
+    }
+    // LDLᵀ: a is overwritten so that the strict-lower triangle holds L
+    // (with implicit unit diagonal) and the diagonal holds D.
+    for j in 0..n {
+        // Compute D[j,j] = a[j,j] - Σ_{k<j} L[j,k]^2 * D[k,k]
+        let mut d_jj = a[j][j];
+        for k in 0..j {
+            d_jj -= a[j][k] * a[j][k] * a[k][k];
+        }
+        if d_jj.abs() < SINGULARITY_PIVOT_EPS {
+            return None;
+        }
+        a[j][j] = d_jj;
+        // Compute L[i,j] for i > j: a[i,j] = (a[i,j] - Σ_{k<j} L[i,k]*L[j,k]*D[k,k]) / D[j,j]
+        for i in (j + 1)..n {
+            let mut s = a[i][j];
+            for k in 0..j {
+                s -= a[i][k] * a[j][k] * a[k][k];
+            }
+            a[i][j] = s / d_jj;
+        }
+    }
+    // Forward solve L · y = b (L unit-lower).
+    for i in 0..n {
+        let mut s = b[i];
+        for k in 0..i {
+            s -= a[i][k] * b[k];
+        }
+        b[i] = s;
+    }
+    // Diagonal solve D · z = y.
+    for i in 0..n {
+        b[i] /= a[i][i];
+    }
+    // Back solve Lᵀ · x = z.
+    for i in (0..n).rev() {
+        let mut s = b[i];
+        for k in (i + 1)..n {
+            s -= a[k][i] * b[k];
+        }
+        b[i] = s;
+    }
+    Some(b)
+}
+
+/// Generic Gauss-Newton solver for closure-driven residual+jacobian problems.
+///
+/// `residual_jac(&x)` must return `(r, j_cols)` where `r` is the residual
+/// vector (a stacked sequence of 6-element twists, `[ω; v]` per loop) and
+/// `j_cols` is `Vec<Vec<f64>>` of length `x.len()` — one column per free
+/// variable, each a `r.len()`-element twist column.  Returning `None` aborts
+/// the solve as `NewtonOutcome::NotConverged` with `residual_norm` set to
+/// `f64::INFINITY` (signal that the closure could not produce a residual,
+/// e.g. a chain returned `Value::Undef`).
+///
+/// Convergence rule: per [`NewtonConfig::tol_pos_m`] / [`NewtonConfig::tol_rot_rad`],
+/// we converge iff `linear_norm < tol_pos_m` AND `angular_norm < tol_rot_rad`.
+/// Singularity rule: per the inlined LDLᵀ pivot check (1e-12 threshold), any
+/// rank-deficient `JᵀJ` returns `NewtonOutcome::Singular`.
+pub fn newton_solve<F>(
+    x0: Vec<f64>,
+    mut residual_jac: F,
+    config: &NewtonConfig,
+) -> NewtonOutcome
+where
+    F: FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)>,
+{
+    let mut x = x0;
+    let n = x.len();
+    let mut last_residual_norm = f64::INFINITY;
+
+    for iter in 0..config.max_iters {
+        let (r, j_cols) = match residual_jac(&x) {
+            Some(rj) => rj,
+            None => {
+                return NewtonOutcome::NotConverged {
+                    x,
+                    residual_norm: f64::INFINITY,
+                };
+            }
+        };
+        let (ang_norm, lin_norm) = position_rotation_norms(&r);
+        last_residual_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
+        if lin_norm < config.tol_pos_m && ang_norm < config.tol_rot_rad {
+            return NewtonOutcome::Converged {
+                x,
+                iters: iter,
+                residual_norm: last_residual_norm,
+            };
+        }
+        // Build JᵀJ (n×n) and Jᵀr (n).
+        if j_cols.len() != n {
+            return NewtonOutcome::NotConverged {
+                x,
+                residual_norm: last_residual_norm,
+            };
+        }
+        if j_cols.iter().any(|c| c.len() != r.len()) {
+            return NewtonOutcome::NotConverged {
+                x,
+                residual_norm: last_residual_norm,
+            };
+        }
+        let mut jtj: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
+        let mut jtr: Vec<f64> = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for (a, b) in j_cols[i].iter().zip(j_cols[j].iter()) {
+                    s += a * b;
+                }
+                jtj[i][j] = s;
+            }
+            let mut s = 0.0;
+            for (a, b) in j_cols[i].iter().zip(r.iter()) {
+                s += a * b;
+            }
+            jtr[i] = s;
+        }
+        // Solve JᵀJ · δx = -Jᵀr.
+        let neg_jtr: Vec<f64> = jtr.iter().map(|v| -v).collect();
+        let dx = match solve_normal_equations(jtj, neg_jtr) {
+            Some(d) => d,
+            None => {
+                return NewtonOutcome::Singular { x, iters: iter };
+            }
+        };
+        for i in 0..n {
+            x[i] += dx[i];
+        }
+    }
+
+    // After max_iters: re-evaluate the residual at the final x so the
+    // reported norm reflects the final iterate (not the last pre-step
+    // residual).  If max_iters == 0, last_residual_norm is INFINITY; we
+    // need to evaluate once at x0 to honour the user contract.
+    if config.max_iters == 0 {
+        if let Some((r, _)) = residual_jac(&x) {
+            let (ang_norm, lin_norm) = position_rotation_norms(&r);
+            last_residual_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
+        }
+    }
+    NewtonOutcome::NotConverged {
+        x,
+        residual_norm: last_residual_norm,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
