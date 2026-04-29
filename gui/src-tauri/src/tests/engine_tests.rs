@@ -4322,6 +4322,67 @@ fn consumed_idents_cache_lifecycle() {
     );
 }
 
+/// Proves that `get_mechanism_descriptors` reads from `consumed_idents_cache` rather
+/// than re-walking the AST.  Mirrors the `get_containing_definition_reads_from_parsed_cache`
+/// pattern: load → baseline → inject poisoned cache → second call → verify readback.
+///
+/// Poison: replace the cache for "Kinematic" with an empty set (zero consumed mechanisms).
+/// With no consumed idents, the terminal-mechanism filter lets every mechanism cell through.
+/// If the method re-walked the AST it would rebuild {"m0", "m1"} and filter them out,
+/// returning only m2.  The presence of m0 and m1 in the result proves cache use.
+#[test]
+fn get_mechanism_descriptors_reads_from_consumed_idents_cache() {
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+
+    // Baseline: with the real cache ({m0, m1} consumed), only m2 (the terminal cell)
+    // should appear.
+    let baseline = session.get_mechanism_descriptors();
+    let baseline_names: Vec<&str> = baseline.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        baseline_names,
+        vec!["m2"],
+        "baseline: only m2 (the terminal cell) should appear; got {:?}",
+        baseline_names
+    );
+
+    // Inject a poisoned cache: "Kinematic" maps to an empty consumed set, so the
+    // filter treats every mechanism cell as terminal.
+    let poisoned: HashMap<String, HashSet<String>> =
+        HashMap::from([("Kinematic".to_string(), HashSet::new())]);
+    session.override_consumed_idents_cache_for_test(poisoned);
+
+    // After poisoning, all three mechanism cells should appear.
+    let all = session.get_mechanism_descriptors();
+    let all_names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
+    assert!(
+        all_names.contains(&"m0"),
+        "m0 (0 bodies) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+    assert!(
+        all_names.contains(&"m1"),
+        "m1 (1 body) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+    assert!(
+        all_names.contains(&"m2"),
+        "m2 (2 bodies) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+
+    // Verify bodies_count to confirm the right cells came through.
+    let m0_desc = all.iter().find(|d| d.name == "m0").unwrap();
+    let m1_desc = all.iter().find(|d| d.name == "m1").unwrap();
+    assert_eq!(m0_desc.bodies_count, 0, "m0 should have 0 bodies");
+    assert_eq!(m1_desc.bodies_count, 1, "m1 should have 1 body");
+}
+
 #[test]
 fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
