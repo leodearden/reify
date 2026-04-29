@@ -95,3 +95,56 @@ fn engine_active_tolerance_for_returns_some_after_activate_purpose_with_represen
         "entities outside the subject's prefix scan must NOT have a tolerance entry"
     );
 }
+
+#[test]
+fn engine_active_tolerance_for_drops_after_deactivate_purpose() {
+    let module = build_module_with_manufacturing_purpose("manufacturing", 1e-6);
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+
+    // Activate, then verify the tolerance is set (precondition — if this
+    // fires the test failure is upstream of deactivate, not in it).
+    engine.activate_purpose("manufacturing", "MyDesign");
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        Some(1e-6),
+        "precondition: subject root must carry tolerance after activation"
+    );
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(1e-6),
+        "precondition: sub-component descendant must inherit tolerance after activation"
+    );
+
+    // Deactivate; both root and descendant tolerance entries must be cleared.
+    engine.deactivate_purpose("manufacturing");
+
+    // (a) Subject root no longer carries the tolerance.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        None,
+        "subject root must lose its tolerance entry after deactivation"
+    );
+    // (b) Dotted descendant likewise loses its inherited entry.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        None,
+        "sub-component descendant must lose its inherited tolerance after deactivation"
+    );
+
+    // Re-activate: the recompute must be idempotent — the tolerance
+    // reappears at both the root and the descendant.
+    engine.activate_purpose("manufacturing", "MyDesign");
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        Some(1e-6),
+        "re-activation must restore the tolerance at the subject root \
+         (recompute_tolerance_scope idempotency)"
+    );
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(1e-6),
+        "re-activation must restore the inherited tolerance at the descendant"
+    );
+}
