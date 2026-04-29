@@ -147,6 +147,31 @@ impl<V> ToleranceBucket<V> {
 mod tests {
     use super::*;
 
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn insert_panics_on_nan_tolerance() {
+        let mut bucket = ToleranceBucket::<u32>::new();
+        bucket.insert(f64::NAN, 0u32);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn insert_panics_on_negative_tolerance() {
+        let mut bucket = ToleranceBucket::<u32>::new();
+        bucket.insert(-1.0e-3, 0u32);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn lookup_panics_on_nan_tolerance() {
+        let mut bucket = ToleranceBucket::<u32>::new();
+        bucket.insert(0.01, 42u32);
+        bucket.lookup(f64::NAN);
+    }
+
     #[test]
     fn bucket_evicts_loosest_when_capacity_exceeded() {
         let mut bucket = ToleranceBucket::<&str>::new();
