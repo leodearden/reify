@@ -133,6 +133,13 @@ pub fn resolve_unique_by_attribute(
         return AttributeResolution::FallbackToComputed;
     }
 
+    // Track the count from the last branch consulted so the final
+    // diagnostic message reports an accurate "matched N sub-shapes". The
+    // user_label multi-match path short-circuits below (it does NOT fall
+    // through to the role/idx branch); the zero-match user_label path
+    // falls through and may be overridden by the role/idx count.
+    let mut last_count: Option<usize> = None;
+
     // user_label branch (step-2). Per PRD line 62, this branch fires first
     // when query.user_label is Some.
     if let Some(label) = query.user_label.as_deref() {
@@ -142,12 +149,15 @@ pub fn resolve_unique_by_attribute(
         match n {
             1 => return AttributeResolution::Resolved(found.unwrap()),
             // Zero matches: fall through to role/idx branch.
-            0 => {}
+            0 => last_count = Some(0),
             // Multi-match: explicitly do NOT fall through. The role/idx
             // branch is skipped so an authored label collision is not
-            // silently converted to a role-based match. Step-12 emits a
-            // diagnostic; for now we drop into the Unresolved tail.
-            _ => return AttributeResolution::Unresolved,
+            // silently converted to a role-based match. Emit the
+            // count-aware stale diagnostic and surface the ambiguity.
+            _ => {
+                emit_attribute_stale_diagnostic(selector_span, n, diagnostics);
+                return AttributeResolution::Unresolved;
+            }
         }
     }
     // role + local_index branch (step-4).
@@ -158,23 +168,42 @@ pub fn resolve_unique_by_attribute(
         if n == 1 {
             return AttributeResolution::Resolved(found.unwrap());
         }
+        last_count = Some(n);
     }
-    // Zero-match diagnostic emission (step-10). At least one candidate
-    // carries an entry (the fallback pre-pass already eliminated the
-    // imported-geometry case) but no branch produced a unique match. The
-    // multi-match user_label early-return above bypasses this on purpose;
-    // step-12 will refactor it to share this emission point with a
-    // count-aware message.
+    // Stale-attribute diagnostic emission (step-10/step-12). At least one
+    // candidate carries an entry (the fallback pre-pass already eliminated
+    // the imported-geometry case) but no branch produced a unique match.
+    // `last_count` reflects the count of the last branch consulted (zero
+    // when neither branch fired — e.g. an all-None query, defended in
+    // step-16).
+    let n = last_count.unwrap_or(0);
+    emit_attribute_stale_diagnostic(selector_span, n, diagnostics);
+    AttributeResolution::Unresolved
+}
+
+/// Push a `TopologyAttributeStale` Warning describing a `matched n
+/// sub-shapes` outcome onto `diagnostics`.
+///
+/// Shared by the zero-match (step-10) and multi-match (step-12) emission
+/// sites so the message form stays consistent. The primary label is
+/// attached at `selector_span` with the canonical "selector call" text,
+/// matching `resolve_unique_by_tag`'s diagnostic shape. A secondary
+/// "feature originally produced here" label is intentionally omitted —
+/// `TopologyAttribute` does not currently carry a `source_span`, so there
+/// is no canonical originating-feature span to point at.
+fn emit_attribute_stale_diagnostic(
+    selector_span: SourceSpan,
+    n: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     diagnostics.push(
-        Diagnostic::warning(
-            "topology-attribute selector matched 0 sub-shapes \
+        Diagnostic::warning(format!(
+            "topology-attribute selector matched {n} sub-shapes \
              (expected exactly 1; topology may have changed)"
-                .to_string(),
-        )
+        ))
         .with_code(DiagnosticCode::TopologyAttributeStale)
         .with_label(DiagnosticLabel::new(selector_span, "selector call")),
     );
-    AttributeResolution::Unresolved
 }
 
 /// Walk `candidates`, looking up each id in `table` and applying `predicate`
