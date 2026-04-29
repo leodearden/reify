@@ -909,9 +909,11 @@ mod tests {
     ///     forwarders; per the `CacheStore::pending_cause` contract at
     ///     cache.rs:597-603).
     /// (c) A Pending consumer whose upstream Failed → `Some(NodeId::Value(a))`.
-    ///
-    /// Step-1 test: will not compile until `Engine::pending_cause` is
-    /// implemented in step-2 (the method does not yet exist).
+    /// (d) A transitively-Pending node (Pending whose upstream is itself Pending)
+    ///     → `Some(<chain root>)` — the upstream Pending node's own NodeId is
+    ///     NOT the cause; only Failed leaves are chain roots, and a Pending
+    ///     input forwards its `pending_cause` per cache.rs:147-156 and
+    ///     `derive_output_freshness_with_cause` at cache.rs:961-1013.
     #[test]
     fn pending_cause_returns_failed_leaf_for_pending_dependent() {
         use crate::cache::NodeId;
@@ -922,9 +924,11 @@ mod tests {
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
+        let c_id = ValueCellId::new("T", "c");
 
-        // Build a 2-cell module: `let a = 1.0` and `let b = a + 1.0`.
+        // Build a 3-cell module: `let a = 1.0`, `let b = a + 1.0`, `let c = b + 1.0`.
         // b reads a, so when a fails b becomes Pending (arch §9.2).
+        // c reads b, so when b is Pending c becomes transitively Pending.
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(
                 TopologyTemplateBuilder::new("T")
@@ -941,6 +945,16 @@ mod tests {
                         binop(
                             BinOp::Add,
                             value_ref("T", "a"),
+                            literal(Value::Real(1.0)),
+                        ),
+                    )
+                    .let_binding(
+                        "T",
+                        "c",
+                        Type::Real,
+                        binop(
+                            BinOp::Add,
+                            value_ref("T", "b"),
                             literal(Value::Real(1.0)),
                         ),
                     )
@@ -979,6 +993,22 @@ mod tests {
             engine.pending_cause(&b_node),
             Some(expected_cause),
             "pending_cause of the Pending consumer must return Some(NodeId::Value(a))"
+        );
+
+        // (d) Pending dependent of a Pending dependent → chain root forwarded.
+        //     `c` reads `b` (Pending with cause = a). Per the forwarding contract
+        //     at cache.rs:147-156 and the chain-forwarding logic in
+        //     `derive_output_freshness_with_cause` (cache.rs:961-1013), a Pending
+        //     input forwards the upstream entry's `pending_cause` — the Pending
+        //     node's own NodeId is NOT used (only Failed leaves are chain roots).
+        //     So c.pending_cause must read `Some(a)`, not `Some(b)`.
+        let c_node = NodeId::Value(c_id.clone());
+        assert_eq!(
+            engine.pending_cause(&c_node),
+            Some(NodeId::Value(a_id.clone())),
+            "pending_cause of a transitively-Pending node must forward the chain root \
+             (a), not the immediate Pending upstream (b); see cache.rs:147-156 and \
+             derive_output_freshness_with_cause at cache.rs:961-1013"
         );
     }
 }
