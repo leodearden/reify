@@ -65,3 +65,38 @@ fn filter_returns_empty_for_empty_candidates_input() {
         result
     );
 }
+
+// ─── step-3: no constraints → vacuous feasibility ─────────────────────────
+
+/// When the parameterized template has zero top-level constraints, every
+/// candidate is vacuously feasible (the per-candidate constraint loop body
+/// produces zero results, so there is nothing to Violate). This test also
+/// checks that the `MockConstraintChecker::with_default(Violated)` is truly
+/// irrelevant when no constraints exist — the default would surface any
+/// accidental invocation but zero constraints mean zero check calls.
+#[test]
+fn filter_accepts_single_candidate_when_template_has_no_constraints() {
+    // No .constraint(...) calls → template has zero top-level constraints.
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    // Default Violated: if the checker were invoked for a non-existent
+    // constraint, the logic would produce a non-empty violated list, making
+    // this test fail. Vacuous feasibility must not depend on checker behavior.
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(
+        &["ORingSeal".to_string()],
+        &template,
+        &checker,
+        functions,
+    );
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Feasible {
+            accepted: vec!["ORingSeal".to_string()],
+            rejected: vec![],
+        },
+        "zero constraints → vacuously feasible; expected single accepted candidate"
+    );
+}
