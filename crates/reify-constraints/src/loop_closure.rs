@@ -206,15 +206,13 @@ fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
 /// absolute pivot drops below `pivot_eps` — the signal that `JᵀJ` is
 /// rank-deficient.  Callers should pass [`NewtonConfig::singularity_pivot_eps`].
 ///
-/// Precondition: `a.len() == n*n` and `b.len() == n`; returns `false` if
-/// either guard fails (defensive, should not occur in normal usage).
+/// Precondition: `a.len() == n*n` and `b.len() == n` (asserted in debug builds).
 fn solve_normal_equations(a: &mut [f64], b: &mut [f64], n: usize, pivot_eps: f64) -> bool {
     if n == 0 {
         return true;
     }
-    if a.len() != n * n || b.len() != n {
-        return false;
-    }
+    debug_assert_eq!(a.len(), n * n);
+    debug_assert_eq!(b.len(), n);
     // LDLᵀ: a is overwritten so that the strict-lower triangle holds L
     // (with implicit unit diagonal) and the diagonal holds D.
     for j in 0..n {
@@ -298,13 +296,7 @@ where
     let mut prev_combined_norm: Option<f64> = None;
     let mut diverging_streak: usize = 0;
 
-    // Scratch buffers allocated once per `newton_solve` call and reused across
-    // all iterations.  Allocation accounting:
-    //   Pre-refactor: up to 3·max_iters allocations — one `vec![vec![0.0;n];n]`
-    //     (n+1 Vec headers + n*n f64 cells) plus per-iteration `jtr: Vec<f64>`
-    //     and `neg_jtr: Vec<f64>`.
-    //   Post-refactor: exactly 3 allocations total (jtj_flat, jtr, dx),
-    //     reused across every iteration of the loop.
+    // Scratch buffers reused across iterations to avoid per-iter allocation.
     let mut jtj_flat: Vec<f64> = vec![0.0; n * n];
     let mut jtr: Vec<f64> = vec![0.0; n];
     let mut dx: Vec<f64> = vec![0.0; n];
@@ -363,15 +355,13 @@ where
                 residual_norm: combined_norm,
             };
         }
-        // Exploit symmetry: compute the upper triangle (j >= i) and mirror to
-        // the lower triangle — n*(n+1)/2 dot products instead of n².
+        // Exploit symmetry: populate only the lower triangle (j <= i) —
+        // n*(n+1)/2 dot products instead of n²; LDLᵀ reads only the lower
+        // triangle and diagonal, so no mirroring is needed.
         for i in 0..n {
-            for j in i..n {
-                let s: f64 = j_cols[i].iter().zip(j_cols[j].iter()).map(|(a, b)| a * b).sum();
-                jtj_flat[i * n + j] = s;
-                if i != j {
-                    jtj_flat[j * n + i] = s;
-                }
+            for j in 0..=i {
+                jtj_flat[i * n + j] =
+                    j_cols[i].iter().zip(j_cols[j].iter()).map(|(a, b)| a * b).sum();
             }
             jtr[i] = j_cols[i].iter().zip(r.iter()).map(|(a, b)| a * b).sum();
         }
