@@ -3569,6 +3569,78 @@ mod tests {
         assert_eq!(from_parse_access, from_prelude_access);
     }
 
+    /// (d) Regression guard for the `HashSet<&'a str>` borrow-through contract
+    /// (task 2558).  Pins three invariants simultaneously:
+    ///
+    /// 1. `&[&'static str]` API surface: the `static PRELUDE` slice has element
+    ///    type `&'static str`, exercising the tightened parameter type.
+    /// 2. Same prelude slice can be reused across TWO parse calls without
+    ///    re-allocating Strings — the OnceLock memoisation in `parse_with_stdlib`
+    ///    is sound only if the parser itself doesn't re-allocate per call.
+    /// 3. Mixed-source resolution: in the second call a source-declared enum
+    ///    (`SourceEnum`) and a prelude-supplied enum (`PreludeEnumB`) must BOTH
+    ///    lower to `EnumAccess` in the same parse.
+    #[test]
+    fn parse_with_prelude_enums_borrows_static_names_across_calls() {
+        static PRELUDE: &[&str] = &["PreludeEnumA", "PreludeEnumB"];
+
+        // First call — prelude-only enum (no source enum declarations).
+        let source1 = "structure S1 { let v = PreludeEnumA.X }";
+        let module1 = parse_with_prelude_enums(
+            source1,
+            reify_types::ModulePath::single("test_borrow_call1"),
+            PRELUDE,
+        );
+        assert!(
+            module1.errors.is_empty(),
+            "call 1 parse errors: {:?}",
+            module1.errors
+        );
+        let (type1, variant1) =
+            find_first_enum_access(&module1).expect("call 1: expected EnumAccess");
+        assert_eq!(type1, "PreludeEnumA");
+        assert_eq!(variant1, "X");
+
+        // Second call — source-declared enum + prelude enum, same PRELUDE slice.
+        // Both PreludeEnumB.Z and SourceEnum.Y must resolve to EnumAccess.
+        let source2 =
+            "enum SourceEnum { Y }\nstructure S2 { let v = PreludeEnumB.Z\n let w = SourceEnum.Y }";
+        let module2 = parse_with_prelude_enums(
+            source2,
+            reify_types::ModulePath::single("test_borrow_call2"),
+            PRELUDE,
+        );
+        assert!(
+            module2.errors.is_empty(),
+            "call 2 parse errors: {:?}",
+            module2.errors
+        );
+
+        // Collect all EnumAccess let-decl values from S2.
+        let mut accesses: Vec<(String, String)> = Vec::new();
+        for decl in &module2.declarations {
+            if let Declaration::Structure(s) = decl {
+                for member in &s.members {
+                    if let MemberDecl::Let(l) = member {
+                        if let ExprKind::EnumAccess { type_name, variant } = &l.value.kind {
+                            accesses.push((type_name.clone(), variant.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            accesses.contains(&("PreludeEnumB".to_string(), "Z".to_string())),
+            "expected PreludeEnumB.Z → EnumAccess; got: {:?}",
+            accesses
+        );
+        assert!(
+            accesses.contains(&("SourceEnum".to_string(), "Y".to_string())),
+            "expected SourceEnum.Y → EnumAccess; got: {:?}",
+            accesses
+        );
+    }
+
     #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
