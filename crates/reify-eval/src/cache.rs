@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
@@ -39,6 +40,17 @@ impl From<RealizationNodeId> for NodeId {
 impl From<ResolutionNodeId> for NodeId {
     fn from(id: ResolutionNodeId) -> Self {
         NodeId::Resolution(id)
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeId::Value(v) => v.fmt(f),
+            NodeId::Constraint(c) => c.fmt(f),
+            NodeId::Realization(r) => r.fmt(f),
+            NodeId::Resolution(s) => s.fmt(f),
+        }
     }
 }
 
