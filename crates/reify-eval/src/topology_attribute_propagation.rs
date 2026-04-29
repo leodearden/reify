@@ -173,14 +173,23 @@ pub fn propagate_attributes_via_brepalgoapi_history(
 /// concatenation of `records_modified` and `records_generated`.
 ///
 /// Records are visited in `Modified` then `Generated` order within each
-/// kind; this ordering matches the propagation walk, so counts here pin
-/// the same per-parent record stream that determines `split_index`
-/// assignment in [`propagate_one`].
+/// kind; this ordering determines `split_index` assignment downstream in
+/// [`propagate_one`] (Modified records' children get the lower indices,
+/// Generated records' children follow). The count map and propagator MUST
+/// walk identical record streams in identical orders so that `split_index`
+/// for child `i` equals child `i`'s position in the per-parent record
+/// stream — both call sites use the same `chain(modified, generated)`
+/// iterator over the same `BooleanOpHistoryRecords` to enforce this.
 ///
 /// A parent appearing in this map with `count > 1` is a split — each of
 /// its children is given a fresh `ModEntry { splitting_feature_id,
 /// split_index }` appended to `mod_history`. `count == 1` means a pure
 /// pass-through (mod_history unchanged).
+///
+/// Regression pin:
+/// `propagate_split_combines_modified_and_generated_records_for_same_parent`
+/// (parent appearing in BOTH Modified and Generated yields count == 2 with
+/// Modified-record child at split_index 0, Generated-record child at 1).
 fn count_children_per_parent(
     records_modified: &[HistoryRecord],
     records_generated: &[HistoryRecord],
