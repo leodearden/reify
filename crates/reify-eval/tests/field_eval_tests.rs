@@ -1616,3 +1616,188 @@ structure S {
         other => panic!("expected Value::Real(0.5), got: {:?}", other),
     }
 }
+
+// ── Step 21: parse-failure diagnostics for Sampled-field config ──────────
+//
+// These tests pin the W_FIELD_SAMPLED_INVALID_CONFIG warning emitted from
+// `engine_eval::build_sampled_field` when the user's `sampled` config has
+// a typo'd grid-kind tag, an unknown interpolation name, or a non-string
+// value in a string-keyed slot. The field's lambda becomes `Value::Undef`
+// (poisoned no-op) and any `sample(...)` returns `Undef`.
+//
+// Required diagnostic shape:
+//   * `severity == Severity::Warning`
+//   * `code == Some(DiagnosticCode::FieldSampledInvalidConfig)`
+//   * message names the field (`'f'`) and (where applicable) both the
+//     offending value and an allowed-set hint to guide the user toward
+//     a valid config.
+
+/// A typo'd grid-kind tag (`"RegularGrid42"`) emits a single
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names both the
+/// offending value and the allowed-set hint, and the sample call returns
+/// `Value::Undef`. Pins the parse-failure path in `parse_grid_kind`.
+#[test]
+fn eval_sampled_field_with_typo_grid_kind_emits_specific_diagnostic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid42" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("RegularGrid42"),
+        "diagnostic should mention the offending value 'RegularGrid42', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("RegularGrid1"),
+        "diagnostic should mention the allowed-set hint 'RegularGrid1', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// A typo'd interpolation tag (`"QuadraticSpline"`) emits a single
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names both the
+/// offending value and the allowed-set hint (`"Linear"`), and the sample
+/// call returns `Value::Undef`. Pins the parse-failure path in
+/// `parse_interpolation`.
+#[test]
+fn eval_sampled_field_with_typo_interpolation_emits_specific_diagnostic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "QuadraticSpline" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("QuadraticSpline"),
+        "diagnostic should mention the offending value 'QuadraticSpline', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("Linear"),
+        "diagnostic should mention an allowed-set hint 'Linear', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// A non-string value in the `grid = …` slot (here an `Int`) emits a single
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names the field
+/// and indicates the slot expected a `String`, and the sample call returns
+/// `Value::Undef`. Pins the wrong-Value-variant path in `parse_grid_kind`.
+#[test]
+fn eval_sampled_field_with_non_string_grid_value_emits_specific_diagnostic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = 42 bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    // Must either explicitly name the expected variant ('String') or render
+    // the unexpected value type (`Int(42)`) so the user can locate the typo.
+    let mentions_expected_or_value = (msg.contains("expected") && msg.contains("String"))
+        || msg.contains("Int")
+        || msg.contains("42");
+    assert!(
+        mentions_expected_or_value,
+        "diagnostic should mention either 'expected … String' or render the unexpected value type / value '42', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
