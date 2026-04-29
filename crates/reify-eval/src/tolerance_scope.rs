@@ -27,7 +27,7 @@ use std::collections::{BTreeSet, HashMap};
 /// to, and the SI tolerance (metres) carried by the matching
 /// `RepresentationWithin` constraint.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ToleranceBinding {
+pub(crate) struct ToleranceBinding {
     pub subject_entity: String,
     pub si_tolerance: f64,
 }
@@ -52,7 +52,17 @@ pub struct ToleranceBinding {
 ///    where `si_value.is_finite()`. Non-finite values (NaN, ±Inf) have no semantics for a
 ///    tolerance — and worse, NaN would propagate into the scope and stick (NaN comparisons
 ///    always evaluate false, so `merge_with_min` could never displace it with a real value).
-pub fn extract_tolerance_bindings(
+///
+/// # Single-binding contract
+///
+/// The matched param identity (`subject_cell_id.entity`) is intentionally discarded after the
+/// membership check: under today's single-binding `activate_purpose(name, single_entity_ref)`
+/// API only one entity-ref is bound per purpose, so substituting `bound_entity_ref` for every
+/// matched constraint's subject is unambiguous — but a future multi-param-aware producer (one
+/// that activates a purpose against multiple entity-refs, one per param) will need to thread
+/// the matched param identity back through so each `ToleranceBinding` records *which* param
+/// the constraint subjected, rather than collapsing all bindings to a single `bound_entity_ref`.
+pub(crate) fn extract_tolerance_bindings(
     purpose: &CompiledPurpose,
     bound_entity_ref: &str,
 ) -> Vec<ToleranceBinding> {
@@ -132,7 +142,7 @@ pub fn extract_tolerance_bindings(
 /// `PersistentMap` does not guarantee stable iteration across runs, so we
 /// sort. This mirrors the convention in `engine_purposes.rs::expand_purpose
 /// _reflective_placeholders` fallback scan.
-pub fn propagate_subject_to_descendants(
+pub(crate) fn propagate_subject_to_descendants(
     subject: &str,
     value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
 ) -> Vec<String> {
@@ -151,7 +161,7 @@ pub fn propagate_subject_to_descendants(
 /// Merge `additions` into `scope`, applying `min` per entity (tighter
 /// satisfies looser — same partial-order semantics as the cache-side
 /// `ToleranceBucket`). Entries new to `scope` are inserted as-is.
-pub fn merge_with_min<I: IntoIterator<Item = (String, f64)>>(
+pub(crate) fn merge_with_min<I: IntoIterator<Item = (String, f64)>>(
     scope: &mut HashMap<String, f64>,
     additions: I,
 ) {
