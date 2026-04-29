@@ -4,9 +4,17 @@
 //! `docs/prds/kinematic-constraints.md` task 3 and `docs/reify-stdlib-reference.md` §13.2.
 //!
 //! Mechanism state is encoded as a `Value::Map` with the shape:
-//! `{ "kind": "mechanism", "bodies": List(body_record...), "joint_parents": Map(joint→parent), "next_id": Int(N) }`.
-//! On error the Map additionally carries `error`, `error_path1`, `error_path2`,
-//! and `error_message` fields. See plan §"Mechanism Map shape".
+//! `{ "kind": "mechanism", "bodies": List(body_record...), "joint_parents": Map(joint→parent), "loop_closures": List(loop_closure_record...), "next_id": Int(N) }`.
+//!
+//! `loop_closures` (v0.2) records closed-chain edges as constraint records
+//! rather than rejecting them — see `make_loop_closure_record` for the
+//! per-entry shape. Open-chain mechanisms carry an empty list.
+//!
+//! On a `duplicate_solid` error the Map additionally carries `error`,
+//! `error_path1`, `error_path2`, and `error_message` fields (`error_path1`
+//! and `error_path2` are empty Lists for `duplicate_solid` — they were
+//! used by the v0.1 `closed_chain` error which is no longer emitted).
+//! See plan §"Mechanism Map shape".
 //!
 //! Diagnostic emission via `EvalResult.diagnostics` is deferred to the
 //! snapshot/eval-pipeline integration (`DiagnosticCode::KinematicClosedChain`
@@ -328,12 +336,18 @@ fn cycle_introduced(
     true
 }
 
-/// Decorate an existing Mechanism Map with closed-chain or duplicate-solid
-/// error fields. Preserves the input's `bodies`, `joint_parents`,
+/// Decorate an existing Mechanism Map with `duplicate_solid` error fields.
+/// Preserves the input's `bodies`, `joint_parents`, `loop_closures`,
 /// `next_id`, and `kind` fields verbatim and appends `error`,
-/// `error_path1`, `error_path2`, `error_message`. Used by both the
-/// closed-chain conflict path and (in a later step) the duplicate-solid
-/// path so the error-Map shape stays uniform.
+/// `error_path1`, `error_path2`, `error_message`.
+///
+/// Under v0.2 the only caller is the duplicate-solid branch of
+/// `append_body`, which always passes empty `path1`/`path2` Lists since
+/// `duplicate_solid` has no path-shaped diagnostic context (the
+/// `error_path1`/`error_path2` fields are retained as empty Lists for
+/// shape uniformity with the v0.1 error-Map convention). The v0.1
+/// closed-chain conflict path also called this; in v0.2 that path
+/// records a loop closure instead and no longer emits an error Map.
 fn make_error_mechanism(
     mech_map: &BTreeMap<Value, Value>,
     error_kind: &str,
@@ -384,12 +398,6 @@ fn make_loop_closure_record(
     m.insert(Value::String("path_a".to_string()), Value::List(path_a));
     m.insert(Value::String("path_b".to_string()), Value::List(path_b));
     Value::Map(m)
-}
-
-/// Return a new `loop_closures` list with `record` appended.
-fn append_loop_closure(mut loop_closures: Vec<Value>, record: Value) -> Vec<Value> {
-    loop_closures.push(record);
-    loop_closures
 }
 
 /// Append a body record to a Mechanism `Value::Map`, returning the new
@@ -485,7 +493,7 @@ fn append_body(
         path_b.extend(walk_to_world(&joint_parents, &parent));
         path_b.push(at.clone());
         let lc = make_loop_closure_record(next_id, at.clone(), path_a, path_b);
-        loop_closures = append_loop_closure(loop_closures, lc);
+        loop_closures.push(lc);
         true // skip joint_parents.insert below
     } else if cycle_introduced(&joint_parents, &at, &parent) {
         // Closed-chain cycle detection (v0.2): if walking from `parent`
@@ -507,7 +515,7 @@ fn append_body(
         path_b.extend(walk_to_world(&joint_parents, &parent));
         path_b.push(at.clone());
         let lc = make_loop_closure_record(next_id, at.clone(), path_a, path_b);
-        loop_closures = append_loop_closure(loop_closures, lc);
+        loop_closures.push(lc);
         true // skip joint_parents.insert below
     } else {
         false
