@@ -151,6 +151,23 @@ structure Kinematic {
 }
 "#;
 
+/// A 3-body mechanism with a coupling joint and a fixed joint (step 7).
+///
+/// j_a: prismatic (parent)
+/// j_c: coupling of j_a with ratio -1.0 (mirrors parent, dimensionless)
+/// j_f: fixed (no axis, no range)
+const COUPLING_FIXED_SOURCE: &str = r#"
+structure Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_c = couple(j_a, -1.0)
+    let j_f = fixed()
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_c, j_a)
+    let m3  = body(m2, "solid_c", j_f, j_c)
+}
+"#;
+
 /// Helper: create a fresh empty EngineSession.
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -256,6 +273,86 @@ fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
         descriptors.is_empty(),
         "bracket has no mechanisms; expected empty list, got {:?}",
         descriptors
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
+    // Step-7 RED: load a mechanism with a coupling and a fixed joint,
+    // assert that their descriptors carry dimension="dimensionless", axis=None,
+    // range_lower_si=None, range_upper_si=None.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(COUPLING_FIXED_SOURCE, "kinematic")
+        .expect("load coupling/fixed mechanism");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    // m3 has 3 bodies and should have three distinct joints (j_a, j_c, j_f).
+    let m3_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 3)
+        .expect("expected a descriptor with bodies_count=3 (m3 mechanism)");
+
+    assert_eq!(
+        m3_desc.joints.len(),
+        3,
+        "m3 has 3 distinct joints; expected 3 JointDescriptors, got {:?}",
+        m3_desc.joints
+    );
+
+    // Coupling joint assertions.
+    let coupling = m3_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "coupling")
+        .expect("expected a coupling JointDescriptor");
+    assert_eq!(
+        coupling.dimension, "dimensionless",
+        "coupling dimension should be 'dimensionless'"
+    );
+    assert!(
+        coupling.axis.is_none(),
+        "coupling axis should be None, got {:?}",
+        coupling.axis
+    );
+    assert!(
+        coupling.range_lower_si.is_none(),
+        "coupling range_lower_si should be None, got {:?}",
+        coupling.range_lower_si
+    );
+    assert!(
+        coupling.range_upper_si.is_none(),
+        "coupling range_upper_si should be None, got {:?}",
+        coupling.range_upper_si
+    );
+
+    // Fixed joint assertions.
+    let fixed = m3_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "fixed")
+        .expect("expected a fixed JointDescriptor");
+    assert_eq!(
+        fixed.dimension, "dimensionless",
+        "fixed dimension should be 'dimensionless'"
+    );
+    assert!(
+        fixed.axis.is_none(),
+        "fixed axis should be None, got {:?}",
+        fixed.axis
+    );
+    assert!(
+        fixed.range_lower_si.is_none(),
+        "fixed range_lower_si should be None, got {:?}",
+        fixed.range_lower_si
+    );
+    assert!(
+        fixed.range_upper_si.is_none(),
+        "fixed range_upper_si should be None, got {:?}",
+        fixed.range_upper_si
     );
 }
 
