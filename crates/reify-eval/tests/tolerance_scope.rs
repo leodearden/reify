@@ -148,3 +148,129 @@ fn engine_active_tolerance_for_drops_after_deactivate_purpose() {
         "re-activation must restore the inherited tolerance at the descendant"
     );
 }
+
+/// Build a module with templates `MyDesign` (subs `head: Head` and
+/// `tail: Head` — a sibling pair so we can witness propagation reaching
+/// the non-tightened descendant) plus two purposes:
+///   - `loose` whose constraint is `RepresentationWithin(subject, loose_tol m)`,
+///   - `tight` whose constraint is `RepresentationWithin(subject, tight_tol m)`.
+/// Both purposes carry the bare-StructureRef-typed `subject` parameter
+/// recognised by `extract_tolerance_bindings`.
+fn build_module_with_overlapping_purposes(
+    loose_name: &str,
+    loose_tol: f64,
+    tight_name: &str,
+    tight_tol: f64,
+) -> reify_compiler::CompiledModule {
+    let head_template = TopologyTemplateBuilder::new("Head")
+        .param("Head", "diameter", Type::Real, None)
+        .build();
+    // Two siblings so `loose`'s descendant propagation reaches BOTH `head`
+    // and `tail`, while `tight` overrides only `head`.
+    let my_design_template = TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None)
+        .sub_component("head", "Head", Vec::new())
+        .sub_component("tail", "Head", Vec::new())
+        .build();
+
+    let make_purpose = |name: &str, kind: &str, si_value: f64| {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef(kind.to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let rep_within = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        CompiledPurposeBuilder::new(name)
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, rep_within)
+            .build()
+    };
+    let loose = make_purpose(loose_name, "Bracket", loose_tol);
+    let tight = make_purpose(tight_name, "Head", tight_tol);
+
+    CompiledModuleBuilder::new(ModulePath::new(vec!["test".to_string()]))
+        .template(head_template)
+        .template(my_design_template)
+        .compiled_purpose(loose)
+        .compiled_purpose(tight)
+        .build()
+}
+
+#[test]
+fn engine_active_tolerance_for_takes_minimum_across_overlapping_purposes() {
+    // Two purposes whose subject prefix-scans overlap on `MyDesign.head`:
+    //   loose @ MyDesign       → reaches MyDesign, MyDesign.head, MyDesign.tail
+    //   tight @ MyDesign.head  → reaches only MyDesign.head
+    // Per the partial-order semantics (tighter satisfies looser),
+    // `MyDesign.head` must report the minimum (1e-6), but its sibling
+    // `MyDesign.tail` retains the looser 50e-6 contributed by `loose`.
+    let module = build_module_with_overlapping_purposes("loose", 50e-6, "tight", 1e-6);
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+
+    engine.activate_purpose("loose", "MyDesign");
+    engine.activate_purpose("tight", "MyDesign.head");
+
+    // (a) Root carries only the loose contribution. `tight`'s subject is
+    //     `MyDesign.head` and its prefix-scan must NOT match `MyDesign`
+    //     (the dot-boundary check in propagate_subject_to_descendants).
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        Some(50e-6),
+        "root entity must see only the loose contributor; \
+         tight's subject is MyDesign.head and does not propagate up"
+    );
+    // (b) Overlapped descendant: tighter wins (`min(50e-6, 1e-6) == 1e-6`).
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(1e-6),
+        "overlapping descendant must take min across contributors; \
+         tighter (1e-6) satisfies looser (50e-6)"
+    );
+    // (c) Sibling descendant of MyDesign sees ONLY loose (50e-6) — `tight`'s
+    //     prefix-scan is rooted at `MyDesign.head` and does not reach
+    //     `MyDesign.tail`.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.tail"),
+        Some(50e-6),
+        "non-overlapped sibling descendant must retain loose (50e-6); \
+         tight's prefix-scan does not reach a sibling sub-entity"
+    );
+
+    // Deactivate `tight`: the descendant relaxes back to `loose`'s 50e-6
+    // (the lone surviving contributor), confirming full recompute correctly
+    // sheds the tightening contribution.
+    engine.deactivate_purpose("tight");
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(50e-6),
+        "deactivating `tight` must re-relax MyDesign.head to the loose \
+         contributor's 50e-6 (which still propagates from MyDesign)"
+    );
+    // Sibling unchanged.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.tail"),
+        Some(50e-6),
+        "sibling descendant must remain at loose's 50e-6 across the \
+         deactivation"
+    );
+    // Root unchanged.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        Some(50e-6),
+        "root must remain at loose's 50e-6 across the deactivation"
+    );
+}
