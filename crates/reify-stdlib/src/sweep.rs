@@ -243,6 +243,15 @@ fn driving_joint_kind(v: &Value) -> Option<DimensionVector> {
         Some(Value::String(s)) => match s.as_str() {
             "prismatic" => Some(DimensionVector::LENGTH),
             "revolute" => Some(DimensionVector::ANGLE),
+            // 3-DOF planar joint: no single sweep dimension to choose from.
+            // Planar has two prismatic axes plus one revolute about the plane
+            // normal — sweeping it requires either choosing one of its three
+            // internal DOFs (not the v0.1 single-driver sweep API) or
+            // product-iterating over all three (sweep_grid supports this for
+            // multiple dim()s, but each dim() still needs a single-DOF
+            // driver). Defer to PRD v0.2 kinematic task 2 (taskmaster #2670
+            // — "FD fallback for spherical, cylindrical, planar").
+            "planar" => None,
             _ => None,
         },
         _ => None,
@@ -277,6 +286,17 @@ fn wrap_value_for_driving_joint(joint: &Value, v_si: f64) -> Option<Value> {
     match kind {
         "prismatic" => Some(Value::length(v_si)),
         "revolute" => Some(Value::angle(v_si)),
+        // 3-DOF planar joint: defense-in-depth explicit deferral arm.
+        // Today this arm is unreachable: driving_joint_kind rejects planar
+        // before this function is ever called (it short-circuits to Undef
+        // at the joint-kind guard). The explicit arm keeps the two sweep
+        // dispatch sites symmetric (mirrors step-6's change in
+        // driving_joint_kind) and provides a documented breadcrumb: if a
+        // future change ever expands driving_joint_kind to multi-DOF kinds,
+        // this function's f64 v_si signature still can't wrap a 3-element
+        // List, so the TODO comment will guide that contributor to the PRD
+        // v0.2 kinematic task 2 refactor (taskmaster #2670).
+        "planar" => None,
         _ => None,
     }
 }
@@ -1439,6 +1459,56 @@ mod tests {
             )
             .is_undef(),
             "sweep_grid() on errored mechanism must yield Undef"
+        );
+    }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    fn planar_xy_joint() -> Value {
+        eval_builtin(
+            "planar",
+            &[
+                axis_x_unit(),
+                axis_y_unit(),
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        )
+    }
+
+    /// `dim(planar_joint, range, steps)` returns Undef.
+    ///
+    /// Pins the contract that `dim` rejects planar drivers: planar is a
+    /// 3-DOF joint (two prismatic axes + one revolute about the plane normal)
+    /// with no single sweep dimension. Deferred to PRD v0.2 kinematic task 2
+    /// (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+    #[test]
+    fn dim_with_planar_returns_undef() {
+        let planar = planar_xy_joint();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
+        assert!(
+            eval_builtin("dim", &[planar, r, n]).is_undef(),
+            "dim must return Undef for a planar driving joint"
+        );
+    }
+
+    /// `sweep(mechanism, planar_joint, range, steps)` returns Undef.
+    ///
+    /// Pins the user-facing contract that sweeping a mechanism with a planar
+    /// driver returns Undef cleanly (not a partially-built snapshot list).
+    /// The Undef originates from driving_joint_kind short-circuiting at the
+    /// joint-kind guard before any snapshot work is attempted.
+    #[test]
+    fn sweep_with_planar_returns_undef() {
+        let mech = eval_builtin("mechanism", &[]);
+        let planar = planar_xy_joint();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(5);
+        assert!(
+            eval_builtin("sweep", &[mech, planar, r, n]).is_undef(),
+            "sweep must return Undef for a planar driving joint"
         );
     }
 }

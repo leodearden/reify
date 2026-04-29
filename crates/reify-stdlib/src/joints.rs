@@ -417,16 +417,18 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             //   revolute  → angular=axis_unit, linear=[0,0,0]
             //   coupling  → ratio * parent_jacobian (component-wise).
             //   fixed     → zero column placeholder (0-DOF joint).
-            //   planar    → zero column placeholder (3-DOF FD-fallback); the
-            //               actual per-DOF wrench contributions are computed by
-            //               `chain_jacobian_fd`, which perturbs motion variables
-            //               directly and does NOT consult this function.
+            //   planar    → zero column placeholder (3-DOF deferred); the
+            //               per-DOF wrench contributions are NOT yet computed
+            //               by `chain_jacobian_fd` either: `value_for_joint`
+            //               returns None for planar, so chain Jacobians for
+            //               planar chains currently return None too. Deferred
+            //               to PRD v0.2 kinematic task 2 (taskmaster #2670 —
+            //               "FD fallback for multi-DOF kinds").
             //
             // For multi-DOF joints (fixed, planar) the returned column is zero
             // rather than Undef: callers expecting a { angular, linear } Map get a
-            // well-formed result, and `chain_jacobian_fd` bypasses this path
-            // entirely.  Do NOT assume a non-zero result for planar joints; consume
-            // `chain_jacobian_fd` instead for multi-DOF chain Jacobians.
+            // well-formed result. Do NOT assume a non-zero result for planar joints
+            // or that chain_jacobian_fd succeeds for chains containing planar.
             //
             // Validation mirrors `transform_at`'s coupling arm: parent kind must
             // be prismatic/revolute (no nested couplings), ratio must be a
@@ -479,12 +481,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // is semantically valid (no motion variable contributes any twist), and keeps
         // the existing drift-guard tests simple.
         "fixed" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
-        // 3-DOF planar joint: zero-twist placeholder column — FD-fallback design decision.
+        // 3-DOF planar joint: zero-twist placeholder column — deferred design decision.
         // A planar joint has a 6×3 Jacobian (three columns: two prismatic + one revolute),
-        // but the v0.1 single-column convention returns one Map per joint. The actual
-        // per-DOF wrench contributions are computed correctly via `chain_jacobian_fd`
-        // (which perturbs each motion variable independently and does not consult this
-        // function). Returning a zero-magnitude column preserves the uniform
+        // but the v0.1 single-column convention returns one Map per joint. Note that
+        // `chain_jacobian_fd` also returns None for chains containing a planar joint
+        // (because `value_for_joint` has no planar arm yet); this zero placeholder is
+        // NOT equivalent to "FD chain Jacobians work for planar" — they do not yet.
+        // Returning a zero-magnitude column preserves the uniform
         // `{ angular, linear }` shape across all kinds and satisfies the
         // `joint_jacobian_dispatches_for_every_joint_kind` coverage test.
         // The analytic 3-DOF Jacobian is deferred per PRD task 2 ("finite-difference

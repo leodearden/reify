@@ -26,12 +26,14 @@
 //! this single canonical ordering.
 //!
 //! Jacobian strategy (v0.2 task 2 MVP): chain Jacobians use central-difference
-//! finite difference ([`chain_jacobian_fd`]).  This is correct for ALL joint
-//! kinds — including future spherical/cylindrical/planar — and immediately
-//! satisfies the PRD's "FD fallback" requirement.  The analytic per-joint
-//! twist column is exposed via [`per_joint_jacobian_local`] for future
-//! adjoint-transport composition; that optimisation is out of scope for this
-//! task and tracked as a follow-up design note.
+//! finite difference ([`chain_jacobian_fd`]).  This is correct for all joint
+//! kinds that [`value_for_joint`] handles (currently prismatic, revolute,
+//! coupling, fixed); planar, spherical, and cylindrical are deferred to PRD
+//! v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback for multi-DOF
+//! kinds") because their f64-per-joint scalar representation is insufficient.
+//! The analytic per-joint twist column is exposed via [`per_joint_jacobian_local`]
+//! for future adjoint-transport composition; that optimisation is out of scope
+//! for this task and tracked as a follow-up design note.
 //!
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
 //! design rationale and convergence-tolerance defaults (1 µm position, 1 µrad
@@ -187,6 +189,14 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
         // for "fixed", so chain_transform/chain_jacobian_fd handle fixed
         // joints in the chain without special-casing at the call site.
         "fixed" => None,
+        // 3-DOF planar joint: no single-scalar midpoint to compute.
+        // Planar's free-variable space is 3-dimensional (x_length, y_length,
+        // theta_angle), so there is no single f64 midpoint to seed. Callers
+        // building initial-guess vectors should skip planar joints just as
+        // they skip fixed joints. Supporting planar's multi-DOF midpoint
+        // requires the refactor scheduled in PRD v0.2 kinematic task 2
+        // (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+        "planar" => None,
         _ => None,
     }
 }
@@ -220,8 +230,11 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// `chain_transform` at both perturbed values, and computes
 /// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
 /// the central-difference column.  This is symmetric-error O(ε²) and works
-/// for ALL joint kinds the chain contains (the analytic per-joint accessor
-/// is plumbed separately in [`per_joint_jacobian_local`]).
+/// for all joint kinds that [`value_for_joint`] handles (currently prismatic,
+/// revolute, coupling, fixed); chains containing planar/spherical/cylindrical
+/// return `None` because `value_for_joint` has no arm for those multi-DOF
+/// kinds yet (deferred to PRD task 2 / taskmaster #2670). The analytic
+/// per-joint accessor is plumbed separately in [`per_joint_jacobian_local`].
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
@@ -313,6 +326,19 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
         // an initial-guess vector from joint_range_midpoint should skip fixed
         // joints; chain_transform/chain_jacobian_fd handle them transparently.
         "fixed" => Some(Value::Real(0.0)),
+        // 3-DOF planar joint: no f64-scalar motion variable representation.
+        // Planar's motion variable in `transform_at` is a 3-element
+        // `Value::List [x_length, y_length, theta_angle]`, which doesn't fit
+        // this function's `(joint, scalar: f64) -> Option<Value>` signature.
+        // Returning None here causes chain_transform and chain_jacobian_fd to
+        // short-circuit to None for any chain containing a planar joint.
+        // Multi-DOF chain support (including planar) is deferred to PRD v0.2
+        // kinematic task 2 (taskmaster #2670 — "FD fallback for spherical,
+        // cylindrical, planar"), which will refactor the f64-per-joint
+        // signature. Until that lands, callers needing planar transforms must
+        // use `transform_at(planar, list)` or `joint_jacobian(planar)` directly,
+        // not the chain wrappers.
+        "planar" => None,
         _ => None,
     }
 }
@@ -943,5 +969,104 @@ mod tests {
                 v
             );
         }
+    }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    fn axis_y() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    fn planar_xy_joint() -> Value {
+        eval_builtin(
+            "planar",
+            &[
+                axis_x(),
+                axis_y(),
+                length_range(0.0, 1.0),
+                length_range(0.0, 1.0),
+                angle_range(0.0, std::f64::consts::PI),
+            ],
+        )
+    }
+
+    /// `joint_range_midpoint` returns `None` for a planar joint.
+    ///
+    /// Pins the contract that planar's multi-DOF free-variable space has no
+    /// single-scalar midpoint until PRD v0.2 kinematic task 2 (taskmaster
+    /// #2670 — "FD fallback for spherical, cylindrical, planar") lands.
+    #[test]
+    fn joint_range_midpoint_planar_returns_none() {
+        assert!(
+            super::joint_range_midpoint(&planar_xy_joint()).is_none(),
+            "joint_range_midpoint must return None for a planar joint"
+        );
+    }
+
+    /// `chain_transform` returns `None` when the chain contains a planar joint.
+    ///
+    /// Pins the contract that the f64-per-joint chain machinery short-circuits
+    /// gracefully on planar (no panic, deterministic None). `value_for_joint`
+    /// cannot map a scalar f64 to planar's 3-element List motion variable, so
+    /// the chain aborts. Multi-DOF chain support is deferred to PRD v0.2
+    /// kinematic task 2 (taskmaster #2670).
+    #[test]
+    fn chain_transform_with_planar_returns_none() {
+        assert!(
+            super::chain_transform(&[planar_xy_joint()], &[0.0]).is_none(),
+            "chain_transform must return None for a chain containing a planar joint"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` when the chain contains a planar joint.
+    ///
+    /// Pins the contract that the FD Jacobian assembler short-circuits gracefully
+    /// on planar (no panic, deterministic None). The FD perturbation relies on
+    /// `chain_transform` which itself short-circuits for planar, so the whole
+    /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
+    #[test]
+    fn chain_jacobian_fd_with_planar_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(&[planar_xy_joint()], &[0.0], &[0], 1e-6).is_none(),
+            "chain_jacobian_fd must return None for a chain containing a planar joint"
+        );
+    }
+
+    /// `chain_transform` returns `None` for a mixed chain where planar is not
+    /// the only element — pins the stronger contract that *any* planar joint in
+    /// the chain short-circuits, regardless of its position or the other kinds
+    /// present.
+    ///
+    /// A [prismatic_x @ 0.5m, planar_xy] chain with two scalar entries must
+    /// still return `None` because `value_for_joint` has no f64-scalar mapping
+    /// for planar regardless of how many valid joints precede it.
+    #[test]
+    fn chain_transform_mixed_prismatic_planar_returns_none() {
+        assert!(
+            super::chain_transform(&[prismatic_x(), planar_xy_joint()], &[0.5, 0.0]).is_none(),
+            "chain_transform must return None when any joint in the chain is planar"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a planar
+    /// joint — the same stronger contract as
+    /// `chain_transform_mixed_prismatic_planar_returns_none`.
+    ///
+    /// Even with two free indices `[0, 1]`, the FD loop calls `chain_transform`
+    /// for the perturbed chains; the first call with a perturbed prismatic value
+    /// will still encounter the planar slot and return `None`, killing the whole
+    /// Jacobian.
+    #[test]
+    fn chain_jacobian_fd_mixed_prismatic_planar_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(
+                &[prismatic_x(), planar_xy_joint()],
+                &[0.5, 0.0],
+                &[0, 1],
+                1e-6,
+            )
+            .is_none(),
+            "chain_jacobian_fd must return None when any joint in the chain is planar"
+        );
     }
 }

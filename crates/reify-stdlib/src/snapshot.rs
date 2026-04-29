@@ -684,6 +684,15 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             wrap_midpoint_for_joint(parent, mid_si)
         }
+        // 3-DOF planar joint: defense-in-depth explicit deferral arm.
+        // Today this arm is unreachable from a planar joint: joint_range_midpoint
+        // returns None for planar (step-2's change), and value_for only calls
+        // wrap_midpoint_for_joint after joint_range_midpoint returns Some.
+        // The explicit arm keeps the dispatch table symmetric across all kinds
+        // in JOINT_KINDS, mirroring step-2's change in joint_range_midpoint,
+        // and is the documented breadcrumb when PRD v0.2 task 2 (#2670) extends
+        // joint_range_midpoint to return per-DOF defaults for planar.
+        "planar" => None,
         _ => None,
     }
 }
@@ -1845,5 +1854,42 @@ mod tests {
             assert!(cy.abs() < 1e-9, "COM.y should be 0 at v={}, got {}", v, cy);
             assert!(cz.abs() < 1e-9, "COM.z should be 0 at v={}, got {}", v, cz);
         }
+    }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    fn planar_xy_joint() -> Value {
+        eval_builtin(
+            "planar",
+            &[
+                axis_x_unit(),
+                axis_y_unit(),
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        )
+    }
+
+    /// `snapshot(mech_with_unbound_planar, [])` returns Undef.
+    ///
+    /// Pins the contract that an unbound planar joint can't fall back to a
+    /// range midpoint (because `joint_range_midpoint` returns None for
+    /// planar). The FK walk's `value_for` resolution returns None at the
+    /// midpoint fallback step, which the FK walk maps to Value::Undef for
+    /// the body's world_transform, propagating Undef to the snapshot result.
+    /// Deferred to PRD v0.2 kinematic task 2 (taskmaster #2670).
+    #[test]
+    fn snapshot_with_unbound_planar_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let solid = Value::String("solidA".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, planar_xy_joint()]);
+
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![])]);
+        assert!(
+            s.is_undef(),
+            "snapshot with unbound planar joint must return Undef, got {:?}",
+            s
+        );
     }
 }
