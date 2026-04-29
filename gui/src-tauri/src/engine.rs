@@ -1465,10 +1465,10 @@ fn collect_body_first_args(
     use reify_syntax::ExprKind;
     match &expr.kind {
         ExprKind::FunctionCall { name, args } => {
-            if name == "body" && !args.is_empty() {
-                if let ExprKind::Ident(s) = &args[0].kind {
-                    consumed.insert(s.clone());
-                }
+            if name == "body" && !args.is_empty()
+                && let ExprKind::Ident(s) = &args[0].kind
+            {
+                consumed.insert(s.clone());
             }
             // Recurse into all args regardless (body may be nested).
             for arg in args {
