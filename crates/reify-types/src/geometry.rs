@@ -526,6 +526,29 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+/// Errors from constructing a [`BooleanOpParents`] value with mismatched
+/// slice lengths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BooleanOpParentsError {
+    /// The `faces` and `edges` slices passed to the constructor have different
+    /// lengths. Each parent must appear in both slices at the same index.
+    LengthMismatch { faces: usize, edges: usize },
+}
+
+impl fmt::Display for BooleanOpParentsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BooleanOpParentsError::LengthMismatch { faces, edges } => write!(
+                f,
+                "BooleanOpParents::NAry: faces.len() ({faces}) != edges.len() ({edges}); \
+                 each parent must have an entry in both slices"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BooleanOpParentsError {}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
@@ -972,6 +995,26 @@ pub enum BooleanOpParents<'a> {
 }
 
 impl<'a> BooleanOpParents<'a> {
+    /// Checked constructor for the [`NAry`][Self::NAry] variant.
+    ///
+    /// Returns `Ok(Self::NAry { faces, edges })` when `faces.len() ==
+    /// edges.len()`, otherwise `Err(BooleanOpParentsError::LengthMismatch)`.
+    /// Prefer this over direct enum-literal construction when the slice
+    /// lengths are not statically guaranteed to match.
+    pub fn try_nary(
+        faces: &'a [&'a [GeometryHandleId]],
+        edges: &'a [&'a [GeometryHandleId]],
+    ) -> Result<Self, BooleanOpParentsError> {
+        if faces.len() != edges.len() {
+            Err(BooleanOpParentsError::LengthMismatch {
+                faces: faces.len(),
+                edges: edges.len(),
+            })
+        } else {
+            Ok(Self::NAry { faces, edges })
+        }
+    }
+
     /// Returns the per-parent face-handle slices as a flat slice of slices,
     /// regardless of variant. Index `i` gives the face handles for parent `i`.
     pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
