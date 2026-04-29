@@ -114,6 +114,25 @@ pub fn resolve_unique_by_attribute(
     _selector_span: SourceSpan,
     _diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
+    // Imported-geometry fallback pre-pass (step-8). Per PRD line 68: if
+    // NONE of the supplied candidates carry an attribute entry, the result
+    // handles came from an op that didn't seed/propagate (the imported-
+    // geometry case once import ops exist). Route through computed
+    // selectors. Dedup defensively — a misbehaving extractor that returned
+    // duplicates would otherwise still trigger the fallback correctly, but
+    // a HashSet keeps the contract symmetric with the match counter below.
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
+    let mut any_has_entry = false;
+    for &id in candidates {
+        if seen.insert(id) && table.lookup(id).is_some() {
+            any_has_entry = true;
+            break;
+        }
+    }
+    if !any_has_entry {
+        return AttributeResolution::FallbackToComputed;
+    }
+
     // user_label branch (step-2). Per PRD line 62, this branch fires first
     // when query.user_label is Some.
     if let Some(label) = query.user_label.as_deref() {
