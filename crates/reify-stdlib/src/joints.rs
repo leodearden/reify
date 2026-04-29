@@ -945,7 +945,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
     use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
 
@@ -3502,9 +3502,7 @@ mod tests {
 
     #[test]
     fn transform_at_spherical_identity_quaternion_returns_identity() {
-        // Build the spherical joint inline; the spherical_joint() fixture
-        // helper lands in step-6 alongside the transform_at impl.
-        let sj = eval_builtin("spherical", &[angle_range_0_to_pi()]);
+        let sj = spherical_joint();
         let identity_q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         let result = eval_builtin("transform_at", &[sj, identity_q]);
         assert_transform_approx(
@@ -3513,6 +3511,59 @@ mod tests {
             [0.0, 0.0, 0.0],
             1e-12,
             "spherical identity quaternion → identity Transform",
+        );
+    }
+
+    // ── transform_at on spherical: general quaternions (step-7) ──────────────
+
+    /// `transform_at(spherical, q)` returns a Transform whose rotation matches
+    /// `q` (component-wise) and whose translation is the LENGTH zero vector.
+    /// Covers three non-identity cases: 90° about +Z, 180° about +X, and a
+    /// general rotation built via `orient_axis_angle([1,1,0], π/3)`.
+    #[test]
+    fn transform_at_spherical_general_quaternion_preserves_rotation() {
+        let pi = std::f64::consts::PI;
+
+        // (a) 90° about +Z: q = (cos(π/4), 0, 0, sin(π/4))
+        let cos_q4 = (pi / 4.0).cos();
+        let sin_q4 = (pi / 4.0).sin();
+        let q_z90 = Value::Orientation { w: cos_q4, x: 0.0, y: 0.0, z: sin_q4 };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_z90]);
+        assert_transform_approx(
+            &result,
+            (cos_q4, 0.0, 0.0, sin_q4),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, 90° about +Z",
+        );
+
+        // (b) 180° about +X: q = (0, 1, 0, 0)
+        let q_x180 = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_x180]);
+        assert_transform_approx(
+            &result,
+            (0.0, 1.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, 180° about +X",
+        );
+
+        // (c) Build a general quaternion via orient_axis_angle([1,1,0], π/3).
+        // The rotation sits on a non-axis-aligned axis, so all four quaternion
+        // components are non-zero.
+        let axis_xy = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        let q_general = eval_builtin("orient_axis_angle", &[axis_xy, Value::Real(pi / 3.0)]);
+        let (gw, gx, gy, gz) = match &q_general {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("orient_axis_angle did not produce an Orientation: {:?}", other),
+        };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_general.clone()]);
+        assert_transform_approx(
+            &result,
+            (gw, gx, gy, gz),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, general axis-angle [1,1,0]/√2 by π/3",
         );
     }
 
