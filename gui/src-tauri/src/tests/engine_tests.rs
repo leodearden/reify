@@ -137,11 +137,98 @@ fn set_parameter_changes_width() {
 
 // ---- get_mechanism_descriptors tests (steps 3, 5, 7, 9, 11, 23) -----------
 
+/// A 2-body open-chain mechanism with one prismatic and one revolute joint.
+///
+/// Using explicit intermediate `let` bindings (mechanism() stdlib uses
+/// free functions, not method chaining).
+const HAPPY_MECHANISM_SOURCE: &str = r#"
+structure Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_b, j_a)
+}
+"#;
+
 /// Helper: create a fresh empty EngineSession.
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+#[test]
+fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
+    // Step-5 RED: load a 2-body open-chain mechanism and assert the descriptor
+    // for m2 (bodies_count=2) has two joints with correct kind/dimension/range.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    // m0 (0 bodies), m1 (1 body), m2 (2 bodies) all appear as mechanism Maps.
+    // Assert at least one descriptor has bodies_count=2.
+    let m2_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 2)
+        .expect("expected a descriptor with bodies_count=2 (the m2 mechanism)");
+
+    // Joint extraction: two unique joints (j_a prismatic, j_b revolute).
+    assert_eq!(
+        m2_desc.joints.len(),
+        2,
+        "m2 uses 2 distinct joints; expected 2 JointDescriptors, got {:?}",
+        m2_desc.joints
+    );
+
+    // Find the prismatic joint.
+    let prismatic = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "prismatic")
+        .expect("expected a prismatic JointDescriptor");
+    assert_eq!(prismatic.dimension, "length");
+    // 0mm = 0.0 m, 1000mm = 1.0 m in SI.
+    assert_eq!(
+        prismatic.range_lower_si,
+        Some(0.0),
+        "prismatic lower bound should be 0.0 m"
+    );
+    let upper = prismatic.range_upper_si.expect("prismatic upper_si should be Some");
+    assert!(
+        (upper - 1.0).abs() < 1e-9,
+        "prismatic upper bound should be 1.0 m (1000mm), got {upper}"
+    );
+    // Axis should be [1, 0, 0].
+    let axis = prismatic.axis.expect("prismatic axis should be Some");
+    assert!(
+        (axis[0] - 1.0).abs() < 1e-9 && axis[1].abs() < 1e-9 && axis[2].abs() < 1e-9,
+        "prismatic axis should be [1,0,0], got {:?}",
+        axis
+    );
+
+    // Find the revolute joint.
+    let revolute = m2_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "revolute")
+        .expect("expected a revolute JointDescriptor");
+    assert_eq!(revolute.dimension, "angle");
+    assert_eq!(
+        revolute.range_lower_si,
+        Some(0.0),
+        "revolute lower bound should be 0.0 rad"
+    );
+    let upper_rev = revolute.range_upper_si.expect("revolute upper_si should be Some");
+    assert!(
+        (upper_rev - 3.14).abs() < 1e-6,
+        "revolute upper bound should be 3.14 rad, got {upper_rev}"
+    );
 }
 
 #[test]
