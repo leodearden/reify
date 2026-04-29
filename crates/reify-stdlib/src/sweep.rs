@@ -333,4 +333,35 @@ mod tests {
             eval_builtin("dim", &[j_rev, length_range_0_to_1m(), Value::Int(11)]).is_undef()
         );
     }
+
+    // ── sweep(m, joint, range, steps): degenerate inputs ──────────────────
+
+    /// Helper: build a 1-body mechanism with a prismatic +X joint
+    /// (range 0..1m), parent=world, identity pose. Returns the
+    /// mechanism Map and the joint so tests can use both.
+    fn make_one_body_prismatic_mechanism() -> (Value, Value) {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("a".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, j.clone()]);
+        (m1, j)
+    }
+
+    /// `sweep(m, j, range, Int(0))` returns the empty `Value::List`.
+    /// Pins the degenerate-input semantic so callers can pipe
+    /// `sweep(...).map(...)` without a defensive `if steps > 0`
+    /// guard.
+    #[test]
+    fn sweep_steps_zero_returns_empty_list() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let result = eval_builtin(
+            "sweep",
+            &[m, j, length_range_0_to_1m(), Value::Int(0)],
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![]),
+            "sweep with steps==0 should yield an empty List"
+        );
+    }
 }
