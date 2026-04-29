@@ -4261,6 +4261,67 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
     );
 }
 
+/// Lifecycle test for `consumed_idents_cache`:
+/// - starts as `None` on a fresh session,
+/// - remains `None` after load (lazy — populated only on first `get_mechanism_descriptors` call),
+/// - becomes `Some` after the first `get_mechanism_descriptors` call following a load,
+/// - is reset to `None` after `update_source` (invalidated by `commit_state`),
+/// - becomes `Some` again after a second `get_mechanism_descriptors` call on the new module.
+#[test]
+fn consumed_idents_cache_lifecycle() {
+    let mut session = make_session();
+
+    // 1. Fresh session → None.
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "fresh session: consumed_idents_cache should be None"
+    );
+
+    // 2. After load_from_source, still None (lazy — not populated until
+    //    get_mechanism_descriptors is called for the first time).
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "after load but before get_mechanism_descriptors: consumed_idents_cache should still be None"
+    );
+
+    // 3. After get_mechanism_descriptors, Some with an entry for the 'Kinematic' structure.
+    //    m0 and m1 are consumed by body() calls; m2 is the terminal cell (not consumed).
+    let _ = session.get_mechanism_descriptors();
+    let cache = session
+        .consumed_idents_cache_for_test()
+        .expect("after get_mechanism_descriptors: consumed_idents_cache should be Some");
+    let kinematic_consumed = cache
+        .get("Kinematic")
+        .expect("cache should contain an entry for the 'Kinematic' structure");
+    let expected_consumed: std::collections::HashSet<String> =
+        ["m0", "m1"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        *kinematic_consumed,
+        expected_consumed,
+        "Kinematic's consumed set should be {{m0, m1}}"
+    );
+
+    // 4. After update_source, the cache is invalidated by commit_state → None again.
+    session
+        .update_source("kinematic.ri", bracket_source())
+        .expect("update_source should succeed");
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "after update_source: consumed_idents_cache should be None (invalidated by commit_state)"
+    );
+
+    // 5. After another get_mechanism_descriptors call, Some again — now reflecting the
+    //    new module (bracket_source has no body() calls, so consumed sets are empty).
+    let _ = session.get_mechanism_descriptors();
+    assert!(
+        session.consumed_idents_cache_for_test().is_some(),
+        "after second get_mechanism_descriptors call: consumed_idents_cache should be Some again"
+    );
+}
+
 #[test]
 fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
