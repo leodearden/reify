@@ -224,6 +224,48 @@ assert "subtask orphan dep fails with --check-subtasks" \
 assert "subtask orphan dep error mentions '999' or 'orphan'" \
     bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_ORPHAN_DEP' 2>&1 | grep -qE '999|orphan'"
 
+# -- Subtask invariant 2 (dotted form): <parent>.<subtask> deps ---------------
+# A subtask's dep may also take the dotted ``<parent>.<subtask>`` form iff the
+# parent is a known top-level id AND the subtask id exists under that parent.
+# These fixtures exercise the dotted-dep branch in _validate_subtasks, which
+# is a different code path from the top-level dotted-dep tests above (those
+# tests only reach _validate_tasks).
+echo ""
+echo "--- Test: subtask dotted <parent>.<subtask> deps ---"
+
+# (a) Dotted dep from a subtask where parent and subtask both resolve → must PASS.
+SUBTASK_DOTTED_DEP_VALID="$TMPDIR_FIXTURES/subtask_dotted_dep_valid.json"
+cat >"$SUBTASK_DOTTED_DEP_VALID" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":[],"subtasks":[{"id":"1","dependencies":["200.1"]}]},{"id":"200","dependencies":[],"subtasks":[{"id":"1","dependencies":[]}]}]}}
+EOF
+
+assert "valid subtask dotted <parent>.<subtask> dep passes with --check-subtasks" \
+    python3 "$VALIDATOR" --check-subtasks "$SUBTASK_DOTTED_DEP_VALID"
+
+# (b) Dotted dep from subtask where parent does not exist → must FAIL as orphan.
+SUBTASK_DOTTED_DEP_BAD_PARENT="$TMPDIR_FIXTURES/subtask_dotted_dep_bad_parent.json"
+cat >"$SUBTASK_DOTTED_DEP_BAD_PARENT" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":[],"subtasks":[{"id":"1","dependencies":["999.1"]}]}]}}
+EOF
+
+assert "subtask dotted dep with missing parent fails validator" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$SUBTASK_DOTTED_DEP_BAD_PARENT'"
+
+assert "subtask dotted dep with missing parent error mentions '999.1' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_DOTTED_DEP_BAD_PARENT' 2>&1 | grep -qE '999\\.1|orphan'"
+
+# (c) Dotted dep from subtask where subtask id does not exist under parent → must FAIL.
+SUBTASK_DOTTED_DEP_BAD_SUBTASK="$TMPDIR_FIXTURES/subtask_dotted_dep_bad_subtask.json"
+cat >"$SUBTASK_DOTTED_DEP_BAD_SUBTASK" <<'EOF'
+{"master":{"tasks":[{"id":"100","dependencies":[],"subtasks":[{"id":"1","dependencies":["200.99"]}]},{"id":"200","dependencies":[],"subtasks":[{"id":"1","dependencies":[]}]}]}}
+EOF
+
+assert "subtask dotted dep with missing subtask fails validator" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$SUBTASK_DOTTED_DEP_BAD_SUBTASK'"
+
+assert "subtask dotted dep with missing subtask error mentions '200.99' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_DOTTED_DEP_BAD_SUBTASK' 2>&1 | grep -qE '200\\.99|orphan'"
+
 # -- Multi-tag support --------------------------------------------------------
 echo ""
 echo "--- Test: multi-tag support ---"

@@ -42,6 +42,8 @@ import re
 import sys
 import collections
 
+_DOTTED_DEP_RE = re.compile(r"(\d+)\.(\d+)")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -145,7 +147,7 @@ def main() -> None:
         print(f"WARN: {warn}", file=sys.stderr)
 
 
-def _validate_tasks(tasks: list, errors: list, context: str) -> tuple:
+def _validate_tasks(tasks: list, errors: list, context: str) -> tuple[set[str], dict[str, set[str]]]:
     """Validate invariants 1-3 for a flat list of tasks.
 
     Returns ``(known_ids, subtasks_by_parent)`` where ``known_ids`` is the set
@@ -195,7 +197,6 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> tuple:
 
     # Invariant 2: every dep is a string referencing a known id.  Dotted
     # ``<parent>.<subtask>`` form is also accepted when both halves resolve.
-    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for task in tasks:
         tid = task.get("id", "?")
         deps_raw = task.get("dependencies", [])
@@ -212,7 +213,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> tuple:
                 continue
             if dep in known_ids:
                 continue
-            m = dotted_re.fullmatch(dep)
+            m = _DOTTED_DEP_RE.fullmatch(dep)
             if m and m.group(1) in known_ids and m.group(2) in subtasks_by_parent.get(m.group(1), set()):
                 continue
             errors.append(
@@ -274,7 +275,6 @@ def _validate_subtasks(
     # Invariant 2 for subtasks (deps may be sibling subtask ids, parent task ids,
     # or dotted <parent>.<subtask> references resolved via subtasks_by_parent).
     allowed_ids = known_subtask_ids | parent_task_ids
-    dotted_re = re.compile(r"(\d+)\.(\d+)")
     for sub in subtasks:
         sid = sub.get("id", "?")
         deps_raw = sub.get("dependencies", [])
@@ -291,9 +291,8 @@ def _validate_subtasks(
             elif dep in allowed_ids:
                 pass  # valid plain dep
             else:
-                # Check dotted <parent>.<subtask> form (e.g. "2295.4" meaning
-                # subtask 4 of top-level task 2295).
-                m = dotted_re.fullmatch(dep)
+                # Also accept dotted <parent>.<subtask> form.
+                m = _DOTTED_DEP_RE.fullmatch(dep)
                 if (
                     m
                     and subtasks_by_parent is not None
