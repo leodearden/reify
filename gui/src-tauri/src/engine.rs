@@ -1858,6 +1858,20 @@ impl EngineSession {
         self.consumed_idents_cache.as_ref()
     }
 
+    /// Replace the consumed-idents cache with `cache`, for testing purposes.
+    ///
+    /// Used by `get_mechanism_descriptors_reads_from_consumed_idents_cache` to
+    /// inject a deliberately-empty consumed-idents map for "Kinematic" and verify
+    /// that the descriptor build consults the cache (terminal-mechanism filter sees
+    /// zero consumed → emits all mechanism cells) rather than re-walking the AST.
+    /// Mirrors the style of `override_parsed_cache_for_test`.
+    pub(crate) fn override_consumed_idents_cache_for_test(
+        &mut self,
+        cache: HashMap<String, HashSet<String>>,
+    ) {
+        self.consumed_idents_cache = Some(cache);
+    }
+
     /// Directly inject a `CompiledModule` as the session's current compiled state,
     /// bypassing parse / compile / check.
     ///
