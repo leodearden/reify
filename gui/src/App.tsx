@@ -27,6 +27,7 @@ import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
 import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
+import { createMechanismStore } from './stores/mechanismStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
 import {
   getInitialState,
@@ -53,6 +54,7 @@ import {
   onKernelStatus,
   getContainingDefinition as bridgeGetContainingDefinition,
   getDefPreview as bridgeGetDefPreview,
+  getMechanismDescriptors as bridgeGetMechanismDescriptors,
 } from './bridge';
 import {
   navigateToSource,
@@ -106,6 +108,7 @@ const App: Component = () => {
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
   const defPreviewStore = createDefPreviewStore();
+  const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
@@ -338,6 +341,20 @@ const App: Component = () => {
         bridgeGetEntityTree()
           .then((t) => { if (alive) setEntityTree(t); })
           .catch((err) => console.error('[entity-tree] refresh failed:', err));
+      }
+      prevPhase = phase;
+    });
+  }
+
+  // Re-fetch mechanism descriptors on each non-idle→idle transition.
+  // Mirrors the entity-tree refresh effect above.
+  {
+    let prevPhase: string | undefined;
+    createEffect(() => {
+      const phase = engineStore.state.evalStatus.phase;
+      if (prevPhase !== undefined && phase === 'idle' && prevPhase !== 'idle') {
+        mechanismStore.refresh()
+          .catch((err) => console.error('[mechanism] refresh failed:', err));
       }
       prevPhase = phase;
     });
@@ -601,6 +618,10 @@ const App: Component = () => {
     }
 
     if (!alive) return;
+
+    // Fetch mechanism descriptors for the initial state (non-blocking: does
+    // not delay the subscribeToEvents chain).
+    mechanismStore.refresh().catch((err) => console.error('[mechanism] initial fetch failed:', err));
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
@@ -1063,8 +1084,12 @@ const App: Component = () => {
               data-testid="side-panel"
               class={styles.sidePanel}
               style={{ 'grid-template-rows': chatOpen()
-                ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`
-                : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px 1fr` }}
+                ? (mechanismStore.state.descriptors.length > 0
+                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px auto 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`
+                  : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`)
+                : (mechanismStore.state.descriptors.length > 0
+                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px auto`
+                  : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px 1fr`) }}
             >
               <DesignTree
                 tree={entityTree()}
@@ -1093,6 +1118,15 @@ const App: Component = () => {
                 onConstraintSelect={handleConstraintSelect}
                 onAskClaude={handleAskClaude}
               />
+              <Show when={mechanismStore.state.descriptors.length > 0}>
+                <MechanismPanel
+                  descriptors={mechanismStore.state.descriptors}
+                  onSetParameter={handleSetParameter}
+                  onScrubLocal={(cellId, jointIndex, valueSi) =>
+                    mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
+                  }
+                />
+              </Show>
               <Show when={chatOpen()}>
                 <Splitter orientation="horizontal" onResize={handleConstraintResize} data-testid="splitter-constraint" />
                 <ChatPanel

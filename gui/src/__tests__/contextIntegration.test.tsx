@@ -70,6 +70,7 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
+  getMechanismDescriptors: vi.fn().mockResolvedValue([]),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';
