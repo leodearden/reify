@@ -610,6 +610,75 @@ mod tests {
     }
 
     #[test]
+    fn solve_loop_closure_midpoint_max_iters_zero_returns_midpoint_in_x() {
+        // chain_b's joint is prismatic_x with range 0..1m → midpoint 0.5m.
+        // Setting max_iters=0 should return NotConverged with x = [0.5]
+        // (the midpoint, before any Newton step).
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0];
+        let free_b = vec![0];
+        let strategy = StartStrategy::Midpoint;
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 0,
+        };
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        match outcome {
+            NewtonOutcome::NotConverged { x, .. } => {
+                assert_eq!(x.len(), 1);
+                assert!(
+                    (x[0] - 0.5).abs() < 1e-12,
+                    "expected midpoint x=[0.5], got {x:?}"
+                );
+            }
+            other => panic!("expected NotConverged with midpoint x, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_loop_closure_midpoint_converges() {
+        // Midpoint init at 0.5m, but chain_a's value is also 0.5m so we are
+        // at the root immediately — trivially Converged in 0 iterations.
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0];
+        let free_b = vec![0];
+        let strategy = StartStrategy::Midpoint;
+        let cfg = NewtonConfig::default();
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        match outcome {
+            NewtonOutcome::Converged { x, .. } => {
+                assert!((x[0] - 0.5).abs() < 1e-6);
+            }
+            other => panic!("expected Converged, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn solve_loop_closure_warm_start_converges_single_prismatic() {
         // chain_a fixed at 0.5m; chain_b's free var should converge there.
         let chain_a = vec![prismatic_x_0_to_1()];
