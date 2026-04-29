@@ -219,6 +219,18 @@ impl OcctKernelHandle {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub `sweep_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::sweep_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-4).
+    pub fn sweep_with_history(
+        &self,
+        _profile: GeometryHandleId,
+        _path: GeometryHandleId,
+    ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     /// No-op shutdown (no thread to join).
     pub async fn shutdown(self) {}
 }

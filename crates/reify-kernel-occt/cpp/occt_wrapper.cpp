@@ -1070,6 +1070,77 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     });
 }
 
+std::unique_ptr<SweepOpHistory> make_pipe_with_history(
+    const OcctShape& profile, const OcctShape& spine) {
+    return wrap_occt_call("make_pipe_with_history", [&]() {
+        // BRepOffsetAPI_MakePipe inherits from BRepPrimAPI_MakeSweep (via
+        // BRepOffsetAPI_BuildAddSurface), which inherits from
+        // BRepBuilderAPI_MakeShape — so the Modified/IsDeleted/Generated/
+        // FirstShape/LastShape accessors expected by the templated
+        // `emit_sweep_*` helpers are all available. Sweep is single-parent
+        // like extrude/revolve, so the existing SweepOpHistory shape fits
+        // (parent_index always 0; cap-index lists for FirstShape/LastShape).
+        BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
+        // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
+        // an explicit Build() here is redundant (matches `make_pipe`).
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakePipe failed");
+        }
+        auto history = std::make_unique<SweepOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = maker.Shape();
+
+        // Build result face/edge maps once via the cached lazy accessors.
+        const auto& result_face_map = history->result->face_map();
+        const auto& result_edge_map = history->result->edge_map();
+
+        // Build a profile-vertex map ad-hoc (sweeps generate result edges
+        // from profile vertices; not cached on OcctShape because vertex
+        // maps are rarely needed except for sweeps).
+        TopTools_IndexedMapOfShape profile_vertex_map;
+        TopExp::MapShapes(profile.shape, TopAbs_VERTEX, profile_vertex_map);
+
+        // Faces (same-type modified): profile face → result face. Modified
+        // is typically empty for sweep (face sub-shapes go to FirstShape /
+        // LastShape, captured separately as caps); IsDeleted is empty too.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.face_map(), result_face_map,
+            history->face_modified, history->face_deleted);
+
+        // Edges (same-type modified): profile edge → result edge. Modified
+        // edges from a sweep are also typically empty.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.edge_map(), result_edge_map,
+            history->edge_modified, history->edge_deleted);
+
+        // Cross-type Generated: profile EDGES generate result FACES (the
+        // lateral swept side faces). parent_subshape_index in each
+        // face_generated record is the profile edge index.
+        emit_sweep_generated_cross_type(
+            maker, profile.edge_map(), result_face_map, TopAbs_FACE,
+            history->face_generated);
+
+        // Cross-type Generated: profile VERTICES generate result EDGES
+        // (the lateral edges joining the start/end caps).
+        emit_sweep_generated_cross_type(
+            maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
+            history->edge_generated);
+
+        // Caps: FirstShape() == profile-as-placed (start of spine),
+        //       LastShape()  == profile at the spine end.
+        // BRepOffsetAPI_MakePipe inherits FirstShape/LastShape from
+        // BRepPrimAPI_MakeSweep so these accessors work the same way as
+        // for prism / revolve. Diagnostic counters
+        // (unsynthesized_profile_edge_count,
+        // duplicate_parent_subshape_index_count) remain at default 0;
+        // they are revolve-synthesis-specific and have no analogue here.
+        emit_cap_face_indices(maker.FirstShape(), result_face_map, history->start_cap_face_indices);
+        emit_cap_face_indices(maker.LastShape(),  result_face_map, history->end_cap_face_indices);
+
+        return history;
+    });
+}
+
 std::unique_ptr<OcctShape> sweep_op_history_take_result_shape(SweepOpHistory& history) {
     return std::move(history.result);
 }

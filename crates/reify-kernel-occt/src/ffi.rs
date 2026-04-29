@@ -181,6 +181,19 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<SweepOpHistory>>;
 
+        /// Run `BRepOffsetAPI_MakePipe` on `profile` along `spine` (a
+        /// wire), eagerly capturing the per-parent face/edge/vertex
+        /// Modified/Generated/Deleted records and the FirstShape/LastShape
+        /// cap-face indices alongside the swept result shape. Reuses the
+        /// SweepOpHistory shape (single-parent, `parent_index` always 0)
+        /// since `BRepOffsetAPI_MakePipe` inherits the same
+        /// Modified/Generated/IsDeleted/FirstShape/LastShape interface as
+        /// prism / revolve via `BRepBuilderAPI_MakeShape`. Task 5b (#2619).
+        fn make_pipe_with_history(
+            profile: &OcctShape,
+            spine: &OcctShape,
+        ) -> Result<UniquePtr<SweepOpHistory>>;
+
         /// Move the result shape out of the sweep-history wrapper for
         /// registration in the kernel's shape table. Subsequent
         /// `_take_result_shape` calls return an empty pointer.

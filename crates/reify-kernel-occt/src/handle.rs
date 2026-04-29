@@ -422,6 +422,45 @@ impl OcctKernelHandle {
         }
     }
 
+    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
+    /// for the [`GeometryOp::Sweep`] case: returns `(handle_id,
+    /// SweepOpHistoryRecords)` directly.
+    ///
+    /// Sweep is single-parent — the profile is the operand whose
+    /// sub-shapes propagate to the result; the path is the spine along
+    /// which the profile is swept. `parent_index` in every record is
+    /// `0`. `start_cap_face_indices` carries the FirstShape() face
+    /// index (profile-as-placed); `end_cap_face_indices` carries the
+    /// LastShape() face index (profile at the spine end).
+    ///
+    /// # Errors
+    ///
+    /// Returns `GeometryError::OperationFailed` if the kernel reported
+    /// an unexpected `AttributeHistory` variant — e.g. `None`, indicating
+    /// the kernel built but failed to populate sweep history. This is a
+    /// programming-error guard; it is exposed as an `Err` rather than a
+    /// panic so test code can pin the contract.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-4).
+    pub fn sweep_with_history(
+        &self,
+        profile: GeometryHandleId,
+        path: GeometryHandleId,
+    ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
+        let op = GeometryOp::Sweep { profile, path };
+        let (handle, history) = self.execute_with_history(&op)?;
+        match history {
+            AttributeHistory::Sweep(records) => Ok((handle.id, records)),
+            other => Err(GeometryError::OperationFailed(format!(
+                "sweep_with_history expected AttributeHistory::Sweep, got {other:?}"
+            ))),
+        }
+    }
+
     /// Test-fixture: build a `width × height` rect_face profile on the
     /// kernel thread and return its handle id (registered with
     /// `ReprKind::Face`). Only compiled when the `test-fixtures` cargo
@@ -635,6 +674,13 @@ impl OcctKernelHandle {
                             } => kernel
                                 .revolve_with_history(*profile, *axis_origin, *axis_dir, *angle_rad)
                                 .map(|(h, recs)| (h, AttributeHistory::Revolve(recs))),
+                            // Task 5b (#2619): GeometryOp::Sweep routes to
+                            // `OcctKernel::sweep_with_history`, which uses
+                            // `BRepOffsetAPI_MakePipe` and the same templated
+                            // history-emit helpers as extrude / revolve.
+                            GeometryOp::Sweep { profile, path } => kernel
+                                .sweep_with_history(*profile, *path)
+                                .map(|(h, recs)| (h, AttributeHistory::Sweep(recs))),
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.

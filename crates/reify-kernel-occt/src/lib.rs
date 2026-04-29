@@ -738,6 +738,84 @@ impl OcctKernel {
         let handle = self.store_with_repr(result_shape, ReprKind::Solid);
         Ok((handle, records))
     }
+
+    /// Sweep `profile` along `path` (a wire) via `BRepOffsetAPI_MakePipe`,
+    /// returning the swept-result handle alongside the per-parent
+    /// face/edge Modified/Generated/Deleted history records AND the
+    /// FirstShape/LastShape cap-face indices.
+    ///
+    /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
+    /// [`OcctKernel::execute`]: same handle resolution and result
+    /// registration with `ReprKind::Solid`. Sweep is single-parent
+    /// (the profile is the operand; the path is the spine along which
+    /// the profile is swept), so `parent_index` is always `0` and the
+    /// existing `SweepOpHistoryRecords` struct fits verbatim.
+    ///
+    /// Cap behavior: `start_cap_face_indices` carries the FirstShape()
+    /// face index (profile-as-placed at the spine start);
+    /// `end_cap_face_indices` carries the LastShape() face index
+    /// (profile at the spine end).
+    ///
+    /// Diagnostic counters `unsynthesized_profile_edge_count` and
+    /// `duplicate_parent_subshape_index_count` are always `0` for
+    /// sweep — those are revolve-synthesis-specific (full-revolution
+    /// radial-edge synthesis post-pass) and have no analogue in pipe
+    /// sweeping.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-4).
+    pub fn sweep_with_history(
+        &mut self,
+        profile_id: GeometryHandleId,
+        path_id: GeometryHandleId,
+    ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
+        let (result_shape, records) = {
+            let profile_shape = self.get_shape(profile_id)?;
+            let path_shape = self.get_shape(path_id)?;
+            let mut history = ffi::ffi::make_pipe_with_history(profile_shape, path_shape)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
+            let start_cap_face_indices =
+                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
+                .into_iter()
+                .collect();
+            let unsynthesized_profile_edge_count =
+                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
+            let duplicate_parent_subshape_index_count =
+                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
+            // Take the result shape last, after all record buffers have
+            // been read off (mirrors extrude/revolve pattern).
+            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
+            let records = SweepOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+                start_cap_face_indices,
+                end_cap_face_indices,
+                unsynthesized_profile_edge_count,
+                duplicate_parent_subshape_index_count,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
+    }
 }
 
 #[cfg(has_occt)]

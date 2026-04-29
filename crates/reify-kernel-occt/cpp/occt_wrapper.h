@@ -308,6 +308,34 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     double ax, double ay, double az,
     double angle_rad);
 
+/// Run `BRepOffsetAPI_MakePipe` on `profile` along `spine` (a wire),
+/// materializing the result shape AND the Modified/Generated/Deleted
+/// records for the profile's face/edge/vertex sub-shapes into a single
+/// `SweepOpHistory`. Also populates the cap-face index lists from
+/// `FirstShape()` / `LastShape()` lookups in the result face_map.
+///
+/// `BRepOffsetAPI_MakePipe` inherits from `BRepPrimAPI_MakeSweep` (via
+/// `BRepOffsetAPI_BuildAddSurface`), which inherits from
+/// `BRepBuilderAPI_MakeShape` — so the templated `emit_sweep_*` helpers
+/// reused from the prism/revolve wrappers work verbatim. Sweep is
+/// single-parent like extrude/revolve (the spine is the path along which
+/// the profile is swept; only the profile counts as the operand whose
+/// sub-shapes propagate to the result), so the existing SweepOpHistory
+/// shape fits — `parent_index` is always `0` and the cap-index lists
+/// hold the start/end profile placements.
+///
+/// Diagnostic counters `unsynthesized_profile_edge_count` and
+/// `duplicate_parent_subshape_index_count` remain `0` for sweep — those
+/// are revolve-synthesis-specific (full-revolution radial-edge synthesis
+/// post-pass) and have no analogue in pipe sweeping.
+///
+/// Profile sub-shapes are walked in canonical TopExp `face_map()` /
+/// `edge_map()` order (1-based, deduplicated by `IsSame`); per-record
+/// indices are 0-based at the FFI boundary. Result-side indices come
+/// from the result shape's cached `face_map()` / `edge_map()`.
+std::unique_ptr<SweepOpHistory> make_pipe_with_history(
+    const OcctShape& profile, const OcctShape& spine);
+
 /// Move the result shape out of the history wrapper. Returns the freshly
 /// constructed `OcctShape` for the kernel to register; subsequent calls
 /// observe an empty `unique_ptr`.
