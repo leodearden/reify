@@ -2056,4 +2056,30 @@ mod tests {
         // faces.len() == 1, edges.len() == 2 → should panic
         BooleanOpParents::nary(&[&[][..]], &[&[][..], &[][..]]);
     }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "faces.len()")]
+    fn boolean_op_parents_face_slices_debug_asserts_length_mismatch() {
+        // Direct-literal NAry construction with mismatched lengths: faces.len() == 1, edges.len() == 2.
+        // Calling face_slices() must panic in debug builds via the shared helper.
+        let parents = BooleanOpParents::NAry {
+            faces: &[&[][..]],
+            edges: &[&[][..], &[][..]],
+        };
+        let _ = parents.face_slices();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "faces.len()")]
+    fn boolean_op_parents_edge_slices_debug_asserts_length_mismatch() {
+        // Direct-literal NAry construction with mismatched lengths.
+        // Calling edge_slices() must panic in debug builds via the shared helper.
+        let parents = BooleanOpParents::NAry {
+            faces: &[&[][..]],
+            edges: &[&[][..], &[][..]],
+        };
+        let _ = parents.edge_slices();
+    }
 }
