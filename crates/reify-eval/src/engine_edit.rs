@@ -663,6 +663,15 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// `donate_preserving_lru` only panics in debug builds when the events
     /// buffer is at its cap (65 536 entries).  Both risks are documented here
     /// for completeness.
+    ///
+    /// # Test-context note
+    ///
+    /// Unit tests that intentionally exercise the staging-without-drain path
+    /// (dropping a non-empty `PendingWarmSeedsGuard` without calling
+    /// `drain_into_cache_or_repool`) will trigger this WARN.  Its appearance
+    /// in test output is benign — it is the correct, observable signal that the
+    /// safety net fired — and is distinct from the production diagnostic
+    /// described above.
     fn drop(&mut self) {
         let len = self.map.len();
         if len == 0 {
@@ -673,8 +682,7 @@ impl Drop for PendingWarmSeedsGuard<'_> {
             count = len,
             "PendingWarmSeedsGuard safety-net fired: re-donating staged \
              warm-pool entries from Drop (fires if a panic unwinds between \
-             staging warm seeds and the post-eval drain in production; \
-             benign in unit tests)"
+             staging warm seeds and the post-eval drain in production)"
         );
         for (nid, (state, stamp)) in self.map.drain() {
             self.pool.donate_preserving_lru(nid, state, stamp);
@@ -4388,12 +4396,11 @@ mod tests {
     ///
     /// This test pins the *schema* — which fields are present and what value
     /// `count` carries — but does **not** assert the message-body wording.
-    /// It mirrors `auto_trim_warn_omits_invariant_current_len_field` in
-    /// `warm_pool.rs` by combining a positive `contains_key("count")` check,
-    /// a value-pin `assert_eq!(…, Some(1usize))` (parsed from the captured
-    /// string to be invariant to visitor integer formatting), and a
-    /// discriminating negative `!contains_key("cap")` (the auto-trim WARN's
-    /// signature field must not appear in the drop path).
+    /// It combines a positive `contains_key("count")` check, a value-pin
+    /// `assert_eq!(…, Some(1usize))` (parsed from the captured string to be
+    /// invariant to visitor integer formatting), and a schema-size pin
+    /// `assert_eq!(event_fields.len(), 1)` that locks the total field count to
+    /// exactly one, catching any future unintended field additions.
     ///
     /// Structured fields with actionable, varying values are the unit of
     /// log-aggregator queries; body wording is verified by code review.
@@ -4439,13 +4446,16 @@ mod tests {
              entry; got fields: {event_fields:?}"
         );
 
-        // Discriminating negative: the auto-trim WARN's `cap` field must NOT
-        // appear in the drop path (mirrors the negative assertion in
-        // `auto_trim_warn_omits_invariant_current_len_field` in warm_pool.rs).
-        assert!(
-            !event_fields.contains_key("cap"),
-            "`cap` must NOT appear in the safety-net WARN (it is the auto-trim \
-             WARN's signature field; this drop path emits only `count`); \
+        // Schema-size pin: the safety-net WARN's structured-field schema is exactly
+        // {`count`}. This is strictly stronger than singling out an arbitrary
+        // unrelated field name (e.g. `!contains_key("cap")`): it fails on ANY
+        // unintended additional field (which is the regression we actually care
+        // about), and it would not pass without the positive `count` assertion
+        // above.
+        assert_eq!(
+            event_fields.len(),
+            1,
+            "safety-net WARN must emit exactly one structured field (`count`); \
              got fields: {event_fields:?}"
         );
     }
