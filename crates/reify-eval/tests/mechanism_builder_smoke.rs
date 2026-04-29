@@ -185,4 +185,50 @@ fn mechanism_builder_closed_chain_e2e() {
         !path2.is_empty(),
         "m2.error_path2 should be non-empty (walks world → ... → j_b → j_x)"
     );
+
+    // Pin path1.last() / path2.last() to the actual j_x Value produced
+    // by the eval pipeline. Mirrors the unit-test assertion in
+    // `mechanism.rs::tests::closed_chain_via_parent_conflict_emits_
+    // error_with_both_paths`, which pins the full path content. At
+    // the e2e boundary we additionally guard the Value-equality
+    // round-trip so a future eval-pipeline glue change that wrapped
+    // path elements differently (e.g. boxing the joint Map, attaching
+    // a span, swapping `kind` strings) would surface here.
+    let j_x = get_value(v, "j_x");
+    assert_eq!(
+        path1.last(),
+        Some(j_x),
+        "m2.error_path1 should terminate at j_x (the conflicting joint)"
+    );
+    assert_eq!(
+        path2.last(),
+        Some(j_x),
+        "m2.error_path2 should terminate at j_x (the conflicting joint)"
+    );
+
+    // The non-terminal entries of each path should be the parent
+    // joints in canonical top-down order: path1 = [world, j_a, j_x],
+    // path2 = [world, j_b, j_x]. Pin the parent joint in each path so
+    // a regression that swapped j_a/j_b or dropped the world-prepend
+    // would surface here as well.
+    let j_a = get_value(v, "j_a");
+    let j_b = get_value(v, "j_b");
+    let world = Value::Map({
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("world".to_string()),
+        );
+        m
+    });
+    assert_eq!(
+        path1,
+        &vec![world.clone(), j_a.clone(), j_x.clone()],
+        "m2.error_path1 should be [world, j_a, j_x]"
+    );
+    assert_eq!(
+        path2,
+        &vec![world, j_b.clone(), j_x.clone()],
+        "m2.error_path2 should be [world, j_b, j_x]"
+    );
 }
