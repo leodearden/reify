@@ -298,6 +298,17 @@ where
     let mut prev_combined_norm: Option<f64> = None;
     let mut diverging_streak: usize = 0;
 
+    // Scratch buffers allocated once per `newton_solve` call and reused across
+    // all iterations.  Allocation accounting:
+    //   Pre-refactor: up to 3·max_iters allocations — one `vec![vec![0.0;n];n]`
+    //     (n+1 Vec headers + n*n f64 cells) plus per-iteration `jtr: Vec<f64>`
+    //     and `neg_jtr: Vec<f64>`.
+    //   Post-refactor: exactly 3 allocations total (jtj_flat, jtr, dx),
+    //     reused across every iteration of the loop.
+    let mut jtj_flat: Vec<f64> = vec![0.0; n * n];
+    let mut jtr: Vec<f64> = vec![0.0; n];
+    let mut dx: Vec<f64> = vec![0.0; n];
+
     for iter in 0..config.max_iters {
         let (r, j_cols) = match residual_jac(&x) {
             Some(rj) => rj,
@@ -339,13 +350,7 @@ where
         }
         prev_combined_norm = Some(combined_norm);
 
-        // Build JᵀJ (n×n) and Jᵀr (n).
-        // TODO(perf, suggestion #5): JᵀJ is allocated as a fresh vec-of-vecs
-        // per iteration, and the full n×n matrix is populated even though it
-        // is symmetric.  For multi-loop / many-DOF problems this defeats
-        // cache locality.  A future pass should reuse a single contiguous
-        // `Vec<f64>` scratch buffer (length n*n) across iterations and only
-        // populate j>=i, mirroring the rest.
+        // Build JᵀJ (n×n) and Jᵀr (n) into the hoisted scratch buffers.
         if j_cols.len() != n {
             return NewtonOutcome::NotConverged {
                 x,
@@ -358,28 +363,27 @@ where
                 residual_norm: combined_norm,
             };
         }
-        let mut jtj_flat: Vec<f64> = vec![0.0; n * n];
-        let mut jtr: Vec<f64> = vec![0.0; n];
+        // Exploit symmetry: compute the upper triangle (j >= i) and mirror to
+        // the lower triangle — n*(n+1)/2 dot products instead of n².
         for i in 0..n {
-            for j in 0..n {
-                let mut s = 0.0;
-                for (a, b) in j_cols[i].iter().zip(j_cols[j].iter()) {
-                    s += a * b;
-                }
+            for j in i..n {
+                let s: f64 = j_cols[i].iter().zip(j_cols[j].iter()).map(|(a, b)| a * b).sum();
                 jtj_flat[i * n + j] = s;
+                if i != j {
+                    jtj_flat[j * n + i] = s;
+                }
             }
-            let mut s = 0.0;
-            for (a, b) in j_cols[i].iter().zip(r.iter()) {
-                s += a * b;
-            }
-            jtr[i] = s;
+            jtr[i] = j_cols[i].iter().zip(r.iter()).map(|(a, b)| a * b).sum();
         }
-        // Solve JᵀJ · δx = -Jᵀr.
-        let mut neg_jtr: Vec<f64> = jtr.iter().map(|v| -v).collect();
-        if !solve_normal_equations(&mut jtj_flat, &mut neg_jtr, n, config.singularity_pivot_eps) {
+        // Solve JᵀJ · δx = -Jᵀr (dx is loaded with -jtr as RHS; solution
+        // overwrites dx in place; jtj_flat is overwritten by LDLᵀ — both are
+        // repopulated at the top of the next iteration).
+        for i in 0..n {
+            dx[i] = -jtr[i];
+        }
+        if !solve_normal_equations(&mut jtj_flat, &mut dx, n, config.singularity_pivot_eps) {
             return NewtonOutcome::Singular { x, iters: iter };
         }
-        let dx = neg_jtr;
         for i in 0..n {
             x[i] += dx[i];
         }
