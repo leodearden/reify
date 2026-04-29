@@ -78,13 +78,21 @@ pub struct AttributeQuery {
     pub feature_id: Option<FeatureId>,
 }
 
-/// Three-arm resolution outcome.
+/// Four-arm resolution outcome.
 ///
 /// PRD line 68 mandates that "no construction history" (imported geometry)
 /// is reported separately from "match failed", so callers can route through
 /// computed selectors on the former and emit a diagnostic on the latter.
 /// Folding both into `Option::None` would force every caller to re-derive
 /// the difference.
+///
+/// PRD line 64 (modification-history postfix) further mandates that a
+/// multi-match where ALL matched candidates share the parent-key
+/// (`feature_id, role, local_index, user_label`) is reported as the SET of
+/// split children rather than folded into a generic Unresolved miss — so
+/// callers can surface the ambiguity for user disambiguation rather than
+/// silently rebinding to one arbitrary child. Hence the
+/// `AmbiguousAfterSplit` variant is distinct from `Unresolved`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttributeResolution {
     /// Exactly one candidate matched the query.
@@ -93,9 +101,20 @@ pub enum AttributeResolution {
     /// imported-geometry signal. Callers route through computed selectors.
     FallbackToComputed,
     /// At least one candidate has an entry, but the query produced zero or
-    /// multiple matches. A `TopologyAttributeStale` diagnostic has been
-    /// pushed to the supplied `diagnostics` vec.
+    /// multiple matches with mixed parent-keys (genuine ambiguity, not a
+    /// split). A `TopologyAttributeStale` diagnostic has been pushed to
+    /// the supplied `diagnostics` vec.
     Unresolved,
+    /// All matched candidates share the same parent-key
+    /// (`feature_id, role, local_index, user_label`) and only differ in
+    /// `mod_history` — the v0.2 split-children signature. Children list
+    /// is in records-encounter order (which matches per-parent
+    /// `split_index` ordering written by the propagator). Per PRD line 64,
+    /// callers surface this for user disambiguation rather than silently
+    /// rebinding. A `TopologyAttributeStale` diagnostic with the
+    /// "split children" message sub-form has been pushed to the supplied
+    /// `diagnostics` vec.
+    AmbiguousAfterSplit { children: Vec<GeometryHandleId> },
 }
 
 /// Resolve a `query` against a slice of candidate handles, consulting the
@@ -222,6 +241,22 @@ pub fn resolve_unique_by_attribute(
         if n == 1 {
             return AttributeResolution::Resolved(found.unwrap());
         }
+        // Multi-match: try the parent-key clustering check (task #2653).
+        // If all matched candidates share `(feature_id, role, local_index,
+        // user_label)` and differ only in `mod_history`, this is a split —
+        // surface the SET of children via AmbiguousAfterSplit instead of
+        // Unresolved. Otherwise fall through to the existing Unresolved
+        // arm with the generic count-aware diagnostic.
+        if n > 1 {
+            let matches = collect_matches(table, candidates, |attr| {
+                attr.role == role && attr.local_index == idx && feature_id_filter(attr)
+            });
+            if let Some(resolution) =
+                try_cluster_after_split(table, &matches, selector_span, diagnostics)
+            {
+                return resolution;
+            }
+        }
         last_count = Some(n);
     }
     // Stale-attribute diagnostic emission (step-10/step-12). At least one
@@ -297,6 +332,107 @@ where
         }
     }
     (found, n)
+}
+
+/// Walk `candidates`, looking up each id in `table` and applying `predicate`
+/// to the attribute. Returns the de-duplicated Vec of all matching ids in
+/// candidate-encounter order.
+///
+/// The set-returning sibling of [`count_unique_matches`]: same dedup
+/// discipline (HashSet-backed), same predicate shape, but exposes the
+/// full Vec rather than collapsing to (first, count). Used by
+/// [`try_cluster_after_split`] to inspect the matched set's parent-keys
+/// before deciding between AmbiguousAfterSplit (cluster) and Unresolved
+/// (mixed parents).
+fn collect_matches<F>(
+    table: &TopologyAttributeTable,
+    candidates: &[GeometryHandleId],
+    predicate: F,
+) -> Vec<GeometryHandleId>
+where
+    F: Fn(&TopologyAttribute) -> bool,
+{
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
+    let mut out: Vec<GeometryHandleId> = Vec::new();
+    for &id in candidates {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(attr) = table.lookup(id)
+            && predicate(attr)
+        {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// If every attribute behind `matches` agrees on its parent-key fields
+/// (`feature_id, role, local_index, user_label`), emit a `split children`
+/// diagnostic and return `Some(AmbiguousAfterSplit { children: matches })`.
+/// Otherwise return `None` so the caller falls through to the generic
+/// Unresolved arm with the existing "matched N sub-shapes" diagnostic.
+///
+/// Failure mode: when ANY two matched candidates' attributes disagree on
+/// any parent-key field, the windows-pairwise check returns false → `None`.
+/// This is the genuine-ambiguity path (e.g. two distinct features
+/// colliding on a label, two roles colliding on local_index after
+/// reassignment) and intentionally distinct from a post-split cluster
+/// where every matched candidate shares one parent.
+///
+/// Children list inside the returned variant is `matches` verbatim, in
+/// candidate-encounter order — which matches per-parent record-stream
+/// position (i.e. ascending `split_index`), per the propagator's
+/// iteration order documented in `count_children_per_parent`.
+fn try_cluster_after_split(
+    table: &TopologyAttributeTable,
+    matches: &[GeometryHandleId],
+    selector_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<AttributeResolution> {
+    if matches.len() < 2 {
+        return None;
+    }
+    // Resolve each handle's attribute up-front so the windows check is a
+    // pure predicate over a Vec<&TopologyAttribute>. A missing entry in
+    // the table for any matched id means we cannot prove clustering and
+    // must fall through to Unresolved.
+    let attrs: Option<Vec<&TopologyAttribute>> =
+        matches.iter().map(|&id| table.lookup(id)).collect();
+    let attrs = attrs?;
+    if !attrs.windows(2).all(|w| w[0].same_parent_as(w[1])) {
+        return None;
+    }
+    emit_split_children_diagnostic(selector_span, matches.len(), diagnostics);
+    Some(AttributeResolution::AmbiguousAfterSplit {
+        children: matches.to_vec(),
+    })
+}
+
+/// Push a `TopologyAttributeStale` Warning describing a `matched n
+/// split children of the same parent` outcome onto `diagnostics`.
+///
+/// Sibling of [`emit_attribute_stale_diagnostic`]; both reuse the
+/// `TopologyAttributeStale` code so downstream consumers (LSP/MCP) need
+/// no new case. Message text intentionally diverges so the two sub-forms
+/// remain distinguishable in user-visible output and snapshot tests:
+///   - "matched N sub-shapes" → genuine ambiguity (Unresolved).
+///   - "matched N split children of the same parent" → split cluster
+///     (AmbiguousAfterSplit; user can disambiguate via split_by(...)
+///     once vocabulary v2 lands per task 10).
+fn emit_split_children_diagnostic(
+    selector_span: SourceSpan,
+    n: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::warning(format!(
+            "topology-attribute selector matched {n} split children of the same parent \
+             (disambiguate via split_by(...) selector once vocabulary v2 lands)"
+        ))
+        .with_code(DiagnosticCode::TopologyAttributeStale)
+        .with_label(DiagnosticLabel::new(selector_span, "selector call")),
+    );
 }
 
 #[cfg(test)]
