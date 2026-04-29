@@ -521,20 +521,20 @@ impl EngineSession {
         // Only when parsed_cache is Some — if None, the per-template WARN branch
         // below handles the fallback and the cache is left None so the warning
         // fires on every call (regression signal).
-        if self.consumed_idents_cache.is_none() {
-            if let Some(parsed) = self.parsed_cache.as_ref() {
-                let new_cache: HashMap<String, HashSet<String>> = compiled
-                    .templates
-                    .iter()
-                    .map(|tmpl| {
-                        (
-                            tmpl.name.clone(),
-                            collect_consumed_mechanism_idents(parsed, &tmpl.name),
-                        )
-                    })
-                    .collect();
-                self.consumed_idents_cache = Some(new_cache);
-            }
+        if self.consumed_idents_cache.is_none()
+            && let Some(parsed) = self.parsed_cache.as_ref()
+        {
+            let new_cache: HashMap<String, HashSet<String>> = compiled
+                .templates
+                .iter()
+                .map(|tmpl| {
+                    (
+                        tmpl.name.clone(),
+                        collect_consumed_mechanism_idents(parsed, &tmpl.name),
+                    )
+                })
+                .collect();
+            self.consumed_idents_cache = Some(new_cache);
         }
 
         let mut descriptors = Vec::new();
