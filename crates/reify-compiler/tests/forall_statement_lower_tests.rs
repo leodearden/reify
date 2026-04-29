@@ -651,6 +651,265 @@ structure S {
     );
 }
 
+/// task 2629 amendment (reviewer suggestion 1): the deferred-count
+/// info-diagnostic contract for the `Instantiation` body shape — sibling
+/// to the where-clause case — must also be pinned. Without this test, a
+/// future refactor could accidentally start pushing a
+/// `CompiledForallTemplate` for a `forall v in <coll_sub>: constraint
+/// SomeDef(...)` over a deferred-count collection, and the runtime would
+/// silently emit per-element constraints with the wrong `inst_idx`
+/// allocation (or no inst_idx at all).
+///
+/// Pins:
+/// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
+/// (b) Zero `forall@*`-labelled CompiledConstraints in `template.constraints`.
+/// (c) `template.forall_templates.is_empty()` — the Instantiation body
+///     must NOT push a runtime template (task 2690 / future scope).
+/// (d) Exactly one `Diagnostic::info` mentioning the limitation, with a
+///     stable substring tying it to the future-scope task.
+#[test]
+fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
+ {
+    use reify_types::Severity;
+
+    let source = r#"
+constraint def MinThreshold {
+    param value : Scalar
+    value > 0
+}
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: constraint MinThreshold(value: v.mass)
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall inst body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero `forall@*`-labelled CompiledConstraints — no per-element
+    //     emissions at compile time for a deferred-count Instantiation body.
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@") || s.contains(":forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef and body is \
+         a constraint-inst, got {}",
+        forall_constraints_count
+    );
+
+    // (c) NO runtime template captured.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         with constraint-inst body (Instantiation is task 2690 future scope), \
+         got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic with stable substring "future scope".
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("constraint-instantiation"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+         'constraint-instantiation' for the deferred-count forall with inst \
+         body, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// task 2629 amendment (reviewer suggestion 1): the deferred-count
+/// info-diagnostic contract for the `forall v in <coll_sub>: connect ...`
+/// body shape (Connect) must be pinned. The Connect arm is tracked by
+/// follow-up task 2690 — no template captured at compile time, info
+/// diagnostic emitted so the limitation is discoverable.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero CompiledConnections (deferred-count → silent-skip).
+/// (c) `template.forall_templates.is_empty()` — Connect body never
+///     captures a runtime template in this task.
+/// (d) Exactly one `Diagnostic::info` mentioning task 2690 future scope.
+#[test]
+fn forall_connect_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
+    use reify_types::Severity;
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections — silent-skip preserved at compile time.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) NO runtime template captured.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         connect (task 2690 future scope), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic, with the 2690 substring tying the
+    //     limitation to the follow-up task.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("forall connect"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+         'forall connect' for the deferred-count forall connect, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// task 2629 amendment (reviewer suggestion 1): the deferred-count
+/// info-diagnostic contract for the `forall v in <coll_sub>: chain ...`
+/// body shape (Chain) must be pinned. The Chain arm retains compile-time
+/// silent-skip semantics; an info diagnostic flags the limitation.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero CompiledConnections (deferred-count → silent-skip).
+/// (c) `template.forall_templates.is_empty()` — Chain body never
+///     captures a runtime template.
+/// (d) Exactly one `Diagnostic::info` mentioning the future-scope task.
+#[test]
+fn forall_chain_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
+    use reify_types::Severity;
+
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 1mm }
+    port c : in T { param d : Length = 1mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: chain v.a -> v.b -> v.c
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall chain body, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections — silent-skip preserved at compile time.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) NO runtime template captured.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         chain (future scope), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic mentioning future scope and chain.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("forall chain"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+         'forall chain' for the deferred-count forall chain, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// `forall v in [1, 2, 3]: constraint v > 0 where heavy` should emit one
 /// `CompiledGuardedGroup` per element (3 total), each containing exactly
 /// one `forall@v[*]`-labelled constraint and each whose `guard_expr` is
