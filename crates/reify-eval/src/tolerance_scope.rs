@@ -18,6 +18,73 @@
 //! via *multiple active purposes with overlapping subjects* (purpose A bound to
 //! `bracket`, purpose B bound to `bracket.head`, with B tighter).
 
+use reify_compiler::CompiledPurpose;
+use reify_types::{CompiledExprKind, DimensionVector, Type, Value};
+
+/// One extracted tolerance scope root: the entity-ref the purpose was bound
+/// to, and the SI tolerance (metres) carried by the matching
+/// `RepresentationWithin` constraint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToleranceBinding {
+    pub subject_entity: String,
+    pub si_tolerance: f64,
+}
+
+/// Walk `purpose.constraints` and extract every
+/// `RepresentationWithin(<bare-param-StructureRef>, <length-literal>)`
+/// binding, anchored on `bound_entity_ref`.
+///
+/// Non-matching constraints are silently skipped — this matches the PRD's
+/// "activate dormant infrastructure" posture: a constraint that doesn't
+/// match the recognised shape simply contributes no tolerance.
+pub fn extract_tolerance_bindings(
+    purpose: &CompiledPurpose,
+    bound_entity_ref: &str,
+) -> Vec<ToleranceBinding> {
+    let mut bindings = Vec::new();
+    for constraint in &purpose.constraints {
+        // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
+        let (function_name, args) = match &constraint.expr.kind {
+            CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } => (function_name, args),
+            _ => continue,
+        };
+        if function_name != "RepresentationWithin" {
+            continue;
+        }
+        if args.len() != 2 {
+            continue;
+        }
+
+        // arg0 must be a ValueRef whose result_type is StructureRef(_).
+        let subject_arg = &args[0];
+        if !matches!(subject_arg.kind, CompiledExprKind::ValueRef(_)) {
+            continue;
+        }
+        if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
+            continue;
+        }
+
+        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. }).
+        let tol_arg = &args[1];
+        let si_value = match &tol_arg.kind {
+            CompiledExprKind::Literal(Value::Scalar {
+                si_value,
+                dimension,
+            }) if *dimension == DimensionVector::LENGTH => *si_value,
+            _ => continue,
+        };
+
+        bindings.push(ToleranceBinding {
+            subject_entity: bound_entity_ref.to_string(),
+            si_tolerance: si_value,
+        });
+    }
+    bindings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
