@@ -1689,4 +1689,125 @@ mod tests {
             carried.compatibility_constraint, conn.compatibility_constraint,
         );
     }
+
+    /// Helper for the connection-bucket fingerprint tests below.
+    fn make_connection(
+        entity: &str,
+        idx: u32,
+        left: &str,
+        right: &str,
+    ) -> reify_compiler::CompiledConnection {
+        use reify_syntax::ConnectOp;
+        use reify_types::SourceSpan;
+        reify_compiler::CompiledConnection {
+            left_port: left.to_string(),
+            operator: ConnectOp::Forward,
+            right_port: right.to_string(),
+            connector_sub: None,
+            compatibility_constraint: ConstraintNodeId::new(entity, idx),
+            port_mappings: Vec::new(),
+            frame_constraint: None,
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// Task 2690 step-7/step-8: adding a `CompiledConnection` to a graph
+    /// must change `topology_fingerprint`. Two graphs identical except for
+    /// one extra connection must produce distinct fingerprints.
+    ///
+    /// RED before step-8 (the connections bucket is not yet mixed in).
+    #[test]
+    fn topology_fingerprint_includes_connections() {
+        let mut g_no_conn = EvaluationGraph::default();
+        g_no_conn.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: ContentHash::of_str("a"),
+            },
+        );
+
+        let mut g_with_conn = g_no_conn.clone();
+        g_with_conn
+            .connections
+            .push(make_connection("X", 0, "p", "q"));
+
+        assert_ne!(
+            g_no_conn.topology_fingerprint(),
+            g_with_conn.topology_fingerprint(),
+            "fingerprint must change when a connection is added",
+        );
+    }
+
+    /// Task 2690 step-7/step-8: domain separation between connection bucket
+    /// and other node-type buckets. A graph with a single CompiledConnection
+    /// whose hash inputs collide with an unrelated value-cell content_hash
+    /// must produce a different fingerprint than a graph with that same hash
+    /// on the value-cell only. Mirrors `fingerprint_domain_separates_node_types`.
+    ///
+    /// RED before step-8 (the connections bucket is not yet mixed in, so
+    /// both graphs collapse to the same fingerprint).
+    #[test]
+    fn fingerprint_domain_separates_connections_from_others() {
+        let hash_h = ContentHash::of_str("collide");
+
+        // Graph A: single value cell with hash_h.
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: hash_h,
+            },
+        );
+
+        // Graph B: same value cell + one CompiledConnection. The
+        // connection contributes an additional bucket hash; if connections
+        // were not mixed in, both graphs would fingerprint identically.
+        let mut graph_b = graph_a.clone();
+        graph_b
+            .connections
+            .push(make_connection("X", 0, "p", "q"));
+
+        assert_ne!(
+            graph_a.topology_fingerprint(),
+            graph_b.topology_fingerprint(),
+            "fingerprint must domain-separate connections from value_cells",
+        );
+    }
+
+    /// Task 2690 step-7/step-8: insertion order of `connections` must NOT
+    /// affect `topology_fingerprint`. Mirrors `topology_fingerprint_order_independent`.
+    ///
+    /// RED before step-8 (since connections aren't mixed in, both graphs
+    /// fingerprint identically anyway — this test will only fail meaningfully
+    /// once the bucket is wired and the per-connection hashes are sorted).
+    /// Even after wiring, this test guards against an accidental
+    /// non-deterministic mix (e.g. forgetting to sort the per-connection
+    /// hashes before `combine_all`).
+    #[test]
+    fn topology_fingerprint_connections_order_independent() {
+        let conn_a = make_connection("X", 0, "p1", "q1");
+        let conn_b = make_connection("X", 1, "p2", "q2");
+
+        let mut g1 = EvaluationGraph::default();
+        g1.connections.push(conn_a.clone());
+        g1.connections.push(conn_b.clone());
+
+        let mut g2 = EvaluationGraph::default();
+        g2.connections.push(conn_b);
+        g2.connections.push(conn_a);
+
+        assert_eq!(
+            g1.topology_fingerprint(),
+            g2.topology_fingerprint(),
+            "connection insertion order must not affect fingerprint",
+        );
+    }
 }
