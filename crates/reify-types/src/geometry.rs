@@ -1782,4 +1782,25 @@ mod tests {
         assert_eq!(table.lookup(GeometryHandleId(1)), Some(&second));
         assert_eq!(table.len(), 1);
     }
+
+    #[test]
+    fn boolean_op_parents_binary_constructor_and_accessors() {
+        let lf: Vec<GeometryHandleId> = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        let rf: Vec<GeometryHandleId> = vec![GeometryHandleId(3), GeometryHandleId(4)];
+        let le: Vec<GeometryHandleId> = vec![GeometryHandleId(5)];
+        let re: Vec<GeometryHandleId> = vec![GeometryHandleId(6)];
+
+        let parents = BooleanOpParents::Binary {
+            faces: [&lf, &rf],
+            edges: [&le, &re],
+        };
+
+        assert_eq!(parents.face_slices().len(), 2);
+        assert_eq!(parents.face_slices()[0], &lf[..]);
+        assert_eq!(parents.face_slices()[1], &rf[..]);
+
+        assert_eq!(parents.edge_slices().len(), 2);
+        assert_eq!(parents.edge_slices()[0], &le[..]);
+        assert_eq!(parents.edge_slices()[1], &re[..]);
+    }
 }
