@@ -264,6 +264,32 @@ pub enum DiagnosticCode {
     /// `oob_emitted` flag on the runtime `SampledField` value
     /// (see `crates/reify-types/src/value.rs::SampledField`).
     FieldOutOfBounds,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::build_sampled_field`.
+    /// Emitted as a `Severity::Warning` when a `sampled` field's runtime
+    /// config fails to parse (typo'd grid kind, wrong interpolation name,
+    /// non-string slot for a string-keyed key, non-list `data`, etc.) or
+    /// violates a runtime invariant required by the interpolation primitives
+    /// (mismatched `data` length, axis grid with fewer than 2 nodes,
+    /// non-positive or non-finite spacing).
+    ///
+    /// On emission the field's lambda becomes `Value::Undef` and any
+    /// `sample(...)` call returns `Undef` — the warning gives the user a
+    /// clear message naming the field, the offending value, and (where
+    /// applicable) the allowed-set hint, instead of letting
+    /// `interp::interpolate_Nd`'s `assert!` panic the eval loop.
+    ///
+    /// Canonical message form:
+    /// `"sampled field '<name>': invalid <key>: expected <hint>, got <short_value>"`
+    /// (parse failure) or
+    /// `"sampled field '<name>': data length <N> does not match grid shape (<...>); expected <M> elements"`
+    /// (runtime invariant violation).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FIELD_SAMPLED_INVALID_CONFIG`.
+    /// Severity is `Warning` (not `Error`) for consistency with the sibling
+    /// `W_FIELD_OUT_OF_BOUNDS` and `W_INTERPOLATION_DEFERRED` warnings emitted
+    /// from the same dispatch path; downstream tooling that wants to surface
+    /// these as harder failures can filter by code at the consumer side.
+    FieldSampledInvalidConfig,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
