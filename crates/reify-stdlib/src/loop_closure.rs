@@ -944,4 +944,36 @@ mod tests {
             );
         }
     }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    fn axis_y() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    fn planar_xy_joint() -> Value {
+        eval_builtin(
+            "planar",
+            &[
+                axis_x(),
+                axis_y(),
+                length_range(0.0, 1.0),
+                length_range(0.0, 1.0),
+                angle_range(0.0, std::f64::consts::PI),
+            ],
+        )
+    }
+
+    /// `joint_range_midpoint` returns `None` for a planar joint.
+    ///
+    /// Pins the contract that planar's multi-DOF free-variable space has no
+    /// single-scalar midpoint until PRD v0.2 kinematic task 2 (taskmaster
+    /// #2670 — "FD fallback for spherical, cylindrical, planar") lands.
+    #[test]
+    fn joint_range_midpoint_planar_returns_none() {
+        assert!(
+            super::joint_range_midpoint(&planar_xy_joint()).is_none(),
+            "joint_range_midpoint must return None for a planar joint"
+        );
+    }
 }
