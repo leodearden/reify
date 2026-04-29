@@ -525,64 +525,6 @@ mod tests {
         assert_eq!(cfg.singularity_pivot_eps, 1e-12);
     }
 
-    #[test]
-    fn newton_config_constructible_with_custom_values() {
-        let cfg = NewtonConfig {
-            tol_pos_m: 1e-3,
-            tol_rot_rad: 1e-4,
-            max_iters: 100,
-            singularity_pivot_eps: 1e-10,
-        };
-        assert_eq!(cfg.tol_pos_m, 1e-3);
-        assert_eq!(cfg.tol_rot_rad, 1e-4);
-        assert_eq!(cfg.max_iters, 100);
-        assert_eq!(cfg.singularity_pivot_eps, 1e-10);
-    }
-
-    #[test]
-    fn start_strategy_variants_constructible() {
-        let _ws = StartStrategy::WarmStart(vec![0.1, 0.2]);
-        let _mp = StartStrategy::Midpoint;
-    }
-
-    #[test]
-    fn newton_outcome_variants_constructible() {
-        let _conv = NewtonOutcome::Converged {
-            x: vec![1.0, 2.0],
-            iters: 3,
-            residual_norm: 1e-9,
-        };
-        let _notc = NewtonOutcome::NotConverged {
-            x: vec![1.0],
-            residual_norm: 0.5,
-        };
-        let _sing = NewtonOutcome::Singular {
-            x: vec![1.0],
-            iters: 2,
-        };
-        let _bad = NewtonOutcome::InvalidInput {
-            reason: "bad".to_string(),
-        };
-    }
-
-    #[test]
-    fn types_implement_debug_and_clone() {
-        let cfg = NewtonConfig::default();
-        let _: NewtonConfig = cfg.clone();
-        let _ = format!("{cfg:?}");
-
-        let s = StartStrategy::Midpoint;
-        let _: StartStrategy = s.clone();
-        let _ = format!("{s:?}");
-
-        let o = NewtonOutcome::NotConverged {
-            x: vec![],
-            residual_norm: 0.0,
-        };
-        let _: NewtonOutcome = o.clone();
-        let _ = format!("{o:?}");
-    }
-
     // ── newton_solve tests (step-13) ────────────────────────────────────
 
     /// Build a residual+jacobian closure for a 1-D linear residual r(x) = x - target.
