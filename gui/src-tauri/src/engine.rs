@@ -1252,6 +1252,13 @@ fn resolve_driving_params_from_ast(
                 if let Some(jd) = desc.joints.get_mut(joint_index) {
                     if jd.driving_param_cell_id.is_none() {
                         jd.driving_param_cell_id = Some(param_cell_id_str.clone());
+                        // Step-24: populate current_value_si from the param cell's
+                        // post-eval value so the slider's initial position reflects
+                        // the actual evaluated parameter value (not just the source
+                        // default).  Uses the same check.values channel as build_values.
+                        let param_cell_id = ValueCellId::new(structure_name, &value_cell_name);
+                        let param_val = check.values.get_or_undef(&param_cell_id);
+                        jd.current_value_si = scalar_to_f64(&param_val);
                     }
                 }
             }
