@@ -1370,4 +1370,129 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         assert!(eval_builtin("bounding_box", &[m0]).is_undef());
     }
+
+    // ── center_of_mass(snapshot, [densities]) accessor (uniform default) ──
+    //
+    // v0.1 semantic: `center_of_mass(s)` returns the density-weighted mean
+    // of the per-body world-frame ORIGINS (translation of each body's
+    // `world_transform`).  This is a point-mass approximation — the real
+    // volumetric centroid requires OCCT (`BRepGProp::VolumeProperties`),
+    // scope of FFI task #2530.  Empty Snapshot → Undef (zero-mass system,
+    // divide-by-zero).
+    //
+    // Default density (no `densities` arg, or arg is Undef, or arg is an
+    // empty Map) is uniform 1.0 per body.  Per-body density Map is wired
+    // in step 26.
+    //
+    // Result shape: `Value::Point` of three LENGTH-dimensioned scalars.
+
+    /// `center_of_mass(s)` on a 2-body Snapshot whose bodies sit
+    /// symmetrically at (-0.5, 0, 0) and (+0.5, 0, 0): uniform-density
+    /// COM = (0, 0, 0).  All result components carry LENGTH dimension.
+    #[test]
+    fn center_of_mass_uniform_two_body_returns_origin() {
+        let (s, _, _) = make_two_body_snapshot();
+        let result = eval_builtin("center_of_mass", &[s]);
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(cx.abs() < 1e-12, "COM.x should be 0, got {}", cx);
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+
+        // All components must carry LENGTH dimension (not bare Real).
+        let comps = match &result {
+            Value::Point(c) => c,
+            other => panic!("expected Value::Point, got {:?}", other),
+        };
+        for (i, comp) in comps.iter().enumerate() {
+            match comp {
+                Value::Scalar { dimension, .. } => {
+                    assert_eq!(
+                        *dimension,
+                        reify_types::DimensionVector::LENGTH,
+                        "COM component[{}] should carry LENGTH dimension",
+                        i
+                    );
+                }
+                other => panic!("COM component[{}] should be Value::Scalar, got {:?}", i, other),
+            }
+        }
+    }
+
+    /// `center_of_mass(s)` on a single-body Snapshot returns that body's
+    /// world-frame origin.  Bind a prismatic joint to 0.7 m so the body
+    /// sits at (0.7, 0, 0).
+    #[test]
+    fn center_of_mass_uniform_single_body_returns_body_origin() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solid".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, j.clone()]);
+        let binding = eval_builtin("bind", &[j, Value::length(0.7)]);
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![binding])]);
+
+        let result = eval_builtin("center_of_mass", &[s]);
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!((cx - 0.7).abs() < 1e-12, "COM.x should be 0.7, got {}", cx);
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+    }
+
+    /// `center_of_mass(empty_snapshot)` returns `Value::Undef` — zero-mass
+    /// system has no canonical COM (would be a divide-by-zero).
+    #[test]
+    fn center_of_mass_on_empty_snapshot_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let s = eval_builtin("snapshot", &[m0, Value::List(vec![])]);
+        assert!(eval_builtin("center_of_mass", &[s]).is_undef());
+    }
+
+    /// `center_of_mass(s, Value::Map(empty))` is treated as uniform
+    /// density (per spec §13.3 — an empty densities Map has no effect on
+    /// the partial-map fallback to 1.0 per body).  Result must equal the
+    /// no-densities-arg call.
+    #[test]
+    fn center_of_mass_with_empty_densities_map_uses_uniform() {
+        let (s, _, _) = make_two_body_snapshot();
+        let result = eval_builtin(
+            "center_of_mass",
+            &[s, Value::Map(std::collections::BTreeMap::new())],
+        );
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(cx.abs() < 1e-12, "COM.x with empty densities should be 0, got {}", cx);
+        assert!(cy.abs() < 1e-12, "COM.y with empty densities should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z with empty densities should be 0, got {}", cz);
+    }
+
+    /// `center_of_mass(s, Value::Undef)` is treated as the uniform
+    /// default (no densities arg).  Useful for callers that pass an
+    /// optional value that may be Undef (e.g., a let-binding that
+    /// failed validation upstream).
+    #[test]
+    fn center_of_mass_with_undef_densities_uses_uniform() {
+        let (s, _, _) = make_two_body_snapshot();
+        let result = eval_builtin("center_of_mass", &[s, Value::Undef]);
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(cx.abs() < 1e-12, "COM.x with Undef densities should be 0, got {}", cx);
+        assert!(cy.abs() < 1e-12, "COM.y with Undef densities should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z with Undef densities should be 0, got {}", cz);
+    }
+
+    /// `center_of_mass()` validation surface: arity outside {1, 2} and
+    /// non-snapshot args[0] both return `Value::Undef`.
+    #[test]
+    fn center_of_mass_validation_returns_undef() {
+        let (s, _, _) = make_two_body_snapshot();
+        // Wrong arity (0, 3 args)
+        assert!(eval_builtin("center_of_mass", &[]).is_undef());
+        assert!(eval_builtin(
+            "center_of_mass",
+            &[s.clone(), Value::Undef, Value::Undef]
+        )
+        .is_undef());
+        // Non-snapshot first arg: Real, world sentinel, mechanism
+        assert!(eval_builtin("center_of_mass", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("center_of_mass", &[eval_builtin("world", &[])]).is_undef());
+        let m0 = eval_builtin("mechanism", &[]);
+        assert!(eval_builtin("center_of_mass", &[m0]).is_undef());
+    }
 }
