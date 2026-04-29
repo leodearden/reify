@@ -123,6 +123,9 @@ pub struct ResolutionProblem {
     /// User-defined functions available for evaluating expressions.
     /// Shares the same Arc allocation as `Engine.functions` — assigned via
     /// `Arc::clone` at the solver boundary so construction is O(1) (task #2286).
+    /// The inner type is `[CompiledFunction]` (slice), not `Vec<CompiledFunction>`,
+    /// so the table lives in a single Arc-owned heap buffer — one pointer hop
+    /// instead of Arc → Vec header → heap (task #2413).
     pub functions: Arc<[CompiledFunction]>,
 }
 

@@ -1148,23 +1148,6 @@ structure S {
         );
     }
 
-    // ── Type-narrow contract: ResolutionProblem.functions (task #2413) ──────────
-    //
-    // Documentation-only — every construction site already enforces this type
-    // (vec![].into() only compiles because the field type is known, so any
-    // regression to Arc<Vec<CompiledFunction>> would break dozens of call sites
-    // before this pin fires).  The block is kept as an explicit, named declaration
-    // of the layout invariant — single-allocation slice Arc, one pointer hop
-    // instead of Arc → Vec header → heap — and as a quick `cargo check` anchor for
-    // anyone working specifically in the ResolutionProblem type neighbourhood.
-    // The Arc-identity sentinel tests below cover the *sharing* invariant.
-    const _: fn() = || {
-        use std::sync::Arc;
-        use reify_types::{CompiledFunction, ResolutionProblem};
-        let _typed: fn(&ResolutionProblem) -> &Arc<[CompiledFunction]> =
-            |p| &p.functions;
-    };
-
     // ── Arc-sharing invariant: Engine.functions ───────────────────────────────
 
     /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
