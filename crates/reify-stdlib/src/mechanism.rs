@@ -50,7 +50,7 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             //   args[2] is a joint value                → at-arg guard
             //   args[3] is a joint value or world       → parent guard (4/5-arg)
             //   args[4] is a Value::Transform           → pose guard (5-arg)
-            if !matches!(args.len(), 3 | 4 | 5) {
+            if !matches!(args.len(), 3..=5) {
                 return Some(Value::Undef);
             }
 
@@ -59,10 +59,10 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             // idempotent error propagation so callers can chain
             // `.body(...)` calls without each link re-validating in a
             // way that could mask the original error (test step-21).
-            if let Value::Map(m) = &args[0] {
-                if m.contains_key(&Value::String("error".to_string())) {
-                    return Some(args[0].clone());
-                }
+            if let Value::Map(m) = &args[0]
+                && m.contains_key(&Value::String("error".to_string()))
+            {
+                return Some(args[0].clone());
             }
 
             // Validate args[0] is a Mechanism Map.
@@ -407,41 +407,40 @@ fn append_body(
     // structural equality. The follow-on docs task (#2538) reconciles
     // the spec wording with the v0.1 implementation.
     for existing in &bodies {
-        if let Value::Map(b) = existing {
-            if b.get(&Value::String("solid".to_string())) == Some(&solid) {
-                return make_error_mechanism(
-                    mech_map,
-                    "duplicate_solid",
-                    Vec::new(),
-                    Vec::new(),
-                    "duplicate solid: solid value already attached to a body in this mechanism"
-                        .to_string(),
-                );
-            }
+        if let Value::Map(b) = existing
+            && b.get(&Value::String("solid".to_string())) == Some(&solid)
+        {
+            return make_error_mechanism(
+                mech_map,
+                "duplicate_solid",
+                Vec::new(),
+                Vec::new(),
+                "duplicate solid: solid value already attached to a body in this mechanism"
+                    .to_string(),
+            );
         }
     }
 
     // Closed-chain conflict detection: if `at` is already mapped to a
     // *different* parent, surface a `closed_chain` error before any
     // mutation. (Same-parent re-registration is a no-op overwrite.)
-    if let Some(existing_parent) = joint_parents.get(&at) {
-        if existing_parent != &parent {
-            let world = make_world_sentinel();
-            let mut path1 = vec![world.clone()];
-            path1.extend(walk_to_world(&joint_parents, existing_parent));
-            path1.push(at.clone());
-            let mut path2 = vec![world];
-            path2.extend(walk_to_world(&joint_parents, &parent));
-            path2.push(at);
-            return make_error_mechanism(
-                mech_map,
-                "closed_chain",
-                path1,
-                path2,
-                "closed chain detected: joint already has a different parent recorded"
-                    .to_string(),
-            );
-        }
+    if let Some(existing_parent) = joint_parents.get(&at)
+        && existing_parent != &parent
+    {
+        let world = make_world_sentinel();
+        let mut path1 = vec![world.clone()];
+        path1.extend(walk_to_world(&joint_parents, existing_parent));
+        path1.push(at.clone());
+        let mut path2 = vec![world];
+        path2.extend(walk_to_world(&joint_parents, &parent));
+        path2.push(at);
+        return make_error_mechanism(
+            mech_map,
+            "closed_chain",
+            path1,
+            path2,
+            "closed chain detected: joint already has a different parent recorded".to_string(),
+        );
     }
 
     // Closed-chain cycle detection: if walking from `parent` upward in
