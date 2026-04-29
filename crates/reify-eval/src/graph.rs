@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
-use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind, find_template};
+use reify_compiler::{
+    CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind, find_template,
+};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
     ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
@@ -101,6 +103,18 @@ pub struct EvaluationGraph {
     pub structure_controlling: HashSet<ValueCellId>,
     /// Collection sub-component metadata for count-based re-elaboration.
     pub collection_subs: Vec<CollectionSubInfo>,
+    /// Captured per-element body templates for statement-form `forall`
+    /// over deferred-count collection subs (task 2629; PRD criterion 7
+    /// second-half). The runtime `Engine::edit_param` collection-count
+    /// phase walks these whenever a count cell becomes known and emits
+    /// per-element constraints / connections by rewriting `coll_sub[0]`
+    /// placeholder cell IDs to `coll_sub[i]`.
+    ///
+    /// **Hash stability:** intentionally NOT mixed into
+    /// `topology_fingerprint`; per-element constraints become observable
+    /// in the fingerprint only once they materialize in `constraints` at
+    /// runtime emission.
+    pub forall_templates: Vec<CompiledForallTemplate>,
 }
 
 impl EvaluationGraph {
@@ -114,6 +128,15 @@ impl EvaluationGraph {
         let mut graph = EvaluationGraph::default();
 
         for template in templates {
+            // task 2629: carry forall templates (deferred-count statement-form
+            // forall body shapes) into the runtime graph. Populated alongside
+            // other per-template extraction passes so the runtime
+            // `Engine::edit_param` collection-count phase can consume them
+            // when a count cell becomes known.
+            graph
+                .forall_templates
+                .extend(template.forall_templates.iter().cloned());
+
             for cell in &template.value_cells {
                 let id_hash = ContentHash::of_str(&format!("{}", cell.id));
                 let expr_hash = cell
