@@ -359,21 +359,26 @@ pub struct CompiledForallTemplate {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum CompiledForallBody {
-    /// Per-element constraint body: `forall v in coll: constraint <expr> [where <cond>]`.
+    /// Per-element constraint body: `forall v in coll: constraint <expr>`.
     ///
     /// `body_expr` is the body constraint expression with `v` substituted to
     /// `coll[0]` and run through `compile_expr` once at compile time. At
     /// runtime, `map_value_refs` rewrites every cell ID whose entity equals
     /// `format!("{parent}.{sub}[0]")` to `format!("{parent}.{sub}[{i}]")` and
     /// the resulting expression becomes the per-element constraint's `expr`.
+    ///
+    /// **Where-clause-bearing bodies are NOT captured here** (task 2629 step-24,
+    /// reviewer-flagged): the runtime engine has no guarded-group plumbing
+    /// for per-element where clauses, so deferred-count forall bodies with
+    /// a `where` clause are treated as future scope alongside
+    /// `Instantiation` / `Chain`. See `forall_elaborate.rs`'s
+    /// `Deferred / ForallConstraintBody::Constraint` arm — it emits an info
+    /// diagnostic and returns early without pushing a template. Re-adding
+    /// where-clause support here MUST also wire guarded-group emission in
+    /// `engine_edit.rs`.
     Constraint {
         /// Compiled body expression with placeholder cells (entity == `<parent>.<sub>[0]`).
         body_expr: CompiledExpr,
-        /// Optional where-clause condition (substituted, compiled). When present,
-        /// the per-element runtime emission must route through guarded-group
-        /// machinery — out of scope for this task; presence triggers an
-        /// escalation in the runtime path.
-        where_expr: Option<CompiledExpr>,
     },
     /// Per-element connection body: `forall v in coll: connect <l> <op> <r>`.
     ///

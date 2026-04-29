@@ -1565,7 +1565,7 @@ impl Engine {
                     //     still cleared above.
                     let mut fresh_ids: Vec<ConstraintNodeId> = Vec::new();
                     match &t.body {
-                        CompiledForallBody::Constraint { body_expr, .. } => {
+                        CompiledForallBody::Constraint { body_expr } => {
                             let placeholder_entity =
                                 format!("{}.{}[0]", t.parent_entity, t.collection_sub_name);
                             let cnid_entity = format!(

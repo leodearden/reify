@@ -298,10 +298,32 @@ pub(crate) fn elaborate_forall_constraint(
             // and emits an info diagnostic.
             match &decl.body {
                 ForallConstraintBody::Constraint(body_constraint) => {
-                    // Substitute v -> sub_name[0] inside the body and where
-                    // condition (if any), then compile to CompiledExpr once
-                    // at compile time. The runtime engine rewrites cell IDs
-                    // [0] -> [i] per emission via map_value_refs.
+                    // task 2629 step-24 (reviewer-flagged): a deferred-count
+                    // forall whose body has a `where` clause cannot be safely
+                    // captured for runtime re-emission — the runtime engine
+                    // has no guarded-group plumbing for per-element where
+                    // clauses, so capturing here would silently drop the
+                    // guard at re-emission time. Treat where-clause-bearing
+                    // bodies as "future scope" alongside Instantiation/Chain:
+                    // emit an info diagnostic and skip capture.
+                    if body_constraint.where_clause.is_some() {
+                        diagnostics.push(
+                            Diagnostic::info(
+                                "forall constraint with where-clause over deferred-count \
+                                 collections will not re-elaborate at runtime \
+                                 (task 2629 future scope)",
+                            )
+                            .with_label(DiagnosticLabel::new(
+                                decl.span,
+                                "deferred-count forall with where-clause",
+                            )),
+                        );
+                        return;
+                    }
+                    // Substitute v -> sub_name[0] inside the body, then
+                    // compile to CompiledExpr once at compile time. The
+                    // runtime engine rewrites cell IDs [0] -> [i] per
+                    // emission via map_value_refs.
                     let coll_span = decl.collection.span;
                     let placeholder = reify_syntax::Expr {
                         kind: reify_syntax::ExprKind::IndexAccess {
@@ -328,20 +350,13 @@ pub(crate) fn elaborate_forall_constraint(
                         functions,
                         diagnostics,
                     );
-                    let where_expr = body_constraint.where_clause.as_ref().map(|wc| {
-                        let substituted = substitute_expr(&wc.condition, &bindings);
-                        compile_expr(&substituted, scope, enum_defs, functions, diagnostics)
-                    });
                     forall_templates_out.push(CompiledForallTemplate {
                         variable: decl.variable.clone(),
                         parent_entity: entity_name.to_string(),
                         collection_sub_name: sub_name,
                         count_cell,
                         span: decl.span,
-                        body: CompiledForallBody::Constraint {
-                            body_expr,
-                            where_expr,
-                        },
+                        body: CompiledForallBody::Constraint { body_expr },
                     });
                 }
                 ForallConstraintBody::Instantiation(_) => {

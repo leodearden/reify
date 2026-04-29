@@ -1592,7 +1592,6 @@ mod tests {
             span: SourceSpan::empty(0),
             body: CompiledForallBody::Constraint {
                 body_expr: body_expr.clone(),
-                where_expr: None,
             },
         };
 
