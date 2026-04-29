@@ -409,6 +409,112 @@ structure S {
     );
 }
 
+/// task-2629 step-3: when `forall v in <coll_sub>` is compiled over a
+/// collection sub whose count is undef, the compiler produces zero per-element
+/// constraints (preserves PRD criterion 7 first-half) AND populates a
+/// `CompiledForallTemplate` capturing the per-element body so the runtime
+/// re-elaboration phase (engine_edit) can emit per-element constraints once
+/// the count becomes known.
+///
+/// Pins:
+/// (a) zero `forall@*`-labelled constraints in `template.constraints`;
+/// (b) `template.forall_templates.len() == 1`;
+/// (c) the entry's metadata: `variable == "v"`, `parent_entity == "S"`,
+///     `collection_sub_name == "vents"`, `count_cell == ValueCellId::new("S","__count_vents")`;
+/// (d) the entry's `body` is `CompiledForallBody::Constraint` whose
+///     `body_expr` references `S.vents[0].mass` (the canonical placeholder
+///     element, rewritten at runtime to `S.vents[i].mass` per emission).
+///
+/// RED before step-4 (types do not yet exist) and step-5 (capture path
+/// not yet wired through `forall_elaborate.rs`).
+#[test]
+fn compile_time_forall_template_populated_for_undef_count_constraint() {
+    use reify_compiler::CompiledForallBody;
+    use reify_types::ValueCellId;
+
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for undef-count forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (a) Zero `forall@*` constraints in this template — the compile-time
+    //     silent-skip half of PRD criterion 7 is preserved.
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef, got {}",
+        forall_constraints_count
+    );
+
+    // (b) Exactly one captured forall template.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 forall template, got {}",
+        template.forall_templates.len()
+    );
+
+    let ft = &template.forall_templates[0];
+
+    // (c) Metadata.
+    assert_eq!(ft.variable, "v");
+    assert_eq!(ft.parent_entity, "S");
+    assert_eq!(ft.collection_sub_name, "vents");
+    assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
+
+    // (d) Body shape: Constraint with body_expr referencing S.vents[0].mass.
+    match &ft.body {
+        CompiledForallBody::Constraint { body_expr, .. } => {
+            // The body should reference S.vents[0].mass somewhere in its
+            // expression tree. Walk the expr and confirm.
+            let mut found_vent_mass = false;
+            body_expr.walk(&mut |node| {
+                if let CompiledExprKind::ValueRef(id) = &node.kind
+                    && id.entity == "S.vents[0]"
+                    && id.member == "mass"
+                {
+                    found_vent_mass = true;
+                }
+            });
+            assert!(
+                found_vent_mass,
+                "body_expr must reference S.vents[0].mass; got {:?}",
+                body_expr.kind
+            );
+        }
+        other => panic!(
+            "expected CompiledForallBody::Constraint, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
 /// `forall v in [1, 2, 3]: constraint v > 0 where heavy` should emit one
 /// `CompiledGuardedGroup` per element (3 total), each containing exactly
 /// one `forall@v[*]`-labelled constraint and each whose `guard_expr` is
