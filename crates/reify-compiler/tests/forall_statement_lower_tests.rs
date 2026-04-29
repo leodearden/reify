@@ -246,6 +246,58 @@ structure S {
     }
 }
 
+/// `forall v in [1, 2, 3]: constraint v > 0` should emit constraints with
+/// labels `forall@v[0]`, `forall@v[1]`, `forall@v[2]` exactly (no
+/// whitespace tolerance). Pins the label-format convention used for
+/// diagnostic provenance — a per-element constraint failure cites the
+/// element index via the label (PRD criterion 10).
+#[test]
+fn forall_constraint_label_encodes_element_index() {
+    let source = r#"
+structure S {
+    forall v in [1, 2, 3]: constraint v > 0
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    let labels: Vec<String> = template
+        .constraints
+        .iter()
+        .filter_map(|c| c.label.clone())
+        .filter(|l| l.starts_with("forall@v["))
+        .collect();
+
+    assert_eq!(
+        labels,
+        vec!["forall@v[0]".to_string(), "forall@v[1]".to_string(), "forall@v[2]".to_string()],
+        "expected exact labels forall@v[0..3], got {:?}",
+        labels
+    );
+
+    // Sanity: no two labels should be equal (uniqueness — also implied
+    // by the assert above, but pin explicitly so a future label-reuse
+    // bug fails this assertion specifically).
+    let unique_count = labels.iter().collect::<std::collections::HashSet<_>>().len();
+    assert_eq!(
+        unique_count,
+        labels.len(),
+        "all forall@v[*] labels must be unique, got {:?}",
+        labels
+    );
+}
+
 /// `forall v in vents: ...` over a collection sub *without* a count
 /// constraint should emit zero CompiledConstraints and zero errors. Pins
 /// PRD criterion 7's "no decls when count is undef" half — at compile
