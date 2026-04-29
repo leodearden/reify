@@ -3698,6 +3698,37 @@ mod tests {
         );
     }
 
+    // ── joint_jacobian for spherical (step-11) ───────────────────────────────
+
+    /// `joint_jacobian(spherical_joint)` returns a zero-twist Map placeholder.
+    ///
+    /// Design decision: spherical is a 3-DOF joint with a 6×3 angular Jacobian
+    /// (three rotational columns), but the v0.1 single-column convention returns
+    /// one Map per joint. A zero column preserves the uniform `{ angular, linear }`
+    /// shape across all kinds (matching the fixed-joint and planar-joint pattern),
+    /// so `joint_jacobian_dispatches_for_every_joint_kind` can assert non-Undef
+    /// for every kind in JOINT_KINDS. The analytic 3-column form is deferred to
+    /// PRD task 2 / #2670 ("FD fallback for multi-DOF kinds").
+    #[test]
+    fn joint_jacobian_spherical_returns_zero_column_placeholder() {
+        let sj = spherical_joint();
+        let result = eval_builtin("joint_jacobian", &[sj]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("joint_jacobian(spherical): expected Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("angular".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "angular twist column should be [0, 0, 0]"
+        );
+        assert_eq!(
+            map.get(&Value::String("linear".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "linear twist column should be [0, 0, 0]"
+        );
+    }
+
     // ── JOINT_KINDS membership regression pin (step-15) ──────────────────────
     //
     // Asserts that `"planar"` is a member of `JOINT_KINDS` so that:
