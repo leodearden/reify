@@ -615,6 +615,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 mod tests {
     use crate::eval_builtin;
     use reify_types::Value;
+    use super::{is_joint_value, JOINT_KINDS};
 
     fn axis_x_unit() -> Value {
         Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
@@ -2489,6 +2490,113 @@ mod tests {
         assert!(
             eval_builtin("joint_jacobian", &[Value::Map(outer)]).is_undef(),
             "nested coupling should return Undef"
+        );
+    }
+
+    // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
+
+    #[test]
+    fn joint_kinds_pins_canonical_set() {
+        assert_eq!(
+            JOINT_KINDS,
+            &["prismatic", "revolute", "coupling"],
+            "JOINT_KINDS must list exactly the three canonical joint kinds"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_true_for_prismatic_map() {
+        assert!(
+            is_joint_value(&prismatic_x_joint()),
+            "prismatic_x_joint() should be recognized as a joint value"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_true_for_revolute_map() {
+        assert!(
+            is_joint_value(&revolute_z_joint()),
+            "revolute_z_joint() should be recognized as a joint value"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_true_for_coupling_map() {
+        let coupling = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            is_joint_value(&coupling),
+            "couple(prismatic_x_joint(), 1.0) should be recognized as a joint value"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_false_for_non_map() {
+        assert!(
+            !is_joint_value(&Value::Real(1.0)),
+            "Value::Real should not be a joint value"
+        );
+        assert!(
+            !is_joint_value(&Value::Int(0)),
+            "Value::Int should not be a joint value"
+        );
+        assert!(
+            !is_joint_value(&Value::String("prismatic".to_string())),
+            "bare String 'prismatic' should not be a joint value (only a Map with kind field is)"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_false_for_map_without_kind_key() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            !is_joint_value(&Value::Map(m)),
+            "Map without 'kind' key should not be a joint value"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_false_for_map_with_unknown_kind() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        assert!(
+            !is_joint_value(&Value::Map(m)),
+            "Map with kind='sliding' (not in JOINT_KINDS) should not be a joint value"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_false_for_map_with_non_string_kind() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::Int(0));
+        assert!(
+            !is_joint_value(&Value::Map(m)),
+            "Map with kind=Value::Int(0) should not be a joint value"
+        );
+    }
+
+    #[test]
+    fn is_joint_value_aligns_with_joint_kinds() {
+        use std::collections::BTreeMap;
+        // Every kind in JOINT_KINDS must be recognized as a joint value.
+        for &kind in JOINT_KINDS {
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("kind".to_string()), Value::String(kind.to_string()));
+            assert!(
+                is_joint_value(&Value::Map(m)),
+                "Map with kind='{}' (in JOINT_KINDS) should be a joint value",
+                kind
+            );
+        }
+        // A kind not in JOINT_KINDS must not be recognized.
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("not_a_joint".to_string()));
+        assert!(
+            !is_joint_value(&Value::Map(m)),
+            "Map with kind='not_a_joint' should not be a joint value"
         );
     }
 }
