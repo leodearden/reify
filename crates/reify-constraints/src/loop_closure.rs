@@ -1184,6 +1184,39 @@ mod tests {
     }
 
     #[test]
+    fn solve_loop_closure_warm_start_free_b_out_of_range_returns_invalid_input() {
+        let chain_a = vec![prismatic_x_0_to_1()];
+        let vals_a = vec![0.5];
+        let chain_b = vec![prismatic_x_0_to_1()];
+        let vals_b_initial = vec![0.0];
+        // free_b index 5 is out of range for chain_b of length 1.
+        let free_b = vec![5];
+        // WarmStart vec has length 1 to match free_b len — so the length-mismatch
+        // guard does NOT pre-empt the new chain_b bound check.
+        let strategy = StartStrategy::WarmStart(vec![0.0]);
+        let cfg = NewtonConfig::default();
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+        match outcome {
+            NewtonOutcome::InvalidInput { reason } => {
+                assert!(
+                    reason.contains("out of range"),
+                    "expected reason to mention out-of-range index, got {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn solve_loop_closure_midpoint_missing_range_returns_invalid_input() {
         // A revolute Map without a range field — joint_range_midpoint → None.
         // Build a malformed Map directly.
