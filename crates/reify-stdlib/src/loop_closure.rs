@@ -197,6 +197,16 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
         // requires the refactor scheduled in PRD v0.2 kinematic task 2
         // (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
         "planar" => None,
+        // 3-DOF spherical joint: no single-scalar midpoint to compute.
+        // Spherical's free-variable space is the unit-quaternion manifold of
+        // SO(3), which cannot be summarised as a single f64 midpoint. Callers
+        // building initial-guess vectors should skip spherical joints just as
+        // they skip fixed and planar joints. The explicit arm makes the
+        // contract source-visible (rather than relying on the catch-all
+        // `_ => None`) so a future kind addition cannot silently change this
+        // behaviour. Multi-DOF chain support is deferred to PRD v0.2
+        // kinematic task 2 (taskmaster #2670).
+        "spherical" => None,
         _ => None,
     }
 }
@@ -661,10 +671,15 @@ mod tests {
 
     #[test]
     fn per_joint_jacobian_local_unknown_kind_returns_none() {
+        // "cylindrical" is intentionally not in JOINT_KINDS — the v0.2 PRD
+        // tracks it as a future kind (see #2670). Any string not in
+        // `JOINT_KINDS` will exercise the unknown-kind path; "cylindrical"
+        // is preferred over an arbitrary placeholder so the test reads as a
+        // realistic future-kind probe rather than an artificial fixture.
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("kind".to_string()),
-            Value::String("spherical".to_string()),
+            Value::String("cylindrical".to_string()),
         );
         let j = Value::Map(m);
         assert!(super::per_joint_jacobian_local(&j).is_none());
