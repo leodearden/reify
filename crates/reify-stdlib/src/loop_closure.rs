@@ -232,6 +232,79 @@ mod tests {
         assert!(super::chain_transform(&chain, &[0.3, 0.5, 0.1]).is_none());
     }
 
+    // ── loop_residual_twist tests ────────────────────────────────────────
+
+    #[test]
+    fn loop_residual_twist_identical_chains_zero() {
+        let a = vec![prismatic_x()];
+        let b = vec![prismatic_x()];
+        let twist: [f64; 6] =
+            super::loop_residual_twist(&a, &[0.5], &b, &[0.5]).expect("twist");
+        for v in twist.iter() {
+            assert!(v.abs() < 1e-12, "expected zero twist, got {twist:?}");
+        }
+    }
+
+    #[test]
+    fn loop_residual_twist_prismatic_diff_in_x() {
+        // chain_a = prismatic_x at 0.5m, chain_b = prismatic_x at 0.3m.
+        // T_a inverse * T_b = pure translation (-0.2, 0, 0). log of that is
+        // a twist with angular = 0 and linear = (-0.2, 0, 0).
+        let a = vec![prismatic_x()];
+        let b = vec![prismatic_x()];
+        let twist = super::loop_residual_twist(&a, &[0.5], &b, &[0.3]).expect("twist");
+        // [ω_x, ω_y, ω_z, v_x, v_y, v_z]
+        assert!(twist[0].abs() < 1e-12);
+        assert!(twist[1].abs() < 1e-12);
+        assert!(twist[2].abs() < 1e-12);
+        assert!(
+            (twist[3] + 0.2).abs() < 1e-12,
+            "expected v_x ≈ -0.2, got {}",
+            twist[3]
+        );
+        assert!(twist[4].abs() < 1e-12);
+        assert!(twist[5].abs() < 1e-12);
+    }
+
+    #[test]
+    fn loop_residual_twist_two_joint_identical_chains_zero() {
+        let a = vec![prismatic_x(), revolute_z()];
+        let b = vec![prismatic_x(), revolute_z()];
+        let twist: [f64; 6] = super::loop_residual_twist(
+            &a,
+            &[0.5, std::f64::consts::FRAC_PI_2],
+            &b,
+            &[0.5, std::f64::consts::FRAC_PI_2],
+        )
+        .expect("twist");
+        for v in twist.iter() {
+            assert!(v.abs() < 1e-10, "expected ~zero twist, got {twist:?}");
+        }
+    }
+
+    #[test]
+    fn loop_residual_twist_length_mismatch_returns_none() {
+        let a = vec![prismatic_x(), prismatic_x()];
+        let b = vec![prismatic_x()];
+        // chain_a length mismatches vals_a
+        assert!(super::loop_residual_twist(&a, &[0.5], &b, &[0.3]).is_none());
+        // chain_b length mismatches vals_b
+        assert!(super::loop_residual_twist(&b, &[0.5], &b, &[0.3, 0.1]).is_none());
+    }
+
+    #[test]
+    fn loop_residual_twist_undef_chain_returns_none() {
+        // Hand-built joint Map with bogus kind triggers chain_transform → None.
+        let mut bogus = std::collections::BTreeMap::new();
+        bogus.insert(
+            Value::String("kind".to_string()),
+            Value::String("bogus".to_string()),
+        );
+        let a = vec![Value::Map(bogus)];
+        let b = vec![prismatic_x()];
+        assert!(super::loop_residual_twist(&a, &[0.0], &b, &[0.0]).is_none());
+    }
+
     #[test]
     fn chain_transform_invalid_kind_returns_none() {
         // Hand-built joint Map with bogus kind
