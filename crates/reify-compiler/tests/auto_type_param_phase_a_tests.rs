@@ -17,7 +17,7 @@ use reify_compiler::auto_type_param::{
     CandidateEnumeration, MAX_AUTO_TYPE_PARAM_CANDIDATES, enumerate_candidates,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
-use reify_test_support::compile_source;
+use reify_test_support::parse_and_compile;
 use reify_types::{DiagnosticCode, Severity, SourceSpan};
 
 /// Build the `(template_registry, trait_registry)` pair that
@@ -61,7 +61,7 @@ structure def Bracket {
     param x : Real = 1.0
 }
 "#;
-    let module = compile_source(source);
+    let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     // Sanity check the fixture: the template exists but does NOT declare Seal.
@@ -110,7 +110,7 @@ structure def ORingSeal : Seal {
     param diameter : Real = 10.0
 }
 "#;
-    let module = compile_source(source);
+    let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
@@ -163,7 +163,7 @@ structure def Mike : Seal {
     param x : Real = 1.0
 }
 "#;
-    let module = compile_source(source);
+    let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
@@ -209,7 +209,7 @@ structure def NitrileOilSeal : OilSeal {
     param x : Real = 1.0
 }
 "#;
-    let module = compile_source(source);
+    let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
@@ -262,7 +262,7 @@ structure def Both : Seal + Cooled {
     param x : Real = 1.0
 }
 "#;
-    let module = compile_source(source);
+    let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
@@ -314,7 +314,7 @@ fn build_n_seal_structures(count: usize) -> String {
 #[test]
 fn enumerate_returns_found_at_exactly_max_candidates_no_overflow() {
     let source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES);
-    let module = compile_source(&source);
+    let module = parse_and_compile(&source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
@@ -356,7 +356,7 @@ fn enumerate_returns_found_at_exactly_max_candidates_no_overflow() {
 #[test]
 fn enumerate_overflows_at_eleven_candidates_emits_diagnostic_with_first_ten() {
     let source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
-    let module = compile_source(&source);
+    let module = parse_and_compile(&source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let use_site_span = SourceSpan::new(100, 110);
@@ -422,7 +422,7 @@ fn enumerate_overflows_at_eleven_candidates_emits_diagnostic_with_first_ten() {
 #[test]
 fn enumerate_overflow_with_many_candidates_still_terminates_at_eleven() {
     let source = build_n_seal_structures(25);
-    let module = compile_source(&source);
+    let module = parse_and_compile(&source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
@@ -486,7 +486,7 @@ fn build_n_composite_structures(count: usize) -> String {
 #[test]
 fn enumerate_composite_bound_overflow_message_lists_all_bound_traits() {
     let source = build_n_composite_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
-    let module = compile_source(&source);
+    let module = parse_and_compile(&source);
     let (template_registry, trait_registry) = build_registries(&module);
 
     let mut diagnostics = Vec::new();
