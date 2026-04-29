@@ -694,6 +694,59 @@ mod tests {
         assert!(eval_builtin("body", &[m0, solid, j, Value::Real(1.0)]).is_undef());
     }
 
+    // ── body_id_of() lookup ──────────────────────────────────────────────
+
+    /// `body_id_of(m, solid)` returns `Int(body.id)` for the first body
+    /// whose stored solid value equals (Value::Eq) the supplied solid;
+    /// `Value::Undef` for an absent solid, a non-mechanism Map, or wrong
+    /// arg count.
+    #[test]
+    fn body_id_of_returns_int_for_present_solid_and_undef_for_unknown() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_a.clone()]);
+        let m2 = eval_builtin("body", &[m1, solid_b.clone(), j_b, j_a]);
+
+        assert_eq!(
+            eval_builtin("body_id_of", &[m2.clone(), solid_a]),
+            Value::Int(0),
+            "first body's id is 0"
+        );
+        assert_eq!(
+            eval_builtin("body_id_of", &[m2.clone(), solid_b]),
+            Value::Int(1),
+            "second body's id is 1"
+        );
+        assert!(
+            eval_builtin(
+                "body_id_of",
+                &[m2.clone(), Value::String("absent".to_string())]
+            )
+            .is_undef(),
+            "unknown solid yields Undef"
+        );
+
+        // Non-mechanism Map → Undef.
+        let world = eval_builtin("world", &[]);
+        assert!(
+            eval_builtin("body_id_of", &[world, Value::String("anything".to_string())]).is_undef(),
+            "non-mechanism Map yields Undef"
+        );
+
+        // Wrong arity → Undef.
+        assert!(eval_builtin("body_id_of", &[]).is_undef());
+        assert!(eval_builtin("body_id_of", &[m2.clone()]).is_undef());
+        assert!(eval_builtin(
+            "body_id_of",
+            &[m2, Value::String("a".to_string()), Value::Int(1)]
+        )
+        .is_undef());
+    }
+
     /// 5-arg body() with a non-Transform pose argument returns Undef.
     #[test]
     fn body_five_args_non_transform_pose_returns_undef() {
