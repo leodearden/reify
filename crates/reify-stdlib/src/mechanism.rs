@@ -450,4 +450,93 @@ mod tests {
         );
         assert_eq!(jp.len(), 1, "joint_parents should have exactly one entry");
     }
+
+    // ── body() 4-arg form (explicit parent joint) ────────────────────────
+
+    fn axis_z_unit() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    fn angle_range_0_to_pi() -> Value {
+        Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        }
+    }
+
+    /// `body(m, solid, at, parent)` with the 4-arg form threads the
+    /// explicit parent joint through to the body record and to
+    /// `joint_parents`. Builds the chain `body(m0, solid_a, j_a)` →
+    /// `body(m1, solid_b, j_b, j_a)` and asserts:
+    ///   - the second body's `parent` field equals `j_a`
+    ///   - `joint_parents` carries both `j_a → world` (from call 1)
+    ///     and `j_b → j_a` (from call 2)
+    ///   - poses for both bodies remain the identity transform
+    #[test]
+    fn body_four_args_records_explicit_parent_joint() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_a.clone()]);
+        let m2 = eval_builtin(
+            "body",
+            &[m1, solid_b.clone(), j_b.clone(), j_a.clone()],
+        );
+
+        let map = match m2 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+
+        let bodies = match map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 2, "bodies should have two records");
+
+        // Second body record's parent equals j_a.
+        let body1 = match &bodies[1] {
+            Value::Map(b) => b,
+            other => panic!("expected body record Map, got {:?}", other),
+        };
+        assert_eq!(
+            body1.get(&Value::String("parent".to_string())),
+            Some(&j_a),
+            "4-arg body() records the supplied parent joint"
+        );
+        assert_eq!(
+            body1.get(&Value::String("id".to_string())),
+            Some(&Value::Int(1)),
+            "second body's id should be Int(1)"
+        );
+        // Pose for both bodies remains identity.
+        assert_eq!(
+            body1.get(&Value::String("pose".to_string())),
+            Some(&identity_transform_value()),
+            "4-arg body() defaults pose to identity"
+        );
+
+        // joint_parents has both edges.
+        let jp = match map.get(&Value::String("joint_parents".to_string())) {
+            Some(Value::Map(jp)) => jp,
+            other => panic!("expected joint_parents Map, got {:?}", other),
+        };
+        let world = eval_builtin("world", &[]);
+        assert_eq!(
+            jp.get(&j_a),
+            Some(&world),
+            "joint_parents preserves j_a → world from the first call"
+        );
+        assert_eq!(
+            jp.get(&j_b),
+            Some(&j_a),
+            "joint_parents records j_b → j_a from the 4-arg call"
+        );
+        assert_eq!(jp.len(), 2, "joint_parents should have exactly two entries");
+    }
 }
