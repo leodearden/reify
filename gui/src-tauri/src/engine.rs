@@ -496,8 +496,8 @@ impl EngineSession {
     /// - no module is loaded (`compiled` is `None`), or
     /// - the loaded module contains no valid mechanism cells.
     ///
-    /// Joint extraction and AST-based driving-param resolution are added in
-    /// subsequent steps (steps 5–12 of the task plan).
+    /// AST-based driving-param resolution (`driving_param_cell_id`) is added in
+    /// step 12 of the task plan. `current_value_si` is populated in step 24.
     pub fn get_mechanism_descriptors(&self) -> Vec<MechanismDescriptor> {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
@@ -526,7 +526,8 @@ impl EngineSession {
                     continue;
                 }
 
-                // Count bodies for the descriptor (bodies_count).
+                // Extract joints from the bodies list (step-6).
+                let joints = extract_joints_from_mechanism(map);
                 let bodies_count = match map.get(&Value::String("bodies".to_string())) {
                     Some(Value::List(bodies)) => bodies.len(),
                     _ => 0,
@@ -537,8 +538,7 @@ impl EngineSession {
                     entity_path: cell.id.entity.clone(),
                     name: cell.id.member.clone(),
                     bodies_count,
-                    // Joint extraction added in steps 5–6.
-                    joints: Vec::new(),
+                    joints,
                 });
             }
         }
@@ -955,6 +955,174 @@ fn build_constraints(
         });
     }
     constraints
+}
+
+// ---- Mechanism descriptor helpers -------------------------------------------
+
+/// Extract a `Vec<JointDescriptor>` from a valid (non-errored) mechanism Map.
+///
+/// Walks the `bodies` list and collects the `"at"` field of each body record
+/// as the joint for that body.  Deduplicates by structural equality (same joint
+/// Map referenced from multiple bodies gets one descriptor).  Assigns
+/// `joint_index` in first-encounter order.
+///
+/// `driving_param_cell_id` and `current_value_si` are left `None` here; they
+/// are populated by later steps (AST traversal in step-12, value read in
+/// step-24).
+fn extract_joints_from_mechanism(map: &std::collections::BTreeMap<Value, Value>) -> Vec<JointDescriptor> {
+    let bodies = match map.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b,
+        _ => return Vec::new(),
+    };
+
+    let mut seen_joints: Vec<Value> = Vec::new();
+    let mut joints = Vec::new();
+
+    for body in bodies {
+        let body_map = match body {
+            Value::Map(b) => b,
+            _ => continue,
+        };
+
+        let joint_val = match body_map.get(&Value::String("at".to_string())) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Skip world sentinel (not a real joint).
+        if is_world_sentinel(joint_val) {
+            continue;
+        }
+
+        // Deduplicate by structural equality.
+        if seen_joints.iter().any(|j| j == joint_val) {
+            continue;
+        }
+
+        let joint_index = seen_joints.len();
+        seen_joints.push(joint_val.clone());
+
+        let descriptor = extract_joint_descriptor(joint_val, joint_index);
+        joints.push(descriptor);
+    }
+
+    joints
+}
+
+/// Returns `true` if `val` is the world sentinel Map (`{ "kind": "world" }`).
+fn is_world_sentinel(val: &Value) -> bool {
+    match val {
+        Value::Map(m) => {
+            m.get(&Value::String("kind".to_string()))
+                == Some(&Value::String("world".to_string()))
+        }
+        _ => false,
+    }
+}
+
+/// Build a `JointDescriptor` from a single joint `Value::Map`.
+///
+/// Extracts `kind`, `axis`, `range`, and `dimension` from the joint Map.
+/// Coupling and fixed joints have no axis/range; their descriptors carry `None`
+/// for those fields.  `driving_param_cell_id` and `current_value_si` are always
+/// `None` at this point (populated by later steps).
+fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> JointDescriptor {
+    let joint_map = match joint_val {
+        Value::Map(m) => m,
+        _ => {
+            return JointDescriptor {
+                joint_index,
+                kind: "unknown".to_string(),
+                dimension: "dimensionless".to_string(),
+                range_lower_si: None,
+                range_upper_si: None,
+                axis: None,
+                driving_param_cell_id: None,
+                current_value_si: None,
+            };
+        }
+    };
+
+    let kind = match joint_map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(k)) => k.clone(),
+        _ => "unknown".to_string(),
+    };
+
+    let (dimension, axis, range_lower_si, range_upper_si) = match kind.as_str() {
+        "prismatic" => {
+            let axis = extract_axis(joint_map);
+            let (lo, hi) = extract_range(joint_map);
+            ("length".to_string(), axis, lo, hi)
+        }
+        "revolute" => {
+            let axis = extract_axis(joint_map);
+            let (lo, hi) = extract_range(joint_map);
+            ("angle".to_string(), axis, lo, hi)
+        }
+        // coupling and fixed have no independent motion variable.
+        _ => ("dimensionless".to_string(), None, None, None),
+    };
+
+    JointDescriptor {
+        joint_index,
+        kind,
+        dimension,
+        range_lower_si,
+        range_upper_si,
+        axis,
+        driving_param_cell_id: None,
+        current_value_si: None,
+    }
+}
+
+/// Extract a 3-component axis from a joint Map's `"axis"` field.
+///
+/// The axis is stored as `Value::Vector([Real(x), Real(y), Real(z)])` (or
+/// Scalar components — any variant accepted by the joints stdlib validator).
+/// Returns `None` if the field is missing or malformed.
+fn extract_axis(joint_map: &std::collections::BTreeMap<Value, Value>) -> Option<[f64; 3]> {
+    let axis_val = joint_map.get(&Value::String("axis".to_string()))?;
+    match axis_val {
+        Value::Vector(items) if items.len() == 3 => {
+            let x = scalar_to_f64(&items[0])?;
+            let y = scalar_to_f64(&items[1])?;
+            let z = scalar_to_f64(&items[2])?;
+            Some([x, y, z])
+        }
+        _ => None,
+    }
+}
+
+/// Extract the lower and upper SI bounds from a joint Map's `"range"` field.
+///
+/// The range is stored as `Value::Range { lower, upper, .. }` where each bound
+/// (when `Some`) is a `Value::Scalar { si_value, .. }`.  Returns `(None, None)`
+/// if the field is missing or malformed.
+fn extract_range(
+    joint_map: &std::collections::BTreeMap<Value, Value>,
+) -> (Option<f64>, Option<f64>) {
+    let range_val = match joint_map.get(&Value::String("range".to_string())) {
+        Some(v) => v,
+        None => return (None, None),
+    };
+    match range_val {
+        Value::Range { lower, upper, .. } => {
+            let lo = lower.as_deref().and_then(scalar_to_f64);
+            let hi = upper.as_deref().and_then(scalar_to_f64);
+            (lo, hi)
+        }
+        _ => (None, None),
+    }
+}
+
+/// Extract the SI numeric value from a `Value::Scalar` or `Value::Real`.
+fn scalar_to_f64(val: &Value) -> Option<f64> {
+    match val {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        Value::Real(f) => Some(*f),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
 }
 
 // ---- build_preview_gui_state -------------------------------------------------
