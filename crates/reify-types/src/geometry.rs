@@ -977,7 +977,17 @@ impl<'a> BooleanOpParents<'a> {
     pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { faces, .. } => &faces[..],
-            Self::NAry { faces, .. } => faces,
+            Self::NAry { faces, edges } => {
+                debug_assert_eq!(
+                    faces.len(),
+                    edges.len(),
+                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
+                     each parent must have an entry in both slices",
+                    faces.len(),
+                    edges.len(),
+                );
+                faces
+            }
         }
     }
 
@@ -986,7 +996,17 @@ impl<'a> BooleanOpParents<'a> {
     pub fn edge_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { edges, .. } => &edges[..],
-            Self::NAry { edges, .. } => edges,
+            Self::NAry { faces, edges } => {
+                debug_assert_eq!(
+                    faces.len(),
+                    edges.len(),
+                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
+                     each parent must have an entry in both slices",
+                    faces.len(),
+                    edges.len(),
+                );
+                edges
+            }
         }
     }
 }

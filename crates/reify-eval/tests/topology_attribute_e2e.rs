@@ -337,10 +337,11 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     // result faces NOT in Modified ∪ Generated have no entry — this
     // pins the "no spurious entries" invariant.
     if !history.face_deleted.is_empty() {
+        let parent_face_slices = parents.face_slices();
         for deleted in history.face_deleted.iter() {
             let parent_idx = deleted.parent_index as usize;
             let parent_subshape_idx = deleted.parent_subshape_index as usize;
-            let parent_handle = parents.face_slices()[parent_idx][parent_subshape_idx];
+            let parent_handle = parent_face_slices[parent_idx][parent_subshape_idx];
             assert!(
                 table.lookup(parent_handle).is_some(),
                 "parent face handle for deleted record (parent {}, subshape {}) \

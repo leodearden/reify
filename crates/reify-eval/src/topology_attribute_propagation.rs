@@ -413,4 +413,28 @@ mod tests {
         .expect("empty history should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
     }
+
+    #[test]
+    fn no_records_binary_succeeds() {
+        // Smoke-test: Binary variant + empty history must succeed and leave
+        // the table empty — exercises the Binary accessor path through
+        // propagation without hitting any error branch.
+        let mut table = TopologyAttributeTable::default();
+        let layout = minimal_parent_result_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+        let history = BooleanOpHistoryRecords::default();
+
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("empty history with Binary parents should propagate without error");
+        assert!(table.is_empty(), "no-op propagation must not write entries");
+    }
 }
