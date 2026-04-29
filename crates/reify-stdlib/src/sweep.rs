@@ -165,6 +165,79 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             }
             Value::List(snapshots)
         }
+        "sweep_grid" => {
+            // Validation surface (each guard short-circuits to
+            // Value::Undef BEFORE any iteration / delegation):
+            //   args.len() == 2                                → arity guard
+            //   args[0] is Map with kind="mechanism"           → mechanism guard
+            //   no `error` key on the mechanism Map            → errored-mech guard
+            //   args[1] is Value::List                         → dims-list shape
+            //   each entry is Value::Map with kind="sweep_dim"
+            //     and present `joint`/`range`/`steps` fields    → per-entry shape
+            // Multi-dim cross-product iteration is layered on in step-18;
+            // for now this arm only handles the empty-dims case.
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let mech_map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Some(Value::Undef),
+            };
+            if mech_map.get(&Value::String("kind".to_string()))
+                != Some(&Value::String("mechanism".to_string()))
+            {
+                return Some(Value::Undef);
+            }
+            // Errored-mechanism short-circuit (mirrors `sweep` and
+            // `snapshot`). Layered AFTER the kind-guard so an
+            // unrelated error-bearing Map without kind="mechanism"
+            // still hits the kind-mismatch guard above.
+            if mech_map.contains_key(&Value::String("error".to_string())) {
+                return Some(Value::Undef);
+            }
+            let dims = match &args[1] {
+                Value::List(d) => d,
+                _ => return Some(Value::Undef),
+            };
+            // Per-entry shape validation: each must be a SweepDim Map
+            // with the canonical four-field layout (kind="sweep_dim",
+            // joint, range, steps). Whole-call rejection on any
+            // malformed entry, mirroring snapshot.rs's bindings
+            // validation.
+            for entry in dims {
+                let emap = match entry {
+                    Value::Map(m) => m,
+                    _ => return Some(Value::Undef),
+                };
+                if emap.get(&Value::String("kind".to_string()))
+                    != Some(&Value::String("sweep_dim".to_string()))
+                {
+                    return Some(Value::Undef);
+                }
+                if !emap.contains_key(&Value::String("joint".to_string()))
+                    || !emap.contains_key(&Value::String("range".to_string()))
+                    || !emap.contains_key(&Value::String("steps".to_string()))
+                {
+                    return Some(Value::Undef);
+                }
+            }
+            // Empty dims: product of empty set = 1 snapshot, every joint
+            // falls back to its range midpoint via snapshot()'s
+            // existing fallback. Multi-dim cross-product is wired in
+            // step-18.
+            if dims.is_empty() {
+                let snap = eval_builtin(
+                    "snapshot",
+                    &[args[0].clone(), Value::List(vec![])],
+                );
+                if snap.is_undef() {
+                    return Some(Value::Undef);
+                }
+                return Some(Value::List(vec![snap]));
+            }
+            // Multi-dim cross-product: wired in step-18.
+            return Some(Value::Undef);
+        }
         _ => return None,
     })
 }
