@@ -100,3 +100,44 @@ fn filter_accepts_single_candidate_when_template_has_no_constraints() {
         "zero constraints → vacuously feasible; expected single accepted candidate"
     );
 }
+
+// ─── step-5: all-Satisfied → accepted ────────────────────────────────────
+
+/// When all constraints return `Satisfied`, the candidate passes the
+/// feasibility filter. This pins the all-Satisfied path through the
+/// `!= Violated` predicate: a constraint whose result is Satisfied must
+/// never appear in `violated_constraints`.
+///
+/// Uses a boolean-typed literal expression (`Value::Bool(true)`) as the
+/// constraint expression. The mock ignores the expression content entirely;
+/// it's only there so `TopologyTemplateBuilder::constraint` has something
+/// to store in the `CompiledConstraint::expr` field.
+#[test]
+fn filter_accepts_candidate_when_all_constraints_satisfied() {
+    let cnid = ConstraintNodeId::new("Bearing", 0);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("Bearing")
+        .constraint("Bearing", 0, None, expr)
+        .build();
+    // Default Satisfied: every constraint result is Satisfied.
+    let checker = MockConstraintChecker::new(); // default is Satisfied
+    let functions: &[CompiledFunction] = &[];
+
+    let result = filter_feasible_candidates(
+        &["ORingSeal".to_string()],
+        &template,
+        &checker,
+        functions,
+    );
+
+    assert_eq!(
+        result,
+        FeasibilityResult::Feasible {
+            accepted: vec!["ORingSeal".to_string()],
+            rejected: vec![],
+        },
+        "all-Satisfied constraints → candidate accepted; got: {:?}",
+        result
+    );
+    let _ = cnid; // Used to document which constraint is in the template.
+}
