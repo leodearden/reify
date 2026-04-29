@@ -263,3 +263,84 @@ fn seed_primitive_attributes_cylinder_classifies_cap_top_cap_bottom_and_side() {
         "exactly one cylinder face must be classified Role::Side, got {side_count}"
     );
 }
+
+// ─── step-5: Sphere → ≥1 face entries, all Role::Side ─────────────────────────
+
+#[test]
+fn seed_primitive_attributes_sphere_records_role_side_for_each_face() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let sphere_id = kernel
+        .execute(&sphere_op())
+        .expect("sphere should build")
+        .id;
+
+    // Pre-extract face/edge handles ONCE — fresh ids each call.
+    let face_handles = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces(sphere) should succeed");
+    let edge_handles = kernel
+        .extract_edges(sphere_id)
+        .expect("extract_edges(sphere) should succeed");
+
+    // OCCT's sphere parameterisation may emit 1+ faces (the count varies
+    // across OCCT versions / sphere parameterisations); the contract is
+    // "at least 1". We don't pin an exact count.
+    assert!(
+        !face_handles.is_empty(),
+        "a sphere should have at least 1 face from extract_faces"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &feature_id,
+        &sphere_op(),
+    )
+    .expect("seed_primitive_attributes for a sphere should succeed");
+
+    // Step-5 contract: faces only — one entry per face. Edges arrive in step-8.
+    assert_eq!(
+        table.len(),
+        face_handles.len(),
+        "step-5 contract: exactly one face entry per extracted face"
+    );
+
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table.lookup(face_id).unwrap_or_else(|| {
+            panic!(
+                "sphere face #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, face_id
+            )
+        });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "sphere face #{idx} feature_id should equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.role,
+            Role::Side,
+            "sphere face #{idx} role should be Role::Side (sphere has no caps)"
+        );
+        assert_eq!(
+            attr.local_index, idx as u32,
+            "sphere face #{idx} local_index should be the consecutive 0..n value {idx}"
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "sphere face #{idx} user_label should be None per task-1 invariant"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "sphere face #{idx} mod_history should be empty per task-1 invariant"
+        );
+    }
+}
