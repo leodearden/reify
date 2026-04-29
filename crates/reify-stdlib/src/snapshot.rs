@@ -684,6 +684,15 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             wrap_midpoint_for_joint(parent, mid_si)
         }
+        // 3-DOF planar joint: defense-in-depth explicit deferral arm.
+        // Today this arm is unreachable from a planar joint: joint_range_midpoint
+        // returns None for planar (step-2's change), and value_for only calls
+        // wrap_midpoint_for_joint after joint_range_midpoint returns Some.
+        // The explicit arm keeps the dispatch table symmetric across all kinds
+        // in JOINT_KINDS, mirroring step-2's change in joint_range_midpoint,
+        // and is the documented breadcrumb when PRD v0.2 task 2 (#2670) extends
+        // joint_range_midpoint to return per-DOF defaults for planar.
+        "planar" => None,
         _ => None,
     }
 }
