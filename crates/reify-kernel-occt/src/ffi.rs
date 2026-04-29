@@ -144,6 +144,24 @@ pub mod ffi {
             dz: f64,
         ) -> Result<UniquePtr<SweepOpHistory>>;
 
+        /// Run `BRepPrimAPI_MakeRevol` on `profile` about the axis at
+        /// origin `(ox, oy, oz)` with direction `(ax, ay, az)` for
+        /// `angle_rad` radians, eagerly capturing the per-parent face/edge
+        /// Modified/Generated/Deleted records and (for partial revolutions)
+        /// the FirstShape/LastShape cap-face indices alongside the swept
+        /// result shape. Under full revolution (FirstShape == LastShape)
+        /// both cap-index lists are empty.
+        fn make_revolve_with_history(
+            profile: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            angle_rad: f64,
+        ) -> Result<UniquePtr<SweepOpHistory>>;
+
         /// Move the result shape out of the sweep-history wrapper for
         /// registration in the kernel's shape table. Subsequent
         /// `_take_result_shape` calls return an empty pointer.

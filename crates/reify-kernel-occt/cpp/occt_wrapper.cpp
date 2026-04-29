@@ -600,6 +600,129 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
     });
 }
 
+std::unique_ptr<SweepOpHistory> make_revolve_with_history(
+    const OcctShape& profile,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    double angle_rad) {
+    return wrap_occt_call("make_revolve_with_history", [&]() {
+        // DEFENSE-IN-DEPTH: mirror make_revolve's input checks so callers
+        // bypassing the Rust validation layer still get a clean error
+        // (this is the same threshold pattern used by make_prism_with_history).
+        if (!(std::isfinite(ox) && std::isfinite(oy) && std::isfinite(oz) &&
+              std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az) &&
+              std::isfinite(angle_rad))) {
+            throw std::runtime_error("make_revolve_with_history: all parameters must be finite");
+        }
+        double axis_mag_sq = ax*ax + ay*ay + az*az;
+        if (axis_mag_sq < CPP_AXIS_MAG_SQ_MIN) {
+            throw std::runtime_error("make_revolve_with_history: axis direction must not be zero-length");
+        }
+        if (std::abs(angle_rad) < CPP_ANGLE_ABS_MIN) {
+            throw std::runtime_error("make_revolve_with_history: angle must not be zero");
+        }
+        gp_Pnt origin(ox, oy, oz);
+        gp_Dir dir(ax, ay, az);
+        gp_Ax1 axis(origin, dir);
+        BRepPrimAPI_MakeRevol maker(profile.shape, axis, angle_rad);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeRevol failed");
+        }
+
+        // Capture FirstShape/LastShape BEFORE the Shell→Solid conversion
+        // — the conversion produces a fresh TopoDS_Solid whose face_map
+        // re-indexes the lateral faces, but the IsSame()/IsEqual() identity
+        // of the cap shapes themselves is preserved by OCCT's TopoDS_Shape
+        // sharing semantics. We do the IsSame()-vs-distinct decision here,
+        // then look up the indices in the result face_map AFTER conversion.
+        TopoDS_Shape first_cap = maker.FirstShape();
+        TopoDS_Shape last_cap  = maker.LastShape();
+        // Full-revolution detection: under angle_rad ≈ 2π · k (k ≠ 0)
+        // OCCT collapses FirstShape() and LastShape() to the same closed
+        // surface. We detect this via TopoDS_Shape::IsSame which is
+        // tolerance-free and preserved across Shell→Solid conversion.
+        const bool is_full_revolution =
+            !first_cap.IsNull() && !last_cap.IsNull() && first_cap.IsSame(last_cap);
+
+        TopoDS_Shape rev_shape = maker.Shape();
+        // Some OCCT versions produce a Shell instead of Solid when revolving
+        // a Face. Convert Shell → Solid so volume queries work correctly
+        // (mirrors make_revolve's post-processing at occt_wrapper.cpp:1508-1521).
+        if (rev_shape.ShapeType() == TopAbs_SHELL) {
+            BRepBuilderAPI_MakeSolid solidMaker(TopoDS::Shell(rev_shape));
+            if (solidMaker.IsDone()) {
+                rev_shape = solidMaker.Solid();
+            } else {
+                throw std::runtime_error("make_revolve_with_history: Shell\xe2\x86\x92Solid conversion failed \xe2\x80\x94 BRepBuilderAPI_MakeSolid did not complete");
+            }
+        }
+        // Fix face orientations so volume computation works correctly.
+        if (rev_shape.ShapeType() == TopAbs_SOLID) {
+            TopoDS_Solid solid = TopoDS::Solid(rev_shape);
+            BRepLib::OrientClosedSolid(solid);
+            rev_shape = solid;
+        }
+
+        auto history = std::make_unique<SweepOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = rev_shape;
+
+        // Build result face/edge maps once via the cached lazy accessors
+        // (rev_shape is the post-conversion solid, so the maps reflect the
+        // final face indexing).
+        const auto& result_face_map = history->result->face_map();
+        const auto& result_edge_map = history->result->edge_map();
+
+        // Build a profile-vertex map ad-hoc (vertices generate result edges
+        // for sweeps; not cached on OcctShape because vertex maps are rarely
+        // needed except for sweeps).
+        TopTools_IndexedMapOfShape profile_vertex_map;
+        TopExp::MapShapes(profile.shape, TopAbs_VERTEX, profile_vertex_map);
+
+        // Faces (same-type modified): profile face → result face. Modified
+        // is typically empty for revolve (face sub-shapes go to FirstShape /
+        // LastShape, captured separately as caps under partial revolution);
+        // IsDeleted is empty too. We still walk it for completeness.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.face_map(), result_face_map,
+            history->face_modified, history->face_deleted);
+
+        // Edges (same-type modified): profile edge → result edge. Modified
+        // edges from a revolve are also typically empty.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.edge_map(), result_edge_map,
+            history->edge_modified, history->edge_deleted);
+
+        // Cross-type Generated: profile EDGES generate result FACES (the
+        // lateral revolved faces). parent_subshape_index in each
+        // face_generated record is the profile edge index.
+        emit_sweep_generated_cross_type(
+            maker, profile.edge_map(), result_face_map, TopAbs_FACE,
+            history->face_generated);
+
+        // Cross-type Generated: profile VERTICES generate result EDGES
+        // (lateral edges joining the start/end caps under partial
+        // revolution; circular trace edges under full revolution).
+        emit_sweep_generated_cross_type(
+            maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
+            history->edge_generated);
+
+        // Caps: under PARTIAL revolution, FirstShape() and LastShape()
+        // reference distinct cap faces and both lists are populated.
+        // Under FULL revolution (FirstShape().IsSame(LastShape())) both
+        // lists remain empty so consumers can encode the no-caps case
+        // naturally. BRepPrimAPI_MakeRevol is a BRepPrimAPI_MakeSweep,
+        // so these accessors exist.
+        if (!is_full_revolution) {
+            emit_cap_face_indices(first_cap, result_face_map, history->start_cap_face_indices);
+            emit_cap_face_indices(last_cap,  result_face_map, history->end_cap_face_indices);
+        }
+
+        return history;
+    });
+}
+
 std::unique_ptr<OcctShape> sweep_op_history_take_result_shape(SweepOpHistory& history) {
     return std::move(history.result);
 }

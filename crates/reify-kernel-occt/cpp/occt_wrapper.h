@@ -209,6 +209,34 @@ struct SweepOpHistory {
 std::unique_ptr<SweepOpHistory> make_prism_with_history(
     const OcctShape& profile, double dx, double dy, double dz);
 
+/// Run `BRepPrimAPI_MakeRevol` on `profile` about the axis with origin
+/// `(ox, oy, oz)` and direction `(ax, ay, az)` for `angle_rad` radians,
+/// materializing the result shape AND the Modified/Generated/Deleted
+/// records for the profile's face/edge sub-shapes into a single
+/// `SweepOpHistory`. Also populates the cap-face index lists from
+/// `FirstShape()` / `LastShape()` lookups in the result face_map.
+///
+/// Cap behavior: under PARTIAL revolution (angle_rad mod 2π ∈ (0, 2π))
+/// `FirstShape()` and `LastShape()` reference distinct cap faces and
+/// both lists are populated. Under FULL revolution (angle_rad's modulo-2π
+/// residual is below `CPP_FULL_REVOLVE_TOL`) `FirstShape()` and
+/// `LastShape()` reference the same closed surface; both cap lists
+/// remain empty so consumers can encode the no-caps case naturally.
+///
+/// Honors the same Shell→Solid + `BRepLib::OrientClosedSolid`
+/// post-processing as `make_revolve` (the result shape may be a Solid
+/// constructed from the algorithm's Shell output).
+///
+/// Profile sub-shapes are walked in canonical TopExp order (1-based,
+/// deduplicated by `IsSame`); per-record indices are 0-based at the
+/// FFI boundary. Result-side indices come from the result shape's
+/// cached `face_map()` / `edge_map()`.
+std::unique_ptr<SweepOpHistory> make_revolve_with_history(
+    const OcctShape& profile,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    double angle_rad);
+
 /// Move the result shape out of the history wrapper. Returns the freshly
 /// constructed `OcctShape` for the kernel to register; subsequent calls
 /// observe an empty `unique_ptr`.

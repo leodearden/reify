@@ -87,6 +87,20 @@ enum OcctRequest {
         height: f64,
         reply: oneshot::Sender<GeometryHandleId>,
     },
+    /// Test-fixture: build a `width × height` rect_face profile centered
+    /// at `(cx, cy, cz)` and return its handle id. Variant of
+    /// `MakeRectProfileForTest` that accepts a non-origin center — used
+    /// by the `revolve_with_history` integration test to place the profile
+    /// off-axis (an on-axis rect would produce a degenerate revolved solid).
+    #[cfg(feature = "test-fixtures")]
+    MakeRectProfileAtForTest {
+        width: f64,
+        height: f64,
+        cx: f64,
+        cy: f64,
+        cz: f64,
+        reply: oneshot::Sender<GeometryHandleId>,
+    },
 }
 
 /// Thread-safe handle to an OCCT kernel running on a dedicated thread.
@@ -346,6 +360,52 @@ impl OcctKernelHandle {
         }
     }
 
+    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
+    /// for the [`GeometryOp::Revolve`] case: returns `(handle_id,
+    /// SweepOpHistoryRecords)` directly.
+    ///
+    /// `axis_origin` and `axis_dir` are 3-element arrays in metres /
+    /// (dimensionless direction); `angle_rad` is the revolve angle in
+    /// radians. Validation thresholds match
+    /// [`OcctKernel::revolve_with_history`] (axis must be finite +
+    /// magnitude > AXIS_MAG_SQ_MIN; angle must be finite + magnitude >
+    /// ANGLE_ABS_MIN).
+    ///
+    /// # Errors
+    ///
+    /// Returns `GeometryError::OperationFailed` if the kernel reported
+    /// an unexpected `AttributeHistory` variant — e.g. `None`, indicating
+    /// the kernel built but failed to populate sweep history. This is a
+    /// programming-error guard; it is exposed as an `Err` rather than a
+    /// panic so test code can pin the contract.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-10).
+    pub fn revolve_with_history(
+        &self,
+        profile: GeometryHandleId,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        angle_rad: f64,
+    ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
+        let op = GeometryOp::Revolve {
+            profile,
+            axis_origin,
+            axis_dir,
+            angle_rad,
+        };
+        let (handle, history) = self.execute_with_history(&op)?;
+        match history {
+            AttributeHistory::Revolve(records) => Ok((handle.id, records)),
+            other => Err(GeometryError::OperationFailed(format!(
+                "revolve_with_history expected AttributeHistory::Revolve, got {other:?}"
+            ))),
+        }
+    }
+
     /// Test-fixture: build a `width × height` rect_face profile on the
     /// kernel thread and return its handle id (registered with
     /// `ReprKind::Face`). Only compiled when the `test-fixtures` cargo
@@ -372,6 +432,44 @@ impl OcctKernelHandle {
             |reply| OcctRequest::MakeRectProfileForTest {
                 width,
                 height,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )
+    }
+
+    /// Test-fixture: build a `width × height` rect_face profile in the
+    /// **XZ plane** centered at `(cx, cy, cz)` on the kernel thread, and
+    /// return its handle id (registered with `ReprKind::Face`). Variant of
+    /// `make_rect_profile_for_test` purpose-built for the
+    /// `revolve_with_history` integration test: the rect is placed in a
+    /// plane containing the Z-axis (XZ plane), so revolving about Z
+    /// produces a non-degenerate solid. `width` becomes the radial
+    /// dimension; `height` becomes the axial dimension. The `(cx, cy, cz)`
+    /// translation lets the caller offset the profile clear of the
+    /// rotation axis (an on-axis rect would produce a degenerate revolved
+    /// solid).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context, or
+    /// if the kernel thread is dead (test-fixture path).
+    #[cfg(feature = "test-fixtures")]
+    pub fn make_rect_profile_at_for_test(
+        &self,
+        width: f64,
+        height: f64,
+        cx: f64,
+        cy: f64,
+        cz: f64,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        self.send_request_blocking(
+            |reply| OcctRequest::MakeRectProfileAtForTest {
+                width,
+                height,
+                cx,
+                cy,
+                cz,
                 reply,
             },
             || GeometryError::OperationFailed("kernel thread died".into()),
@@ -457,8 +555,8 @@ impl OcctKernelHandle {
                         let _ = reply.send(result);
                     }
                     OcctRequest::ExecuteWithHistory { op, reply } => {
-                        // Per-op dispatcher: route Extrude to the
-                        // history-aware kernel primitive; fall through to
+                        // Per-op dispatcher: route Extrude/Revolve to the
+                        // history-aware kernel primitives; fall through to
                         // `execute(op)` (returning `AttributeHistory::None`)
                         // for ops without a history-aware variant. Future
                         // task-5b/6/7/8 add Sweep/Loft/primitive/local/boolean
@@ -477,6 +575,14 @@ impl OcctKernelHandle {
                                     )),
                                 }
                             }
+                            GeometryOp::Revolve {
+                                profile,
+                                axis_origin,
+                                axis_dir,
+                                angle_rad,
+                            } => kernel
+                                .revolve_with_history(*profile, *axis_origin, *axis_dir, *angle_rad)
+                                .map(|(h, recs)| (h, AttributeHistory::Revolve(recs))),
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.
@@ -493,6 +599,18 @@ impl OcctKernelHandle {
                         reply,
                     } => {
                         let id = kernel.store_rect_face_for_test(width, height);
+                        let _ = reply.send(id);
+                    }
+                    #[cfg(feature = "test-fixtures")]
+                    OcctRequest::MakeRectProfileAtForTest {
+                        width,
+                        height,
+                        cx,
+                        cy,
+                        cz,
+                        reply,
+                    } => {
+                        let id = kernel.store_rect_face_at_for_test(width, height, cx, cy, cz);
                         let _ = reply.send(id);
                     }
                 }

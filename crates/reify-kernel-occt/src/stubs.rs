@@ -205,6 +205,20 @@ impl OcctKernelHandle {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub `revolve_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::revolve_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 5a / #2573, step-10).
+    pub fn revolve_with_history(
+        &self,
+        _profile: GeometryHandleId,
+        _axis_origin: [f64; 3],
+        _axis_dir: [f64; 3],
+        _angle_rad: f64,
+    ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     /// No-op shutdown (no thread to join).
     pub async fn shutdown(self) {}
 }
