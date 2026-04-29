@@ -23,6 +23,7 @@ use reify_compiler::CompiledModule;
 use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
 use reify_eval::Engine;
+use reify_syntax::ConnectOp;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
 use reify_types::{CompiledExprKind, ConstraintNodeId, Value, ValueCellId};
@@ -713,4 +714,198 @@ fn edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constr
         "expected per-member partition {{mass: 2, length: 2}} after re-grow, got {:?}",
         by_member_2_again
     );
+}
+
+// ─── task 2690: forall-Connect runtime re-elaboration ───────────────────────
+//
+// Sibling coverage to the Constraint-arm tests above. When the count cell of
+// a deferred-count collection sub becomes known via `edit_param`, the engine
+// must re-emit per-element forall *connections* (in addition to the
+// per-element forall *constraints* already covered by 2629). The runtime
+// emission rewrites `<sub>[0]` → `<sub>[i]` substring tokens in the captured
+// `left_port_template`/`right_port_template`, allocates a synthetic
+// `ConstraintNodeId` per element, and pushes a `CompiledConnection` into
+// `graph.connections` paired with a `Bool::True`-bodied compatibility
+// constraint into `graph.constraints` (label `forall_connect@<var>[<i>]`).
+
+/// Canonical fixture for the forall-Connect runtime tests. Mirrors
+/// `FORALL_FIXTURE_SRC` (n is undef, count cell synthesised from
+/// `vents.count == n`) but with a Connect body in place of the Constraint
+/// body. The single connection in the structure is forall-deferred at compile
+/// time, so `template.connections` is empty until `edit_param(S.n, Int(N))`
+/// runs the runtime re-emission.
+const FORALL_CONNECT_FIXTURE_SRC: &str = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+
+/// Helper: collect connections whose `compatibility_constraint` label starts
+/// with `forall_connect@` (i.e. were emitted by the forall-Connect runtime
+/// re-emission path), sorted by their LHS-port suffix index.
+fn collect_forall_connect_connections(
+    snap: &Snapshot,
+) -> Vec<reify_compiler::CompiledConnection> {
+    let mut entries: Vec<(usize, reify_compiler::CompiledConnection)> = snap
+        .graph
+        .connections
+        .iter()
+        .filter_map(|c| {
+            let constraint = snap.graph.constraints.get(&c.compatibility_constraint)?;
+            let label = constraint.label.as_deref()?;
+            if !label.starts_with("forall_connect@") {
+                return None;
+            }
+            // Extract `i` from `vents[<i>].inlet` for ordering.
+            let idx_str = c
+                .left_port
+                .strip_prefix("vents[")?
+                .split(']')
+                .next()?;
+            let i: usize = idx_str.parse().ok()?;
+            Some((i, c.clone()))
+        })
+        .collect();
+    entries.sort_by_key(|(i, _)| *i);
+    entries.into_iter().map(|(_, c)| c).collect()
+}
+
+/// task-2690 step-9: pins that `Engine::edit_param` re-elaborates per-element
+/// `forall` *connections* when a deferred count cell becomes known.
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` — count is Undef ⇒ zero forall-emitted
+///    entries in `graph.connections` (the only connection in the source is
+///    forall-deferred, so the carry-through Vec is empty at this point).
+/// 2. `edit_param(S.n, Int(2))` — count becomes 2.
+/// 3. Assert `graph.connections.len() == 2` and each entry has the
+///    expected per-element shape:
+///       * `left_port == "vents[<i>].inlet"`
+///       * `right_port == "air_channel"`
+///       * `operator == ConnectOp::Forward`
+///       * `connector_sub.is_none()`
+///       * `frame_constraint.is_none()`
+/// 4. Each connection's `compatibility_constraint` id resolves to a
+///    `ConstraintNodeData` in `graph.constraints` with label
+///    `forall_connect@v[<i>]` and `expr` being a `Bool::True` literal.
+///
+/// RED before step-10 wires the runtime Connect re-emission block in
+/// `engine_edit.rs` (the current stub at the `CompiledForallBody::Connect`
+/// match arm emits zero entries).
+#[test]
+fn edit_param_count_undef_to_known_emits_per_element_forall_connections() {
+    let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+
+    // (1) Initial eval — count Undef ⇒ zero forall-emitted connections. The
+    //     only compile-time connection in the source is forall-deferred, so
+    //     `graph.connections` is empty at this point.
+    let _initial = engine.eval(&module);
+    let initial_snap = engine.snapshot().expect("snapshot after initial eval");
+    assert!(
+        collect_forall_connect_connections(initial_snap).is_empty(),
+        "expected zero forall-emitted connections when count is Undef, got {} entries",
+        collect_forall_connect_connections(initial_snap).len()
+    );
+    assert_eq!(
+        initial_snap.graph.connections.len(),
+        0,
+        "expected total connections.len() == 0 when count is Undef (the only \
+         connection in the fixture is forall-deferred), got {}",
+        initial_snap.graph.connections.len()
+    );
+
+    // (2) Edit param `S.n` to 2 — count cell becomes Int(2), runtime
+    //     re-emission must produce 2 per-element connections.
+    let n_id = ValueCellId::new("S", "n");
+    let _ = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param should succeed");
+
+    // (3) Snapshot now carries exactly 2 forall-Connect entries.
+    let snap = engine.snapshot().expect("snapshot after edit_param");
+    let connections = collect_forall_connect_connections(snap);
+    assert_eq!(
+        connections.len(),
+        2,
+        "expected exactly 2 forall-emitted connections after edit_param to Int(2), got {}",
+        connections.len()
+    );
+    // Also pin the total connections count — no stray emissions from the
+    // compile-time path should be present, only the 2 forall-emitted ones.
+    assert_eq!(
+        snap.graph.connections.len(),
+        2,
+        "expected total connections.len() == 2 after edit_param to Int(2) (got {})",
+        snap.graph.connections.len()
+    );
+
+    for (i, c) in connections.iter().enumerate() {
+        assert_eq!(
+            c.left_port,
+            format!("vents[{}].inlet", i),
+            "forall-Connect[{}] left_port mismatch",
+            i
+        );
+        assert_eq!(
+            c.right_port, "air_channel",
+            "forall-Connect[{}] right_port mismatch",
+            i
+        );
+        assert_eq!(
+            c.operator,
+            ConnectOp::Forward,
+            "forall-Connect[{}] operator mismatch",
+            i
+        );
+        assert!(
+            c.connector_sub.is_none(),
+            "forall-Connect[{}] connector_sub must be None for simple connect (got {:?})",
+            i,
+            c.connector_sub
+        );
+        assert!(
+            c.frame_constraint.is_none(),
+            "forall-Connect[{}] frame_constraint must be None for non-Frame trait (got {:?})",
+            i,
+            c.frame_constraint
+        );
+
+        // (4) Compatibility constraint exists with the expected label and
+        //     a `Bool::True` literal expression.
+        let constraint = snap
+            .graph
+            .constraints
+            .get(&c.compatibility_constraint)
+            .unwrap_or_else(|| {
+                panic!(
+                    "forall-Connect[{}] missing compatibility constraint {} in graph.constraints",
+                    i, c.compatibility_constraint
+                )
+            });
+        let expected_label = format!("forall_connect@v[{}]", i);
+        assert_eq!(
+            constraint.label.as_deref(),
+            Some(expected_label.as_str()),
+            "forall-Connect[{}] compatibility-constraint label mismatch",
+            i
+        );
+        match &constraint.expr.kind {
+            CompiledExprKind::Literal(Value::Bool(true)) => {}
+            other => panic!(
+                "forall-Connect[{}] compatibility-constraint expr must be a Bool::True \
+                 literal (mirrors the placeholder direction-check policy in the task plan), \
+                 got {:?}",
+                i, other
+            ),
+        }
+    }
 }
