@@ -323,6 +323,67 @@ fn full_revolve_with_history_reports_no_caps() {
             result_edge_count
         );
     }
+
+    // (e) Normal-axis orientation, mirroring the triangle regression test
+    //     (full_revolve_triangle_profile_synthesis_regression) — task 2707.
+    //  - Profile edges 0 and 2 (bottom and top of the rect, Δz=0) are radial
+    //    and reach face_generated via the synthesis post-pass; their result
+    //    faces are flat annular disks with |n·axis| >= 1 - DIR_TOL. This pins
+    //    the synthesis matcher's face-normal filter (occt_wrapper.cpp:737-740).
+    //  - Profile edges 1 and 3 (right and left, parallel to Z) are axial and
+    //    reach face_generated via OCCT's Generated() as cylindrical sweeps;
+    //    their normals are perpendicular to the axis (|n·axis| ≈ 0), so
+    //    |n·axis| < 1 - DIR_TOL. This confirms those records did NOT come
+    //    from the synthesis path.
+    let axis_dir = [0.0_f64, 0.0, 1.0];
+    let dot_for = |kernel: &OcctKernelHandle, idx: u32| -> f64 {
+        let face_id = result_faces[idx as usize];
+        let v = kernel
+            .query(&GeometryQuery::FaceNormal(face_id))
+            .expect("FaceNormal query should succeed for rect revolve face");
+        let (nx, ny, nz) = parse_xyz(&v);
+        (nx * axis_dir[0] + ny * axis_dir[1] + nz * axis_dir[2]).abs()
+    };
+
+    for radial_edge in [0u32, 2u32] {
+        let rec = history
+            .face_generated
+            .iter()
+            .find(|r| r.parent_subshape_index == radial_edge)
+            .unwrap_or_else(|| {
+                panic!("rect radial edge e{radial_edge} missing from face_generated")
+            });
+        let dot = dot_for(&kernel, rec.result_subshape_index);
+        assert!(
+            dot > 1.0 - DIR_TOL,
+            "synthesised annular-disk face for radial edge e{radial_edge} must \
+             have |face_normal · axis| > 1 - DIR_TOL ({}), got {} (record {:?})",
+            1.0 - DIR_TOL,
+            dot,
+            rec
+        );
+    }
+
+    for axial_edge in [1u32, 3u32] {
+        let rec = history
+            .face_generated
+            .iter()
+            .find(|r| r.parent_subshape_index == axial_edge)
+            .unwrap_or_else(|| {
+                panic!("rect axial edge e{axial_edge} missing from face_generated")
+            });
+        let dot = dot_for(&kernel, rec.result_subshape_index);
+        assert!(
+            dot < 1.0 - DIR_TOL,
+            "OCCT-reported cylindrical face for axial edge e{axial_edge} must \
+             have |face_normal · axis| < 1 - DIR_TOL ({}), got {} (record {:?}); \
+             value >= 1 - DIR_TOL would indicate this record came from the \
+             synthesis path rather than OCCT's Generated()",
+            1.0 - DIR_TOL,
+            dot,
+            rec
+        );
+    }
 }
 
 /// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
