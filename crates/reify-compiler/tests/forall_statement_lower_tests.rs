@@ -545,6 +545,115 @@ structure S {
     }
 }
 
+/// task 2629 step-23: `forall v in <coll_sub>: constraint <body> where <cond>`
+/// over a deferred-count collection sub must NOT capture a runtime template
+/// (the runtime engine has no guarded-group plumbing for per-element where
+/// clauses), and must emit a `Diagnostic::info` flagging the limitation so
+/// it is discoverable.
+///
+/// The reviewer's preferred Option (a) treatment: deferred + where-clause is
+/// in the same "future scope" bucket as Instantiation and Chain.
+///
+/// Pins:
+/// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
+/// (b) Zero `forall@*`-labelled CompiledConstraints in `template.constraints`
+///     (preserves the silent-skip-on-deferred contract).
+/// (c) `template.forall_templates.is_empty()` — the where-clause case must
+///     NOT push a `CompiledForallTemplate`, otherwise the runtime would
+///     silently emit guard-less per-element constraints (the reviewer's
+///     exact concern).
+/// (d) Exactly one `Diagnostic::info` whose message contains both
+///     "where-clause" and "deferred-count" — pins a stable substring so
+///     future refactors can't silently regress to capture.
+///
+/// The fixture matches the existing
+/// `forall_constraint_over_undef_count_collection_sub_emits_no_decls_no_error`
+/// shape, but adds a `where v.hot` body where-clause to drive the new path.
+///
+/// RED before step-24: today the deferred-Constraint arm captures a template
+/// with `where_expr: Some(...)` and the runtime would silently drop the
+/// guard at re-emission time.
+#[test]
+fn forall_constraint_with_where_clause_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
+ {
+    use reify_types::Severity;
+
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+    param hot : Bool = false
+}
+structure S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: constraint v.mass < 50kg where v.hot
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors — info diagnostics must not surface as errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall with where clause, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero `forall@*`-labelled CompiledConstraints — silent-skip preserved.
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef and body has \
+         a where-clause, got {}",
+        forall_constraints_count
+    );
+
+    // (c) NO captured template — the where-clause case must not push.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall \
+         with where-clause (would drop guard at runtime), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic flagging the limitation, with a stable
+    //     substring pin.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("where-clause") && d.message.contains("deferred-count"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic mentioning 'where-clause' and \
+         'deferred-count' for the deferred-count forall with where clause, \
+         got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// `forall v in [1, 2, 3]: constraint v > 0 where heavy` should emit one
 /// `CompiledGuardedGroup` per element (3 total), each containing exactly
 /// one `forall@v[*]`-labelled constraint and each whose `guard_expr` is
