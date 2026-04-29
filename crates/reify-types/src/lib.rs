@@ -51,9 +51,9 @@ pub use geometry::{
     DeletedRecord, ExportError, ExportFormat,
     FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, HistoryRecord, Mesh, ModEntry, QueryError, ReprKind, Role,
-    StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute, TopologyAttributeTable,
-    debug_assert_query_many_invariant,
+    GeometryOp, GeometryQuery, HistoryRecord, LoftOpHistoryRecords, Mesh, ModEntry, QueryError,
+    ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute,
+    TopologyAttributeTable, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;
