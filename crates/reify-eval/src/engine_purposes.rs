@@ -164,9 +164,13 @@ impl Engine {
         }
 
         // Record the per-purpose entity binding then rebuild the tolerance
-        // scope (task 2647). The binding insert MUST run before the recompute
-        // so this purpose's RepresentationWithin contribution is included in
-        // the resulting scope. See `crates/reify-eval/src/tolerance_scope.rs`.
+        // scope (task 2647 / PRD `docs/prds/v0_2/per-purpose-tolerance.md`,
+        // "Resolved design decisions" → "Tolerance lives at the purpose").
+        // The binding insert MUST run before the recompute so this purpose's
+        // `RepresentationWithin` contribution is included in the resulting
+        // scope; tighter contributions across purposes win via `min`. See
+        // `crates/reify-eval/src/tolerance_scope.rs` for the recognition
+        // matcher and propagation walk.
         self.active_purpose_bindings
             .insert(purpose_name.to_string(), entity_ref.to_string());
         self.recompute_tolerance_scope();
@@ -216,9 +220,13 @@ impl Engine {
         self.active_objective_map.remove(purpose_name);
 
         // Drop the per-purpose entity binding then rebuild the tolerance
-        // scope (task 2647). The binding remove MUST run before the recompute
-        // so this purpose's contribution is excluded from the resulting
-        // scope. See `crates/reify-eval/src/tolerance_scope.rs`.
+        // scope (task 2647 / PRD `docs/prds/v0_2/per-purpose-tolerance.md`,
+        // "Resolved design decisions" → "Tolerance lives at the purpose").
+        // The binding remove MUST run before the recompute so this purpose's
+        // contribution is excluded from the resulting scope; surviving
+        // contributors fold back to their own `min`. See
+        // `crates/reify-eval/src/tolerance_scope.rs` for the recognition
+        // matcher and propagation walk.
         self.active_purpose_bindings.remove(purpose_name);
         self.recompute_tolerance_scope();
     }
@@ -236,8 +244,18 @@ impl Engine {
     /// Look up the active tolerance (SI metres) for `entity_ref`, computed
     /// from the currently active purposes whose subject prefix-scan covers
     /// `entity_ref`. Returns `None` if no active purpose contributes a
-    /// tolerance for this entity. Per PRD
-    /// `docs/prds/v0_2/per-purpose-tolerance.md` (task 2647).
+    /// tolerance for this entity.
+    ///
+    /// The returned value is the *minimum* across all active contributors —
+    /// tighter satisfies looser, the same partial-order semantics as the
+    /// cache-side `ToleranceBucket` (task 2648). This is the demand-side
+    /// counterpart that tells the dispatcher (sibling tasks 2649/2650) which
+    /// tolerance to ask for when materialising realizations for `entity_ref`.
+    ///
+    /// Per PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
+    /// decisions" → "Tolerance lives at the purpose"), task 2647. The
+    /// extraction/propagation/merge primitives live in
+    /// `crates/reify-eval/src/tolerance_scope.rs`.
     pub fn active_tolerance_for(&self, entity_ref: &str) -> Option<f64> {
         self.active_tolerance_scope.get(entity_ref).copied()
     }
