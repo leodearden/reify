@@ -263,12 +263,22 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
 
-            // Uniform-density default (this step) — densities arg absent,
-            // Undef, or empty Map all collapse to 1.0 per body.  Step 26
-            // extends this to per-body Map lookup with uniform fallback.
-            let _densities_uniform = args.len() == 1
-                || matches!(&args[1], Value::Undef)
-                || matches!(&args[1], Value::Map(m) if m.is_empty());
+            // Density resolution.  When args[1] is absent OR Undef OR an
+            // empty Map → uniform 1.0 per body.  When args[1] is a non-
+            // empty Map → per-body lookup with 1.0 fallback for absent
+            // ids.  Any other shape (Real, List, String, …) is rejected
+            // up-front; non-numeric density values inside a populated Map
+            // collapse the whole call later (per-body loop below).
+            let densities_map: Option<&BTreeMap<Value, Value>> = if args.len() == 1 {
+                None
+            } else {
+                match &args[1] {
+                    Value::Undef => None,
+                    Value::Map(m) if m.is_empty() => None,
+                    Value::Map(m) => Some(m),
+                    _ => return Some(Value::Undef),
+                }
+            };
 
             let mut weighted_xyz = [0.0_f64; 3];
             let mut total_density = 0.0_f64;
@@ -285,13 +295,37 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                     Some(t) => t,
                     None => return Some(Value::Undef),
                 };
-                // Step 24: uniform density.  Step 26 will resolve per-body
-                // density from args[1] when it's a non-empty Map.
-                let density = 1.0_f64;
+
+                // Resolve this body's density.  Uniform fallback when
+                // densities_map is None (no arg / Undef / empty Map) OR
+                // when this body's id isn't a key in the populated Map
+                // (partial map → 1.0 for absent ids per spec §13.3).
+                // Non-numeric density values reject the whole call.
+                let id = match body_map.get(&Value::String("id".to_string())) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+                let density = match densities_map.and_then(|m| m.get(id)) {
+                    None => 1.0_f64,
+                    Some(Value::Real(r)) => *r,
+                    Some(Value::Int(i)) => *i as f64,
+                    Some(Value::Scalar { si_value, .. }) => *si_value,
+                    Some(_) => return Some(Value::Undef),
+                };
+                if !density.is_finite() {
+                    return Some(Value::Undef);
+                }
                 for i in 0..3 {
                     weighted_xyz[i] += density * xyz[i];
                 }
                 total_density += density;
+            }
+            // Total density of zero (e.g., user supplies all-zero
+            // densities) is a divide-by-zero — return Undef.  The
+            // uniform default never hits this branch (every body
+            // contributes 1.0).
+            if total_density == 0.0 {
+                return Some(Value::Undef);
             }
             // total_density > 0 is guaranteed because snap_bodies is non-empty
             // and each body contributes 1.0 (or, post-step-26, a positive
