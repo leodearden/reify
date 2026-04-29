@@ -300,9 +300,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             //   • DIMENSIONLESS — accepted for unit-less twists / numerical work
             //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
             //
-            // This matches transform_log, which preserves the input translation's
-            // dimension verbatim — so the round-trip log↔exp works for both
-            // LENGTH and DIMENSIONLESS Transforms.
+            // transform_log applies the identical LENGTH|DIMENSIONLESS gate and
+            // preserves the dimension on output, so the log↔exp round-trip is
+            // symmetric on both accept and reject.
             let (lin_comps, lin_dim) = match decompose_vec3(linear_val) {
                 Some(v) => v,
                 None => return Some(Value::Undef),
@@ -371,6 +371,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
+            // Gate translation dimension: must be LENGTH or DIMENSIONLESS, matching
+            // the identical check in transform_exp so the log↔exp round-trip is
+            // symmetric on both accept and reject.
+            if t_dim != DimensionVector::LENGTH && t_dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
             let (tx, ty, tz) = (t[0], t[1], t[2]);
             // Compute angular = orient_log(R): rotation vector ω.
             let (rw, rx, ry, rz) = r_q;
