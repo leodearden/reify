@@ -272,30 +272,61 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Sampled { .. } => {
-            // Mirrors the Imported arm: v0.2 deferral — emit the diagnostic and
-            // return the variant with an empty config Vec.  (Imported is fully
-            // payload-less; Sampled keeps its config field but the compiler always
-            // emits an empty Vec here.)  The config block is intentionally not
-            // walked; the field-iteration loop in `Engine::eval` maps
-            // Sampled { .. } unconditionally to Value::Undef, so the compiled
-            // config has no runtime consumer.  `dot_chain_lint::walk_declaration`
-            // still walks the AST config expressions for shape-level lints
-            // (DeepDotChain); deeper compile_expr diagnostics — unresolved idents,
-            // type errors — are intentionally suppressed since the feature is
-            // wholesale deferred to v0.2.
-            diagnostics.push(
-                Diagnostic::error(
-                    "sampled field sources are deferred to v0.2; v0.1 supports analytical and composed only",
-                )
-                .with_code(DiagnosticCode::FieldSampledV02)
-                .with_label(DiagnosticLabel::new(
-                    field_def.span,
-                    "sampled field source is deferred to v0.2",
-                )),
-            );
+        reify_syntax::FieldSource::Sampled { config } => {
+            // v0.2 (task 2341): walk the AST config entries and compile each value
+            // expression. Runtime parsing of the resulting Values into a
+            // `SampledField` is performed in `engine_eval::elaborate_field`; this
+            // arm validates the shape (allowed keys + no duplicates) and forwards
+            // the compiled expressions.
+            //
+            // Validation rules:
+            //   - Accepted keys: `grid`, `interpolation`, `data`. All three are
+            //     required at v0.2 — the missing-key check is in step-8.
+            //   - Unknown keys produce a hard error; the entry is dropped.
+            //   - Duplicate keys (e.g. two `grid = ...` entries) produce a hard
+            //     error; only the first occurrence is kept in the compiled
+            //     config so engine_eval sees a deterministic shape.
+            let mut compiled_config: Vec<(String, reify_types::CompiledExpr)> = Vec::new();
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for (key, expr) in config {
+                let key_str = key.as_str();
+                let is_known = matches!(key_str, "grid" | "interpolation" | "data");
+                if !is_known {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown sampled-field config key: '{}'; expected grid, interpolation, or data",
+                            key
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "unknown sampled config key",
+                        )),
+                    );
+                    // Drop unknown-keyed entries; do not call compile_expr so
+                    // unrelated unresolved-name diagnostics from the value don't
+                    // cascade after the canonical "unknown key" error.
+                    continue;
+                }
+                if !seen.insert(key_str) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate sampled-field config key: '{}'",
+                            key
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "duplicate sampled config key",
+                        )),
+                    );
+                    // Drop the duplicate; the first-seen entry is kept.
+                    continue;
+                }
+                let compiled_expr =
+                    compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                compiled_config.push((key.clone(), compiled_expr));
+            }
             CompiledFieldSource::Sampled {
-                config: Vec::new(),
+                config: compiled_config,
             }
         }
         reify_syntax::FieldSource::Composed { expr } => {
