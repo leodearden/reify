@@ -75,6 +75,66 @@ use reify_types::{
 /// `topology_selectors` filters.
 const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 
+/// Extract the primitive's faces/edges from `kernel` and seed
+/// `TopologyAttribute` records for each, in one call.
+///
+/// Convenience wrapper for callers (e.g. `Engine::execute_realization_ops`)
+/// that don't already have pre-extracted face/edge handle vectors and
+/// don't need to reuse them downstream. For seedable primitive variants
+/// (`Box`, `Cylinder`, `Sphere`), this calls `kernel.extract_faces` /
+/// `kernel.extract_edges` and then delegates to
+/// [`seed_primitive_attributes`]. For non-seedable variants, it returns
+/// `Ok(())` without calling into the kernel — the dispatch by op kind
+/// happens here so non-primitive ops (Translate / boolean / sweep / …)
+/// pay zero kernel overhead per realization op.
+///
+/// `Engine::execute_realization_ops` cannot use the underlying
+/// [`seed_primitive_attributes`] directly because the kernel is not
+/// available to the engine as a `&mut dyn GeometryKernel` at the same
+/// time as borrows on `step_handles` / `feature_tag_table`; this wrapper
+/// brackets all kernel borrows in one synchronous call.
+///
+/// Errors: same contract as [`seed_primitive_attributes`] — callers
+/// should treat any `Err(QueryError)` as auxiliary-metadata failure
+/// (warn and continue) rather than primary geometry failure.
+pub fn seed_primitive_attributes_for_handle(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    result_handle: GeometryHandleId,
+    feature_id: &FeatureId,
+    op: &GeometryOp,
+) -> Result<(), QueryError> {
+    if !is_seedable_primitive(op) {
+        // Non-seedable variants — skip the extract_* calls entirely so the
+        // engine pays zero kernel overhead per non-primitive op. The
+        // closed-extension contract pins in `tests` (steps 9-10) verify
+        // every non-primitive variant returns Ok(()) without a kernel
+        // touch when invoked through `seed_primitive_attributes`; this
+        // wrapper enforces the same invariant for the engine path.
+        return Ok(());
+    }
+    let face_handles = kernel.extract_faces(result_handle)?;
+    let edge_handles = kernel.extract_edges(result_handle)?;
+    seed_primitive_attributes(
+        table,
+        kernel,
+        &face_handles,
+        &edge_handles,
+        feature_id,
+        op,
+    )
+}
+
+/// Returns `true` for `GeometryOp` variants that this seeder originates
+/// attribute records for. Non-seedable variants are intentional no-ops —
+/// see the module docstring for the deferred-task accounting.
+fn is_seedable_primitive(op: &GeometryOp) -> bool {
+    matches!(
+        op,
+        GeometryOp::Box { .. } | GeometryOp::Cylinder { .. } | GeometryOp::Sphere { .. }
+    )
+}
+
 /// Seed per-face/per-edge `TopologyAttribute` records for a primitive
 /// constructor's result handle.
 ///

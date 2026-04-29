@@ -5,15 +5,16 @@ use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat, FeatureTag,
+    CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat, FeatureId, FeatureTag,
     FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel, Mesh, RealizationNodeId,
-    SourceSpan, ValueMap, VersionId,
+    SourceSpan, TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
+use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::{BuildResult, Engine, TessellateResult};
 
 impl Engine {
@@ -55,6 +56,7 @@ impl Engine {
                 .any(|r| !r.operations.is_empty());
 
             self.feature_tag_table = FeatureTagTable::default();
+            self.topology_attribute_table = TopologyAttributeTable::default();
             for template in &module.templates {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -74,6 +76,8 @@ impl Engine {
                         &mut diagnostics,
                         &mut named_steps,
                         &mut self.feature_tag_table,
+                        &mut self.topology_attribute_table,
+                        &realization.id,
                         realization.name.as_deref(),
                         realization.span,
                         &mut kernel_error,
@@ -165,6 +169,7 @@ impl Engine {
                 .any(|r| !r.operations.is_empty());
 
             self.feature_tag_table = FeatureTagTable::default();
+            self.topology_attribute_table = TopologyAttributeTable::default();
             for template in &module.templates {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -184,6 +189,8 @@ impl Engine {
                         &mut diagnostics,
                         &mut named_steps,
                         &mut self.feature_tag_table,
+                        &mut self.topology_attribute_table,
+                        &realization.id,
                         realization.name.as_deref(),
                         realization.span,
                         &mut kernel_error,
@@ -274,6 +281,7 @@ impl Engine {
         // kernel-resolved Bool answers (when a kernel is configured).
         let mut values = check_result.values;
         self.feature_tag_table = FeatureTagTable::default();
+        self.topology_attribute_table = TopologyAttributeTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
@@ -282,6 +290,7 @@ impl Engine {
             &mut diagnostics,
             &self.meta_map,
             &mut self.feature_tag_table,
+            &mut self.topology_attribute_table,
         );
 
         TessellateResult {
@@ -319,6 +328,7 @@ impl Engine {
     /// inside `execute_realization_ops` happen *before* the post-process
     /// runs, so the patch is observable only on the final `TessellateResult`
     /// surface — matching the build-pipeline semantics.
+    #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
         module: &CompiledModule,
@@ -327,6 +337,7 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
         meta_map: &HashMap<String, HashMap<String, String>>,
         feature_tag_table: &mut FeatureTagTable,
+        topology_attribute_table: &mut TopologyAttributeTable,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -362,6 +373,8 @@ impl Engine {
                     diagnostics,
                     &mut named_steps,
                     feature_tag_table,
+                    topology_attribute_table,
+                    &realization.id,
                     realization.name.as_deref(),
                     realization.span,
                     &mut kernel_error,
@@ -448,6 +461,8 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
         named_steps: &mut HashMap<String, GeometryHandleId>,
         feature_tag_table: &mut FeatureTagTable,
+        topology_attribute_table: &mut TopologyAttributeTable,
+        realization_id: &RealizationNodeId,
         realization_name: Option<&str>,
         realization_span: SourceSpan,
         kernel_error_out: &mut Option<ErrorRef>,
@@ -470,6 +485,31 @@ impl Engine {
                         // Record the parallel-array feature tag for this handle.
                         if let Some(&tag) = feature_tags.get(op_idx) {
                             feature_tag_table.record(handle.id, tag);
+                        }
+                        // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
+                        // per-face/per-edge `TopologyAttribute` records for
+                        // primitive constructors (Box / Cylinder / Sphere).
+                        // Non-primitive variants are no-ops at zero kernel
+                        // cost — `seed_primitive_attributes_for_handle` skips
+                        // the extract_* calls entirely for them. A seeding
+                        // failure (e.g. extract_faces / FaceNormal query
+                        // error) emits a Warning diagnostic and continues:
+                        // attribute seeding is auxiliary metadata, not
+                        // primary geometry, so it must not regress the
+                        // realization to Failed when only the metadata path
+                        // breaks. Per-task design decision recorded in
+                        // .task/plan.json.
+                        let feature_id = FeatureId::from(realization_id);
+                        if let Err(e) = seed_primitive_attributes_for_handle(
+                            topology_attribute_table,
+                            kernel,
+                            handle.id,
+                            &feature_id,
+                            &geom_op,
+                        ) {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "topology-attribute seeding failed for {realization_id} op {op_idx}: {e}"
+                            )));
                         }
                         step_handles.push(handle.id);
                     }
@@ -685,6 +725,7 @@ impl Engine {
         // `is_orientable`) before they're surfaced via `TessellateResult`
         // (task 2320 amendment).
         self.feature_tag_table = FeatureTagTable::default();
+        self.topology_attribute_table = TopologyAttributeTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
@@ -693,6 +734,7 @@ impl Engine {
             &mut diagnostics,
             &self.meta_map,
             &mut self.feature_tag_table,
+            &mut self.topology_attribute_table,
         );
 
         Some(TessellateResult {
@@ -739,6 +781,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -750,13 +794,24 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
             &mut None,
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
-        assert!(diagnostics.is_empty(), "expected no diagnostics");
+        // Filter to error-severity only: the v0.2 topology-attribute seeder
+        // (#2574) emits a Diagnostic::warning when extract_faces / extract_edges
+        // fail (e.g. on a mock kernel without an extraction fixture). The
+        // happy-path contract is "no Error diagnostics"; auxiliary-metadata
+        // warnings are expected noise on mock kernels.
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
     }
 
     /// Compile failure: a Boolean op with out-of-bounds step references causes
@@ -787,6 +842,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -798,6 +855,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
             &mut None,
@@ -853,6 +912,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -864,6 +925,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
             &mut None,
@@ -930,6 +993,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -941,6 +1006,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
             &mut None,
@@ -999,6 +1066,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -1010,6 +1079,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
             &mut None,
@@ -1069,6 +1140,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -1080,12 +1153,19 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
         );
 
-        assert!(diagnostics.is_empty(), "expected no diagnostics");
+        // Filter to error-severity only: see comment in the happy-path test.
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
         let body_handle = named_steps.get("body").copied();
         assert!(
@@ -1127,6 +1207,8 @@ mod tests {
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -1138,6 +1220,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             Some("bad"),
             SourceSpan::new(0, 0),
             &mut None,
@@ -1199,6 +1283,8 @@ mod tests {
 
         // First binding: let body = box(…)
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &box_ops,
@@ -1210,6 +1296,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
@@ -1220,6 +1308,8 @@ mod tests {
 
         // Second binding: let body = cylinder(…) — same name, different primitive
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &cyl_ops,
@@ -1231,6 +1321,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
@@ -1313,6 +1405,8 @@ mod tests {
 
         // First binding: let body = box(…) — succeeds, populates named_steps.
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &box_ops,
@@ -1324,6 +1418,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
@@ -1336,6 +1432,8 @@ mod tests {
 
         // Second binding: let body = <invalid> — fails (rollback path).
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &fail_ops,
@@ -1347,6 +1445,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
@@ -1404,6 +1504,8 @@ mod tests {
         let realization_span = SourceSpan::new(100, 150);
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -1415,6 +1517,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             realization_span,
             &mut None,
@@ -1483,6 +1587,8 @@ mod tests {
         let realization_span = SourceSpan::new(200, 250);
 
         let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
             &ops,
@@ -1494,6 +1600,8 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &test_realization_id,
             None,
             realization_span,
             &mut None,
