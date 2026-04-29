@@ -279,6 +279,40 @@ fn walk_to_world(joint_parents: &BTreeMap<Value, Value>, start: &Value) -> Vec<V
     walk
 }
 
+/// Returns `true` if adding the edge `(at → parent)` to `joint_parents`
+/// would close a cycle. The check walks the pre-edge `joint_parents`
+/// from `parent` ancestor-ward; if the walk encounters `at`, the new
+/// edge closes a cycle. Returns `false` if the walk reaches the world
+/// sentinel or a node with no recorded parent.
+///
+/// Cycle-safe: bounded at `joint_parents.len() + 1` so any pre-existing
+/// cycle (which would only be present in defensive scenarios — the
+/// builder eagerly rejects every cycle-creating edge) cannot loop here.
+fn cycle_introduced(
+    pre_edge: &BTreeMap<Value, Value>,
+    at: &Value,
+    parent: &Value,
+) -> bool {
+    let mut current = parent.clone();
+    let cap = pre_edge.len() + 1;
+    for _ in 0..cap {
+        if is_world(&current) {
+            return false;
+        }
+        if &current == at {
+            return true;
+        }
+        match pre_edge.get(&current) {
+            Some(p) => current = p.clone(),
+            None => return false,
+        }
+    }
+    // Bound exhausted without reaching world or `at` — defensive: the
+    // pre-edge graph is itself cyclic, so adding any edge "closes a
+    // cycle" in the loose sense. Conservative truthy answer.
+    true
+}
+
 /// Decorate an existing Mechanism Map with closed-chain or duplicate-solid
 /// error fields. Preserves the input's `bodies`, `joint_parents`,
 /// `next_id`, and `kind` fields verbatim and appends `error`,
@@ -371,6 +405,33 @@ fn append_body(
                     .to_string(),
             );
         }
+    }
+
+    // Closed-chain cycle detection: if walking from `parent` upward in
+    // the pre-edge `joint_parents` reaches `at`, then adding the edge
+    // `(at → parent)` would close a cycle. Surface a `closed_chain`
+    // error before any mutation.
+    if cycle_introduced(&joint_parents, &at, &parent) {
+        let world = make_world_sentinel();
+        // path1: `at`'s pre-edge ancestor chain — best-effort
+        // representation of where `at` was rooted before the new edge.
+        let mut path1 = vec![world.clone()];
+        path1.extend(walk_to_world(&joint_parents, &at));
+        // path2: pre-edge ancestor walk from `parent`, top-down,
+        // appended with `at` to make the closing edge visible. The
+        // cycle manifests as `at` appearing twice (once as a pre-
+        // existing ancestor and once as the new closing node).
+        let mut path2 = vec![world];
+        path2.extend(walk_to_world(&joint_parents, &parent));
+        path2.push(at.clone());
+        return make_error_mechanism(
+            mech_map,
+            "closed_chain",
+            path1,
+            path2,
+            "closed chain detected: new edge would close a cycle through joint_parents"
+                .to_string(),
+        );
     }
 
     // Build and append the new body record.
