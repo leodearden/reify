@@ -2993,9 +2993,11 @@ mod tests {
     }
 
     /// Slightly-perturbed q with w near −1 (near-identity in the negative
-    /// hemisphere) must produce ω ≈ +2*(nx,ny,nz), not −2*(nx,ny,nz).
+    /// hemisphere): after canonicalization (flip all components so nw > 0),
+    /// nx becomes −small, so ω = (2·nx, 0, 0) ≈ (−2·small, 0, 0). ang[0]
+    /// is *negative*, not positive.
     #[test]
-    fn transform_log_near_negative_identity_emits_positive_axis() {
+    fn transform_log_near_negative_identity_canonicalizes_axis_sign() {
         // Construct q such that nw ≈ −1 + tiny, with small (x,y,z) of definite sign.
         let small = 1e-10_f64;
         let w0 = -(1.0 - small * small / 2.0); // ≈ -1 + tiny
@@ -3008,9 +3010,14 @@ mod tests {
         let t = make_transform(q, 0.0, 0.0, 0.0);
         let result = eval_builtin("transform_log", &[t]);
         let ang = map_vec3_components(&result, "angular");
-        // After canonicalization (flip sign so nw>0), nx becomes -small, but
-        // ω = 2*nx = -2*small (with magnitude 2*small ≈ 2e-10). The key check
-        // is that the magnitude is ~2*small and y/z components are ~0.
+        // After canonicalization (flip sign so nw > 0), nx becomes −small, so
+        // ω = (2·nx, 0, 0) = (−2·small, 0, 0). Verify the sign (ang[0] < 0)
+        // and the magnitude (|ang[0]| ≈ 2·small ≈ 2e-10).
+        assert!(
+            ang[0] < 0.0,
+            "angular[0] = {}, expected negative after canonicalization-driven sign flip",
+            ang[0]
+        );
         assert!(
             (ang[0].abs() - 2.0 * small).abs() < 1e-15,
             "|angular[0]| = {}, expected ≈ {}",
