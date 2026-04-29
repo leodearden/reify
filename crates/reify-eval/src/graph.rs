@@ -1623,4 +1623,48 @@ mod tests {
             "topology_fingerprint should not change when only forall_templates differs (no instantiated constraints)",
         );
     }
+
+    /// Task 2690 step-5/step-6: `template.connections` must carry through to
+    /// `graph.connections` so the runtime forall-Connect re-emission path
+    /// can mutate the `Vec<CompiledConnection>` in lockstep with the
+    /// synthesised compatibility-constraint nodes in `graph.constraints`.
+    ///
+    /// RED before step-6 (the `connections` field on `EvaluationGraph` does
+    /// not yet exist).
+    #[test]
+    fn evaluation_graph_carries_connections() {
+        use reify_compiler::CompiledConnection;
+        use reify_syntax::ConnectOp;
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::SourceSpan;
+
+        let conn = CompiledConnection {
+            left_port: "vents[0].inlet".to_string(),
+            operator: ConnectOp::Forward,
+            right_port: "air_channel".to_string(),
+            connector_sub: None,
+            compatibility_constraint: ConstraintNodeId::new("S", 0),
+            port_mappings: Vec::new(),
+            frame_constraint: None,
+            span: SourceSpan::empty(0),
+        };
+
+        let template = TopologyTemplateBuilder::new("S")
+            .connection(conn.clone())
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        assert_eq!(
+            graph.connections.len(),
+            1,
+            "expected 1 connection carried into graph",
+        );
+        let carried = &graph.connections[0];
+        assert_eq!(carried.left_port, conn.left_port);
+        assert_eq!(carried.right_port, conn.right_port);
+        assert_eq!(carried.operator, conn.operator);
+        assert_eq!(
+            carried.compatibility_constraint, conn.compatibility_constraint,
+        );
+    }
 }

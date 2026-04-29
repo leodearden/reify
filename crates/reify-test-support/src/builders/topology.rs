@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use reify_compiler::{
-    CompiledConstraint, CompiledForallTemplate, CompiledGeometryOp, CompiledGuardedGroup,
-    EntityKind, RealizationDecl, SolverHint, SubComponentDecl, TopologyTemplate, ValueCellDecl,
-    ValueCellKind,
+    CompiledConnection, CompiledConstraint, CompiledForallTemplate, CompiledGeometryOp,
+    CompiledGuardedGroup, EntityKind, RealizationDecl, SolverHint, SubComponentDecl,
+    TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_syntax;
 use reify_types::{
@@ -30,6 +30,7 @@ pub struct TopologyTemplateBuilder {
     annotations: Vec<reify_types::Annotation>,
     pragmas: Vec<reify_syntax::Pragma>,
     forall_templates: Vec<CompiledForallTemplate>,
+    connections: Vec<CompiledConnection>,
 }
 
 impl TopologyTemplateBuilder {
@@ -52,6 +53,7 @@ impl TopologyTemplateBuilder {
             annotations: Vec::new(),
             pragmas: Vec::new(),
             forall_templates: Vec::new(),
+            connections: Vec::new(),
         }
     }
 
@@ -62,6 +64,17 @@ impl TopologyTemplateBuilder {
     /// `forall_elaborate.rs` automatically.
     pub fn forall_template(mut self, ft: CompiledForallTemplate) -> Self {
         self.forall_templates.push(ft);
+        self
+    }
+
+    /// Add a `CompiledConnection` to the builder (task 2690).
+    ///
+    /// Used by hand-built fixtures exercising the runtime
+    /// `EvaluationGraph::connections` carrier. Production builds populate
+    /// `connections` via `compile_connection` in `connect.rs` and
+    /// `forall_elaborate.rs` automatically.
+    pub fn connection(mut self, conn: CompiledConnection) -> Self {
+        self.connections.push(conn);
         self
     }
 
@@ -415,7 +428,7 @@ impl TopologyTemplateBuilder {
             realizations: self.realizations,
             sub_components: self.sub_components,
             ports: Vec::new(),
-            connections: Vec::new(),
+            connections: self.connections,
             guarded_groups: self.guarded_groups,
             structure_controlling: self.structure_controlling,
             objective: self.objective,
