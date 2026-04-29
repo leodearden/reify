@@ -943,6 +943,95 @@ mod tests {
         assert!(table.is_empty(), "no-op propagation must not write entries");
     }
 
+    /// step-5 — split detection unions `face_modified` ∪ `face_generated`
+    /// per parent, and the iteration order is Modified-then-Generated.
+    ///
+    /// Parent (0, 0) appears in BOTH `face_modified = [(0, 0, 1)]` AND
+    /// `face_generated = [(0, 0, 2)]` — total count = 2 across the union
+    /// ⇒ split. The Modified record is encountered first (per the existing
+    /// `chain(face_modified, face_generated)` order), so result_face[1]
+    /// gets `split_index = 0` and result_face[2] gets `split_index = 1`.
+    /// Both children must carry a fresh ModEntry stamping the
+    /// splitting_feature_id.
+    ///
+    /// Pins both (a) the union semantics for split detection and (b) the
+    /// per-kind iteration order Modified→Generated.
+    #[test]
+    fn propagate_split_combines_modified_and_generated_records_for_same_parent() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = split_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        let parent_handle = layout.parent_faces[0][0];
+        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        table.record(
+            parent_handle,
+            TopologyAttribute {
+                feature_id: parent_feature_id.clone(),
+                role: Role::Side,
+                local_index: 3,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+
+        // Same parent (0, 0) appears once in face_modified and once in
+        // face_generated — count == 2 across the union ⇒ split.
+        let history = BooleanOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 1,
+            }],
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let splitting = fuse_feature_id();
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+            &splitting,
+        )
+        .expect("propagation should succeed for a well-formed cross-kind split");
+
+        // (a) result_faces[1] — first child (Modified record), split_index=0.
+        let attr_modified = table
+            .lookup(layout.result_faces[1])
+            .expect("Modified child should have a propagated entry");
+        assert_eq!(
+            attr_modified.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting.clone(),
+                split_index: 0,
+            }],
+            "Modified record is iterated before Generated; split_index = 0"
+        );
+
+        // (b) result_faces[2] — second child (Generated record), split_index=1.
+        let attr_generated = table
+            .lookup(layout.result_faces[2])
+            .expect("Generated child should have a propagated entry");
+        assert_eq!(
+            attr_generated.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting,
+                split_index: 1,
+            }],
+            "Generated record follows Modified in iteration order; split_index = 1"
+        );
+    }
+
     /// step-3 — single-result parent must NOT receive a fresh ModEntry.
     ///
     /// The parent has exactly one same-kind result record (`face_modified`
