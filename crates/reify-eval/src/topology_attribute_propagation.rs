@@ -26,8 +26,8 @@
 //! 5-8, which will add per-op variants of this helper.
 
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, GeometryHandleId, HistoryRecord, QueryError,
-    TopologyAttributeTable,
+    BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
+    QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -179,6 +179,201 @@ fn propagate_one(
     if let Some(parent_attr) = table.lookup(parent_handle) {
         let attr_clone = parent_attr.clone();
         table.record(result_handle, attr_clone);
+    }
+    Ok(())
+}
+
+/// Originate topology attributes for a `BRepPrimAPI_MakePrism` (extrude)
+/// result, given the per-op history records returned by
+/// `OcctKernel::extrude_with_history`.
+///
+/// Inputs:
+/// - `table`: the table to update in place. Result-face entries are
+///   written for each cap-face index and each `face_generated` record.
+/// - `feature_id`: the FeatureId attached to every entry written. Caller
+///   constructs this from a `RealizationNodeId` via the existing
+///   `From<&RealizationNodeId> for FeatureId` impl.
+/// - `profile_face_handles` / `profile_edge_handles`: the profile shape's
+///   faces / edges in canonical TopExp order. These are passed in for
+///   defense-in-depth `parent_subshape_index` range validation; the
+///   helper does not currently *read* the profile table (extrude
+///   originates fresh attributes — propagation of pre-existing profile
+///   attributes through `Modified` records is task 5b's loft / 6's
+///   primitives concern, not 5a's).
+/// - `result_face_handles` / `result_edge_handles`: the result shape's
+///   faces / edges in canonical TopExp order. Indexed by
+///   `start_cap_face_indices`, `end_cap_face_indices`, and the
+///   `result_subshape_index` of `face_generated` records.
+/// - `history`: the `SweepOpHistoryRecords` produced by the FFI.
+///
+/// Cap orientation contract (see `SweepOpHistoryRecords` doc):
+///   `start_cap_face_indices` → `Role::Cap(CapKind::Top)`
+///   `end_cap_face_indices` → `Role::Cap(CapKind::Bottom)`
+///
+/// The "Top from start" convention follows from the `make_prism(profile,
+/// 0, 0, +dist)` call shape: the profile-as-placed (FirstShape) is the
+/// face the user authored at the chosen Z origin and the swept-end
+/// (LastShape) is at +dist. For a positive-Z extrude the `start_cap` is
+/// the higher-Z face (`Top`) and the `end_cap` is the lower-Z face
+/// (`Bottom`); see `SweepOpHistoryRecords` doc for cross-reference.
+///
+/// Local-index assignment:
+///   - Caps are unique within their `(feature_id, role)` pair, so
+///     each cap face gets `local_index = 0`.
+///   - Side faces (`face_generated`) are assigned sequential 0-based
+///     `local_index` in the order they appear in `history.face_generated`.
+///     Per task-5a design decision, this 0-based ordering follows the
+///     kernel's TopExp parent-edge enumeration (each parent edge sponsors
+///     one side face; the records arrive in parent-edge order), so the
+///     index is invariant across parameter edits that preserve profile
+///     shape (the test in `engine_build_extrude_with_mock_history_*`
+///     verifies this stability).
+///
+/// Edge attributes (e.g. `Role::NewEdge` for cap-to-side seam edges) are
+/// **not** written by this helper. Edge-level attribution is deferred to
+/// task 5b / 6 once the cap-edge / seam-edge classification rules are
+/// finalised; the variant exists in `Role` for the type-system but is
+/// not yet emitted by extrude population.
+///
+/// Returns `Err(QueryError::QueryFailed)` if any record references an
+/// out-of-bounds result-face index, or if any cap-face index is out of
+/// bounds in `result_face_handles`. The FFI primitive guarantees
+/// in-range indices, so this is a defense-in-depth path pinned by the
+/// step-11 unit tests.
+pub fn populate_extrude_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &SweepOpHistoryRecords,
+) -> Result<(), QueryError> {
+    // Caps: start → Top, end → Bottom; each cap is unique → local_index = 0.
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Top),
+        "extrude start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::Bottom),
+        "extrude end cap",
+    )?;
+
+    // Sides: each face_generated record → Role::Side with sequential
+    // local_index in the order the records appear (mirrors parent-edge
+    // TopExp ordering, stable across parameter edits).
+    write_face_generated_attributes(
+        table,
+        feature_id,
+        profile_face_handles,
+        profile_edge_handles,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+        Role::Side,
+        "extrude side",
+    )?;
+
+    Ok(())
+}
+
+/// Shared helper: write `(feature_id, role, local_index = 0)` to each
+/// cap face index in `cap_indices`, validating that each index is in
+/// range for `result_face_handles`.
+fn write_cap_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    result_face_handles: &[GeometryHandleId],
+    cap_indices: &[u32],
+    role: Role,
+    kind: &str,
+) -> Result<(), QueryError> {
+    for &idx in cap_indices {
+        let idx_usize = idx as usize;
+        if idx_usize >= result_face_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "{kind} face index {idx} is out of range \
+                 for result face handles of len {}",
+                result_face_handles.len()
+            )));
+        }
+        let handle = result_face_handles[idx_usize];
+        table.record(
+            handle,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role,
+                local_index: 0,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Shared helper: write `(feature_id, role, local_index = sequential)`
+/// to each `face_generated` record's `result_subshape_index`, validating
+/// that each `parent_subshape_index` is in range for the profile slices
+/// (defense-in-depth) and each `result_subshape_index` is in range for
+/// `result_face_handles`. `local_index` increments per record in the
+/// order they appear in `face_generated`.
+#[allow(clippy::too_many_arguments)] // sweep helpers fan out parent + result slices for both faces and edges
+fn write_face_generated_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    _result_edge_handles: &[GeometryHandleId],
+    face_generated: &[HistoryRecord],
+    role: Role,
+    kind: &str,
+) -> Result<(), QueryError> {
+    let _ = profile_face_handles; // reserved for future face-level Modified checks
+    for (sequential_idx, record) in face_generated.iter().enumerate() {
+        // Defense-in-depth: parent_subshape_index in range over profile edges.
+        // The kernel emits each side face from a parent profile edge sweep,
+        // so parent_subshape_index points into the profile edge map.
+        let parent_subshape_idx = record.parent_subshape_index as usize;
+        if parent_subshape_idx >= profile_edge_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "{kind} face_generated record has parent_subshape_index {} \
+                 but profile has only {} edges",
+                parent_subshape_idx,
+                profile_edge_handles.len()
+            )));
+        }
+
+        let result_subshape_idx = record.result_subshape_index as usize;
+        if result_subshape_idx >= result_face_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "{kind} face_generated record has result_subshape_index {} \
+                 but result has only {} faces",
+                result_subshape_idx,
+                result_face_handles.len()
+            )));
+        }
+
+        let handle = result_face_handles[result_subshape_idx];
+        table.record(
+            handle,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role,
+                local_index: sequential_idx as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
     }
     Ok(())
 }
