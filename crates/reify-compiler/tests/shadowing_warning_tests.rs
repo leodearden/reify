@@ -1291,11 +1291,12 @@ purpose mfg(subject : Structure) {
 ///    subject` hides purpose-param `subject`.  This is the shadow-lint
 ///    contract.
 ///
-/// 2. **`Severity::Error`** from `compile_purpose`
+/// 2. **`DiagnosticCode::PurposeLetUnsupported` Error** from `compile_purpose`
 ///    (`crates/reify-compiler/src/traits.rs`): "let bindings in purpose bodies
 ///    are not yet supported: 'subject'".  This is an *unsupported-feature*
 ///    error, not a *duplicate-decl* error — `DiagnosticCode` has no
-///    `DuplicateDecl` variant.
+///    `DuplicateDecl` variant.  Identified by typed code rather than message
+///    substring.
 ///
 /// Both diagnostics fire at the body's `let subject` span.  We choose the
 /// **document-as-intentional** branch rather than suppressing one:
@@ -1342,22 +1343,18 @@ purpose mfg(subject : Structure) {
             .collect::<Vec<_>>()
     );
 
-    // (2) At least one Severity::Error whose message is the unsupported-let
-    //     error.  This error fires at the same body-let span — intentional.
+    // (2) At least one diagnostic with code PurposeLetUnsupported — the
+    //     unsupported-feature error from compile_purpose.  This error fires at
+    //     the same body-let span — intentional.
     let unsupported_errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error
-                && d.message
-                    .contains("let bindings in purpose bodies are not yet supported")
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::PurposeLetUnsupported))
         .collect();
     assert!(
         !unsupported_errors.is_empty(),
-        "expected at least one Severity::Error with message containing \
-         'let bindings in purpose bodies are not yet supported', got none. \
-         Full diagnostics: {:?}",
+        "expected at least one diagnostic with code DiagnosticCode::PurposeLetUnsupported, \
+         got none. Full diagnostics: {:?}",
         module.diagnostics
     );
 
