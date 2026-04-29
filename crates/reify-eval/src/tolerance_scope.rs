@@ -121,6 +121,7 @@ mod tests {
     use reify_types::{
         BinOp, CompiledExpr, ContentHash, DimensionVector, PersistentMap, Type, Value, ValueCellId,
     };
+    use std::collections::HashMap;
 
     /// Build a one-cell `PersistentMap` entry shaped like the existing
     /// `engine_purposes.rs` unit-test fixtures: a `Param` cell typed
@@ -299,5 +300,45 @@ mod tests {
             vec!["A".to_string()],
             "prefix-lookalike entity (`AB`) must NOT be matched by propagate(`A`)"
         );
+    }
+
+    #[test]
+    fn merge_with_min_keeps_tighter_when_existing_is_looser() {
+        // scope = {"A": 50e-6}, additions = [("A", 1e-6)] → scope == {"A": 1e-6}
+        let mut scope: HashMap<String, f64> = HashMap::new();
+        scope.insert("A".to_string(), 50e-6);
+
+        merge_with_min(&mut scope, vec![("A".to_string(), 1e-6)]);
+
+        assert_eq!(scope.len(), 1);
+        assert_eq!(scope.get("A"), Some(&1e-6));
+    }
+
+    #[test]
+    fn merge_with_min_keeps_existing_when_addition_is_looser() {
+        // scope = {"A": 1e-6}, additions = [("A", 50e-6)] → scope == {"A": 1e-6}
+        let mut scope: HashMap<String, f64> = HashMap::new();
+        scope.insert("A".to_string(), 1e-6);
+
+        merge_with_min(&mut scope, vec![("A".to_string(), 50e-6)]);
+
+        assert_eq!(scope.len(), 1);
+        assert_eq!(scope.get("A"), Some(&1e-6));
+    }
+
+    #[test]
+    fn merge_with_min_inserts_new_entries() {
+        // scope = {}, additions = [("A", 1e-6), ("B", 5e-6)]
+        //   → scope == {"A": 1e-6, "B": 5e-6}
+        let mut scope: HashMap<String, f64> = HashMap::new();
+
+        merge_with_min(
+            &mut scope,
+            vec![("A".to_string(), 1e-6), ("B".to_string(), 5e-6)],
+        );
+
+        assert_eq!(scope.len(), 2);
+        assert_eq!(scope.get("A"), Some(&1e-6));
+        assert_eq!(scope.get("B"), Some(&5e-6));
     }
 }
