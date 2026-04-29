@@ -130,6 +130,9 @@ pub mod ffi {
         fn boolean_op_history_edge_generated(history: &BooleanOpHistory) -> Vec<u32>;
         /// Deleted records for parent edges (flat groups of 2).
         fn boolean_op_history_edge_deleted(history: &BooleanOpHistory) -> Vec<u32>;
+        /// Count of Modified/Generated children that could not be found in the
+        /// result map and were silently skipped. Zero for a well-formed boolean.
+        fn boolean_op_history_silent_drop_count(history: &BooleanOpHistory) -> u32;
 
         // --- BRepPrimAPI sweep history (v0.2 persistent-naming-v2, task 2573) ---
 

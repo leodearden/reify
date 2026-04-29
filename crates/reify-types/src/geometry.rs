@@ -1021,6 +1021,12 @@ pub struct DeletedRecord {
 /// constructive boolean.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BooleanOpHistoryRecords {
+    /// Number of Modified/Generated children that the FFI primitive observed
+    /// but could not map back into the result face/edge map (i.e. the child
+    /// shape reported by BRepAlgoAPI was absent from the result's TopExp map).
+    /// For vanilla boolean operations this should be zero; a non-zero value
+    /// indicates a kernel correspondence loss or map-type mismatch.
+    pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
     pub face_deleted: Vec<DeletedRecord>,

@@ -116,6 +116,11 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 /// `result` after take are illegal (it is a moved-from `unique_ptr`).
 struct BooleanOpHistory {
     std::unique_ptr<OcctShape> result;
+    /// Count of Modified/Generated children that BRepAlgoAPI reported but
+    /// that could not be found in the result face_map/edge_map. Should be
+    /// zero for a well-formed boolean; non-zero indicates a kernel
+    /// correspondence loss or map-type mismatch.
+    uint32_t silent_drop_count = 0;
     std::vector<uint32_t> face_modified;
     std::vector<uint32_t> face_generated;
     std::vector<uint32_t> face_deleted;
@@ -156,6 +161,9 @@ rust::Vec<uint32_t> boolean_op_history_face_deleted(const BooleanOpHistory& hist
 rust::Vec<uint32_t> boolean_op_history_edge_modified(const BooleanOpHistory& history);
 rust::Vec<uint32_t> boolean_op_history_edge_generated(const BooleanOpHistory& history);
 rust::Vec<uint32_t> boolean_op_history_edge_deleted(const BooleanOpHistory& history);
+/// Count of Modified/Generated children silently dropped because they could
+/// not be found in the result map. Zero for a well-formed boolean operation.
+uint32_t boolean_op_history_silent_drop_count(const BooleanOpHistory& history);
 
 // --- BRepPrimAPI sweep history (v0.2 persistent-naming-v2, task 2573) ---
 

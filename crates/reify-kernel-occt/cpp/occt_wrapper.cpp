@@ -288,7 +288,8 @@ void emit_history_for_parent(
     uint32_t parent_index,
     std::vector<uint32_t>& out_modified,
     std::vector<uint32_t>& out_generated,
-    std::vector<uint32_t>& out_deleted) {
+    std::vector<uint32_t>& out_deleted,
+    uint32_t& out_drop_count) {
     const Standard_Integer n = parent_map.Extent();
     for (Standard_Integer i = 1; i <= n; ++i) {
         const TopoDS_Shape& parent_sub = parent_map.FindKey(i);
@@ -301,6 +302,7 @@ void emit_history_for_parent(
             const TopoDS_Shape& child = it.Value();
             Standard_Integer one_based = result_map.FindIndex(child);
             if (one_based < 1) {
+                ++out_drop_count;
                 continue;
             }
             out_modified.push_back(parent_index);
@@ -315,6 +317,7 @@ void emit_history_for_parent(
             const TopoDS_Shape& child = it.Value();
             Standard_Integer one_based = result_map.FindIndex(child);
             if (one_based < 1) {
+                ++out_drop_count;
                 continue;
             }
             out_generated.push_back(parent_index);
@@ -363,18 +366,22 @@ std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& lef
         // Faces: emit per-parent records.
         emit_history_for_parent(
             fuse, left.face_map(), result_face_map, /*parent_index=*/0,
-            history->face_modified, history->face_generated, history->face_deleted);
+            history->face_modified, history->face_generated, history->face_deleted,
+            history->silent_drop_count);
         emit_history_for_parent(
             fuse, right.face_map(), result_face_map, /*parent_index=*/1,
-            history->face_modified, history->face_generated, history->face_deleted);
+            history->face_modified, history->face_generated, history->face_deleted,
+            history->silent_drop_count);
 
         // Edges: emit per-parent records.
         emit_history_for_parent(
             fuse, left.edge_map(), result_edge_map, /*parent_index=*/0,
-            history->edge_modified, history->edge_generated, history->edge_deleted);
+            history->edge_modified, history->edge_generated, history->edge_deleted,
+            history->silent_drop_count);
         emit_history_for_parent(
             fuse, right.edge_map(), result_edge_map, /*parent_index=*/1,
-            history->edge_modified, history->edge_generated, history->edge_deleted);
+            history->edge_modified, history->edge_generated, history->edge_deleted,
+            history->silent_drop_count);
 
         return history;
     });
@@ -406,6 +413,10 @@ rust::Vec<uint32_t> boolean_op_history_edge_generated(const BooleanOpHistory& hi
 
 rust::Vec<uint32_t> boolean_op_history_edge_deleted(const BooleanOpHistory& history) {
     return to_rust_vec(history.edge_deleted);
+}
+
+uint32_t boolean_op_history_silent_drop_count(const BooleanOpHistory& history) {
+    return history.silent_drop_count;
 }
 
 // --- BRepPrimAPI sweep history (v0.2 persistent-naming-v2, task 2573) ---
