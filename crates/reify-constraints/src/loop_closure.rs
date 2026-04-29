@@ -195,67 +195,68 @@ fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
     (ang2.sqrt(), lin2.sqrt())
 }
 
-/// Solve `A · x = b` for `x` where `A` is a small dense symmetric (semi-)PD
-/// matrix supplied as `n×n` row-major nested `Vec`, using inlined LDLᵀ
-/// factorisation.
+/// Solve `A · x = b` for `x` in-place where `A` is a small dense symmetric
+/// (semi-)PD matrix supplied as a flat row-major slice of length `n*n`, and
+/// `b` is the RHS vector of length `n` that is overwritten with the solution.
 ///
-/// Returns `None` if the min absolute pivot drops below `pivot_eps` — that
-/// is the signal that the Gauss-Newton normal-equations matrix `JᵀJ` is
+/// Uses inlined LDLᵀ factorisation.  `a` is overwritten during factorisation
+/// (strict-lower triangle → L, diagonal → D).
+///
+/// Returns `true` on success (`b` now holds `x`), or `false` if the minimum
+/// absolute pivot drops below `pivot_eps` — the signal that `JᵀJ` is
 /// rank-deficient.  Callers should pass [`NewtonConfig::singularity_pivot_eps`].
-fn solve_normal_equations(
-    mut a: Vec<Vec<f64>>,
-    mut b: Vec<f64>,
-    pivot_eps: f64,
-) -> Option<Vec<f64>> {
-    let n = a.len();
+///
+/// Precondition: `a.len() == n*n` and `b.len() == n`; returns `false` if
+/// either guard fails (defensive, should not occur in normal usage).
+fn solve_normal_equations(a: &mut [f64], b: &mut [f64], n: usize, pivot_eps: f64) -> bool {
     if n == 0 {
-        return Some(vec![]);
+        return true;
     }
-    if a.iter().any(|row| row.len() != n) || b.len() != n {
-        return None;
+    if a.len() != n * n || b.len() != n {
+        return false;
     }
     // LDLᵀ: a is overwritten so that the strict-lower triangle holds L
     // (with implicit unit diagonal) and the diagonal holds D.
     for j in 0..n {
         // Compute D[j,j] = a[j,j] - Σ_{k<j} L[j,k]^2 * D[k,k]
-        let mut d_jj = a[j][j];
-        for (k, row) in a.iter().enumerate().take(j) {
-            d_jj -= a[j][k] * a[j][k] * row[k];
+        let mut d_jj = a[j * n + j];
+        for k in 0..j {
+            d_jj -= a[j * n + k] * a[j * n + k] * a[k * n + k];
         }
         if d_jj.abs() < pivot_eps {
-            return None;
+            return false;
         }
-        a[j][j] = d_jj;
+        a[j * n + j] = d_jj;
         // Compute L[i,j] for i > j: a[i,j] = (a[i,j] - Σ_{k<j} L[i,k]*L[j,k]*D[k,k]) / D[j,j]
         for i in (j + 1)..n {
-            let mut s = a[i][j];
-            for (k, row) in a.iter().enumerate().take(j) {
-                s -= a[i][k] * a[j][k] * row[k];
+            let mut s = a[i * n + j];
+            for k in 0..j {
+                s -= a[i * n + k] * a[j * n + k] * a[k * n + k];
             }
-            a[i][j] = s / d_jj;
+            a[i * n + j] = s / d_jj;
         }
     }
     // Forward solve L · y = b (L unit-lower).
     for i in 0..n {
         let mut s = b[i];
         for k in 0..i {
-            s -= a[i][k] * b[k];
+            s -= a[i * n + k] * b[k];
         }
         b[i] = s;
     }
     // Diagonal solve D · z = y.
     for i in 0..n {
-        b[i] /= a[i][i];
+        b[i] /= a[i * n + i];
     }
     // Back solve Lᵀ · x = z.
     for i in (0..n).rev() {
         let mut s = b[i];
         for k in (i + 1)..n {
-            s -= a[k][i] * b[k];
+            s -= a[k * n + i] * b[k];
         }
         b[i] = s;
     }
-    Some(b)
+    true
 }
 
 /// Generic Gauss-Newton solver for closure-driven residual+jacobian problems.
@@ -357,7 +358,7 @@ where
                 residual_norm: combined_norm,
             };
         }
-        let mut jtj: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
+        let mut jtj_flat: Vec<f64> = vec![0.0; n * n];
         let mut jtr: Vec<f64> = vec![0.0; n];
         for i in 0..n {
             for j in 0..n {
@@ -365,7 +366,7 @@ where
                 for (a, b) in j_cols[i].iter().zip(j_cols[j].iter()) {
                     s += a * b;
                 }
-                jtj[i][j] = s;
+                jtj_flat[i * n + j] = s;
             }
             let mut s = 0.0;
             for (a, b) in j_cols[i].iter().zip(r.iter()) {
@@ -374,13 +375,11 @@ where
             jtr[i] = s;
         }
         // Solve JᵀJ · δx = -Jᵀr.
-        let neg_jtr: Vec<f64> = jtr.iter().map(|v| -v).collect();
-        let dx = match solve_normal_equations(jtj, neg_jtr, config.singularity_pivot_eps) {
-            Some(d) => d,
-            None => {
-                return NewtonOutcome::Singular { x, iters: iter };
-            }
-        };
+        let mut neg_jtr: Vec<f64> = jtr.iter().map(|v| -v).collect();
+        if !solve_normal_equations(&mut jtj_flat, &mut neg_jtr, n, config.singularity_pivot_eps) {
+            return NewtonOutcome::Singular { x, iters: iter };
+        }
+        let dx = neg_jtr;
         for i in 0..n {
             x[i] += dx[i];
         }
