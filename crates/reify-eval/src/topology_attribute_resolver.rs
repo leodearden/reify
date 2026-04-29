@@ -302,7 +302,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{CapKind, FeatureId, Severity};
+    use reify_types::{CapKind, FeatureId, ModEntry, Severity};
 
     fn span() -> SourceSpan {
         SourceSpan::empty(0)
@@ -470,6 +470,64 @@ mod tests {
         assert!(
             diag.message.contains("matched 2 sub-shapes"),
             "message should contain 'matched 2 sub-shapes', got: {}",
+            diag.message
+        );
+    }
+
+    /// step-9 (task #2653) — role/idx multi-match where ALL matched
+    /// candidates share the same parent-key routes to AmbiguousAfterSplit.
+    ///
+    /// Two candidates h(60), h(61) carry identical
+    /// `(feature_id, role, local_index, user_label)` but distinct
+    /// `mod_history` (the split-children signature: same parent, different
+    /// `ModEntry`s). The role/idx query matches both. Per PRD line 64, the
+    /// resolver surfaces the SET of children (rather than silently
+    /// rebinding) via `AmbiguousAfterSplit`, with a TopologyAttributeStale
+    /// diagnostic whose message names "split children" and the count.
+    #[test]
+    fn resolve_returns_ambiguous_after_split_when_role_idx_match_clusters_on_parent_key() {
+        let mut table = TopologyAttributeTable::default();
+        // Both entries share the parent-key (feat(), Side, 0, None) and
+        // differ only in mod_history — the post-split signature.
+        let mut a = attr(Role::Side, 0, None);
+        a.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 0,
+        }];
+        let mut b = attr(Role::Side, 0, None);
+        b.mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            split_index: 1,
+        }];
+        table.record(h(60), a);
+        table.record(h(61), b);
+        let candidates = [h(60), h(61)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(
+            result,
+            AttributeResolution::AmbiguousAfterSplit {
+                children: vec![h(60), h(61)],
+            },
+            "matched cluster shares parent-key → AmbiguousAfterSplit with both children in encounter order"
+        );
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("split children"),
+            "message should mention 'split children', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains('2'),
+            "message should mention count '2', got: {}",
             diag.message
         );
     }
