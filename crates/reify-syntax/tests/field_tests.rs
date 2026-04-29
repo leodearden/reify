@@ -108,6 +108,32 @@ fn parse_composed_field() {
     }
 }
 
+// ── Step 2665-1: imported field full key=value block ────────────────
+
+#[test]
+fn parse_imported_field_with_full_block() {
+    let (decls, errors) = parse_decls(
+        r#"field def fea : Point3 -> Scalar { source = imported { path = "fea.vdb" format = OpenVDB grid = "vonMises" } }"#,
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+    assert_eq!(field.name, "fea");
+
+    match &field.source {
+        FieldSource::Imported { path, format, grid } => {
+            assert_eq!(path.as_deref(), Some("fea.vdb"));
+            assert_eq!(format.as_deref(), Some("OpenVDB"));
+            assert_eq!(grid.as_deref(), Some("vonMises"));
+        }
+        other => panic!("expected Imported source, got {:?}", other),
+    }
+}
+
 // ── Step 7: pub field ───────────────────────────────────────────────
 
 #[test]
