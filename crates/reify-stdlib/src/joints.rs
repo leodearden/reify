@@ -66,10 +66,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             // Perpendicularity check: |dot(unit_x, unit_y)| < 1e-9.
             // Normalise each axis first so the dot product is in cos-angle units.
-            let mag_x = (comps_x[0] * comps_x[0] + comps_x[1] * comps_x[1] + comps_x[2] * comps_x[2]).sqrt();
-            let unit_x = [comps_x[0] / mag_x, comps_x[1] / mag_x, comps_x[2] / mag_x];
-            let mag_y = (comps_y[0] * comps_y[0] + comps_y[1] * comps_y[1] + comps_y[2] * comps_y[2]).sqrt();
-            let unit_y = [comps_y[0] / mag_y, comps_y[1] / mag_y, comps_y[2] / mag_y];
+            // `unit_normalize` is shared with `unit_axes_xy_from_planar_map` below;
+            // the single tolerance (1e-9) is documented in that helper's doc-comment.
+            let unit_x = unit_normalize(comps_x);
+            let unit_y = unit_normalize(comps_y);
             let dot = unit_x[0] * unit_y[0] + unit_x[1] * unit_y[1] + unit_x[2] * unit_y[2];
             if dot.abs() >= 1e-9 {
                 return Some(Value::Undef);
@@ -142,7 +142,11 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 }
                 // 3-DOF planar joint: motion_vars is a Value::List of 3 elements
                 // [x_length, y_length, theta_angle].
-                // Composition: T_planar = T_x · T_y · T_theta (left-to-right).
+                // Composition: T_planar = T_x · T_y · T_theta (left-to-right),
+                // matching the chain_transform convention in loop_closure.rs.
+                // See docs/prds/v0_2/kinematic-constraints.md §"Decomposition plan"
+                // task 6 for the canonical composition order (used by the
+                // analytic-Jacobian follow-up task).
                 "planar" => {
                     let items = match &args[1] {
                         Value::List(v) if v.len() == 3 => v.clone(),
@@ -412,6 +416,17 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             //   prismatic → angular=[0,0,0], linear=axis_unit
             //   revolute  → angular=axis_unit, linear=[0,0,0]
             //   coupling  → ratio * parent_jacobian (component-wise).
+            //   fixed     → zero column placeholder (0-DOF joint).
+            //   planar    → zero column placeholder (3-DOF FD-fallback); the
+            //               actual per-DOF wrench contributions are computed by
+            //               `chain_jacobian_fd`, which perturbs motion variables
+            //               directly and does NOT consult this function.
+            //
+            // For multi-DOF joints (fixed, planar) the returned column is zero
+            // rather than Undef: callers expecting a { angular, linear } Map get a
+            // well-formed result, and `chain_jacobian_fd` bypasses this path
+            // entirely.  Do NOT assume a non-zero result for planar joints; consume
+            // `chain_jacobian_fd` instead for multi-DOF chain Jacobians.
             //
             // Validation mirrors `transform_at`'s coupling arm: parent kind must
             // be prismatic/revolute (no nested couplings), ratio must be a
@@ -474,6 +489,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // `joint_jacobian_dispatches_for_every_joint_kind` coverage test.
         // The analytic 3-DOF Jacobian is deferred per PRD task 2 ("finite-difference
         // fallback for spherical, cylindrical, planar until analytic forms are derived").
+        //
+        // Field validation is deliberately skipped (unlike the prismatic/revolute arms):
+        // the result is zero regardless of the stored axis_x/axis_y/range fields, so
+        // a hand-built Map with missing fields returns the same correct placeholder.
+        // This matches the `"fixed"` arm's behaviour. Add
+        // `if unit_axes_xy_from_planar_map(map).is_none() { return Value::Undef; }`
+        // if you need stricter defence-in-depth for malformed fixtures.
         "planar" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
@@ -609,6 +631,18 @@ fn length_input(v: &Value) -> Option<f64> {
     }
 }
 
+/// Unit-normalise a 3-component array.
+///
+/// The caller must have already validated the input via [`validate_axis`],
+/// which guarantees non-zero, finite magnitude — so the division is safe.
+/// Shared by the `"planar"` constructor (perpendicularity check), by
+/// [`unit_axes_xy_from_planar_map`], and by [`unit_axis_from_map`], so the
+/// normalisation formula lives in exactly one place.
+fn unit_normalize(comps: [f64; 3]) -> [f64; 3] {
+    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
+    [comps[0] / mag, comps[1] / mag, comps[2] / mag]
+}
+
 /// Extract and unit-normalise both `"axis_x"` and `"axis_y"` from a planar joint Map.
 ///
 /// Returns `Some((unit_x, unit_y))` on success, `None` if either field is
@@ -619,12 +653,7 @@ fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3
     let axis_y_val = map.get(&Value::String("axis_y".to_string()))?;
     let cx = validate_axis(axis_x_val)?;
     let cy = validate_axis(axis_y_val)?;
-    let mag_x = (cx[0] * cx[0] + cx[1] * cx[1] + cx[2] * cx[2]).sqrt();
-    let mag_y = (cy[0] * cy[0] + cy[1] * cy[1] + cy[2] * cy[2]).sqrt();
-    Some((
-        [cx[0] / mag_x, cx[1] / mag_x, cx[2] / mag_x],
-        [cy[0] / mag_y, cy[1] / mag_y, cy[2] / mag_y],
-    ))
+    Some((unit_normalize(cx), unit_normalize(cy)))
 }
 
 /// Look up the `"axis"` field in a joint map, validate it via [`validate_axis`],
@@ -636,8 +665,7 @@ fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3
 fn unit_axis_from_map(map: &BTreeMap<Value, Value>) -> Option<[f64; 3]> {
     let axis_val = map.get(&Value::String("axis".to_string()))?;
     let comps = validate_axis(axis_val)?;
-    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
-    Some([comps[0] / mag, comps[1] / mag, comps[2] / mag])
+    Some(unit_normalize(comps))
 }
 
 /// Validate an axis value: must be a Vector3 of dimensionless components,
@@ -3249,6 +3277,54 @@ mod tests {
             [s2, s2, 0.0],
             1e-12,
             "planar non-axis-aligned X translation",
+        );
+    }
+
+    // ── transform_at on planar: non-Z plane normal (amendment — review suggestion 4) ──
+
+    #[test]
+    fn transform_at_planar_non_z_normal() {
+        // axis_x=[1,0,0], axis_y=[0,0,1] → plane is the XZ plane.
+        // Normal = axis_x × axis_y = (1,0,0)×(0,0,1):
+        //   nx = ay*bz - az*by = 0*1 - 0*0 = 0
+        //   ny = az*bx - ax*bz = 0*0 - 1*1 = -1
+        //   nz = ax*by - ay*bx = 1*0 - 0*0 = 0
+        // → normal = (0, -1, 0) = -Y axis.
+        //
+        // This test verifies the cross-product sign and catches axis_x/axis_y
+        // transposition bugs: swapping the two axes would flip the normal to +Y
+        // and produce quat.y = +sin_half (not -sin_half), which the assertion catches.
+        //
+        // motion = [0m, 0m, π/4 rad]
+        // → translation = [0, 0, 0], rotation = quat(-Y, π/4)
+        //   = (cos(π/8), 0·sin(π/8), -1·sin(π/8), 0·sin(π/8))
+        //   = (cos(π/8), 0, -sin(π/8), 0)
+        let pi = std::f64::consts::PI;
+        let ax = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let ay = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let joint = eval_builtin("planar", &[
+            ax, ay,
+            length_range_0_to_1m(),
+            length_range_0_to_1m(),
+            angle_range_0_to_pi(),
+        ]);
+        assert!(!joint.is_undef(), "planar([1,0,0],[0,0,1],...) should build OK");
+        let theta = pi / 4.0;
+        let motion = Value::List(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::angle(theta),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        let cos_h = (theta / 2.0).cos();
+        let sin_h = (theta / 2.0).sin();
+        // exp_rot = (w, x, y, z); normal = (0, -1, 0) so y = -sin_h.
+        assert_transform_approx(
+            &result,
+            (cos_h, 0.0, -sin_h, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "planar XZ-plane: rotation about -Y",
         );
     }
 
