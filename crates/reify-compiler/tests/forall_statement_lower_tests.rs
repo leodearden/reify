@@ -1177,6 +1177,71 @@ structure def S {
     );
 }
 
+/// `forall v in []: constraint MinThreshold(value: v)` should emit zero
+/// CompiledConstraints and zero errors. Pins PRD criterion 6 for the
+/// Instantiation body shape: `expand_constraint_inst` is called INSIDE the
+/// per-element loop, so an empty collection never invokes it and no inst_idx
+/// is allocated. If a future refactor pre-allocates inst_idx outside the loop
+/// the total constraint count will become non-zero and this test will catch it.
+#[test]
+fn forall_constraint_inst_body_over_empty_list_literal_emits_no_decls_no_error() {
+    let source = r#"
+constraint def MinThreshold {
+    param value : Scalar
+    value > 0
+}
+structure S {
+    forall v in []: constraint MinThreshold(value: v)
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for empty-list forall constraint-inst, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // Zero total constraints — the only constraints that could exist come from
+    // the forall, and the empty list means none are emitted.
+    assert_eq!(
+        template.constraints.len(),
+        0,
+        "expected zero constraints from empty-list forall constraint-inst, got {}: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+
+    // No MinThreshold#*:forall@v[*] labels exist.
+    let inst_forall_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.contains(":forall@v["))
+        })
+        .count();
+    assert_eq!(
+        inst_forall_count, 0,
+        "expected zero MinThreshold#*:forall@v[*] constraints, got {}",
+        inst_forall_count
+    );
+
+    // Confirm the source parses as ForallConstraint.
+    let _forall_span = find_forall_constraint_span(source, "S");
+}
+
 /// `forall v in []: connect v.inlet -> hub` should emit zero CompiledConnections
 /// and zero errors. Pins PRD criterion 6 for the Connect form: an empty
 /// collection is vacuously satisfied — no connections are emitted, no
