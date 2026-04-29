@@ -242,6 +242,27 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                     t_planar
                 }
+                // 3-DOF spherical joint: motion variable is `Value::Orientation`
+                // (a unit quaternion). Per PRD task 4 design decision, the user
+                // constructs the quaternion via `orient_axis_angle` /
+                // `orient_euler` / `orient_quaternion` before calling
+                // `transform_at`; the spherical arm renormalises as
+                // defence-in-depth. step-6 stub: returns identity regardless of
+                // the second arg (modulo Undef propagation). Step-8 fills in
+                // the real quaternion path.
+                "spherical" => {
+                    if matches!(&args[1], Value::Undef) {
+                        return Some(Value::Undef);
+                    }
+                    Value::Transform {
+                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(0.0),
+                            Value::length(0.0),
+                            Value::length(0.0),
+                        ])),
+                    }
+                }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
