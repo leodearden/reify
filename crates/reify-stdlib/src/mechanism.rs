@@ -1051,9 +1051,10 @@ mod tests {
     ///   `path2 = [world, j_b, j_a, j_b]` — `walk_to_world({j_a:j_b}, j_a)` yields
     ///                                      `[j_b, j_a]` top-down; world prepended;
     ///                                      closing edge `at = j_b` appended. j_b
-    ///                                      appears twice — per the comment at
-    ///                                      lines 484-488 in `append_body` ("the
-    ///                                      cycle manifests as `at` appearing twice").
+    ///                                      appears twice — per the `path2` comment
+    ///                                      in `append_body`'s `cycle_introduced`
+    ///                                      arm ("the cycle manifests as `at`
+    ///                                      appearing twice").
     #[test]
     fn closed_chain_via_joint_graph_cycle_emits_error_with_cycle_path() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1113,7 +1114,7 @@ mod tests {
             vec![world, j_b.clone(), j_a, j_b],
             "path2 should walk world → j_b → j_a → j_b: walk_to_world({{j_a:j_b}}, j_a) \
              yields [j_b, j_a] top-down, then `at=j_b` appended as closing edge \
-             (j_b appears twice — per lines 484-488 in append_body)"
+             (j_b appears twice — per the path2 comment in append_body's cycle_introduced arm)"
         );
     }
 
