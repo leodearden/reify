@@ -91,26 +91,54 @@ pub fn resolve_unique_by_attribute(
     _selector_span: SourceSpan,
     _diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
-    // step-2 — user_label branch only. Later steps add role/idx, fallback
-    // detection, and diagnostic emission.
+    // step-2 — user_label branch.
     if let Some(label) = query.user_label.as_deref() {
-        let mut found: Option<GeometryHandleId> = None;
-        let mut n: usize = 0;
-        for &id in candidates {
-            if let Some(attr) = table.lookup(id) {
-                if attr.user_label.as_deref() == Some(label) {
-                    n += 1;
-                    if n == 1 {
-                        found = Some(id);
-                    }
-                }
-            }
+        let (found, n) = count_unique_matches(table, candidates, |attr| {
+            attr.user_label.as_deref() == Some(label)
+        });
+        if n == 1 {
+            return AttributeResolution::Resolved(found.unwrap());
         }
+    }
+    // step-4 — role + local_index branch.
+    if let Some((role, idx)) = query.role_and_index {
+        let (found, n) =
+            count_unique_matches(table, candidates, |attr| attr.role == role && attr.local_index == idx);
         if n == 1 {
             return AttributeResolution::Resolved(found.unwrap());
         }
     }
     AttributeResolution::Unresolved
+}
+
+/// Walk `candidates`, looking up each id in `table` and applying `predicate`
+/// to the attribute. Returns `(first_matching_handle, total_match_count)`.
+///
+/// Mirrors `resolve_unique_by_tag`'s zero/one/many counting discipline. The
+/// returned count is exactly the number of candidates that matched the
+/// predicate; callers branch on `0` / `1` / `>1` to decide whether to
+/// resolve, fall through, or emit a diagnostic.
+fn count_unique_matches<F>(
+    table: &TopologyAttributeTable,
+    candidates: &[GeometryHandleId],
+    predicate: F,
+) -> (Option<GeometryHandleId>, usize)
+where
+    F: Fn(&TopologyAttribute) -> bool,
+{
+    let mut found: Option<GeometryHandleId> = None;
+    let mut n: usize = 0;
+    for &id in candidates {
+        if let Some(attr) = table.lookup(id) {
+            if predicate(attr) {
+                n += 1;
+                if n == 1 {
+                    found = Some(id);
+                }
+            }
+        }
+    }
+    (found, n)
 }
 
 #[cfg(test)]
