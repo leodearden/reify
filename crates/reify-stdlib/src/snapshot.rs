@@ -565,14 +565,26 @@ fn joint_world_transform(
 
 /// Look up the motion value for `joint` in a bindings list.
 ///
-/// Linear scan; first match by structural `Value::Eq` on the binding's
-/// `joint` field wins.  When no entry matches, fall back to the
-/// joint's range midpoint via [`joint_range_midpoint`] (per spec
-/// §13.3): the resulting f64 (in SI units — metres for prismatic,
-/// radians for revolute, parent-frame midpoint for coupling) is
-/// wrapped back into a dimensioned `Value::length` / `Value::angle`
-/// via [`wrap_midpoint_for_joint`] so it round-trips through
-/// `transform_at`'s `length_input` / `trig_input` checks.
+/// Resolution order:
+/// 1. **Direct binding** — linear scan; first match by structural
+///    `Value::Eq` on the binding's `joint` field wins.
+/// 2. **Coupling-tracks-parent** — when `joint` is a coupling and isn't
+///    directly bound, recurse on the coupling's `parent` joint.  This
+///    realises the kinematic-constraint semantic that a coupling's
+///    "free variable" is its parent's free variable: the user binds
+///    only the parent (the actual degree of freedom) and the coupling
+///    tracks it through the ratio/offset applied by `transform_at`'s
+///    coupling arm. Without this recursion, `transform_at(coupling,
+///    midpoint_of_parent_range)` would surface a constant offset
+///    that breaks counter-mass-balance stationarity (PRD task 6
+///    acceptance test).
+/// 3. **Range-midpoint fallback** — when neither the joint nor any
+///    coupling ancestor is bound, fall back to the joint's range
+///    midpoint via [`joint_range_midpoint`] (per spec §13.3).  The
+///    resulting f64 (in SI units) is wrapped back into a dimensioned
+///    `Value::length` / `Value::angle` via [`wrap_midpoint_for_joint`]
+///    so it round-trips through `transform_at`'s `length_input` /
+///    `trig_input` checks.
 ///
 /// Returns `None` only when the joint is non-Map, lacks a range, or
 /// has an unbounded range — `joint_range_midpoint` already filters
@@ -581,6 +593,7 @@ fn joint_world_transform(
 /// Defensive against malformed binding entries (non-Map, missing
 /// `joint`/`value` keys): such entries are skipped, not failed-on.
 fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
+    // 1. Direct binding by structural Value::Eq on the joint Map.
     for entry in bindings {
         let map = match entry {
             Value::Map(m) => m,
@@ -592,11 +605,26 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
             }
         }
     }
-    // No binding matched — fall back to the joint's range midpoint
-    // (spec §13.3).  For coupling joints, `joint_range_midpoint`
-    // already recurses to the parent's range; we still wrap with the
-    // parent's dimension here so `transform_at(coupling, v)` receives
-    // a properly-typed value for its `length_input`/`trig_input`.
+    // 2. Coupling-tracks-parent: when this joint is a coupling and
+    //    isn't directly bound, look up the parent's value.  This
+    //    expresses the design intent that the user binds the actual
+    //    degree of freedom (the parent), and the coupling derives its
+    //    motion via the ratio/offset applied downstream by
+    //    `transform_at`'s coupling arm.  Termination is guaranteed:
+    //    `couple` rejects coupling parents at construction, so the
+    //    recursion bottoms out at depth 1 in a prismatic/revolute
+    //    parent, where direct-binding lookup or midpoint fallback
+    //    settles the value.
+    if let Value::Map(map) = joint {
+        if map.get(&Value::String("kind".to_string()))
+            == Some(&Value::String("coupling".to_string()))
+        {
+            if let Some(parent) = map.get(&Value::String("parent".to_string())) {
+                return value_for(parent, bindings);
+            }
+        }
+    }
+    // 3. Range-midpoint fallback (spec §13.3).
     let mid_si = joint_range_midpoint(joint)?;
     wrap_midpoint_for_joint(joint, mid_si)
 }
