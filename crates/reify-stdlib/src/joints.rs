@@ -3178,6 +3178,63 @@ mod tests {
         );
     }
 
+    // ── transform_at on planar: combined motion (step-9) ─────────────────────
+
+    #[test]
+    fn transform_at_planar_combined_motion() {
+        // axis_x=[1,0,0], axis_y=[0,1,0], motion=[0.5m, 0.3m, π/2 rad]
+        // T_x has identity rotation → translation adds; T_theta adds rotation.
+        // Expected: translation=[0.5, 0.3, 0], rotation=quat(+Z, π/2).
+        let joint = planar_xy_joint();
+        let pi = std::f64::consts::PI;
+        let motion = Value::List(vec![
+            Value::length(0.5),
+            Value::length(0.3),
+            Value::angle(pi / 2.0),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.5, 0.3, 0.0],
+            1e-12,
+            "planar combined [0.5m, 0.3m, π/2]",
+        );
+    }
+
+    #[test]
+    fn transform_at_planar_combined_non_axis_aligned() {
+        // axis_x = [1/√2, 1/√2, 0] (45° in XY plane)
+        // axis_y = [-1/√2, 1/√2, 0] (perpendicular to axis_x in XY plane)
+        // motion = [1m, 0m, 0rad]
+        // → translation = 1 * unit_axis_x = [1/√2, 1/√2, 0], identity rotation
+        let s2 = std::f64::consts::FRAC_1_SQRT_2; // 1/√2
+        let ax = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
+        let ay = Value::Vector(vec![Value::Real(-s2), Value::Real(s2), Value::Real(0.0)]);
+        let joint = eval_builtin("planar", &[
+            ax,
+            ay,
+            length_range_0_to_1m(),
+            length_range_0_to_1m(),
+            angle_range_0_to_pi(),
+        ]);
+        let motion = Value::List(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::angle(0.0),
+        ]);
+        let result = eval_builtin("transform_at", &[joint, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [s2, s2, 0.0],
+            1e-12,
+            "planar non-axis-aligned X translation",
+        );
+    }
+
     // ── planar constructor: validation surface (step-3) ───────────────────────
 
     #[test]
