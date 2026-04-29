@@ -3278,6 +3278,37 @@ mod tests {
         }
     }
 
+    // ── joint_jacobian for planar (step-13) ──────────────────────────────────
+
+    /// `joint_jacobian(planar_joint)` returns a zero-twist Map placeholder.
+    ///
+    /// Design decision: planar is a 3-DOF joint; the analytic 3×6 Jacobian is
+    /// deferred (PRD task 2 design: "finite-difference fallback for spherical,
+    /// cylindrical, planar until analytic forms are derived"). A zero-column
+    /// Map `{ angular: [0,0,0], linear: [0,0,0] }` is returned to preserve the
+    /// uniform single-column shape across all kinds (matching the fixed-joint
+    /// pattern), so `joint_jacobian_dispatches_for_every_joint_kind` can assert
+    /// non-Undef for every kind in JOINT_KINDS.
+    #[test]
+    fn joint_jacobian_planar_returns_zero_column_placeholder() {
+        let pj = planar_xy_joint();
+        let result = eval_builtin("joint_jacobian", &[pj]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("joint_jacobian(planar): expected Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("angular".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "angular twist column should be [0, 0, 0]"
+        );
+        assert_eq!(
+            map.get(&Value::String("linear".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "linear twist column should be [0, 0, 0]"
+        );
+    }
+
     // ── planar constructor: validation surface (step-3) ───────────────────────
 
     #[test]
