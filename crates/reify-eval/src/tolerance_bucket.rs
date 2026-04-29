@@ -54,21 +54,6 @@ impl<V> ToleranceBucket<V> {
         self.entries.is_empty()
     }
 
-    /// Inserts `(tol, val)` into the bucket and returns `true`, or returns `false`
-    /// without modifying the bucket if any existing entry already satisfies `tol`.
-    ///
-    /// # "Tighter satisfies looser" rule (PRD: per-purpose-tolerance.md)
-    ///
-    /// An existing entry with `cached_tol <= tol` already satisfies any request at
-    /// tolerance `tol`.  Inserting a new, looser entry would be redundant — any
-    /// downstream consumer that could use the new entry can also use the existing
-    /// tighter one.  This function is therefore *idempotent under partial-order
-    /// satisfaction*: inserting a tolerance that is already dominated by an existing
-    /// entry is a no-op.
-    ///
-    /// # Panics (debug only)
-    ///
-    /// Panics in debug builds when `tol` is not finite or is negative.
     /// Inserts `(tol, val)` into the bucket in sorted-ascending order and returns
     /// `true`, or returns `false` without modifying the bucket if any existing entry
     /// already satisfies `tol`.
@@ -85,10 +70,17 @@ impl<V> ToleranceBucket<V> {
     /// After a successful insert the `entries` slice remains sorted ascending by
     /// `cached_tol`, which is the invariant assumed by [`lookup`](Self::lookup).
     ///
-    /// # Panics (debug only)
+    /// # Panics
     ///
-    /// Panics in debug builds when `tol` is not finite or is negative.
+    /// In debug builds, panics when `tol` is `NaN`, infinite, or negative.
+    /// The `debug_assert!` keeps NaN out of all sort/compare operations inside
+    /// the bucket, which would otherwise produce `None` from `partial_cmp` and
+    /// violate the sorted-ascending invariant.
     pub fn insert(&mut self, tol: f64, val: V) -> bool {
+        debug_assert!(
+            tol.is_finite() && tol >= 0.0,
+            "ToleranceBucket: tolerance must be finite and non-negative, got {tol}"
+        );
         // Reject if any existing entry already satisfies this tolerance.
         if self.entries.iter().any(|(cached_tol, _)| *cached_tol <= tol) {
             return false;
@@ -127,10 +119,14 @@ impl<V> ToleranceBucket<V> {
     /// yields the loosest satisfying entry on the first match — O(n) worst-case
     /// but typically O(1) at n ≤ [`SOFT_CAPACITY`].
     ///
-    /// # Panics (debug only)
+    /// # Panics
     ///
-    /// Panics in debug builds when `requested_tol` is not finite or is negative.
+    /// In debug builds, panics when `requested_tol` is `NaN`, infinite, or negative.
     pub fn lookup(&self, requested_tol: f64) -> Option<&V> {
+        debug_assert!(
+            requested_tol.is_finite() && requested_tol >= 0.0,
+            "ToleranceBucket: tolerance must be finite and non-negative, got {requested_tol}"
+        );
         debug_assert!(
             self.entries.windows(2).all(|w| w[0].0 <= w[1].0),
             "ToleranceBucket: entries must be sorted ascending by tolerance"
