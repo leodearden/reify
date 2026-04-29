@@ -163,8 +163,8 @@ fn solve_normal_equations(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f
     for j in 0..n {
         // Compute D[j,j] = a[j,j] - Σ_{k<j} L[j,k]^2 * D[k,k]
         let mut d_jj = a[j][j];
-        for k in 0..j {
-            d_jj -= a[j][k] * a[j][k] * a[k][k];
+        for (k, row) in a.iter().enumerate().take(j) {
+            d_jj -= a[j][k] * a[j][k] * row[k];
         }
         if d_jj.abs() < SINGULARITY_PIVOT_EPS {
             return None;
@@ -173,8 +173,8 @@ fn solve_normal_equations(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f
         // Compute L[i,j] for i > j: a[i,j] = (a[i,j] - Σ_{k<j} L[i,k]*L[j,k]*D[k,k]) / D[j,j]
         for i in (j + 1)..n {
             let mut s = a[i][j];
-            for k in 0..j {
-                s -= a[i][k] * a[j][k] * a[k][k];
+            for (k, row) in a.iter().enumerate().take(j) {
+                s -= a[i][k] * a[j][k] * row[k];
             }
             a[i][j] = s / d_jj;
         }
@@ -293,11 +293,11 @@ where
     // reported norm reflects the final iterate (not the last pre-step
     // residual).  If max_iters == 0, last_residual_norm is INFINITY; we
     // need to evaluate once at x0 to honour the user contract.
-    if config.max_iters == 0 {
-        if let Some((r, _)) = residual_jac(&x) {
-            let (ang_norm, lin_norm) = position_rotation_norms(&r);
-            last_residual_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
-        }
+    if config.max_iters == 0
+        && let Some((r, _)) = residual_jac(&x)
+    {
+        let (ang_norm, lin_norm) = position_rotation_norms(&r);
+        last_residual_norm = (ang_norm * ang_norm + lin_norm * lin_norm).sqrt();
     }
     NewtonOutcome::NotConverged {
         x,

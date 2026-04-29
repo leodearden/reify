@@ -197,7 +197,7 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
 /// [`chain_jacobian_fd`]; a future optimisation can compose these per-joint
 /// columns via SE(3) adjoint transport.
 pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
-    let result = eval_builtin("joint_jacobian", &[joint.clone()]);
+    let result = eval_builtin("joint_jacobian", std::slice::from_ref(joint));
     if result.is_undef() {
         return None;
     }
@@ -223,7 +223,7 @@ pub fn chain_jacobian_fd(
     free_indices: &[usize],
     eps: f64,
 ) -> Option<Vec<[f64; 6]>> {
-    if !(eps > 0.0) || !eps.is_finite() {
+    if eps <= 0.0 || !eps.is_finite() {
         return None;
     }
     if chain.len() != values.len() {
