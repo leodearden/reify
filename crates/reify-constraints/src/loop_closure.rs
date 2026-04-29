@@ -1356,4 +1356,45 @@ mod tests {
             other => panic!("expected Converged, got {other:?}"),
         }
     }
+
+    // ── solve_normal_equations flat-buffer unit tests (step-1) ────────────
+
+    #[test]
+    fn solve_normal_equations_flat_solves_pd_2x2_in_place() {
+        // A = [[2, 1], [1, 3]] (row-major: [2.0, 1.0, 1.0, 3.0])
+        // b = [4, 5]  →  Ax = b  →  x = [1.4, 1.2]
+        // (2x+y=4, x+3y=5 ⟹ x=1.4, y=1.2)
+        let mut a = vec![2.0_f64, 1.0, 1.0, 3.0];
+        let mut b = vec![4.0_f64, 5.0];
+        let result = super::solve_normal_equations(&mut a, &mut b, 2, 1e-12);
+        assert!(result, "expected solve to succeed on PD matrix");
+        assert!(
+            (b[0] - 1.4).abs() < 1e-9,
+            "expected b[0] ≈ 1.4, got {}",
+            b[0]
+        );
+        assert!(
+            (b[1] - 1.2).abs() < 1e-9,
+            "expected b[1] ≈ 1.2, got {}",
+            b[1]
+        );
+    }
+
+    #[test]
+    fn solve_normal_equations_flat_singular_returns_false() {
+        // A = [[1, 2], [2, 4]] — rank-1 (singular): D[1,1] = 4 - 2²·1 = 0.
+        let mut a = vec![1.0_f64, 2.0, 2.0, 4.0];
+        let mut b = vec![1.0_f64, 2.0];
+        let result = super::solve_normal_equations(&mut a, &mut b, 2, 1e-12);
+        assert!(!result, "expected solve to fail on singular matrix");
+    }
+
+    #[test]
+    fn solve_normal_equations_flat_n_zero_returns_true() {
+        // n = 0 edge case: empty slices must return true immediately.
+        let mut a: Vec<f64> = vec![];
+        let mut b: Vec<f64> = vec![];
+        let result = super::solve_normal_equations(&mut a, &mut b, 0, 1e-12);
+        assert!(result, "expected solve to succeed on n=0 (trivial case)");
+    }
 }
