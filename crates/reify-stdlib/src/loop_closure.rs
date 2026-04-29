@@ -164,6 +164,28 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
     }
 }
 
+/// Return the analytic per-joint twist column expressed in the joint's own
+/// input frame, as `[ω_x, ω_y, ω_z, v_x, v_y, v_z]`.
+///
+/// Wraps the existing `joint_jacobian` builtin (analytic for prismatic /
+/// revolute / coupling) and converts the resulting `Map { angular, linear }`
+/// to the canonical `[f64; 6]` layout.  Returns `None` for joint kinds the
+/// builtin can't analyse (the FD chain assembly in
+/// [`chain_jacobian_fd`] is the fallback for those — it perturbs the chain
+/// without consulting this accessor).
+///
+/// **Note**: this is the per-joint analytic column.  Chain-level Jacobians
+/// for the v0.2 task 2 MVP are computed via finite difference in
+/// [`chain_jacobian_fd`]; a future optimisation can compose these per-joint
+/// columns via SE(3) adjoint transport.
+pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
+    let result = eval_builtin("joint_jacobian", &[joint.clone()]);
+    if result.is_undef() {
+        return None;
+    }
+    twist_map_to_array(&result)
+}
+
 /// Wrap a raw f64 motion variable in a dimensioned `Value` appropriate for
 /// the joint kind: `Value::length` for prismatic, `Value::angle` for revolute.
 /// Coupling joints delegate to their parent's kind.
