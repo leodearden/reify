@@ -341,24 +341,13 @@ pub struct CompiledForallTemplate {
     pub body: CompiledForallBody,
 }
 
-/// The body shape of a captured forall template (task 2629).
+/// The body shape of a captured forall template (task 2629 + task 2690).
 ///
-/// Currently only `Constraint` is captured. The compile-time deferred-Connect
-/// arm in `forall_elaborate.rs` emits an info diagnostic and returns early
-/// without pushing — so no Connect template ever reaches the runtime in this
-/// task. Likewise the `Instantiation` and `Chain` source-level shapes retain
-/// compile-time silent-skip semantics — see `forall_elaborate.rs` info
-/// diagnostics.
-///
-/// **Future scope — task 2690:** the planned `Connect` variant should carry
-/// the substituted left/right port-name templates (e.g. `"coll[0].out"` and
-/// `"rest.in"`), the `ConnectOp` operator, an optional explicit
-/// `connector_type` name, the substituted-and-compiled connect parameters,
-/// and the port mappings on the connector type. Re-adding it should be done
-/// together with (a) the producer in `forall_elaborate.rs`'s
-/// deferred-Connect arm and (b) the consumer in `engine_edit.rs`'s
-/// re-emission loop, so the variant is never instantiated without the
-/// runtime path that drives it.
+/// Captured at compile time, consumed at runtime by `Engine::edit_param`'s
+/// collection-count phase when a `__count_<sub>` cell becomes known. The
+/// `Constraint` arm was wired by task 2629; the `Connect` arm by task 2690.
+/// The `Instantiation` / `Chain` source-level shapes retain compile-time
+/// silent-skip semantics — see `forall_elaborate.rs` info diagnostics.
 #[derive(Debug, Clone)]
 pub enum CompiledForallBody {
     /// Per-element constraint body: `forall v in coll: constraint <expr>`.
@@ -393,6 +382,55 @@ pub enum CompiledForallBody {
         /// test if a use case appears, or migrate to a sentinel placeholder
         /// entity that never collides with user-written index expressions.
         body_expr: CompiledExpr,
+    },
+    /// Per-element connection body: `forall v in coll: connect <l> <op> <r> [: T(...)]`.
+    ///
+    /// Task 2690 — wired. The substituted `coll[0]` placeholder appears
+    /// pre-baked in `left_port_template` and `right_port_template` (e.g.
+    /// `"vents[0].inlet"`); at runtime the engine rewrites each occurrence
+    /// of `format!("{coll_sub_name}[0]")` to `format!("{coll_sub_name}[{i}]")`
+    /// to materialise per-element connections.
+    ///
+    /// **Semantic divergence vs. the resolved (non-deferred) path** (mirrors
+    /// the Constraint variant's `body_expr` doc): a user-written explicit
+    /// `coll[0]` reference inside the connect body — vanishingly rare in
+    /// practice — is *also* rewritten to `coll[i]` for each `i`. Anchoring
+    /// the substring on `coll_sub_name` (not just `[0]`) reduces the risk of
+    /// accidentally rewriting an unrelated literal `[0]` in a port name.
+    ///
+    /// At runtime emission, the engine synthesises a fresh
+    /// compatibility-constraint `ConstraintNodeId` per element and pushes a
+    /// fresh `CompiledConnection` into `EvaluationGraph::connections`. The
+    /// synthetic compatibility constraint is a `Bool::True` literal — the
+    /// connect-time direction-check is NOT replicated at runtime; this
+    /// mirrors the Constraint arm's "compile substitution; trust at runtime"
+    /// policy. Auto-creation of `connector_sub` / `frame_constraint` is
+    /// deferred to a future task.
+    ///
+    /// **Connector-spec drop at runtime** (task 2690 amendment): for the
+    /// rich form (`forall v in coll: connect a -> b : T(p = e, ...)`) the
+    /// captured `connector_type` and `params` fields are populated here at
+    /// compile time, but `engine_edit.rs`'s re-emission drops them — only
+    /// the port-to-port connection is materialised, with `connector_sub`
+    /// set to `None` and `port_mappings` carried verbatim. The deferred
+    /// compile-time path emits an info diagnostic surfacing this limitation;
+    /// the captured fields are kept for a future task that wires
+    /// connector-spec-aware runtime emission.
+    Connect {
+        /// Substituted left-side port name (e.g. `"vents[0].inlet"`).
+        left_port_template: String,
+        /// Direction operator from the source `connect` declaration.
+        operator: reify_syntax::ConnectOp,
+        /// Substituted right-side port name (e.g. `"air_channel"`).
+        right_port_template: String,
+        /// Optional explicit connector type name (e.g. `BoltSet`).
+        connector_type: Option<String>,
+        /// Pre-substituted, pre-compiled connect parameters
+        /// (e.g. `[("grade", CompiledExpr::Literal(Int(8)))]`).
+        params: Vec<(String, CompiledExpr)>,
+        /// Explicit port-mappings (left_member, right_member). Carried
+        /// through verbatim from the source declaration.
+        port_mappings: Vec<(String, String)>,
     },
 }
 

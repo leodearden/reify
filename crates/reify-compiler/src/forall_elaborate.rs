@@ -516,7 +516,7 @@ pub(crate) fn elaborate_forall_connect(
     connections: &mut Vec<CompiledConnection>,
     sub_components: &mut Vec<SubComponentDecl>,
     connector_index: &mut u32,
-    _forall_templates_out: &mut Vec<CompiledForallTemplate>,
+    forall_templates_out: &mut Vec<CompiledForallTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_syntax::ForallConnectBody;
@@ -535,19 +535,123 @@ pub(crate) fn elaborate_forall_connect(
     );
     let elements = match outcome {
         ResolveForallOutcome::Resolved(elements) => elements,
-        ResolveForallOutcome::Deferred { .. } => {
-            // task 2629: runtime re-elaboration of forall-connect over
-            // deferred-count collections is out of scope here. Both `Connect`
-            // and `Chain` body shapes retain compile-time silent-skip
-            // semantics and emit an info diagnostic naming the follow-up.
-            // The `Connect` arm is tracked by task 2690; see the resolution
-            // of esc-2629-15 / esc-2629-22 for the scope decision.
+        ResolveForallOutcome::Deferred {
+            count_cell,
+            sub_name,
+        } => {
+            // task 2690: capture a runtime CompiledForallTemplate for the
+            // `Connect` body shape so `Engine::edit_param`'s collection-count
+            // phase can re-emit per-element connections when the count cell
+            // becomes known. Mirrors the Constraint-arm capture wiring at
+            // ~line 327 of this file. The `Chain` body shape retains
+            // compile-time silent-skip + info-diagnostic (task 2629 follow-up).
             match &decl.body {
-                ForallConnectBody::Connect(_) => {
-                    diagnostics.push(Diagnostic::info(
-                        "forall connect over deferred-count collections will not re-elaborate \
-                         at runtime (task 2690 future scope)",
-                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall connect")));
+                ForallConnectBody::Connect(cd) => {
+                    // Build the placeholder element AST (`<sub_name>[0]`) and
+                    // substitute every expression-bearing position.
+                    let coll_span = decl.collection.span;
+                    let placeholder = reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::IndexAccess {
+                            object: Box::new(reify_syntax::Expr {
+                                kind: reify_syntax::ExprKind::Ident(sub_name.clone()),
+                                span: coll_span,
+                            }),
+                            index: Box::new(reify_syntax::Expr {
+                                kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                                span: coll_span,
+                            }),
+                        },
+                        span: coll_span,
+                    };
+                    let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+                    bindings.insert(decl.variable.clone(), placeholder);
+
+                    let left_substituted = substitute_expr(&cd.left.expr, &bindings);
+                    let right_substituted = substitute_expr(&cd.right.expr, &bindings);
+
+                    // Resolve each substituted side to a flat port-name
+                    // string. `resolve_port_name` returns None for shapes
+                    // it does not understand (e.g. an arbitrary expression
+                    // tree); in that case skip capture without diagnostic.
+                    // Such shapes would already have errored on the
+                    // resolved (non-deferred) path; the silent skip here
+                    // mirrors the Constraint arm's "trust the captured
+                    // template" policy and avoids spurious diagnostics on
+                    // a path that compile_connection wouldn't normally
+                    // reach.
+                    let left_port_template = match resolve_port_name(&left_substituted) {
+                        Some(s) => s,
+                        None => return,
+                    };
+                    let right_port_template = match resolve_port_name(&right_substituted) {
+                        Some(s) => s,
+                        None => return,
+                    };
+
+                    // task-2690 amendment: surface the connector-spec drop.
+                    //
+                    // The runtime re-emission path in `engine_edit.rs` does
+                    // NOT replicate `compile_connection`'s connector-spec
+                    // handling: it does not auto-create a `connector_sub`
+                    // sub-component, does not validate connector params, and
+                    // does not generate a `frame_constraint`. For the simple
+                    // form (no `via T(args)`, no params) this is invisible.
+                    // For the rich form, the captured `connector_type` and
+                    // `params` are dropped at runtime — emit an info
+                    // diagnostic so users discover the limitation rather
+                    // than getting a silent semantic divergence vs. the
+                    // resolved (non-deferred) path. Mirrors the Chain-arm
+                    // info diagnostic shape just below.
+                    if cd.connector_type.is_some() || !cd.params.is_empty() {
+                        diagnostics.push(Diagnostic::info(
+                            "forall connect with `via T(args)` over deferred-count \
+                             collections: connector type and params are not \
+                             propagated by runtime re-elaboration; only the \
+                             port-to-port connection is materialised (task 2690 \
+                             future scope)",
+                        ).with_label(DiagnosticLabel::new(decl.span, "connector spec dropped at runtime")));
+                    }
+
+                    // Compile each substituted param expression once at
+                    // capture time. Mirrors the Constraint arm's
+                    // `compile_expr(&substituted_body, ...)` policy. The
+                    // result is captured on `CompiledForallBody::Connect`
+                    // for completeness even though `engine_edit.rs`'s
+                    // current re-emission drops it (see diagnostic above);
+                    // capturing here means the data is ready for a future
+                    // task to wire connector-spec-aware runtime emission
+                    // without re-doing the substitution work.
+                    let params_substituted: Vec<(String, CompiledExpr)> = cd
+                        .params
+                        .iter()
+                        .map(|(n, e)| {
+                            let substituted = substitute_expr(e, &bindings);
+                            let compiled = compile_expr(
+                                &substituted,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            (n.clone(), compiled)
+                        })
+                        .collect();
+
+                    forall_templates_out.push(CompiledForallTemplate {
+                        variable: decl.variable.clone(),
+                        parent_entity: entity_name.to_string(),
+                        collection_sub_name: sub_name,
+                        count_cell,
+                        span: decl.span,
+                        body: CompiledForallBody::Connect {
+                            left_port_template,
+                            operator: cd.operator,
+                            right_port_template,
+                            connector_type: cd.connector_type.clone(),
+                            params: params_substituted,
+                            port_mappings: cd.port_mappings.clone(),
+                        },
+                    });
                 }
                 ForallConnectBody::Chain(_) => {
                     diagnostics.push(Diagnostic::info(

@@ -519,11 +519,15 @@ structure S {
     assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
 
     // (d) Body shape: Constraint with body_expr referencing S.vents[0].mass.
-    // The match is exhaustive on the single live variant; if task 2690 (or any
-    // future task) re-adds a sibling variant to `CompiledForallBody`, this
-    // match will fail to compile and the test will be forced to spell out the
-    // expected discriminant explicitly.
-    let CompiledForallBody::Constraint { body_expr } = &ft.body;
+    // Task 2690 added a sibling `Connect` variant to `CompiledForallBody`,
+    // so this pattern is no longer irrefutable; an explicit `else` branch
+    // panics so the wrong discriminant surfaces a clear failure.
+    let CompiledForallBody::Constraint { body_expr } = &ft.body else {
+        panic!(
+            "expected CompiledForallBody::Constraint variant, got {:?}",
+            &ft.body
+        );
+    };
     // The body should reference S.vents[0].mass somewhere in its expression
     // tree. Walk the expr and confirm.
     let mut found_vent_mass = false;
@@ -759,15 +763,35 @@ structure S {
 /// follow-up task 2690 — no template captured at compile time, info
 /// diagnostic emitted so the limitation is discoverable.
 ///
+/// Task 2690 inverts the prior contract: the deferred Connect arm now CAPTURES
+/// a runtime template (so `Engine::edit_param`'s collection-count phase can
+/// re-emit per-element connections when the count becomes known) and the
+/// "task 2690 future scope" info diagnostic is gone.
+///
 /// Pins:
 /// (a) No errors.
-/// (b) Zero CompiledConnections (deferred-count → silent-skip).
-/// (c) `template.forall_templates.is_empty()` — Connect body never
-///     captures a runtime template in this task.
-/// (d) Exactly one `Diagnostic::info` mentioning task 2690 future scope.
+/// (b) Zero CompiledConnections in `template.connections` (the collection
+///     sub's count is still undef at compile time, so per-element emissions
+///     are deferred to runtime).
+/// (c) `template.forall_templates.len() == 1` — the runtime template was
+///     captured.
+/// (d) Captured entry's metadata: `variable == "v"`, `parent_entity == "S"`,
+///     `collection_sub_name == "vents"`, and
+///     `count_cell == ValueCellId::new("S","__count_vents")`.
+/// (e) Captured entry's body is `CompiledForallBody::Connect` with
+///     `left_port_template == "vents[0].inlet"`,
+///     `right_port_template == "air_channel"`,
+///     `operator == ConnectOp::Forward`,
+///     `connector_type.is_none()`,
+///     `params.is_empty()`,
+///     `port_mappings.is_empty()`.
+/// (f) The OLD info diagnostic ("task 2690 future scope" + "forall connect")
+///     is GONE.
 #[test]
-fn forall_connect_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
-    use reify_types::Severity;
+fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
+    use reify_compiler::CompiledForallBody;
+    use reify_syntax::ConnectOp;
+    use reify_types::{Severity, ValueCellId};
 
     let source = r#"
 trait Air { param d : Length }
@@ -798,19 +822,78 @@ structure def S {
         .find(|t| t.name == "S")
         .expect("template S not found");
 
-    // (b) Zero CompiledConnections — silent-skip preserved at compile time.
+    // (b) Zero CompiledConnections at compile time — count is still deferred.
     assert_no_forall_connect_emissions(template);
 
-    // (c) NO runtime template captured.
-    assert!(
-        template.forall_templates.is_empty(),
-        "expected zero CompiledForallTemplates for deferred-count forall \
-         connect (task 2690 future scope), got {} entries",
+    // (c) Exactly one captured runtime template.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 captured CompiledForallTemplate for deferred-count \
+         forall connect, got {} entries",
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic, with the 2690 substring tying the
-    //     limitation to the follow-up task.
+    let ft = &template.forall_templates[0];
+
+    // (d) Metadata.
+    assert_eq!(ft.variable, "v");
+    assert_eq!(ft.parent_entity, "S");
+    assert_eq!(ft.collection_sub_name, "vents");
+    assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
+
+    // (e) Body shape: Connect with substituted port-name templates.
+    //
+    // The fixture deliberately uses the simple form (no `via T(args...)`,
+    // no explicit port-mappings) so this single test pins:
+    //   * `params.is_empty()`,
+    //   * `port_mappings.is_empty()`,
+    //   * `connector_type.is_none()`.
+    // A richer fixture exercising connector params is left as future
+    // coverage; the per-element substitution path is shared with the
+    // resolved (non-deferred) Connect arm, which is already tested.
+    match &ft.body {
+        CompiledForallBody::Connect {
+            left_port_template,
+            operator,
+            right_port_template,
+            connector_type,
+            params,
+            port_mappings,
+        } => {
+            assert_eq!(
+                left_port_template, "vents[0].inlet",
+                "expected left port template to be 'vents[0].inlet'"
+            );
+            assert_eq!(
+                right_port_template, "air_channel",
+                "expected right port template to be 'air_channel'"
+            );
+            assert_eq!(
+                *operator,
+                ConnectOp::Forward,
+                "expected operator to be ConnectOp::Forward"
+            );
+            assert!(
+                connector_type.is_none(),
+                "expected no explicit connector_type, got {:?}",
+                connector_type
+            );
+            assert!(
+                params.is_empty(),
+                "expected no params for simple connect, got {:?}",
+                params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+            );
+            assert!(
+                port_mappings.is_empty(),
+                "expected no port_mappings for simple connect, got {:?}",
+                port_mappings
+            );
+        }
+        other => panic!("expected CompiledForallBody::Connect, got {:?}", other),
+    }
+
+    // (f) The OLD info diagnostic must be gone.
     let info_diags: Vec<&reify_types::Diagnostic> = module
         .diagnostics
         .iter()
@@ -820,15 +903,154 @@ structure def S {
         .collect();
     assert_eq!(
         info_diags.len(),
-        1,
-        "expected exactly 1 info diagnostic mentioning 'future scope' and \
-         'forall connect' for the deferred-count forall connect, got {}: {:?}",
+        0,
+        "expected zero 'task 2690 future scope' info diagnostics for forall \
+         connect (now captured), got {}: {:?}",
         info_diags.len(),
         module
             .diagnostics
             .iter()
             .map(|d| (d.severity, &d.message))
             .collect::<Vec<_>>()
+    );
+}
+
+/// task 2690 amendment (reviewer suggestion 2): pin the connector-spec drop
+/// contract for the rich-form `forall v in <coll_sub>: connect a -> b : T(p = e)`
+/// body shape over a deferred-count collection.
+///
+/// The runtime re-emission path (`engine_edit.rs`) does not propagate the
+/// `connector_type` or `params` from the captured template — only the
+/// port-to-port connection is materialised. Per the amendment, the
+/// deferred-capture path emits an info diagnostic surfacing this scope
+/// limitation. Capture itself still proceeds: `connector_type` and
+/// compiled `params` are stored on the captured template for a future task
+/// to consume when connector-spec-aware runtime emission lands.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero CompiledConnections (deferred-count → runtime emission).
+/// (c) Exactly one captured `CompiledForallTemplate`.
+/// (d) Captured Connect body has `connector_type == Some("BoltSet")`,
+///     a non-empty `params` Vec containing the `grade` entry.
+/// (e) Exactly one `Diagnostic::info` mentioning the connector-spec
+///     drop, anchored at the source forall span.
+#[test]
+fn forall_connect_rich_form_over_undef_count_collection_sub_emits_connector_drop_info_diagnostic() {
+    use reify_compiler::CompiledForallBody;
+    use reify_types::Severity;
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel : BoltSet { grade = 10.9 }
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for rich-form deferred-count forall connect, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections at compile time — count is deferred.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) Exactly one captured runtime template.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 captured CompiledForallTemplate for rich-form \
+         deferred-count forall connect, got {}",
+        template.forall_templates.len()
+    );
+
+    // (d) Captured Connect body carries the connector_type and params.
+    let ft = &template.forall_templates[0];
+    match &ft.body {
+        CompiledForallBody::Connect {
+            connector_type,
+            params,
+            ..
+        } => {
+            assert_eq!(
+                connector_type.as_deref(),
+                Some("BoltSet"),
+                "expected captured connector_type == Some(\"BoltSet\"), got {:?}",
+                connector_type
+            );
+            assert_eq!(
+                params.len(),
+                1,
+                "expected exactly 1 captured param, got {}: {:?}",
+                params.len(),
+                params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                params[0].0, "grade",
+                "expected captured param name 'grade', got {:?}",
+                params[0].0
+            );
+        }
+        other => panic!(
+            "expected CompiledForallBody::Connect for rich-form capture, got {:?}",
+            other
+        ),
+    }
+
+    // (e) Exactly one info diagnostic mentioning the connector-spec drop.
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| {
+            d.message.contains("connector type and params are not propagated")
+                || d.message.contains("connector spec dropped")
+        })
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic naming the connector-spec drop \
+         for rich-form deferred-count forall connect, got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // The diagnostic should be anchored at the source forall span (via
+    // its label). Re-parse the source to recover the span and assert the
+    // diagnostic's primary label points at it.
+    let forall_span = find_forall_connect_span(source, "S");
+    let diag = info_diags[0];
+    let label_spans: Vec<reify_types::SourceSpan> =
+        diag.labels.iter().map(|l| l.span).collect();
+    assert!(
+        label_spans.iter().any(|s| *s == forall_span),
+        "expected diagnostic label span to match the source forall span; \
+         labels = {:?}, forall_span = {:?}",
+        label_spans,
+        forall_span
     );
 }
 

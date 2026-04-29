@@ -23,6 +23,7 @@ use reify_compiler::CompiledModule;
 use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
 use reify_eval::Engine;
+use reify_syntax::ConnectOp;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
 use reify_types::{CompiledExprKind, ConstraintNodeId, Value, ValueCellId};
@@ -712,5 +713,587 @@ fn edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constr
         by_member_2_again, expected,
         "expected per-member partition {{mass: 2, length: 2}} after re-grow, got {:?}",
         by_member_2_again
+    );
+}
+
+// ─── task 2690: forall-Connect runtime re-elaboration ───────────────────────
+//
+// Sibling coverage to the Constraint-arm tests above. When the count cell of
+// a deferred-count collection sub becomes known via `edit_param`, the engine
+// must re-emit per-element forall *connections* (in addition to the
+// per-element forall *constraints* already covered by 2629). The runtime
+// emission rewrites `<sub>[0]` → `<sub>[i]` substring tokens in the captured
+// `left_port_template`/`right_port_template`, allocates a synthetic
+// `ConstraintNodeId` per element, and pushes a `CompiledConnection` into
+// `graph.connections` paired with a `Bool::True`-bodied compatibility
+// constraint into `graph.constraints` (label `forall_connect@<var>[<i>]`).
+
+/// Canonical fixture for the forall-Connect runtime tests. Mirrors
+/// `FORALL_FIXTURE_SRC` (n is undef, count cell synthesised from
+/// `vents.count == n`) but with a Connect body in place of the Constraint
+/// body. The single connection in the structure is forall-deferred at compile
+/// time, so `template.connections` is empty until `edit_param(S.n, Int(N))`
+/// runs the runtime re-emission.
+const FORALL_CONNECT_FIXTURE_SRC: &str = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+
+/// Helper: collect connections whose `compatibility_constraint` label starts
+/// with `forall_connect@` (i.e. were emitted by the forall-Connect runtime
+/// re-emission path), sorted by their LHS-port suffix index.
+fn collect_forall_connect_connections(
+    snap: &Snapshot,
+) -> Vec<reify_compiler::CompiledConnection> {
+    let mut entries: Vec<(usize, reify_compiler::CompiledConnection)> = snap
+        .graph
+        .connections
+        .iter()
+        .filter_map(|c| {
+            let constraint = snap.graph.constraints.get(&c.compatibility_constraint)?;
+            let label = constraint.label.as_deref()?;
+            if !label.starts_with("forall_connect@") {
+                return None;
+            }
+            // Extract `i` from `vents[<i>].inlet` for ordering.
+            let idx_str = c
+                .left_port
+                .strip_prefix("vents[")?
+                .split(']')
+                .next()?;
+            let i: usize = idx_str.parse().ok()?;
+            Some((i, c.clone()))
+        })
+        .collect();
+    entries.sort_by_key(|(i, _)| *i);
+    entries.into_iter().map(|(_, c)| c).collect()
+}
+
+/// task-2690 step-9: pins that `Engine::edit_param` re-elaborates per-element
+/// `forall` *connections* when a deferred count cell becomes known.
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` — count is Undef ⇒ zero forall-emitted
+///    entries in `graph.connections` (the only connection in the source is
+///    forall-deferred, so the carry-through Vec is empty at this point).
+/// 2. `edit_param(S.n, Int(2))` — count becomes 2.
+/// 3. Assert `graph.connections.len() == 2` and each entry has the
+///    expected per-element shape:
+///       * `left_port == "vents[<i>].inlet"`
+///       * `right_port == "air_channel"`
+///       * `operator == ConnectOp::Forward`
+///       * `connector_sub.is_none()`
+///       * `frame_constraint.is_none()`
+/// 4. Each connection's `compatibility_constraint` id resolves to a
+///    `ConstraintNodeData` in `graph.constraints` with label
+///    `forall_connect@v[<i>]` and `expr` being a `Bool::True` literal.
+///
+/// RED before step-10 wires the runtime Connect re-emission block in
+/// `engine_edit.rs` (the current stub at the `CompiledForallBody::Connect`
+/// match arm emits zero entries).
+#[test]
+fn edit_param_count_undef_to_known_emits_per_element_forall_connections() {
+    let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+
+    // (1) Initial eval — count Undef ⇒ zero forall-emitted connections. The
+    //     only compile-time connection in the source is forall-deferred, so
+    //     `graph.connections` is empty at this point.
+    let _initial = engine.eval(&module);
+    let initial_snap = engine.snapshot().expect("snapshot after initial eval");
+    assert!(
+        collect_forall_connect_connections(initial_snap).is_empty(),
+        "expected zero forall-emitted connections when count is Undef, got {} entries",
+        collect_forall_connect_connections(initial_snap).len()
+    );
+    assert_eq!(
+        initial_snap.graph.connections.len(),
+        0,
+        "expected total connections.len() == 0 when count is Undef (the only \
+         connection in the fixture is forall-deferred), got {}",
+        initial_snap.graph.connections.len()
+    );
+
+    // (2) Edit param `S.n` to 2 — count cell becomes Int(2), runtime
+    //     re-emission must produce 2 per-element connections.
+    let n_id = ValueCellId::new("S", "n");
+    let _ = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param should succeed");
+
+    // (3) Snapshot now carries exactly 2 forall-Connect entries.
+    let snap = engine.snapshot().expect("snapshot after edit_param");
+    let connections = collect_forall_connect_connections(snap);
+    assert_eq!(
+        connections.len(),
+        2,
+        "expected exactly 2 forall-emitted connections after edit_param to Int(2), got {}",
+        connections.len()
+    );
+    // Also pin the total connections count — no stray emissions from the
+    // compile-time path should be present, only the 2 forall-emitted ones.
+    assert_eq!(
+        snap.graph.connections.len(),
+        2,
+        "expected total connections.len() == 2 after edit_param to Int(2) (got {})",
+        snap.graph.connections.len()
+    );
+
+    for (i, c) in connections.iter().enumerate() {
+        assert_eq!(
+            c.left_port,
+            format!("vents[{}].inlet", i),
+            "forall-Connect[{}] left_port mismatch",
+            i
+        );
+        assert_eq!(
+            c.right_port, "air_channel",
+            "forall-Connect[{}] right_port mismatch",
+            i
+        );
+        assert_eq!(
+            c.operator,
+            ConnectOp::Forward,
+            "forall-Connect[{}] operator mismatch",
+            i
+        );
+        assert!(
+            c.connector_sub.is_none(),
+            "forall-Connect[{}] connector_sub must be None for simple connect (got {:?})",
+            i,
+            c.connector_sub
+        );
+        assert!(
+            c.frame_constraint.is_none(),
+            "forall-Connect[{}] frame_constraint must be None for non-Frame trait (got {:?})",
+            i,
+            c.frame_constraint
+        );
+
+        // (4) Compatibility constraint exists with the expected label and
+        //     a `Bool::True` literal expression.
+        let constraint = snap
+            .graph
+            .constraints
+            .get(&c.compatibility_constraint)
+            .unwrap_or_else(|| {
+                panic!(
+                    "forall-Connect[{}] missing compatibility constraint {} in graph.constraints",
+                    i, c.compatibility_constraint
+                )
+            });
+        let expected_label = format!("forall_connect@v[{}]", i);
+        assert_eq!(
+            constraint.label.as_deref(),
+            Some(expected_label.as_str()),
+            "forall-Connect[{}] compatibility-constraint label mismatch",
+            i
+        );
+        match &constraint.expr.kind {
+            CompiledExprKind::Literal(Value::Bool(true)) => {}
+            other => panic!(
+                "forall-Connect[{}] compatibility-constraint expr must be a Bool::True \
+                 literal (mirrors the placeholder direction-check policy in the task plan), \
+                 got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
+/// task-2690 step-11: pins the count-decrease + fingerprint contract for the
+/// forall-Connect runtime re-emission path. Mirror of the Constraint-arm
+/// `edit_param_count_decrease_removes_stale_forall_constraints_and_changes_fingerprint`
+/// test for the Connect arm.
+///
+/// Sequence:
+/// 1. Initial `eval()` — count Undef ⇒ `graph.connections` empty (the only
+///    connection in the fixture is forall-deferred).
+/// 2. `edit_param(S.n, Int(3))` — capture `fingerprint_3`, assert exactly 3
+///    forall-Connect entries with `left_port` covering
+///    `vents[0..2].inlet` and 3 `forall_connect@v[*]` constraint labels.
+/// 3. `edit_param(S.n, Int(1))` — assert exactly 1 entry with
+///    `left_port == "vents[0].inlet"`. Assert that no entry with
+///    `left_port == "vents[1].inlet"` or `vents[2].inlet"` remains in the
+///    `connections` Vec — this is the "removal not overwrite" contract for
+///    the Connect arm. Assert `fingerprint_3 != fingerprint_1`.
+/// 4. `edit_param(S.n, Int(0))` — assert no forall-Connect entries remain
+///    (drain-then-no-emit). Assert `fingerprint_1 != fingerprint_0`.
+#[test]
+fn edit_param_count_decrease_removes_stale_forall_connections_and_changes_fingerprint() {
+    let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval — count Undef ⇒ zero forall-emitted connections.
+    let _ = engine.eval(&module);
+    let initial_snap = engine.snapshot().expect("snapshot after initial eval");
+    assert!(
+        collect_forall_connect_connections(initial_snap).is_empty(),
+        "expected zero forall-emitted connections when count is Undef"
+    );
+    assert_eq!(
+        initial_snap.graph.connections.len(),
+        0,
+        "expected total connections.len() == 0 when count is Undef (only \
+         connection in fixture is forall-deferred), got {}",
+        initial_snap.graph.connections.len()
+    );
+
+    // (2) edit_param(n, 3) ⇒ 3 per-element forall connections.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param to 3 should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    let conns_3 = collect_forall_connect_connections(snap_3);
+    assert_eq!(
+        conns_3.len(),
+        3,
+        "expected 3 forall-Connect entries after edit_param to Int(3) (got {})",
+        conns_3.len()
+    );
+    for (i, c) in conns_3.iter().enumerate() {
+        assert_eq!(
+            c.left_port,
+            format!("vents[{}].inlet", i),
+            "forall-Connect[{}] left_port mismatch after n=3",
+            i
+        );
+        assert_eq!(
+            c.right_port, "air_channel",
+            "forall-Connect[{}] right_port mismatch after n=3",
+            i
+        );
+    }
+    let fingerprint_3 = snap_3.topology_fingerprint;
+
+    // (3) edit_param(n, 1) ⇒ only forall-Connect[0] remains.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(1))
+        .expect("edit_param to 1 should succeed");
+    let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
+    let conns_1 = collect_forall_connect_connections(snap_1);
+    assert_eq!(
+        conns_1.len(),
+        1,
+        "expected exactly 1 forall-Connect entry after count decrease to Int(1) \
+         (got {})",
+        conns_1.len()
+    );
+    assert_eq!(
+        conns_1[0].left_port, "vents[0].inlet",
+        "expected the lone forall-Connect entry to be vents[0].inlet"
+    );
+
+    // Verify vents[1].inlet / vents[2].inlet are *gone* from the connections
+    // Vec — this is the "removal not overwrite" contract for the Connect arm.
+    let stale_left_ports: Vec<&'static str> = ["vents[1].inlet", "vents[2].inlet"]
+        .iter()
+        .filter(|missing| {
+            snap_1
+                .graph
+                .connections
+                .iter()
+                .any(|c| c.left_port.as_str() == **missing)
+        })
+        .copied()
+        .collect();
+    assert!(
+        stale_left_ports.is_empty(),
+        "stale forall-Connect entries should be removed but found {:?}",
+        stale_left_ports
+    );
+
+    // Also verify the corresponding compatibility constraints (forall_connect@v[1],
+    // forall_connect@v[2]) are gone from graph.constraints — the drain block must
+    // remove BOTH the Vec entry and the synthetic compat constraint.
+    let stale_labels: Vec<String> = ["forall_connect@v[1]", "forall_connect@v[2]"]
+        .iter()
+        .filter(|missing| {
+            snap_1
+                .graph
+                .constraints
+                .iter()
+                .any(|(_, n)| n.label.as_deref() == Some(**missing))
+        })
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        stale_labels.is_empty(),
+        "stale forall-Connect compatibility-constraint labels should be removed \
+         but found {:?}",
+        stale_labels
+    );
+
+    let fingerprint_1 = snap_1.topology_fingerprint;
+    assert_ne!(
+        fingerprint_3, fingerprint_1,
+        "topology_fingerprint must change across count transition 3 -> 1 \
+         (Connect arm); fingerprint must mix in the connections-set hash, \
+         and the connections set has changed."
+    );
+
+    // (4) edit_param(n, 0) ⇒ zero forall-Connect entries.
+    let _ = engine
+        .edit_param(n_id, Value::Int(0))
+        .expect("edit_param to 0 should succeed");
+    let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
+    let conns_0 = collect_forall_connect_connections(snap_0);
+    assert!(
+        conns_0.is_empty(),
+        "expected zero forall-Connect entries after edit_param to Int(0), got {} \
+         entries",
+        conns_0.len()
+    );
+    let fingerprint_0 = snap_0.topology_fingerprint;
+    assert_ne!(
+        fingerprint_1, fingerprint_0,
+        "topology_fingerprint must change across count transition 1 -> 0 (Connect arm)"
+    );
+}
+
+/// Helper: collect the `ConstraintNodeId`s of forall-Connect compatibility
+/// constraints (label `forall_connect@<var>[<i>]`), sorted by `i`. Mirrors
+/// `collect_forall_ids` but for the Connect arm's distinct label namespace.
+fn collect_forall_connect_ids(snap: &Snapshot, variable: &str) -> Vec<ConstraintNodeId> {
+    let prefix = format!("forall_connect@{}[", variable);
+    let mut entries: Vec<(usize, ConstraintNodeId)> = snap
+        .graph
+        .constraints
+        .iter()
+        .filter_map(|(id, n)| {
+            let label = n.label.as_deref()?;
+            let rest = label.strip_prefix(&prefix)?;
+            let idx_str = rest.strip_suffix(']')?;
+            let i: usize = idx_str.parse().ok()?;
+            Some((i, id.clone()))
+        })
+        .collect();
+    entries.sort_by_key(|(i, _)| *i);
+    entries.into_iter().map(|(_, id)| id).collect()
+}
+
+/// task-2690 step-13: pins the cache-invalidation contract for the
+/// forall-Connect runtime re-emission path. Sibling of the Constraint-arm
+/// `edit_param_count_change_invalidates_prior_forall_constraint_cache`
+/// (task 2629 step-14).
+///
+/// The drain block at the top of the per-template re-emission loop is
+/// shared between both arms (see `engine_edit.rs:~1599-1607`): every
+/// drained id is removed from `graph.constraints`, retained-out from
+/// `graph.connections`, AND has its cache entry invalidated via
+/// `self.cache.invalidate(&NodeId::Constraint(id))`. This test pins that
+/// contract concretely for the Connect arm by injecting a synthetic cache
+/// entry on each id that will be removed and asserting it's gone after the
+/// next edit.
+///
+/// Sequence:
+/// 1. Compile + initial `eval()` (count=Undef).
+/// 2. `edit_param(S.n, Int(3))` — record the 3 emitted forall-Connect
+///    compatibility-constraint ids.
+/// 3. Inject synthetic `NodeCache` entries for the 2 ids that will be
+///    removed on the next edit (forall_connect@v[1], forall_connect@v[2]).
+/// 4. `edit_param(S.n, Int(1))` — assert the cache entries for the 2
+///    removed ids are gone.
+#[test]
+fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
+    use reify_eval::cache::{CachedResult, NodeCache};
+    use reify_eval::deps::DependencyTrace;
+    use reify_types::{DeterminacyState, Freshness, VersionId};
+
+    let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval.
+    let _ = engine.eval(&module);
+
+    // (2) Edit n=3 — capture the 3 emitted Connect-arm compatibility ids.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param to 3 should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    let ids_3 = collect_forall_connect_ids(snap_3, "v");
+    assert_eq!(
+        ids_3.len(),
+        3,
+        "expected 3 forall_connect@v[*] compatibility-constraint ids after n=3 (got {})",
+        ids_3.len()
+    );
+
+    // (3) Inject synthetic cache entries for the 2 ids that will be removed
+    //     on the next count-decrease (forall_connect@v[1], forall_connect@v[2]).
+    let removed_ids = vec![ids_3[1].clone(), ids_3[2].clone()];
+    for id in &removed_ids {
+        let entry = NodeCache::new(
+            CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace { reads: Vec::new() },
+            VersionId(0),
+        );
+        engine
+            .cache_store_mut()
+            .put(NodeId::Constraint(id.clone()), entry);
+    }
+    for id in &removed_ids {
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Constraint(id.clone()))
+                .is_some(),
+            "synthetic cache entry for forall-Connect compat id {} should be present \
+             before edit_param to 1",
+            id
+        );
+    }
+
+    // (4) Edit n=1: forall_connect@v[1] and forall_connect@v[2] are removed
+    //     from the graph; their cache entries must be cleared by the shared
+    //     drain block.
+    let _ = engine
+        .edit_param(n_id, Value::Int(1))
+        .expect("edit_param to 1 should succeed");
+
+    for (i_in_3, id) in removed_ids.iter().enumerate() {
+        let label_idx = i_in_3 + 1;
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Constraint(id.clone()))
+                .is_none(),
+            "expected cache entry for forall_connect@v[{}] (id={}) to be invalidated \
+             after count decrease (Connect arm), but it was still present",
+            label_idx,
+            id
+        );
+    }
+}
+
+/// task-2690 step-15: regression-pin guarding against accidental cross-arm
+/// regressions in `engine_edit.rs`'s shared per-template re-emission loop.
+///
+/// Re-runs the existing Constraint-arm `FORALL_FIXTURE_SRC` fixture through
+/// the full Undef → 3 → 1 → 0 → 2 lifecycle and asserts the exact
+/// `forall@v[i]` label set + `forall_emitted` ledger shape are unchanged
+/// from task 2629's behaviour after task 2690 lands the Connect arm.
+///
+/// This duplicates partial coverage from existing 2629 tests
+/// (`edit_param_count_decrease_removes_stale_forall_constraints_and_changes_fingerprint`,
+/// `full_lifecycle_undef_to_three_to_zero_to_two_per_element_constraints`),
+/// but the value of this test is the explicit cross-arm pin: assertions
+/// also check that `collect_forall_connect_ids` returns empty at every
+/// step (the Constraint-arm fixture has zero Connect bodies, so the
+/// Connect-arm ledger / labels must be empty throughout the lifecycle).
+#[test]
+fn edit_param_constraint_arm_unchanged_after_connect_arm_landed() {
+    let module = compile_source(FORALL_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval — count Undef ⇒ zero forall@* labels and zero
+    //     forall_connect@* labels.
+    let _ = engine.eval(&module);
+    let snap_initial = engine.snapshot().expect("initial snapshot");
+    assert!(
+        collect_forall_labels(snap_initial).is_empty(),
+        "Constraint-arm: expected zero forall@v[*] labels at Undef"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_initial, "v").is_empty(),
+        "Connect-arm namespace must be empty for a Constraint-only fixture at Undef"
+    );
+
+    // (2) edit n=3 ⇒ forall@v[0..2] and zero Connect-arm labels.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param(n, 3) should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    assert_eq!(
+        collect_forall_labels(snap_3),
+        vec![
+            "forall@v[0]".to_string(),
+            "forall@v[1]".to_string(),
+            "forall@v[2]".to_string(),
+        ],
+        "Constraint-arm regression: expected forall@v[0..2] after edit n=3"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_3, "v").is_empty(),
+        "Connect-arm namespace must remain empty for a Constraint-only fixture at n=3"
+    );
+    // The forall_emitted ledger has exactly one slot (the lone forall in
+    // the fixture), and that slot holds the 3 emitted ConstraintNodeIds.
+    assert_eq!(
+        snap_3.forall_emitted.len(),
+        1,
+        "Constraint-arm regression: forall_emitted should have 1 slot"
+    );
+    assert_eq!(
+        snap_3.forall_emitted[0].len(),
+        3,
+        "Constraint-arm regression: forall_emitted[0] should hold 3 ids at n=3"
+    );
+
+    // (3) edit n=1 ⇒ exactly forall@v[0] remains.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(1))
+        .expect("edit_param(n, 1) should succeed");
+    let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
+    assert_eq!(
+        collect_forall_labels(snap_1),
+        vec!["forall@v[0]".to_string()],
+        "Constraint-arm regression: expected forall@v[0] after edit n=1"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_1, "v").is_empty(),
+        "Connect-arm namespace must remain empty after edit n=1"
+    );
+    assert_eq!(
+        snap_1.forall_emitted[0].len(),
+        1,
+        "Constraint-arm regression: forall_emitted[0] should hold 1 id at n=1"
+    );
+
+    // (4) edit n=0 ⇒ all forall@v[*] cleared.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(0))
+        .expect("edit_param(n, 0) should succeed");
+    let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
+    assert!(
+        collect_forall_labels(snap_0).is_empty(),
+        "Constraint-arm regression: expected zero forall@v[*] after edit n=0"
+    );
+    assert!(
+        snap_0.forall_emitted[0].is_empty(),
+        "Constraint-arm regression: forall_emitted[0] should be empty at n=0"
+    );
+
+    // (5) edit n=2 ⇒ forall@v[0..1] re-emitted from the cleared state.
+    let _ = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param(n, 2) should succeed");
+    let snap_2 = engine.snapshot().expect("snapshot after edit n=2");
+    assert_eq!(
+        collect_forall_labels(snap_2),
+        vec!["forall@v[0]".to_string(), "forall@v[1]".to_string()],
+        "Constraint-arm regression: expected forall@v[0..1] after edit n=2"
+    );
+    assert!(
+        collect_forall_connect_ids(snap_2, "v").is_empty(),
+        "Connect-arm namespace must remain empty after edit n=2"
+    );
+    assert_eq!(
+        snap_2.forall_emitted[0].len(),
+        2,
+        "Constraint-arm regression: forall_emitted[0] should hold 2 ids at n=2"
     );
 }

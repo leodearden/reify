@@ -28,11 +28,13 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{CompiledForallBody, CompiledFunction, CompiledModule};
+use reify_compiler::{
+    CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule,
+};
 use reify_types::{
-    AutoParam, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic, PersistentMap,
-    RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
+    AutoParam, CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic,
+    PersistentMap, RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance,
+    SolveResult, Type, Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -64,6 +66,41 @@ pub(crate) fn deactivate_if_not_auto(
         values.insert(id.clone(), Value::Undef);
         snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
     }
+}
+
+/// Rewrite the FIRST occurrence of `<sub_name>[0]` → `<sub_name>[i]` in a
+/// flat port-name template.
+///
+/// Used by the forall-Connect runtime re-emission path (task 2690) to
+/// substitute the captured placeholder element index into each per-element
+/// `CompiledConnection`'s `left_port` / `right_port`.
+///
+/// # Single-replacement contract (task 2690 amendment)
+///
+/// The captured templates come from `connect.rs::resolve_port_name`, which
+/// returns a flat string with at most one bracketed index per side and bails
+/// on nested `IndexAccess`. The placeholder substitution is therefore expected
+/// to occur exactly once on each side. We use `replacen(.., 1)` rather than
+/// `replace(..)` so that pathological-but-legal port names — for example a
+/// user-written explicit `vents[0]` reference appearing alongside the
+/// `[0]` placeholder, or a name that incidentally repeats `<sub_name>[0]` —
+/// do NOT have additional occurrences silently rewritten. This tightens the
+/// contract to "rewrite the placeholder once" and prevents surprises where
+/// the bound variable was substituted into both sides of a literal-bearing
+/// port name.
+///
+/// # Substring-rewrite divergence
+///
+/// The compile-time placeholder element shape is `<sub>[0]` for the deferred
+/// capture path, mirroring the Constraint-arm's
+/// `<parent>.<sub>[0]` cell-id rewrite (see `engine_edit.rs` Constraint arm
+/// and `types.rs::CompiledForallBody::Connect` docstring). The substring is
+/// anchored on `sub_name` (not just `[0]`) to reduce the risk of accidentally
+/// rewriting a literal `[0]` elsewhere in the port name.
+pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -> String {
+    let placeholder = format!("{}[0]", sub_name);
+    let target = format!("{}[{}]", sub_name, i);
+    template.replacen(&placeholder, &target, 1)
 }
 
 /// Re-elaborate the active and inactive branches of a single guarded group
@@ -1575,17 +1612,32 @@ impl Engine {
                     }
 
                     // (1) Drain prior emissions for this template.
+                    //
+                    // The drain block is shared between the Constraint and
+                    // Connect arms (the latter added in task 2690): the
+                    // recorded `ConstraintNodeId`s are uniformly the
+                    // synthetic compatibility-constraint id, which serves
+                    // dually as (a) the key to remove from `graph.constraints`,
+                    // (b) the key to retain-out from `graph.connections` (a
+                    // no-op for Constraint-arm ids since they were never
+                    // pushed into `connections`), and (c) the cache-invalidation
+                    // key. Mirrors task 2184's per-instance cache invalidation
+                    // (line 1449 above): a subsequent re-emission must
+                    // evaluate freshly rather than return a stale entry.
+                    // Pinned for the Constraint arm by
+                    // `forall_runtime_re_elaboration::
+                    // edit_param_count_change_invalidates_prior_forall_constraint_cache`
+                    // (task 2629 step-14); the Connect-arm parallel is
+                    // `edit_param_count_change_invalidates_prior_forall_connect_constraint_cache`
+                    // (task 2690 step-13). The connections-retain is also
+                    // implicitly pinned by the count-decrease test in step-11.
                     let prior = std::mem::take(&mut new_snapshot.forall_emitted[t_idx]);
                     for old_id in &prior {
                         new_snapshot.graph.constraints.remove(old_id);
-                        // Mirrors task 2184's per-instance cache invalidation
-                        // (line 1449 above): a subsequent re-emission must
-                        // evaluate freshly rather than return a stale entry.
-                        // Pinned by `forall_runtime_re_elaboration::
-                        // edit_param_count_change_invalidates_prior_forall_constraint_cache`
-                        // (task 2629 step-14): a synthetic NodeCache entry
-                        // injected for a soon-to-be-removed forall constraint
-                        // id is observed cleared after the count decrease.
+                        new_snapshot
+                            .graph
+                            .connections
+                            .retain(|c| c.compatibility_constraint != *old_id);
                         self.cache.invalidate(&NodeId::Constraint(old_id.clone()));
                     }
 
@@ -1594,13 +1646,135 @@ impl Engine {
                     //     loop body runs zero times — prior emissions are
                     //     still cleared above.
                     let mut fresh_ids: Vec<ConstraintNodeId> = Vec::new();
-                    // The match is exhaustive on the single live variant. The
-                    // Connect body shape is reserved for follow-up task 2690
-                    // (it will re-add the variant alongside the runtime arm).
-                    // Adding a new `CompiledForallBody` variant will cause
-                    // this match to fail to compile, forcing an explicit
-                    // decision rather than a silent drop.
+                    // The match is exhaustive on the live variants. Adding a
+                    // new `CompiledForallBody` variant will cause this match
+                    // to fail to compile, forcing an explicit decision
+                    // rather than a silent drop. Both arms record their
+                    // synthetic compatibility-constraint id into
+                    // `forall_emitted[t_idx]` for symmetric drain-on-decrease.
                     match &t.body {
+                        CompiledForallBody::Connect {
+                            left_port_template,
+                            operator,
+                            right_port_template,
+                            connector_type: _,
+                            params: _,
+                            port_mappings,
+                        } => {
+                            // task 2690: per-element forall-Connect runtime
+                            // re-emission. Mirrors the Constraint-arm shape:
+                            //   * `cnid_entity` includes `t_idx` so two
+                            //     foralls sharing the same triple produce
+                            //     distinct ConstraintNodeIds (same defence
+                            //     pinned by 2629 step-25, here applied to
+                            //     the Connect arm).
+                            //   * Distinct `forall_connect:` prefix keeps
+                            //     the namespace of synthetic
+                            //     compatibility-constraint ids separate
+                            //     from the Constraint arm's `forall:`
+                            //     prefix, so existing label-filtering tests
+                            //     don't mix arms.
+                            //   * Port-name `<sub>[0]` → `<sub>[i]` rewrite
+                            //     is a substring substitution: the captured
+                            //     templates are flat strings (per
+                            //     `connect.rs::resolve_port_name`), so
+                            //     there's no AST to walk. The substring is
+                            //     anchored on `coll_sub_name` to reduce the
+                            //     risk of accidentally rewriting a literal
+                            //     `[0]` elsewhere in the port name. The
+                            //     resolved (non-deferred) Connect path
+                            //     compiles each element directly through
+                            //     `compile_connection`; this runtime path
+                            //     trades that fidelity for not re-running
+                            //     `compile_connection` on every count edit
+                            //     — the same trade the Constraint arm makes
+                            //     for `compile_expr`.
+                            //   * Synthetic compatibility constraint emits
+                            //     `Bool::True` literal — direction-check
+                            //     and `connector_sub`/`frame_constraint`
+                            //     auto-creation are out of scope for this
+                            //     task (per the task's "Out of scope" list).
+                            // Port-name `<sub>[0]` → `<sub>[i]` rewrite is
+                            // factored into `rewrite_port_placeholder` (top
+                            // of file); see its docstring for the
+                            // substring-rewrite edge-case discussion.
+                            let cnid_entity = format!(
+                                "forall_connect:{}@{}.{}#{}",
+                                t.variable,
+                                t.parent_entity,
+                                t.collection_sub_name,
+                                t_idx,
+                            );
+                            // `port_mappings` is identical across every
+                            // per-element emission. Hoist a single owned
+                            // copy outside the loop, clone from it on
+                            // earlier iterations, and `mem::take` it on
+                            // the last iteration so the final emission
+                            // moves rather than clones. Saves one
+                            // allocation per re-emission for `new_count
+                            // >= 1` (N alloc → 1 alloc + (N-1) clones).
+                            // For `new_count == 0` the owned copy is
+                            // never read; skip the hoist in that path
+                            // to preserve the prior zero-allocation
+                            // behaviour. (task-2690 amendment.)
+                            let mut port_mappings_owned: Vec<(String, String)> =
+                                if new_count > 0 {
+                                    port_mappings.clone()
+                                } else {
+                                    Vec::new()
+                                };
+
+                            for i in 0..new_count {
+                                let rewritten_left = rewrite_port_placeholder(
+                                    left_port_template,
+                                    &t.collection_sub_name,
+                                    i,
+                                );
+                                let rewritten_right = rewrite_port_placeholder(
+                                    right_port_template,
+                                    &t.collection_sub_name,
+                                    i,
+                                );
+
+                                let cnid =
+                                    ConstraintNodeId::new(&cnid_entity, i as u32);
+                                let id_hash =
+                                    ContentHash::of_str(&format!("{}", cnid));
+                                let label =
+                                    format!("forall_connect@{}[{}]", t.variable, i);
+                                let compat_expr = CompiledExpr::literal(
+                                    Value::Bool(true),
+                                    Type::Bool,
+                                );
+                                let node = ConstraintNodeData {
+                                    id: cnid.clone(),
+                                    label: Some(label),
+                                    expr: compat_expr.clone(),
+                                    content_hash: id_hash.combine(compat_expr.content_hash),
+                                    optimized_target: None,
+                                };
+                                new_snapshot
+                                    .graph
+                                    .constraints
+                                    .insert(cnid.clone(), node);
+                                let port_mappings_for_this = if i + 1 == new_count {
+                                    std::mem::take(&mut port_mappings_owned)
+                                } else {
+                                    port_mappings_owned.clone()
+                                };
+                                new_snapshot.graph.connections.push(CompiledConnection {
+                                    left_port: rewritten_left,
+                                    operator: *operator,
+                                    right_port: rewritten_right,
+                                    connector_sub: None,
+                                    compatibility_constraint: cnid.clone(),
+                                    port_mappings: port_mappings_for_this,
+                                    frame_constraint: None,
+                                    span: t.span,
+                                });
+                                fresh_ids.push(cnid);
+                            }
+                        }
                         CompiledForallBody::Constraint { body_expr } => {
                             let placeholder_entity =
                                 format!("{}.{}[0]", t.parent_entity, t.collection_sub_name);

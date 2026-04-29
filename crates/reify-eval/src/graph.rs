@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use reify_compiler::{
-    CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind, find_template,
+    CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
+    ValueCellKind, find_template,
 };
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
@@ -115,6 +116,19 @@ pub struct EvaluationGraph {
     /// in the fingerprint only once they materialize in `constraints` at
     /// runtime emission.
     pub forall_templates: Vec<CompiledForallTemplate>,
+    /// Compiled connections carried through from `template.connections`
+    /// (task 2690). Mutated at runtime by `Engine::edit_param`'s
+    /// collection-count phase to materialise per-element forall-Connect
+    /// emissions when a `__count_<sub>` cell becomes known. Each entry's
+    /// `compatibility_constraint` ties it to the synthesised
+    /// `ConstraintNodeData` in `constraints`; runtime cleanup walks
+    /// `Snapshot::forall_emitted` and removes matching entries here as
+    /// well as in `constraints`.
+    ///
+    /// **Hash stability:** mixed into `topology_fingerprint` (a sixth
+    /// per-bucket sub-hash with domain separation) so cache keys vary
+    /// when the connection set changes.
+    pub connections: Vec<CompiledConnection>,
 }
 
 impl EvaluationGraph {
@@ -136,6 +150,14 @@ impl EvaluationGraph {
             graph
                 .forall_templates
                 .extend(template.forall_templates.iter().cloned());
+
+            // task 2690: carry compile-time connections into the runtime
+            // graph. The forall-Connect runtime arm in
+            // `engine_edit::edit_param` mutates this Vec in lockstep with
+            // `graph.constraints` when a deferred-count cell becomes known.
+            graph
+                .connections
+                .extend(template.connections.iter().cloned());
 
             for cell in &template.value_cells {
                 let id_hash = ContentHash::of_str(&format!("{}", cell.id));
@@ -530,7 +552,45 @@ impl EvaluationGraph {
             ContentHash::combine_all(per_group)
         };
 
-        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash])
+        // Task 2690: connections bucket. Each connection contributes a
+        // composite hash over its compatibility-constraint id, both port
+        // names, the operator discriminant, and the (sorted) port-mappings.
+        // The per-connection hashes are sorted by raw `.0` then combined,
+        // mirroring the order-independence treatment used by the other
+        // buckets above.
+        let conn_hash = {
+            let mut per_conn: Vec<ContentHash> = self
+                .connections
+                .iter()
+                .map(|c| {
+                    let cnid_hash = ContentHash::of_str(&format!(
+                        "{}",
+                        c.compatibility_constraint
+                    ));
+                    let left_hash = ContentHash::of_str(&c.left_port);
+                    let right_hash = ContentHash::of_str(&c.right_port);
+                    let op_hash = ContentHash::of_str(&format!("op:{}", c.operator.as_u8()));
+                    let mut pm_strs: Vec<String> = c
+                        .port_mappings
+                        .iter()
+                        .map(|(l, r)| format!("{}->{}", l, r))
+                        .collect();
+                    pm_strs.sort();
+                    let pm_hash = ContentHash::combine_all(
+                        pm_strs.iter().map(|s| ContentHash::of_str(s)),
+                    );
+                    ContentHash::combine_all([
+                        cnid_hash, left_hash, right_hash, op_hash, pm_hash,
+                    ])
+                })
+                .collect();
+            per_conn.sort_by_key(|h| h.0);
+            ContentHash::combine_all(per_conn)
+        };
+
+        ContentHash::combine_all([
+            vc_hash, cn_hash, real_hash, res_hash, guard_hash, conn_hash,
+        ])
     }
 }
 
@@ -1621,6 +1681,171 @@ mod tests {
             graph.topology_fingerprint(),
             graph_no_ft.topology_fingerprint(),
             "topology_fingerprint should not change when only forall_templates differs (no instantiated constraints)",
+        );
+    }
+
+    /// Task 2690 step-5/step-6: `template.connections` must carry through to
+    /// `graph.connections` so the runtime forall-Connect re-emission path
+    /// can mutate the `Vec<CompiledConnection>` in lockstep with the
+    /// synthesised compatibility-constraint nodes in `graph.constraints`.
+    ///
+    /// RED before step-6 (the `connections` field on `EvaluationGraph` does
+    /// not yet exist).
+    #[test]
+    fn evaluation_graph_carries_connections() {
+        use reify_compiler::CompiledConnection;
+        use reify_syntax::ConnectOp;
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::SourceSpan;
+
+        let conn = CompiledConnection {
+            left_port: "vents[0].inlet".to_string(),
+            operator: ConnectOp::Forward,
+            right_port: "air_channel".to_string(),
+            connector_sub: None,
+            compatibility_constraint: ConstraintNodeId::new("S", 0),
+            port_mappings: Vec::new(),
+            frame_constraint: None,
+            span: SourceSpan::empty(0),
+        };
+
+        let template = TopologyTemplateBuilder::new("S")
+            .connection(conn.clone())
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        assert_eq!(
+            graph.connections.len(),
+            1,
+            "expected 1 connection carried into graph",
+        );
+        let carried = &graph.connections[0];
+        assert_eq!(carried.left_port, conn.left_port);
+        assert_eq!(carried.right_port, conn.right_port);
+        assert_eq!(carried.operator, conn.operator);
+        assert_eq!(
+            carried.compatibility_constraint, conn.compatibility_constraint,
+        );
+    }
+
+    /// Helper for the connection-bucket fingerprint tests below.
+    fn make_connection(
+        entity: &str,
+        idx: u32,
+        left: &str,
+        right: &str,
+    ) -> reify_compiler::CompiledConnection {
+        use reify_syntax::ConnectOp;
+        use reify_types::SourceSpan;
+        reify_compiler::CompiledConnection {
+            left_port: left.to_string(),
+            operator: ConnectOp::Forward,
+            right_port: right.to_string(),
+            connector_sub: None,
+            compatibility_constraint: ConstraintNodeId::new(entity, idx),
+            port_mappings: Vec::new(),
+            frame_constraint: None,
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// Task 2690 step-7/step-8: adding a `CompiledConnection` to a graph
+    /// must change `topology_fingerprint`. Two graphs identical except for
+    /// one extra connection must produce distinct fingerprints.
+    ///
+    /// RED before step-8 (the connections bucket is not yet mixed in).
+    #[test]
+    fn topology_fingerprint_includes_connections() {
+        let mut g_no_conn = EvaluationGraph::default();
+        g_no_conn.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: ContentHash::of_str("a"),
+            },
+        );
+
+        let mut g_with_conn = g_no_conn.clone();
+        g_with_conn
+            .connections
+            .push(make_connection("X", 0, "p", "q"));
+
+        assert_ne!(
+            g_no_conn.topology_fingerprint(),
+            g_with_conn.topology_fingerprint(),
+            "fingerprint must change when a connection is added",
+        );
+    }
+
+    /// Task 2690 step-7/step-8: domain separation between connection bucket
+    /// and other node-type buckets. A graph with a single CompiledConnection
+    /// whose hash inputs collide with an unrelated value-cell content_hash
+    /// must produce a different fingerprint than a graph with that same hash
+    /// on the value-cell only. Mirrors `fingerprint_domain_separates_node_types`.
+    ///
+    /// RED before step-8 (the connections bucket is not yet mixed in, so
+    /// both graphs collapse to the same fingerprint).
+    #[test]
+    fn fingerprint_domain_separates_connections_from_others() {
+        let hash_h = ContentHash::of_str("collide");
+
+        // Graph A: single value cell with hash_h.
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: hash_h,
+            },
+        );
+
+        // Graph B: same value cell + one CompiledConnection. The
+        // connection contributes an additional bucket hash; if connections
+        // were not mixed in, both graphs would fingerprint identically.
+        let mut graph_b = graph_a.clone();
+        graph_b
+            .connections
+            .push(make_connection("X", 0, "p", "q"));
+
+        assert_ne!(
+            graph_a.topology_fingerprint(),
+            graph_b.topology_fingerprint(),
+            "fingerprint must domain-separate connections from value_cells",
+        );
+    }
+
+    /// Task 2690 step-7/step-8: insertion order of `connections` must NOT
+    /// affect `topology_fingerprint`. Mirrors `topology_fingerprint_order_independent`.
+    ///
+    /// RED before step-8 (since connections aren't mixed in, both graphs
+    /// fingerprint identically anyway — this test will only fail meaningfully
+    /// once the bucket is wired and the per-connection hashes are sorted).
+    /// Even after wiring, this test guards against an accidental
+    /// non-deterministic mix (e.g. forgetting to sort the per-connection
+    /// hashes before `combine_all`).
+    #[test]
+    fn topology_fingerprint_connections_order_independent() {
+        let conn_a = make_connection("X", 0, "p1", "q1");
+        let conn_b = make_connection("X", 1, "p2", "q2");
+
+        let mut g1 = EvaluationGraph::default();
+        g1.connections.push(conn_a.clone());
+        g1.connections.push(conn_b.clone());
+
+        let mut g2 = EvaluationGraph::default();
+        g2.connections.push(conn_b);
+        g2.connections.push(conn_a);
+
+        assert_eq!(
+            g1.topology_fingerprint(),
+            g2.topology_fingerprint(),
+            "connection insertion order must not affect fingerprint",
         );
     }
 }
