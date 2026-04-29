@@ -1150,11 +1150,14 @@ structure S {
 
     // ── Type-narrow contract: ResolutionProblem.functions (task #2413) ──────────
     //
-    // Pin the field shape to `Arc<[CompiledFunction]>` so a future regression
-    // to `Arc<Vec<CompiledFunction>>` (or any other inner T) fails to compile
-    // here. The Arc-identity sentinel tests below cover the *sharing* invariant;
-    // this pin guards the *layout* invariant — single-allocation slice Arc, one
-    // pointer hop instead of Arc → Vec header → heap (task #2286 follow-up).
+    // Documentation-only — every construction site already enforces this type
+    // (vec![].into() only compiles because the field type is known, so any
+    // regression to Arc<Vec<CompiledFunction>> would break dozens of call sites
+    // before this pin fires).  The block is kept as an explicit, named declaration
+    // of the layout invariant — single-allocation slice Arc, one pointer hop
+    // instead of Arc → Vec header → heap — and as a quick `cargo check` anchor for
+    // anyone working specifically in the ResolutionProblem type neighbourhood.
+    // The Arc-identity sentinel tests below cover the *sharing* invariant.
     const _: fn() = || {
         use std::sync::Arc;
         use reify_types::{CompiledFunction, ResolutionProblem};
@@ -1290,6 +1293,11 @@ structure S {
     /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
     /// `Arc::strong_count >= 2`). This proves the per-solver-call construction is
     /// O(1) (a refcount bump), not an O(N) deep clone of the entire function table.
+    ///
+    /// Note: the shared helper builds a 2-param (thickness + limit) module rather
+    /// than the minimal 1-param shape the eval invariant alone would require. This
+    /// is intentional — the fixture is shared across all three trigger variants;
+    /// see the comment at the top of `assert_problem_shares_functions_arc` for details.
     #[test]
     fn eval_resolution_problem_shares_functions_arc_with_engine() {
         // The helper's own engine.eval(&module) call already fires the solver,
