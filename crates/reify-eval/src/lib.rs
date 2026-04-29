@@ -414,17 +414,28 @@ pub struct Engine {
     topology_attribute_table: TopologyAttributeTable,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
-    /// Populated only via `Engine::set_panic_on_eval` (cfg-gated to test /
-    /// `test-instrumentation` builds); the field itself is always present so
-    /// the struct layout is identical in test and production builds (same
-    /// trick used by `last_guard_phase_group_evals` etc.).
     ///
-    /// In production builds the set stays empty — the let-binding evaluator's
-    /// hot path costs only a single `HashSet::contains` check per cell. The
-    /// catch_unwind panic boundary in `evaluate_let_bindings` converts any
-    /// panic raised here (or by any other path inside `eval_expr`) into a
-    /// `Freshness::Failed { error }` write plus a single `EventKind::Failed`
-    /// event, per arch §9.1 line 868–877.
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** —
+    /// production builds carry no field, no allocation, no clone, and no
+    /// drop overhead. This deliberately deviates from the `last_*` precedent
+    /// (which keeps fields always-present for identical struct layout); here
+    /// the only write sites are already equivalently-gated accessors
+    /// (`set_panic_on_eval` / `remove_panic_on_eval` / `clear_panic_on_eval`
+    /// in `engine_admin.rs`) so gating the field itself is safe and the
+    /// hygiene benefit (no test-only state in production binaries) outweighs
+    /// the trivial cfg overhead. See task #2555 rationale.
+    ///
+    /// The read site (`let force_panic = …` + `if force_panic { panic!(…) }`)
+    /// in `evaluate_let_bindings` (`engine_eval.rs`) is gated with the same
+    /// predicate, so the `catch_unwind` boundary that converts the panic into
+    /// `Freshness::Failed { error }` + `EventKind::Failed` (arch §9.1
+    /// lines 868–877) is also absent in production builds.
+    ///
+    /// **Sole init site:** `Engine::with_prelude` in `engine_admin.rs`
+    /// (`panic_on_eval_cells: std::collections::HashSet::new()`). Any future
+    /// `Engine` constructor must add the same cfg-gated field initialiser, or
+    /// production builds will fail to compile due to a missing struct field.
+    #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
 }
 

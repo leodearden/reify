@@ -2054,7 +2054,10 @@ impl Engine {
             });
 
             // Snapshot test-instrumentation panic-injection state for this cell
-            // so the closure does not need to borrow `self`.
+            // so the closure does not need to borrow `self`. The field and
+            // this read site are both `#[cfg(any(test, feature =
+            // "test-instrumentation"))]`-gated — absent in production builds.
+            #[cfg(any(test, feature = "test-instrumentation"))]
             let force_panic = self.panic_on_eval_cells.contains(cell_id);
 
             // Arch §7.2 line 748 / §9.2 line 890 — pre-eval Pending gate.
@@ -2142,12 +2145,17 @@ impl Engine {
             // `EventKind::Failed` event — rather than crashing the engine.
             //
             // The test-instrumentation hook (`panic_on_eval_cells` /
-            // `set_panic_on_eval`) panics with a known sentinel BEFORE calling
-            // `eval_expr`, so the same boundary serves both the production path
-            // (a panic raised inside `eval_expr` itself) and the test path.
+            // `set_panic_on_eval`, `force_panic` above) panics with a known
+            // sentinel BEFORE calling `eval_expr`, so the same boundary serves
+            // both the production path (a panic raised inside `eval_expr`
+            // itself) and the test path. The `force_panic` variable and the
+            // `if force_panic { panic!(…) }` branch are both
+            // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
+            // are absent in production builds.
             let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                 .with_determinacy(&snapshot.values);
             let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                #[cfg(any(test, feature = "test-instrumentation"))]
                 if force_panic {
                     panic!(
                         "test-instrumentation forced panic for {:?}",

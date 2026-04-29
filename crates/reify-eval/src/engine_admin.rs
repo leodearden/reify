@@ -163,8 +163,10 @@ impl Engine {
             // construction — task 2590 added the field + accessor as the
             // foundation; tasks 5-8 wire per-op auto-population.
             topology_attribute_table: TopologyAttributeTable::default(),
-            // Always-empty in production builds; populated only by the
-            // cfg-gated test-instrumentation accessor `set_panic_on_eval`.
+            // Only initialised in test / `test-instrumentation` builds; the
+            // field is absent in production (see lib.rs and engine_eval.rs
+            // for the matching cfg gates on the declaration and read site).
+            #[cfg(any(test, feature = "test-instrumentation"))]
             panic_on_eval_cells: std::collections::HashSet::new(),
         }
     }
