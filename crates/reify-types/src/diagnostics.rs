@@ -908,6 +908,34 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::PurposeLetUnsupported).unwrap();
         assert_eq!(s, "\"PurposeLetUnsupported\"");
     }
+
+    // --- FieldOutOfBounds tests (task 2341 — W_FIELD_OUT_OF_BOUNDS) ---
+    // Pairs with the runtime out-of-bounds detector in
+    // `crates/reify-expr/src/sampled.rs::sample_at_point`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldOutOfBounds` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::FieldOutOfBounds)`.
+    /// Pins existence of the new variant for v0.2 sampled-field OOB detection.
+    #[test]
+    fn field_out_of_bounds_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::warning("oob").with_code(DiagnosticCode::FieldOutOfBounds);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldOutOfBounds));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldOutOfBounds` serializes as
+    /// `"FieldOutOfBounds"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_out_of_bounds_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldOutOfBounds).unwrap();
+        assert_eq!(s, "\"FieldOutOfBounds\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
