@@ -54,6 +54,19 @@ impl<V> ToleranceBucket<V> {
         self.entries.is_empty()
     }
 
+    /// Inserts `(tol, val)` into the bucket and returns `true`.
+    ///
+    /// This skeletal version always pushes the entry; partial-order rejection
+    /// (idempotency under satisfaction) is introduced in step-6.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Panics in debug builds when `tol` is not finite or is negative.
+    pub fn insert(&mut self, tol: f64, val: V) -> bool {
+        self.entries.push((tol, val));
+        true
+    }
+
     /// Returns a reference to the value of the *loosest satisfying* entry for
     /// `requested_tol`, or `None` if no cached entry satisfies the request.
     ///
@@ -65,7 +78,12 @@ impl<V> ToleranceBucket<V> {
     /// # Panics (debug only)
     ///
     /// Panics in debug builds when `requested_tol` is not finite or is negative.
-    pub fn lookup(&self, _requested_tol: f64) -> Option<&V> {
+    pub fn lookup(&self, requested_tol: f64) -> Option<&V> {
+        for (t, v) in &self.entries {
+            if *t <= requested_tol {
+                return Some(v);
+            }
+        }
         None
     }
 }
