@@ -118,6 +118,52 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
     Some([ang[0], ang[1], ang[2], lin[0], lin[1], lin[2]])
 }
 
+/// Return the midpoint of a joint's free-variable range, in the joint's
+/// own input coordinate (metres for prismatic, radians for revolute).
+///
+/// Returns `None` for joints whose range is missing, unbounded on either
+/// side, or for non-Map / unknown-kind inputs.
+///
+/// **Coupling note**: returns the *parent's* range midpoint (not scaled by
+/// `ratio`).  The free-variable space of a coupling joint is the parent's
+/// motion variable — the coupling's `transform_at` arm applies the ratio
+/// downstream when computing the parent's coupled position.  This is the
+/// joint's own free-variable space, not the coupled output.
+pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match kind {
+        "prismatic" | "revolute" => {
+            let range = map.get(&Value::String("range".to_string()))?;
+            let (lo, up) = match range {
+                Value::Range {
+                    lower: Some(lo),
+                    upper: Some(up),
+                    ..
+                } => (lo.as_ref(), up.as_ref()),
+                _ => return None,
+            };
+            let lo_si = lo.as_f64()?;
+            let up_si = up.as_f64()?;
+            if !lo_si.is_finite() || !up_si.is_finite() {
+                return None;
+            }
+            Some((lo_si + up_si) / 2.0)
+        }
+        "coupling" => {
+            let parent = map.get(&Value::String("parent".to_string()))?;
+            joint_range_midpoint(parent)
+        }
+        _ => None,
+    }
+}
+
 /// Wrap a raw f64 motion variable in a dimensioned `Value` appropriate for
 /// the joint kind: `Value::length` for prismatic, `Value::angle` for revolute.
 /// Coupling joints delegate to their parent's kind.
