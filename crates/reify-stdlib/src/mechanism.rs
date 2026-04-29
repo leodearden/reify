@@ -35,6 +35,38 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_world_sentinel()
         }
+        "body" => {
+            // Dispatch on arity. Later steps extend with 4-arg (explicit
+            // parent) and 5-arg (explicit pose) forms; this step lands the
+            // 3-arg default-parent / identity-pose path.
+            match args.len() {
+                3 => {
+                    // Validate args[0] is a Mechanism Map.
+                    let mech_map = match &args[0] {
+                        Value::Map(m) => m,
+                        _ => return Some(Value::Undef),
+                    };
+                    if mech_map.get(&Value::String("kind".to_string()))
+                        != Some(&Value::String("mechanism".to_string()))
+                    {
+                        return Some(Value::Undef);
+                    }
+                    // Validate args[2] is a joint value.
+                    if !is_joint_value(&args[2]) {
+                        return Some(Value::Undef);
+                    }
+                    // Delegate to the 5-arg core with defaults.
+                    append_body(
+                        mech_map,
+                        args[1].clone(),
+                        args[2].clone(),
+                        make_world_sentinel(),
+                        identity_transform(),
+                    )
+                }
+                _ => return Some(Value::Undef),
+            }
+        }
         _ => return None,
     })
 }
@@ -104,10 +136,6 @@ fn is_world(v: &Value) -> bool {
 /// `kind in {"prismatic","revolute","coupling"}` guard). Kept private
 /// to `mechanism.rs` for now; if a third call site emerges, it can be
 /// promoted to a shared helpers module.
-//
-// Used by the `body()` builtin arm landed in a later step; allow dead
-// code until that arm wires it up.
-#[allow(dead_code)]
 fn is_joint_value(v: &Value) -> bool {
     match v {
         Value::Map(m) => matches!(
@@ -117,6 +145,108 @@ fn is_joint_value(v: &Value) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Build the canonical identity `Value::Transform` (zero translation,
+/// unit-quaternion rotation). Used as the default `pose` argument
+/// when omitted from a `body()` call.
+///
+/// Mirrors the identity-rotation construction in
+/// `joints.rs::transform_at_simple_joint` (the prismatic arm's
+/// `Value::Orientation { w: 1.0, ... }` block).
+fn identity_transform() -> Value {
+    let rotation = Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let translation = Value::Vector(vec![
+        Value::length(0.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    Value::Transform {
+        rotation: Box::new(rotation),
+        translation: Box::new(translation),
+    }
+}
+
+/// Build a body record `Value::Map` with the standard five-key layout:
+/// `at`, `id`, `parent`, `pose`, `solid` (alphabetical, matching `BTreeMap`
+/// iteration). Parallel to `make_joint`/`make_coupling` in `joints.rs`.
+fn make_body_record(id: i64, solid: Value, at: Value, parent: Value, pose: Value) -> Value {
+    let mut b = BTreeMap::new();
+    b.insert(Value::String("at".to_string()), at);
+    b.insert(Value::String("id".to_string()), Value::Int(id));
+    b.insert(Value::String("parent".to_string()), parent);
+    b.insert(Value::String("pose".to_string()), pose);
+    b.insert(Value::String("solid".to_string()), solid);
+    Value::Map(b)
+}
+
+/// Append a body record to a Mechanism `Value::Map`, returning the new
+/// (immutable) Mechanism Map. The 3-/4-/5-arg `body()` paths all
+/// delegate here after substituting defaults for omitted arguments.
+///
+/// Side effects on the returned Map (vs. the input):
+/// - `bodies` list grows by one record (with `id = m.next_id`).
+/// - `joint_parents` records `at → parent` (existing entries are kept;
+///   conflict detection lands in a later step).
+/// - `next_id` increments by one.
+///
+/// Closed-chain conflict detection, cycle detection, duplicate-solid
+/// detection, and errored-mechanism short-circuit are all layered on
+/// in subsequent steps. This step is the unconditional happy-path
+/// implementation.
+fn append_body(
+    mech_map: &BTreeMap<Value, Value>,
+    solid: Value,
+    at: Value,
+    parent: Value,
+    pose: Value,
+) -> Value {
+    // Extract current bodies / joint_parents / next_id with defense-
+    // in-depth fallbacks (the caller validated `kind = "mechanism"`).
+    let mut bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b.clone(),
+        _ => return Value::Undef,
+    };
+    let mut joint_parents = match mech_map.get(&Value::String("joint_parents".to_string())) {
+        Some(Value::Map(jp)) => jp.clone(),
+        _ => return Value::Undef,
+    };
+    let next_id = match mech_map.get(&Value::String("next_id".to_string())) {
+        Some(Value::Int(n)) => *n,
+        _ => return Value::Undef,
+    };
+
+    // Build and append the new body record.
+    bodies.push(make_body_record(
+        next_id,
+        solid,
+        at.clone(),
+        parent.clone(),
+        pose,
+    ));
+
+    // Record (at → parent) in joint_parents. If the entry already
+    // exists with the same parent, this is a no-op overwrite. Conflict
+    // detection (different parent) is added in a later step.
+    joint_parents.insert(at, parent);
+
+    // Build the new Mechanism Map. Preserve the input map's other
+    // fields verbatim (e.g. an "error" key from a future short-circuit
+    // path; today there are no other fields beyond the four canonical
+    // ones).
+    let mut new_map = mech_map.clone();
+    new_map.insert(Value::String("bodies".to_string()), Value::List(bodies));
+    new_map.insert(
+        Value::String("joint_parents".to_string()),
+        Value::Map(joint_parents),
+    );
+    new_map.insert(Value::String("next_id".to_string()), Value::Int(next_id + 1));
+    Value::Map(new_map)
 }
 
 #[cfg(test)]
