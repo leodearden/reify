@@ -1,9 +1,10 @@
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_violating,
-    bracket_source_with_width, warn_source_with_unknown_port_type,
+    CountingSubscriberBuilder, FailingMockGeometryKernel, MockGeometryKernel, bracket_source,
+    bracket_source_violating, bracket_source_with_width, warn_source_with_unknown_port_type,
     warn_source_with_unknown_port_type_with_width,
 };
 use reify_compiler::find_template;
@@ -397,6 +398,67 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
     );
 }
 
+#[test]
+fn get_mechanism_descriptors_snapshot_consumption_does_not_filter() {
+    // Step 3: MULTI_SNAPSHOT_SOURCE has m0/m1/m2 body chain plus s1/s2 snapshot
+    // lets that read from m2.  snapshot() consumption must NOT make m2 an
+    // intermediate mechanism — it should still appear as the one terminal
+    // descriptor.  Pins the design decision: body()-only filter.
+    let mut session = make_session();
+    session
+        .load_from_source(MULTI_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load multi-snapshot source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "snapshot consumption must not filter the mechanism; expected 1 descriptor, got {:?}",
+        descriptors.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        descriptors[0].name, "m2",
+        "the terminal mechanism should be m2; got {:?}",
+        descriptors[0].name
+    );
+    assert_eq!(
+        descriptors[0].bodies_count, 2,
+        "m2 should have bodies_count=2; got {}",
+        descriptors[0].bodies_count
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_filters_intermediate_body_chain_cells() {
+    // Step 1 RED: HAPPY_MECHANISM_SOURCE has m0/m1/m2 where m0 is consumed by
+    // body(m0,...) → m1, and m1 is consumed by body(m1,...) → m2.  Only the
+    // terminal mechanism (m2) should appear in the returned descriptors.
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "only the terminal mechanism should be returned; got {:?}",
+        descriptors.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        descriptors[0].name, "m2",
+        "the terminal mechanism should be m2; got {:?}",
+        descriptors[0].name
+    );
+    assert_eq!(
+        descriptors[0].bodies_count, 2,
+        "m2 should have bodies_count=2; got {}",
+        descriptors[0].bodies_count
+    );
+}
+
 /// Source for step-11: 1-body mechanism where y_axis is bound to param y_pos.
 /// `snapshot(m1, [bind(y_axis, y_pos)])` — y_pos is a param → driving param
 /// resolution should yield driving_param_cell_id = Some("Kinematic.y_pos").
@@ -716,6 +778,102 @@ fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
         j2_desc.is_some(),
         "j2 should be driven by p2; joint descriptors: {:?}",
         m2_desc.joints
+    );
+}
+
+// ---- snapshot/bind telemetry tests (steps 4-5, 6-7) --------------------------
+
+/// Source for step-4/5: snapshot with an empty bind list.
+/// `snapshot(m1, [])` is a textual snapshot() match but contributes zero bind
+/// pairs — the no-pairs debug event should fire once.
+const EMPTY_BIND_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j1)
+    let snap = snapshot(m1, [])
+}
+"#;
+
+#[test]
+fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
+    // Step 4 RED: snapshot(m1, []) is a textual match for snapshot() but the
+    // bind list is empty, so zero pairs are contributed.  After step-5's impl,
+    // collect_snapshot_bind_pairs must emit exactly one DEBUG event (the
+    // "zero bind pairs" telemetry hook).  Currently emits none → RED.
+    let mut session = make_session();
+    session
+        .load_from_source(EMPTY_BIND_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load empty-bind-list source");
+
+    // Filter on the specific submodule target so this assertion remains valid
+    // even if other debug! calls are added elsewhere in reify_gui::engine.
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::snapshot_bind_pairs")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event at target reify_gui::engine::snapshot_bind_pairs \
+         for the zero-pair snapshot; got {}",
+        debug_count
+    );
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at target reify_gui::engine::snapshot_bind_pairs; got {}",
+        warn_count
+    );
+}
+
+#[test]
+fn resolve_driving_params_emits_debug_for_param_checked_match() {
+    // Step 6 RED: SNAPSHOT_PARAM_BIND_SOURCE has bind(y_axis, y_pos) where
+    // y_pos is a Param.  After step-7's impl, resolve_driving_params_from_ast
+    // must emit exactly one DEBUG event when a Param-checked match resolves.
+    // Currently emits none → RED.
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    // Filter on the specific submodule target so this assertion remains valid
+    // even if other debug! calls are added elsewhere in reify_gui::engine.
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_gui::engine::param_resolution")
+        .build();
+
+    let descriptors = tracing::subscriber::with_default(subscriber, || {
+        session.get_mechanism_descriptors()
+    });
+
+    // Sanity: the match path must have actually executed.
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+    assert_eq!(
+        m1_desc.joints[0].driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving param should be resolved; got {:?}",
+        m1_desc.joints[0].driving_param_cell_id
+    );
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event at target reify_gui::engine::param_resolution \
+         for the resolved param match; got {}",
+        debug_count
     );
 }
 
@@ -4533,4 +4691,97 @@ structure Parent {
             node.entity_path, node.kind, node.freshness
         );
     }
+}
+
+// ---- malformed mechanism Map shape contract tests ----------------------------
+
+#[test]
+fn extract_joints_from_mechanism_skips_non_map_at_value() {
+    // Step 8 RED: hand-construct a mechanism Map whose single body has a
+    // non-Map "at" value (Value::String("not-a-map")).  extract_joints_from_mechanism
+    // must return empty (joints, seen_joints) — no phantom row, no panic.
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+    use crate::engine::extract_joints_from_mechanism;
+
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(
+        Value::String("at".to_string()),
+        Value::String("not-a-map".to_string()),
+    );
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+
+    let (joints, seen_joints) = extract_joints_from_mechanism(&mech_map);
+
+    assert!(
+        joints.is_empty(),
+        "non-Map 'at' value must produce no joint descriptors; got {:?}",
+        joints
+    );
+    assert!(
+        seen_joints.is_empty(),
+        "non-Map 'at' value must produce no seen_joints entries; got {:?}",
+        seen_joints
+    );
+}
+
+#[test]
+fn extract_joints_from_mechanism_handles_malformed_axis_length() {
+    // Step 8 RED: hand-construct a mechanism with a prismatic joint whose
+    // "axis" Vector has length 2 (malformed — extract_axis requires length 3).
+    // The descriptor must still be produced (kind=="prismatic", dimension=="length")
+    // but axis must be None.
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+    use crate::engine::extract_joints_from_mechanism;
+
+    // Build the joint map with a 2-element axis vector.
+    let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+    joint_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("prismatic".to_string()),
+    );
+    joint_map.insert(
+        Value::String("axis".to_string()),
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]), // length 2 — malformed
+    );
+
+    // Build the body map referencing the joint.
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(
+        Value::String("at".to_string()),
+        Value::Map(joint_map),
+    );
+
+    // Build the mechanism map.
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+
+    let (joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor; got {:?}", joints);
+    let jd = &joints[0];
+    assert_eq!(jd.kind, "prismatic", "kind should be prismatic; got {}", jd.kind);
+    assert_eq!(jd.dimension, "length", "dimension should be length; got {}", jd.dimension);
+    assert!(
+        jd.axis.is_none(),
+        "malformed axis (length!=3) must produce axis==None; got {:?}",
+        jd.axis
+    );
 }
