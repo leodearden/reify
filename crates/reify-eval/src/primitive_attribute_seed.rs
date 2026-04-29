@@ -408,7 +408,7 @@ mod tests {
     use super::*;
     use reify_types::{
         ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryQuery,
-        Mesh, ReprKind, TessError,
+        Mesh, TessError,
     };
 
     /// In-test `GeometryKernel` that errors from every method. Used to
@@ -523,7 +523,6 @@ mod tests {
         // attribute attachment is the propagation phase (task 7), not
         // the seeding phase (this task). The dispatch must see Translate,
         // fall through, and leave the table untouched.
-        let _: ReprKind = ReprKind::Solid; // touch the import for symmetry
         assert_seeds_nothing(&GeometryOp::Translate {
             target: fake_target(),
             dx: 1.0,
