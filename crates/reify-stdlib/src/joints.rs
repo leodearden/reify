@@ -2747,6 +2747,18 @@ mod tests {
         );
     }
 
+    // ── is_joint_value for fixed ─────────────────────────────────────────────
+
+    /// `is_joint_value` recognizes a fixed joint once "fixed" is in `JOINT_KINDS`.
+    ///
+    /// This test is independent of `is_joint_value_aligns_with_joint_kinds` —
+    /// it pins the contract directly against the fixed constructor output.
+    #[test]
+    fn is_joint_value_recognizes_fixed() {
+        let fj = eval_builtin("fixed", &[]);
+        assert!(is_joint_value(&fj), "fixed() output should be recognized as a joint value");
+    }
+
     // ── joint_jacobian for fixed ─────────────────────────────────────────────
 
     /// `joint_jacobian(fixed_joint)` returns a zero-twist Map.
