@@ -1150,7 +1150,7 @@ fn scalar_to_f64(val: &Value) -> Option<f64> {
 /// structure boundaries.  The `parsed_cache` is the already-parsed AST from
 /// `EngineSession::parsed_cache`, so no additional parse cost is incurred.
 fn resolve_driving_params_from_ast(
-    descriptors: &mut Vec<MechanismDescriptor>,
+    descriptors: &mut [MechanismDescriptor],
     parsed: &reify_syntax::ParsedModule,
     check: &CheckResult,
     compiled: &CompiledModule,
@@ -1249,8 +1249,8 @@ fn resolve_driving_params_from_ast(
                     None => continue,
                 };
 
-                if let Some(jd) = desc.joints.get_mut(joint_index) {
-                    if jd.driving_param_cell_id.is_none() {
+                if let Some(jd) = desc.joints.get_mut(joint_index)
+                    && jd.driving_param_cell_id.is_none() {
                         jd.driving_param_cell_id = Some(param_cell_id_str.clone());
                         // Step-24: populate current_value_si from the param cell's
                         // post-eval value so the slider's initial position reflects
@@ -1260,7 +1260,6 @@ fn resolve_driving_params_from_ast(
                         let param_val = check.values.get_or_undef(&param_cell_id);
                         jd.current_value_si = scalar_to_f64(&param_val);
                     }
-                }
             }
         }
     }
