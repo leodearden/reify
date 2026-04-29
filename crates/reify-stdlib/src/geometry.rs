@@ -3049,6 +3049,27 @@ mod tests {
         assert!(eval_builtin("transform_log", &[make_identity_orientation()]).is_undef());
     }
 
+    /// transform_log with ANGLE-dimension translation → Undef (matches transform_exp gate).
+    ///
+    /// transform_exp rejects twist.linear with ANGLE dimension (see
+    /// `transform_exp_linear_wrong_dimension_returns_undef`). This test
+    /// pins the symmetric gate in transform_log: a Transform whose
+    /// translation is ANGLE-dimensioned must also return Undef so that
+    /// neither end of the log↔exp round-trip silently accepts
+    /// untranslatable inputs.
+    #[test]
+    fn transform_log_angle_dim_translation_returns_undef() {
+        let t = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::angle(0.0),
+                Value::angle(0.0),
+                Value::angle(0.0),
+            ])),
+        };
+        assert!(eval_builtin("transform_log", &[t]).is_undef());
+    }
+
     // ── transform_exp tests (step-21) ────────────────────────────────────────
 
     /// Helper: build a twist Map with given angular & linear vectors.
