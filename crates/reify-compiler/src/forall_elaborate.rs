@@ -377,10 +377,59 @@ pub(crate) fn elaborate_forall_connect(
                            // forall-element label is added in step-21 if
                            // needed for diagnostic provenance.
             }
-            // Step-18: Chain body desugared per element into pairwise Forward
-            // connections. Left as a no-op for step-16; the chain test will
-            // be added then and pinned by step-18.
-            ForallConnectBody::Chain(_) => {}
+            // Per-element chain desugaring: substitute every chain element,
+            // then emit pairwise Forward connections via `windows(2)`. Mirror
+            // the plain `MemberDecl::Chain` arm at entity.rs:1304-1342, but
+            // anchor every emitted connection's span at `decl.span` so
+            // per-element diagnostics cite the forall site.
+            ForallConnectBody::Chain(cd) => {
+                // Edge case: fewer than two elements is a malformed chain.
+                // Emit the standard chain diagnostic once per element-iteration
+                // (matching the plain-Chain arm's behaviour) anchored at the
+                // forall span. The plain arm uses `chain_decl.span`; here the
+                // forall span subsumes the chain body's span and is the
+                // user-visible site.
+                if cd.elements.len() < 2 {
+                    diagnostics.push(
+                        Diagnostic::error("chain statement requires at least two elements")
+                            .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
+                    );
+                    // Skip emission for this element; without at least two
+                    // elements there is no pairwise window to desugar.
+                    let _ = i;
+                    continue;
+                }
+
+                let substituted_elements: Vec<reify_syntax::Expr> = cd
+                    .elements
+                    .iter()
+                    .map(|e| substitute_expr(e, &bindings))
+                    .collect();
+
+                for pair in substituted_elements.windows(2) {
+                    let mut acc = ConnectAccumulator {
+                        constraints,
+                        constraint_index,
+                        connections,
+                        sub_components,
+                        connector_index,
+                    };
+                    compile_connection(
+                        &ctx,
+                        &ConnectInput {
+                            left_expr: &pair[0],
+                            operator: reify_syntax::ConnectOp::Forward,
+                            right_expr: &pair[1],
+                            connector_type: None,
+                            params: &[],
+                            port_mappings: &[],
+                            span: decl.span,
+                        },
+                        diagnostics,
+                        &mut acc,
+                    );
+                }
+            }
         }
     }
 }
