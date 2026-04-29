@@ -410,6 +410,17 @@ fn full_revolve_with_history_reports_no_caps() {
         history.unmatched_radial_edge_count,
         history.face_generated
     );
+
+    // (g) No duplicate parent_subshape_index values after the post-sort/dedup
+    //     pass — expected 0 for a well-formed rect profile.
+    assert_eq!(
+        history.duplicate_parent_subshape_index_count,
+        0,
+        "full revolve of rect profile must report 0 duplicate parent_subshape_index, \
+         got {} (face_generated = {:?})",
+        history.duplicate_parent_subshape_index_count,
+        history.face_generated
+    );
 }
 
 /// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
