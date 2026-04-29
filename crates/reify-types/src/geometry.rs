@@ -2476,6 +2476,55 @@ mod tests {
         assert_eq!(cloned.mod_history.len(), 2);
     }
 
+    #[test]
+    fn same_parent_as_returns_true_iff_parent_key_fields_match_excluding_mod_history() {
+        // Baseline: two attributes sharing identical (feature_id, role, local_index,
+        // user_label) but with DIFFERENT mod_history. The split-children signature.
+        let a = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Side,
+            local_index: 7,
+            user_label: Some("seam".to_string()),
+            mod_history: Vec::new(),
+        };
+        let b = TopologyAttribute {
+            feature_id: FeatureId::new("Boss#realization[0]"),
+            role: Role::Side,
+            local_index: 7,
+            user_label: Some("seam".to_string()),
+            mod_history: vec![ModEntry {
+                splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+                split_index: 0,
+            }],
+        };
+        // mod_history differs but parent-key fields all match → predicate true.
+        assert!(a.same_parent_as(&b));
+        // Symmetry: predicate is order-independent.
+        assert!(b.same_parent_as(&a));
+
+        // Diverging on each parent-key field in turn flips the predicate to false.
+        let mut diff_feature = b.clone();
+        diff_feature.feature_id = FeatureId::new("Slot#realization[0]");
+        assert!(!a.same_parent_as(&diff_feature));
+
+        let mut diff_role = b.clone();
+        diff_role.role = Role::NewEdge;
+        assert!(!a.same_parent_as(&diff_role));
+
+        let mut diff_idx = b.clone();
+        diff_idx.local_index = 8;
+        assert!(!a.same_parent_as(&diff_idx));
+
+        let mut diff_label = b.clone();
+        diff_label.user_label = Some("rim".to_string());
+        assert!(!a.same_parent_as(&diff_label));
+
+        // None vs Some on user_label is also a parent-key difference.
+        let mut diff_label_none = b.clone();
+        diff_label_none.user_label = None;
+        assert!(!a.same_parent_as(&diff_label_none));
+    }
+
     fn make_attr(feature: &str, idx: u32) -> TopologyAttribute {
         TopologyAttribute {
             feature_id: FeatureId::new(feature),
