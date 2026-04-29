@@ -459,10 +459,13 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
 /// every overlapping parent face is either fully Modified into one
 /// result face, fully Deleted, or absent from history — sub-clauses (a)
 /// and (c) gracefully no-op (with eprintln so the skip is visible in
-/// CI). Sub-clause (b) ALWAYS runs; non-split parents must always have
-/// empty mod_history regardless of OCCT's particular split topology.
-/// Step-16's orthogonal-slab variant covers the explicit-split path
-/// when this fixture doesn't naturally exercise it.
+/// CI). Sub-clause (b) ALWAYS runs and the test asserts that at least
+/// one authoritative count==1 pass-through assertion fired
+/// (`coverage.pass_through_assertions >= 1`); the test name promises
+/// pass-through coverage, and this assert keeps the promise honest if
+/// OCCT's history-emission ever drifts so no count==1 parent stays
+/// authoritative. The orthogonal-slab variant covers the explicit-split
+/// path that this fixture doesn't naturally exercise.
 #[test]
 fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
     if !OCCT_AVAILABLE {
@@ -523,23 +526,63 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
     // Hand off to the shared helper. This fixture (two cubes offset by
     // +5mm) is an aligned fuse — the union is a simple 15×10×10 brick
     // so OCCT typically emits no face splits. Clauses (a) and (c) of
-    // the helper gracefully no-op via the `false` return; clause (b)
-    // (count==1 pure pass-through) ALWAYS runs to pin the contract.
+    // the helper gracefully no-op via `split_exercised == false`; clause
+    // (b) (count==1 pure pass-through) is the contract this fixture pins.
     // The orthogonal-slab variant below covers the explicit-split path.
-    let exercised = assert_mod_history_propagation_and_clustering(
+    // Debug instrumentation (temporary).
+    eprintln!(
+        "DEBUG two-cube: face_modified records = {}, face_generated records = {}",
+        history.face_modified.len(),
+        history.face_generated.len()
+    );
+    {
+        let mut by_parent: std::collections::HashMap<(u8, u32), Vec<u32>> =
+            std::collections::HashMap::new();
+        let mut last_writer: std::collections::HashMap<u32, (u8, u32)> =
+            std::collections::HashMap::new();
+        for rec in history
+            .face_modified
+            .iter()
+            .chain(history.face_generated.iter())
+        {
+            by_parent
+                .entry((rec.parent_index, rec.parent_subshape_index))
+                .or_default()
+                .push(rec.result_subshape_index);
+            last_writer.insert(
+                rec.result_subshape_index,
+                (rec.parent_index, rec.parent_subshape_index),
+            );
+        }
+        eprintln!("DEBUG two-cube: by_parent = {:?}", by_parent);
+        eprintln!("DEBUG two-cube: last_writer = {:?}", last_writer);
+        let mut count_1_authoritative = 0usize;
+        let mut count_1_total = 0usize;
+        for (parent_key, indices) in &by_parent {
+            if indices.len() == 1 {
+                count_1_total += 1;
+                if last_writer.get(&indices[0]) == Some(parent_key) {
+                    count_1_authoritative += 1;
+                }
+            }
+        }
+        eprintln!(
+            "DEBUG two-cube: count==1 parents = {}, authoritative = {}",
+            count_1_total, count_1_authoritative
+        );
+    }
+
+    let coverage = assert_mod_history_propagation_and_clustering(
         &table,
         &parents,
         &history,
         &result_face_handles,
         &fuse_feature_id,
     );
-    if !exercised {
-        eprintln!(
-            "note: this OCCT output had no face splits (every parent has count==1 across \
-             face_modified ∪ face_generated); resolver clustering not exercised by this fixture. \
-             See `mod_history_threading_with_orthogonal_slabs` for explicit-split coverage."
-        );
-    }
+    eprintln!(
+        "DEBUG two-cube: split_exercised = {}, pass_through_assertions = {}",
+        coverage.split_exercised, coverage.pass_through_assertions
+    );
 }
 
 /// step-16 (task #2653) — explicit orthogonal-slab fixture that forces
@@ -646,7 +689,7 @@ fn mod_history_threading_with_orthogonal_slabs() {
     )
     .expect("propagation should succeed");
 
-    let exercised = assert_mod_history_propagation_and_clustering(
+    let coverage = assert_mod_history_propagation_and_clustering(
         &table,
         &parents,
         &history,
@@ -654,7 +697,7 @@ fn mod_history_threading_with_orthogonal_slabs() {
         &fuse_feature_id,
     );
     assert!(
-        exercised,
+        coverage.split_exercised,
         "orthogonal-slab fixture is designed to produce at least one face split with \
          ≥ 2 authoritative children — got none. \
          If OCCT's fuse output for this geometry no longer splits (kernel-version drift), \
@@ -691,17 +734,19 @@ fn mod_history_threading_with_orthogonal_slabs() {
 /// per-child assertions skip non-authoritative shadows — those are
 /// pinned by the v0.1 e2e test's last-write-wins clause.
 ///
-/// Returns `true` if clause (c) ran (a split parent was found),
-/// `false` if no split was present in OCCT's history. Callers that
-/// require the split path (orthogonal-slab fixture) `assert!(returned_true)`;
-/// callers tolerant of the no-op (two-cube fixture) eprintln-skip.
+/// Returns a [`ClusteringCoverage`] capturing which sub-clauses actually
+/// ran. The orthogonal-slab fixture asserts `split_exercised == true`;
+/// the two-cube fixture cannot guarantee a split (aligned fuses often
+/// emit none) but MUST guarantee at least one authoritative count==1
+/// pass-through assertion fires (`pass_through_assertions >= 1`),
+/// otherwise the test name promises coverage that never runs.
 fn assert_mod_history_propagation_and_clustering(
     table: &TopologyAttributeTable,
     parents: &BooleanOpParents<'_>,
     history: &BooleanOpHistoryRecords,
     result_face_handles: &[GeometryHandleId],
     fuse_feature_id: &FeatureId,
-) -> bool {
+) -> ClusteringCoverage {
     // Walk face_modified.iter().chain(face_generated.iter()) in the same
     // order the propagator did, accumulating each parent's children with
     // their assigned split_index (0, 1, 2, …).
@@ -724,6 +769,11 @@ fn assert_mod_history_propagation_and_clustering(
 
     let parent_face_slices = parents.face_slices();
     let mut split_parent_with_children: Option<((u8, u32), Vec<u32>)> = None;
+    // Count how many authoritative count==1 pass-through assertions
+    // actually ran. The reviewer flagged that without this counter the
+    // two-cube test could silently pass when OCCT changed its history
+    // emission such that no count==1 parent was authoritative.
+    let mut pass_through_assertions: usize = 0;
 
     // ─── (a) + (b): mod_history per child for split vs non-split ─────
     for (&parent_key, child_result_indices) in children_per_parent.iter() {
@@ -831,12 +881,16 @@ fn assert_mod_history_propagation_and_clustering(
                 "non-split child mod_history must equal parent's prior history (no new \
                  ModEntry appended; count=1 means pure pass-through)"
             );
+            pass_through_assertions += 1;
         }
     }
 
     // ─── (c) Resolver clustering on the first split parent ───────────
     let Some((split_parent_key, child_result_indices)) = split_parent_with_children else {
-        return false;
+        return ClusteringCoverage {
+            split_exercised: false,
+            pass_through_assertions,
+        };
     };
 
     let split_parent_handle =
@@ -890,5 +944,28 @@ fn assert_mod_history_propagation_and_clustering(
         diag.message
     );
 
-    true
+    ClusteringCoverage {
+        split_exercised: true,
+        pass_through_assertions,
+    }
+}
+
+/// Coverage record returned by
+/// [`assert_mod_history_propagation_and_clustering`].
+///
+/// Two independent dimensions:
+///   - `split_exercised` — whether a split parent with ≥ 2 authoritative
+///     children was found and the resolver cluster-resolution assertions
+///     ran. The orthogonal-slab fixture asserts this is `true`; the
+///     two-cube fixture tolerates `false` because aligned fuses often
+///     emit no splits.
+///   - `pass_through_assertions` — count of authoritative count==1
+///     parents whose pure-pass-through mod_history was verified. Tests
+///     that promise count==1 coverage assert this is `>= 1` so a
+///     fixture that silently stops emitting authoritative count==1
+///     records (kernel-version drift) fails loudly instead of passing
+///     vacuously.
+struct ClusteringCoverage {
+    split_exercised: bool,
+    pass_through_assertions: usize,
 }
