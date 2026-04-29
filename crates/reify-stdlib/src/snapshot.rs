@@ -1846,4 +1846,41 @@ mod tests {
             assert!(cz.abs() < 1e-9, "COM.z should be 0 at v={}, got {}", v, cz);
         }
     }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    fn planar_xy_joint() -> Value {
+        eval_builtin(
+            "planar",
+            &[
+                axis_x_unit(),
+                axis_y_unit(),
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        )
+    }
+
+    /// `snapshot(mech_with_unbound_planar, [])` returns Undef.
+    ///
+    /// Pins the contract that an unbound planar joint can't fall back to a
+    /// range midpoint (because `joint_range_midpoint` returns None for
+    /// planar). The FK walk's `value_for` resolution returns None at the
+    /// midpoint fallback step, which the FK walk maps to Value::Undef for
+    /// the body's world_transform, propagating Undef to the snapshot result.
+    /// Deferred to PRD v0.2 kinematic task 2 (taskmaster #2670).
+    #[test]
+    fn snapshot_with_unbound_planar_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let solid = Value::String("solidA".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, planar_xy_joint()]);
+
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![])]);
+        assert!(
+            s.is_undef(),
+            "snapshot with unbound planar joint must return Undef, got {:?}",
+            s
+        );
+    }
 }
