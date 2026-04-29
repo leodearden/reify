@@ -1163,4 +1163,111 @@ mod tests {
         assert!(eval_builtin("transform_of", &[s.clone(), Value::Real(0.0)]).is_undef());
         assert!(eval_builtin("transform_of", &[s, eval_builtin("world", &[])]).is_undef());
     }
+
+    // ── bounding_box(snapshot) accessor ───────────────────────────────────
+    //
+    // v0.1 semantic: `bounding_box(s)` returns the AABB of the per-body
+    // world-frame ORIGINS (translation of each body's `world_transform`).
+    // This is a point-mass approximation — the real volumetric AABB
+    // requires OCCT (`BRepBndLib::Add`), which is the scope of FFI task
+    // #2530.  Empty Snapshot → Undef (no points to envelope).
+    //
+    // Result shape: `Value::Map { min: Point3<Length>, max: Point3<Length> }`
+    // where each Point3 is `Value::Point(vec![length(x), length(y), length(z)])`.
+
+    /// Decompose a `Value::Point` of three Length-dimensioned scalars
+    /// into `[f64; 3]` SI values for assertion purposes.
+    fn decompose_point3_length_for_assert(v: &Value) -> [f64; 3] {
+        let comps = match v {
+            Value::Point(c) if c.len() == 3 => c,
+            other => panic!("expected Value::Point len=3, got {:?}", other),
+        };
+        let read = |comp: &Value| -> f64 {
+            match comp {
+                Value::Real(r) => *r,
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected numeric component, got {:?}", other),
+            }
+        };
+        [read(&comps[0]), read(&comps[1]), read(&comps[2])]
+    }
+
+    /// `bounding_box(s)` on a 2-body Snapshot whose bodies sit at
+    /// world translations (-0.5, 0, 0) and (+0.5, 0, 0).  Result must
+    /// be a Map with `min` = Point3(-0.5, 0, 0), `max` = Point3(+0.5, 0, 0),
+    /// all components carrying LENGTH dimension.
+    #[test]
+    fn bounding_box_two_body_envelopes_origins() {
+        let (s, _, _) = make_two_body_snapshot();
+        let result = eval_builtin("bounding_box", &[s]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected bounding_box Map, got {:?}", other),
+        };
+
+        let min_v = map
+            .get(&Value::String("min".to_string()))
+            .expect("bounding_box result must carry a `min` field");
+        let max_v = map
+            .get(&Value::String("max".to_string()))
+            .expect("bounding_box result must carry a `max` field");
+
+        let [minx, miny, minz] = decompose_point3_length_for_assert(min_v);
+        let [maxx, maxy, maxz] = decompose_point3_length_for_assert(max_v);
+
+        assert!((minx - (-0.5)).abs() < 1e-12, "min.x should be -0.5, got {}", minx);
+        assert!(miny.abs() < 1e-12, "min.y should be 0, got {}", miny);
+        assert!(minz.abs() < 1e-12, "min.z should be 0, got {}", minz);
+        assert!((maxx - 0.5).abs() < 1e-12, "max.x should be 0.5, got {}", maxx);
+        assert!(maxy.abs() < 1e-12, "max.y should be 0, got {}", maxy);
+        assert!(maxz.abs() < 1e-12, "max.z should be 0, got {}", maxz);
+
+        // All components must carry LENGTH dimension (not bare Real).
+        let assert_length = |p: &Value, label: &str| {
+            let comps = match p {
+                Value::Point(c) => c,
+                other => panic!("{}: expected Value::Point, got {:?}", label, other),
+            };
+            for (i, comp) in comps.iter().enumerate() {
+                match comp {
+                    Value::Scalar { dimension, .. } => {
+                        assert_eq!(
+                            *dimension,
+                            reify_types::DimensionVector::LENGTH,
+                            "{}: component[{}] should carry LENGTH dimension",
+                            label,
+                            i
+                        );
+                    }
+                    other => panic!("{}: component[{}] should be Value::Scalar, got {:?}", label, i, other),
+                }
+            }
+        };
+        assert_length(min_v, "min");
+        assert_length(max_v, "max");
+    }
+
+    /// `bounding_box(empty_snapshot)` returns `Value::Undef` — no points
+    /// to envelope, so the AABB is undefined.
+    #[test]
+    fn bounding_box_on_empty_snapshot_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let s = eval_builtin("snapshot", &[m0, Value::List(vec![])]);
+        assert!(eval_builtin("bounding_box", &[s]).is_undef());
+    }
+
+    /// `bounding_box()` validation surface: arity != 1 and non-snapshot
+    /// args[0] both return `Value::Undef`.
+    #[test]
+    fn bounding_box_validation_returns_undef() {
+        let (s, _, _) = make_two_body_snapshot();
+        // Wrong arity (0, 2 args)
+        assert!(eval_builtin("bounding_box", &[]).is_undef());
+        assert!(eval_builtin("bounding_box", &[s.clone(), Value::Int(0)]).is_undef());
+        // Non-snapshot first arg: Real, world sentinel, mechanism
+        assert!(eval_builtin("bounding_box", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("bounding_box", &[eval_builtin("world", &[])]).is_undef());
+        let m0 = eval_builtin("mechanism", &[]);
+        assert!(eval_builtin("bounding_box", &[m0]).is_undef());
+    }
 }
