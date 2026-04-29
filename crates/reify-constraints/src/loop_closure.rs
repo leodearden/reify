@@ -429,6 +429,19 @@ pub fn solve_loop_closure(
     strategy: &StartStrategy,
     config: &NewtonConfig,
 ) -> NewtonOutcome {
+    // Validate free_b indices against chain_b — strategy-independent invariant.
+    for &i in free_b {
+        if i >= chain_b.len() {
+            let reason = format!(
+                "free_b index {} out of range (chain_b len {})",
+                i,
+                chain_b.len()
+            );
+            tracing::warn!("solve_loop_closure: {reason}");
+            return NewtonOutcome::InvalidInput { reason };
+        }
+    }
+
     // Resolve initial x0 from the strategy.
     let x0: Vec<f64> = match strategy {
         StartStrategy::WarmStart(v) => {
@@ -446,15 +459,7 @@ pub fn solve_loop_closure(
         StartStrategy::Midpoint => {
             let mut out = Vec::with_capacity(free_b.len());
             for &i in free_b {
-                if i >= chain_b.len() {
-                    let reason = format!(
-                        "free_b index {} out of range (chain_b len {})",
-                        i,
-                        chain_b.len()
-                    );
-                    tracing::warn!("solve_loop_closure: {reason}");
-                    return NewtonOutcome::InvalidInput { reason };
-                }
+                // chain_b bound already validated above; index is safe.
                 match reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]) {
                     Some(m) => out.push(m),
                     None => {
