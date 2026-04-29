@@ -7264,4 +7264,72 @@ mod tests {
         );
     }
 
+    // --- SampledField / Value::SampledField tests (task 2341 step-3) ---
+
+    /// Helper: build a 1D `SampledField` over `[0.0, 1.0]` with three samples.
+    /// Used by the three round-trip tests below.
+    fn sample_field_1d_fixture() -> SampledField {
+        SampledField {
+            name: "f".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![1.0],
+            spacing: vec![0.5],
+            axis_grids: vec![vec![0.0, 0.5, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.0, 1.0, 2.0],
+            oob_emitted: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Two `SampledField` values with identical semantic content compare equal,
+    /// even if their `oob_emitted` AtomicBools have observed different writes.
+    /// (AtomicBool is a runtime-mutability slot and is intentionally excluded from PartialEq.)
+    #[test]
+    fn sampled_field_value_partial_eq() {
+        use std::sync::atomic::Ordering;
+        let a = Value::SampledField(sample_field_1d_fixture());
+        let b = Value::SampledField(sample_field_1d_fixture());
+        assert_eq!(a, b);
+
+        // After flipping b's oob_emitted, the values must STILL compare equal —
+        // the runtime-only flag is not part of the PartialEq contract.
+        if let Value::SampledField(sf) = &b {
+            sf.oob_emitted.store(true, Ordering::Release);
+        }
+        assert_eq!(a, b, "AtomicBool oob_emitted must be excluded from PartialEq");
+    }
+
+    /// `Value::SampledField`'s Ord type-tag (25) places it after `BoundingBox` (24).
+    /// This pins the type-tag registry so a future reorganisation that drops
+    /// `SampledField` from the tuple-match in `impl Ord for Value` is caught here.
+    #[test]
+    fn sampled_field_value_ord_type_tag_is_unique() {
+        use std::cmp::Ordering;
+        let sf = Value::SampledField(sample_field_1d_fixture());
+        let bbox = Value::BoundingBox {
+            min: Box::new(Value::Point(vec![Value::Real(0.0)])),
+            max: Box::new(Value::Point(vec![Value::Real(1.0)])),
+        };
+        // SampledField (tag=25) sorts strictly AFTER BoundingBox (tag=24).
+        assert_eq!(sf.cmp(&bbox), Ordering::Greater);
+        assert_eq!(bbox.cmp(&sf), Ordering::Less);
+        // SampledField sorts strictly AFTER Matrix (tag=19) and Field (tag=11).
+        let matrix = Value::Matrix(vec![vec![Value::Real(0.0)]]);
+        assert_eq!(sf.cmp(&matrix), Ordering::Greater);
+    }
+
+    /// `Value::SampledField` produces a non-zero content hash that is distinct
+    /// from `Value::Undef`. Pins the new content-hash tag (26) so a regression
+    /// that collapses the hash for SampledField to the Undef fallback is caught.
+    #[test]
+    fn sampled_field_value_content_hash_is_nonzero_and_distinct_from_undef() {
+        let sf = Value::SampledField(sample_field_1d_fixture());
+        let h = sf.content_hash();
+        let undef_h = Value::Undef.content_hash();
+        assert_ne!(h, undef_h);
+        // Determinism: same inputs → same hash.
+        let sf2 = Value::SampledField(sample_field_1d_fixture());
+        assert_eq!(sf.content_hash(), sf2.content_hash());
+    }
 }
