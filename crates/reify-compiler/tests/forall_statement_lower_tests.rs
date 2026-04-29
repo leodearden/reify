@@ -350,6 +350,118 @@ structure S {
     );
 }
 
+/// `forall v in [1, 2, 3]: constraint v > 0 where heavy` should emit one
+/// `CompiledGuardedGroup` per element (3 total), each containing exactly
+/// one `forall@v[*]`-labelled constraint and each whose `guard_expr` is
+/// a `ValueRef` resolving to the `heavy` value cell. Pins PRD criterion 9:
+/// per-element where-clause routing through the existing
+/// `compile_per_decl_constraint_guard` helper. The where-condition
+/// `heavy` does not reference the bound var, so substitution is a no-op
+/// on the condition AST — but the routing logic must still produce one
+/// guarded group per element so per-element diagnostics keep their
+/// element-index provenance.
+#[test]
+fn forall_constraint_with_body_where_clause_emits_per_element_guarded_groups() {
+    let source = r#"
+structure S {
+    param heavy : Bool = true
+    forall v in [1, 2, 3]: constraint v > 0 where heavy
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forall with body where clause, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // Each guarded element produces its own single-constraint guarded group.
+    assert_eq!(
+        template.guarded_groups.len(),
+        3,
+        "expected 3 guarded groups (one per forall element), got {}: {:?}",
+        template.guarded_groups.len(),
+        template
+            .guarded_groups
+            .iter()
+            .map(|g| {
+                g.constraints
+                    .iter()
+                    .map(|c| c.label.as_deref())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    );
+
+    // None of the forall constraints should also leak into the top-level
+    // `constraints` vec — they live inside the guarded groups.
+    let top_level_forall = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+    assert_eq!(
+        top_level_forall, 0,
+        "guarded forall constraints must not appear in top-level constraints, got {} \
+         (labels: {:?})",
+        top_level_forall,
+        template
+            .constraints
+            .iter()
+            .filter_map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+
+    for (i, group) in template.guarded_groups.iter().enumerate() {
+        // Exactly one constraint per group, labelled forall@v[i].
+        assert_eq!(
+            group.constraints.len(),
+            1,
+            "expected exactly 1 constraint in guarded group {}, got {}",
+            i,
+            group.constraints.len()
+        );
+        let label = group.constraints[0].label.as_deref();
+        assert!(
+            label.is_some_and(|s| s.starts_with("forall@v[")),
+            "expected guarded group {} constraint label to start with `forall@v[`, got {:?}",
+            i,
+            label
+        );
+
+        // The guard_expr should be a ValueRef pointing at S.heavy.
+        match &group.guard_expr.kind {
+            CompiledExprKind::ValueRef(id) => {
+                assert_eq!(
+                    id.entity, "S",
+                    "expected guard_expr.entity == 'S' for group {}, got {}",
+                    i, id.entity
+                );
+                assert_eq!(
+                    id.member, "heavy",
+                    "expected guard_expr.member == 'heavy' for group {}, got {}",
+                    i, id.member
+                );
+            }
+            other => panic!(
+                "expected guard_expr to be ValueRef(S.heavy) for group {}, got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
 /// `forall v in []: constraint v > 0` should emit zero CompiledConstraints
 /// and zero errors. Pins PRD criterion 6 (empty collection produces no
 /// decls, no diagnostic). The empty literal is a degenerate but legal
