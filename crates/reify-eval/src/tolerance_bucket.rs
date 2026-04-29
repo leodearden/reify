@@ -254,6 +254,46 @@ mod tests {
     }
 
     #[test]
+    fn bucket_evicts_loosest_across_many_overflows() {
+        // 10 successively-tightening tolerances (each exactly half the previous).
+        // Every insert is strictly tighter than all prior entries, so all 10 succeed.
+        // Starting from the 6th insert, each one pushes len past SOFT_CAPACITY and
+        // evicts the loosest (largest) entry — testing pop() fires on every overflow,
+        // not just the first.
+        let tols = [
+            1.0, 0.5, 0.25, 0.125, 0.0625,
+            0.03125, 0.015625, 0.0078125, 0.00390625, 0.001953125,
+        ];
+        let mut bucket = ToleranceBucket::<u32>::new();
+        for (i, &tol) in tols.iter().enumerate() {
+            let result = bucket.insert(tol, i as u32);
+            assert!(result, "insert #{i} must succeed for tol={tol}");
+            // len must clamp at SOFT_CAPACITY — catches pop() becoming a no-op on
+            // subsequent overflows and >= vs > drift in the cap comparison.
+            assert_eq!(
+                bucket.len(),
+                (i + 1).min(SOFT_CAPACITY),
+                "bucket len must equal (i+1).min(SOFT_CAPACITY) after insert #{i}",
+            );
+        }
+        // After all 10 inserts the 5 tightest entries remain:
+        // (0.001953125, 9), (0.00390625, 8), (0.0078125, 7), (0.015625, 6), (0.03125, 5).
+        // Loosest in-bucket: 0.03125 = value 5.
+        assert_eq!(
+            bucket.lookup(2.0),
+            Some(&5u32),
+            "loosest in-bucket entry after 10 inserts should be 0.03125 = value 5",
+        );
+        // 0.0625 (value 4) was evicted on the 10th insert.
+        // lookup(0.06) — largest cached_tol <= 0.06 is 0.03125 = value 5.
+        assert_eq!(
+            bucket.lookup(0.06),
+            Some(&5u32),
+            "0.0625 was evicted; loosest satisfying 0.06 is now 0.03125 = value 5",
+        );
+    }
+
+    #[test]
     fn empty_bucket_has_no_hits() {
         let bucket = ToleranceBucket::<u32>::new();
         assert_eq!(bucket.len(), 0);
