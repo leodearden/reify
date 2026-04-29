@@ -37,8 +37,9 @@ use reify_eval::{
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpParents, DiagnosticCode, FeatureId, GeometryHandleId, GeometryOp, ModEntry,
-    RealizationNodeId, Role, SourceSpan, TopologyAttribute, TopologyAttributeTable, Value,
+    BooleanOpHistoryRecords, BooleanOpParents, DiagnosticCode, FeatureId, GeometryHandleId,
+    GeometryOp, ModEntry, RealizationNodeId, Role, SourceSpan, TopologyAttribute,
+    TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -511,21 +512,191 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
     )
     .expect("propagation should succeed");
 
-    // ─── Build per-parent child enumeration in records-encounter order ─
+    // Hand off to the shared helper. This fixture (two cubes offset by
+    // +5mm) is an aligned fuse — the union is a simple 15×10×10 brick
+    // so OCCT typically emits no face splits. Clauses (a) and (c) of
+    // the helper gracefully no-op via the `false` return; clause (b)
+    // (count==1 pure pass-through) ALWAYS runs to pin the contract.
+    // The orthogonal-slab variant below covers the explicit-split path.
+    let exercised = assert_mod_history_propagation_and_clustering(
+        &table,
+        &parents,
+        &history,
+        &result_face_handles,
+        &fuse_feature_id,
+    );
+    if !exercised {
+        eprintln!(
+            "note: this OCCT output had no face splits (every parent has count==1 across \
+             face_modified ∪ face_generated); resolver clustering not exercised by this fixture. \
+             See `mod_history_threading_with_orthogonal_slabs` for explicit-split coverage."
+        );
+    }
+}
+
+/// step-16 (task #2653) — explicit orthogonal-slab fixture that forces
+/// a face split, so the resolver's `AmbiguousAfterSplit` path is
+/// always exercised regardless of OCCT's history-emission quirks for
+/// aligned fuses.
+///
+/// Geometry: a 30×10×10 mm slab along X centred at origin fused with a
+/// 10×30×10 mm slab along Y centred at origin produces a "+"-shape
+/// extruded in Z. Each slab's top face (at z=10mm) is split where the
+/// other slab crosses it, giving us at least one parent face with
+/// `count > 1` across `face_modified ∪ face_generated`.
+///
+/// PRD reference: docs/prds/v0_2/persistent-naming-v2.md task 3 / line 64
+/// (modification-history postfix).
+#[test]
+fn mod_history_threading_with_orthogonal_slabs() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let kernel = OcctKernelHandle::spawn();
+
+    // X-axis slab: 30×10×10 mm. Box anchors at origin (min-corner), so
+    // translate by (-15mm, -5mm, 0) to centre on the XY origin.
+    let slab_x_anchored = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(3.0 * BOX_SIDE_M),
+            height: Value::Real(BOX_SIDE_M),
+            depth: Value::Real(BOX_SIDE_M),
+        })
+        .expect("X-slab box should build")
+        .id;
+    let slab_x = kernel
+        .execute(&GeometryOp::Translate {
+            target: slab_x_anchored,
+            dx: -1.5 * BOX_SIDE_M,
+            dy: -0.5 * BOX_SIDE_M,
+            dz: 0.0,
+        })
+        .expect("X-slab translate should build")
+        .id;
+
+    // Y-axis slab: 10×30×10 mm. Translate by (-5mm, -15mm, 0).
+    let slab_y_anchored = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(BOX_SIDE_M),
+            height: Value::Real(3.0 * BOX_SIDE_M),
+            depth: Value::Real(BOX_SIDE_M),
+        })
+        .expect("Y-slab box should build")
+        .id;
+    let slab_y = kernel
+        .execute(&GeometryOp::Translate {
+            target: slab_y_anchored,
+            dx: -0.5 * BOX_SIDE_M,
+            dy: -1.5 * BOX_SIDE_M,
+            dz: 0.0,
+        })
+        .expect("Y-slab translate should build")
+        .id;
+
+    let slab_x_face_handles = kernel.extract_faces(slab_x).unwrap();
+    let slab_y_face_handles = kernel.extract_faces(slab_y).unwrap();
+    let slab_x_edge_handles = kernel.extract_edges(slab_x).unwrap();
+    let slab_y_edge_handles = kernel.extract_edges(slab_y).unwrap();
+    assert_eq!(
+        slab_x_face_handles.len(),
+        6,
+        "a brick-shaped X-slab should have exactly 6 faces"
+    );
+    assert_eq!(
+        slab_y_face_handles.len(),
+        6,
+        "a brick-shaped Y-slab should have exactly 6 faces"
+    );
+
+    let slab_x_feature_id = FeatureId::from(&RealizationNodeId::new("XSlab", 0));
+    let slab_y_feature_id = FeatureId::from(&RealizationNodeId::new("YSlab", 0));
+
+    let mut table = TopologyAttributeTable::default();
+    seed_face_attributes(&mut table, &slab_x_face_handles, &slab_x_feature_id);
+    seed_face_attributes(&mut table, &slab_y_face_handles, &slab_y_feature_id);
+
+    let (result_handle, history) = kernel
+        .boolean_fuse_with_history(slab_x, slab_y)
+        .expect("boolean_fuse_with_history should succeed for crossing slabs");
+    let result_face_handles = kernel.extract_faces(result_handle).unwrap();
+    let result_edge_handles = kernel.extract_edges(result_handle).unwrap();
+
+    let parents = BooleanOpParents::Binary {
+        faces: [&slab_x_face_handles, &slab_y_face_handles],
+        edges: [&slab_x_edge_handles, &slab_y_edge_handles],
+    };
+    let fuse_feature_id = FeatureId::new("Fuse#realization[0]");
+    propagate_attributes_via_brepalgoapi_history(
+        &mut table,
+        &parents,
+        &result_face_handles,
+        &result_edge_handles,
+        &history,
+        &fuse_feature_id,
+    )
+    .expect("propagation should succeed");
+
+    let exercised = assert_mod_history_propagation_and_clustering(
+        &table,
+        &parents,
+        &history,
+        &result_face_handles,
+        &fuse_feature_id,
+    );
+    assert!(
+        exercised,
+        "orthogonal-slab fixture is designed to produce at least one face split with \
+         ≥ 2 authoritative children — got none. \
+         If OCCT's fuse output for this geometry no longer splits (kernel-version drift), \
+         tighten the fixture geometry until at least one parent face has count > 1 across \
+         face_modified ∪ face_generated."
+    );
+}
+
+/// Shared assertion helper for the mod-history e2e tests.
+///
+/// Given a propagated `table` and the corresponding history+parents,
+/// runs:
+///
+///   (a) For each parent with count > 1 across `face_modified ∪
+///       face_generated`: each child's tail `mod_history` entry equals
+///       `ModEntry { splitting_feature_id == fuse_feature_id, split_index = i }`
+///       in records-encounter order (Modified records first, then
+///       Generated). Parent-key fields (feature_id, role, local_index,
+///       user_label) inherit verbatim. The mod_history prefix preserves
+///       the parent's prior history.
+///   (b) For each parent with count == 1: the single child's
+///       mod_history equals the parent's prior history verbatim
+///       (pure pass-through; no new ModEntry).
+///   (c) The first split parent with ≥ 2 authoritative children: build
+///       an `AttributeQuery` from its (feature_id, role, local_index,
+///       user_label) and assert `resolve_unique_by_attribute` returns
+///       `AttributeResolution::AmbiguousAfterSplit { children }` whose
+///       set equals the propagated child set, plus exactly one
+///       `TopologyAttributeStale` diagnostic mentioning "split children".
+///
+/// Last-write-wins discipline: a single result_subshape_index can be
+/// touched by records from multiple parents (e.g. an internal shared
+/// face). The table's entry reflects only the LAST parent's stamp, so
+/// per-child assertions skip non-authoritative shadows — those are
+/// pinned by the v0.1 e2e test's last-write-wins clause.
+///
+/// Returns `true` if clause (c) ran (a split parent was found),
+/// `false` if no split was present in OCCT's history. Callers that
+/// require the split path (orthogonal-slab fixture) `assert!(returned_true)`;
+/// callers tolerant of the no-op (two-cube fixture) eprintln-skip.
+fn assert_mod_history_propagation_and_clustering(
+    table: &TopologyAttributeTable,
+    parents: &BooleanOpParents<'_>,
+    history: &BooleanOpHistoryRecords,
+    result_face_handles: &[GeometryHandleId],
+    fuse_feature_id: &FeatureId,
+) -> bool {
     // Walk face_modified.iter().chain(face_generated.iter()) in the same
     // order the propagator did, accumulating each parent's children with
     // their assigned split_index (0, 1, 2, …).
-    //
-    // Caveat: a single result_subshape_index can appear in records for
-    // MULTIPLE parents (e.g. an internal face that was deleted from one
-    // operand and "modified" from the other, OCCT's history may emit
-    // both). Last-write-wins propagation means the table's entry for
-    // that result face reflects only the LAST parent to write. We track
-    // the LAST writing parent per result_subshape_index here so the
-    // assertions below can skip non-authoritative writes — those
-    // shared-result-face stamps are the table's contract under
-    // last-write-wins (which the previous test pinned), not a regression
-    // of mod_history threading.
     let mut children_per_parent: HashMap<(u8, u32), Vec<u32>> = HashMap::new();
     let mut last_writer_for_result: HashMap<u32, (u8, u32)> = HashMap::new();
     for rec in history
@@ -632,8 +803,7 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
             }
         } else {
             // (b) Non-split parent: child's mod_history is the parent's
-            // mod_history verbatim — no new ModEntry appended. For the
-            // existing fixture (no prior splits), this is empty.
+            // mod_history verbatim — no new ModEntry appended.
             // Skip if another parent is the authoritative writer
             // (last-write-wins overwrote this parent's pass-through).
             let result_subshape_index = child_result_indices[0];
@@ -658,12 +828,7 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
 
     // ─── (c) Resolver clustering on the first split parent ───────────
     let Some((split_parent_key, child_result_indices)) = split_parent_with_children else {
-        eprintln!(
-            "note: this OCCT output had no face splits (every parent has count==1 across \
-             face_modified ∪ face_generated); resolver clustering not exercised by this fixture. \
-             See `mod_history_threading_with_orthogonal_slabs` for explicit-split coverage."
-        );
-        return;
+        return false;
     };
 
     let split_parent_handle =
@@ -678,8 +843,8 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
     };
     let mut diagnostics = Vec::new();
     let resolution = resolve_unique_by_attribute(
-        &table,
-        &result_face_handles,
+        table,
+        result_face_handles,
         &query,
         SourceSpan::empty(0),
         &mut diagnostics,
@@ -716,4 +881,6 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
         "diagnostic message must mention 'split children', got: {}",
         diag.message
     );
+
+    true
 }
