@@ -21,11 +21,32 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
 #[cfg(has_occt)]
 #[allow(dead_code)]
-pub mod ffi;
+mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
+// Re-export the result type so callers using the test-fixture wrapper below
+// can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
+
+/// Fixture for integration tests: runs only the post-sort/dedup helper on
+/// a synthetic flat-records input, without requiring real OCCT geometry.
+///
+/// Input is a flat buffer of `(parent_index, parent_subshape_index,
+/// result_subshape_index)` triples.  The fixture stable-sorts by
+/// `parent_subshape_index`, drops duplicate records (keeping the first under
+/// the stable sort), and returns the compacted buffer plus the count of
+/// dropped duplicates.
+///
+/// Gated behind the `test-fixtures` feature so the internal cxx-bridge symbol
+/// is not exposed on the crate's public surface in production builds.
+/// Integration tests reach this function via the self-dev-dep entry in
+/// `Cargo.toml` (`features = ["test-fixtures"]`).
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPostSortResult {
+    ffi::ffi::revolve_synthesis_post_sort_for_test(input)
+}
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 #[cfg(has_occt)]

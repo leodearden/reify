@@ -621,33 +621,38 @@ static void revolve_synthesis_post_sort_and_dedup(
         sorted.push_back(face_generated[idx * 3 + 2]);
     }
 
-    // (2) Walk sorted records, dropping where parent_subshape_index == previous.
-    std::vector<uint32_t> deduped;
-    deduped.reserve(sorted.size());
-    const uint32_t SENTINEL = std::numeric_limits<uint32_t>::max();
-    uint32_t prev_parent = SENTINEL;
+    // (2) In-place dedup: compact sorted[], dropping records whose
+    //     parent_subshape_index equals the preceding kept record.
+    //     Gate on rec_idx > 0 rather than a SENTINEL value so that a
+    //     hypothetical parent_subshape_index == UINT32_MAX is handled
+    //     correctly (no false duplicate on the first record).
     const std::size_t n_sorted = sorted.size();
+    std::size_t write_idx = 0;
+    uint32_t prev_parent = 0; // value irrelevant; only read when write_idx > 0
     for (std::size_t i = 0; i < n_sorted; i += 3) {
+        const std::size_t rec_idx = i / 3;
         uint32_t cur_parent = sorted[i + 1];
-        if (cur_parent == prev_parent) {
+        if (rec_idx > 0 && cur_parent == prev_parent) {
             ++out_duplicate_count;
         } else {
-            deduped.push_back(sorted[i + 0]);
-            deduped.push_back(sorted[i + 1]);
-            deduped.push_back(sorted[i + 2]);
+            // Safe: write_idx <= rec_idx, so destination never aliases unread src.
+            sorted[write_idx * 3 + 0] = sorted[i + 0];
+            sorted[write_idx * 3 + 1] = sorted[i + 1];
+            sorted[write_idx * 3 + 2] = sorted[i + 2];
             prev_parent = cur_parent;
+            ++write_idx;
         }
     }
+    sorted.resize(write_idx * 3);
 
     // (3) Debug-only: assert strictly increasing parent_subshape_index.
 #ifndef NDEBUG
-    const std::size_t n_deduped = deduped.size() / 3;
-    for (std::size_t k = 1; k < n_deduped; ++k) {
-        assert(deduped[k * 3 + 1] > deduped[(k - 1) * 3 + 1]);
+    for (std::size_t k = 1; k < write_idx; ++k) {
+        assert(sorted[k * 3 + 1] > sorted[(k - 1) * 3 + 1]);
     }
 #endif
 
-    face_generated = std::move(deduped);
+    face_generated = std::move(sorted);
 }
 
 /// Synthesize `face_generated` records for purely-radial profile edges
@@ -679,9 +684,11 @@ static void revolve_synthesis_post_sort_and_dedup(
 /// `SweepOpHistory::unmatched_radial_edge_count`. After the synthesis loop
 /// completes, if the counter is non-zero, one OCCT `Message_Warning` is
 /// emitted via `Message::DefaultMessenger()` summarising the count. The
-/// counter is surfaced to Rust callers via the `SweepOpHistoryRecords`
-/// field `unmatched_radial_edge_count` so integration tests can assert it
-/// is zero for well-formed profiles.
+/// warning emission is best-effort (the OCCT messenger contract is not
+/// tested directly; only the counter field is asserted in integration
+/// tests). The counter is surfaced to Rust callers via the
+/// `SweepOpHistoryRecords` field `unmatched_radial_edge_count` so
+/// integration tests can assert it is zero for well-formed profiles.
 ///
 /// DUPLICATE DETECTION: if `parent_subshape_index` values are not distinct
 /// in face_generated after sorting, duplicates are dropped by the

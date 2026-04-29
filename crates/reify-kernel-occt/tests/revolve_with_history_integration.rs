@@ -20,7 +20,7 @@
 
 #![cfg(has_occt)]
 
-use reify_kernel_occt::{ffi, OCCT_AVAILABLE, OcctKernelHandle};
+use reify_kernel_occt::{revolve_synthesis_post_sort_for_test, OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{GeometryHandleId, GeometryQuery, Value};
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
@@ -762,11 +762,29 @@ fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
     );
 
     // Self-consistency: every edge without a synthesised record must have
-    // bumped the counter. This is OCCT-version-agnostic:
-    //   - OCCT covers the slightly-slanted edge → face_generated.len()==3,
-    //     counter==0, both sides 0.
-    //   - OCCT does NOT cover it → face_generated.len()==2, counter==1,
-    //     both sides 1.
+    // bumped the counter.
+    //
+    // Two possible OCCT behaviours — both handled by the assertion:
+    //
+    //  A. OCCT 7.5.x does NOT track the nearly-radial edge in Generated()
+    //     (the expected behaviour given the full-2π silent-gap; this is the
+    //     regime the synthesis helper was written for).  The edge is not in
+    //     `tracked_parent_edges`, hits path 5 (slanted: dot ≈ 2e-6 > DIR_TOL),
+    //     increments the counter, and no record is synthesised.
+    //     → face_generated.len()==2, counter==1 → 1 == 3−2 = 1  ✓ (meaningful)
+    //
+    //  B. A future OCCT version *does* track the nearly-radial edge. The edge
+    //     lands in `tracked_parent_edges` before the synthesis loop, so the
+    //     loop skips it without touching the counter, and face_generated.len()
+    //     remains 3 (OCCT covered all three edges).
+    //     → face_generated.len()==3, counter==0 → 0 == 3−3 = 0  ✓ (tautological
+    //       but still a valid regression guard: any incorrect increment would
+    //       make both sides non-zero and unequal, catching a double-count bug).
+    //
+    // If OCCT's behaviour changes and the test degrades to case B, the
+    // eprintln! above will show counter=0 in CI output, signalling that the
+    // increment path is no longer exercised here.  A dedicated synthesis-loop
+    // fixture (not yet implemented) would provide a fully deterministic path.
     assert_eq!(
         history.unmatched_radial_edge_count as usize,
         3 - history.face_generated.len(),
@@ -809,7 +827,7 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
         /* rec1: parent=0, subshape=1, result=200 */ 0, 1, 200, // duplicate
         /* rec2: parent=0, subshape=2, result=300 */ 0, 2, 300,
     ];
-    let result_dup = ffi::ffi::revolve_synthesis_post_sort_for_test(&input_dup);
+    let result_dup = revolve_synthesis_post_sort_for_test(&input_dup);
     assert_eq!(
         result_dup.duplicate_count,
         1,
@@ -832,7 +850,7 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
         /* rec1: parent=0, subshape=0, result=100 */ 0, 0, 100,
         /* rec2: parent=0, subshape=1, result=200 */ 0, 1, 200,
     ];
-    let result_ok = ffi::ffi::revolve_synthesis_post_sort_for_test(&input_ok);
+    let result_ok = revolve_synthesis_post_sort_for_test(&input_ok);
     assert_eq!(
         result_ok.duplicate_count,
         0,
