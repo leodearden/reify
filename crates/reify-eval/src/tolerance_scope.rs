@@ -88,10 +88,33 @@ pub fn extract_tolerance_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::ValueCellNode;
+    use reify_compiler::ValueCellKind;
     use reify_test_support::builders::CompiledPurposeBuilder;
     use reify_types::{
-        BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId,
+        BinOp, CompiledExpr, ContentHash, DimensionVector, PersistentMap, Type, Value, ValueCellId,
     };
+
+    /// Build a one-cell `PersistentMap` entry shaped like the existing
+    /// `engine_purposes.rs` unit-test fixtures: a `Param` cell typed
+    /// `Type::Real`, with a content_hash derived from the member name.
+    fn insert_param_cell(
+        cells: &mut PersistentMap<ValueCellId, ValueCellNode>,
+        entity: &str,
+        member: &str,
+    ) {
+        let id = ValueCellId::new(entity, member);
+        cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str(&format!("{}.{}", entity, member)),
+            },
+        );
+    }
 
     /// Build the canonical `RepresentationWithin(<ValueRef typed
     /// StructureRef>, <Literal Scalar(LENGTH)>)` shape that
@@ -204,6 +227,50 @@ mod tests {
         assert!(
             bindings.is_empty(),
             "non-LENGTH dimension on tolerance arg must not yield a binding"
+        );
+    }
+
+    #[test]
+    fn propagate_subject_to_descendants_collects_subject_and_dotted_descendants() {
+        let mut cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        // Subject + dotted descendants — every entity needs at least one cell
+        // for prefix-scan to surface it.
+        insert_param_cell(&mut cells, "A", "x");
+        insert_param_cell(&mut cells, "A.x", "len");
+        insert_param_cell(&mut cells, "A.y", "len");
+        insert_param_cell(&mut cells, "A.x.z", "len");
+        // Unrelated subject — must NOT appear in the result.
+        insert_param_cell(&mut cells, "B", "len");
+
+        let descendants = propagate_subject_to_descendants("A", &cells);
+
+        assert_eq!(
+            descendants,
+            vec![
+                "A".to_string(),
+                "A.x".to_string(),
+                "A.x.z".to_string(),
+                "A.y".to_string(),
+            ],
+            "result must equal subject + dotted descendants in ascending order, \
+             excluding unrelated entities"
+        );
+    }
+
+    #[test]
+    fn propagate_subject_does_not_match_prefix_lookalikes() {
+        // Without the dot-boundary check, `"A".starts_with(prefix-of("A"))`
+        // would silently include `"AB"` as if it were a descendant.
+        let mut cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        insert_param_cell(&mut cells, "A", "len");
+        insert_param_cell(&mut cells, "AB", "len");
+
+        let descendants = propagate_subject_to_descendants("A", &cells);
+
+        assert_eq!(
+            descendants,
+            vec!["A".to_string()],
+            "prefix-lookalike entity (`AB`) must NOT be matched by propagate(`A`)"
         );
     }
 }
