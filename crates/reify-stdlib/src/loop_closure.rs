@@ -348,6 +348,7 @@ mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, planar_xy_joint,
+        spherical_joint,
     };
     use reify_types::Value;
 
@@ -1020,6 +1021,27 @@ mod tests {
             )
             .is_none(),
             "chain_jacobian_fd must return None when any joint in the chain is planar"
+        );
+    }
+
+    // ── spherical joint pin tests ────────────────────────────────────────
+
+    /// `joint_range_midpoint` returns `None` for a spherical joint.
+    ///
+    /// Pins the contract that spherical's 3-DOF orientation free-variable
+    /// space has no single-scalar midpoint. Future code MUST keep this
+    /// `None` — the catch-all `_ => None` arm currently masks the absence
+    /// of an explicit `"spherical"` arm, so step-16 will add the explicit
+    /// arm to make the contract source-visible. If a future contributor
+    /// adds an arm returning `Some`, this pin breaks loudly.
+    ///
+    /// Multi-DOF chain support is deferred to PRD v0.2 kinematic task 2
+    /// (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+    #[test]
+    fn joint_range_midpoint_spherical_returns_none() {
+        assert!(
+            super::joint_range_midpoint(&spherical_joint()).is_none(),
+            "joint_range_midpoint must return None for a spherical joint"
         );
     }
 }
