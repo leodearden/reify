@@ -244,6 +244,13 @@ fn get_entity_identity_map(
 }
 
 #[tauri::command]
+fn get_mechanism_descriptors(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<reify_gui::types::MechanismDescriptor>, String> {
+    reify_gui::commands::get_mechanism_descriptors_impl(&state.engine)
+}
+
+#[tauri::command]
 fn get_def_preview(
     state: tauri::State<'_, AppState>,
     def_name: String,
@@ -541,6 +548,7 @@ fn main() {
             get_source_location,
             get_entity_tree,
             get_entity_identity_map,
+            get_mechanism_descriptors,
             get_def_preview,
             get_containing_definition,
             focus_entity,

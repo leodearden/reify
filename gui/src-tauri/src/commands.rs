@@ -8,7 +8,7 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, PersistentViewState};
+use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor, PersistentViewState};
 use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
@@ -191,4 +191,20 @@ pub fn get_containing_definition_impl(
 ) -> Result<Option<DefInfo>, String> {
     let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     Ok(s.get_containing_definition(line, col))
+}
+
+/// Return mechanism descriptors for all non-errored mechanisms in the loaded module.
+///
+/// Each descriptor contains the mechanism's cell id, entity path, name, body count,
+/// and a list of joint descriptors with kind, dimension, range bounds, axis, and
+/// the resolved driving param cell id (when a `bind(joint, param_ref)` is found
+/// via AST traversal).
+///
+/// Returns an empty vec when no module is loaded or no mechanisms are present.
+/// Returns `Err` when the engine mutex is poisoned.
+pub fn get_mechanism_descriptors_impl(
+    engine: &Mutex<EngineSession>,
+) -> Result<Vec<MechanismDescriptor>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_mechanism_descriptors())
 }
