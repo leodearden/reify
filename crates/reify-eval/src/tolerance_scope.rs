@@ -21,7 +21,7 @@
 use crate::graph::ValueCellNode;
 use reify_compiler::CompiledPurpose;
 use reify_types::{CompiledExprKind, DimensionVector, PersistentMap, Type, Value, ValueCellId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// One extracted tolerance scope root: the entity-ref the purpose was bound
 /// to, and the SI tolerance (metres) carried by the matching
@@ -110,6 +110,25 @@ pub fn propagate_subject_to_descendants(
         }
     }
     entities.into_iter().collect()
+}
+
+/// Merge `additions` into `scope`, applying `min` per entity (tighter
+/// satisfies looser — same partial-order semantics as the cache-side
+/// `ToleranceBucket`). Entries new to `scope` are inserted as-is.
+pub fn merge_with_min<I: IntoIterator<Item = (String, f64)>>(
+    scope: &mut HashMap<String, f64>,
+    additions: I,
+) {
+    for (entity, tol) in additions {
+        scope
+            .entry(entity)
+            .and_modify(|cur| {
+                if tol < *cur {
+                    *cur = tol;
+                }
+            })
+            .or_insert(tol);
+    }
 }
 
 #[cfg(test)]
