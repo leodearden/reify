@@ -464,6 +464,17 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // is semantically valid (no motion variable contributes any twist), and keeps
         // the existing drift-guard tests simple.
         "fixed" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 3-DOF planar joint: zero-twist placeholder column — FD-fallback design decision.
+        // A planar joint has a 6×3 Jacobian (three columns: two prismatic + one revolute),
+        // but the v0.1 single-column convention returns one Map per joint. The actual
+        // per-DOF wrench contributions are computed correctly via `chain_jacobian_fd`
+        // (which perturbs each motion variable independently and does not consult this
+        // function). Returning a zero-magnitude column preserves the uniform
+        // `{ angular, linear }` shape across all kinds and satisfies the
+        // `joint_jacobian_dispatches_for_every_joint_kind` coverage test.
+        // The analytic 3-DOF Jacobian is deferred per PRD task 2 ("finite-difference
+        // fallback for spherical, cylindrical, planar until analytic forms are derived").
+        "planar" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
