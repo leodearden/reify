@@ -297,6 +297,8 @@ where
     let mut diverging_streak: usize = 0;
 
     // Scratch buffers reused across iterations to avoid per-iter allocation.
+    // n is fixed for the lifetime of this call; residual_jac shape is
+    // validated each iteration before we read into the buffers.
     let mut jtj_flat: Vec<f64> = vec![0.0; n * n];
     let mut jtr: Vec<f64> = vec![0.0; n];
     let mut dx: Vec<f64> = vec![0.0; n];
