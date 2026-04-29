@@ -888,21 +888,9 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
-
-    fn axis_x_unit() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn length_range_0_to_1m() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(0.0))),
-            upper: Some(Box::new(Value::length(1.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── prismatic constructor: happy path ────────────────────────────────────
 
@@ -953,19 +941,6 @@ mod tests {
     }
 
     // ── revolute constructor helpers ─────────────────────────────────────────
-
-    fn axis_z_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn angle_range_0_to_pi() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(0.0))),
-            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── revolute constructor: happy path ─────────────────────────────────────
 
@@ -3060,22 +3035,6 @@ mod tests {
                 "zero translation for {label}"
             );
         }
-    }
-
-    // ── planar constructor helpers ────────────────────────────────────────────
-
-    fn axis_y_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
-
-    fn planar_xy_joint() -> Value {
-        eval_builtin("planar", &[
-            axis_x_unit(),
-            axis_y_unit(),
-            length_range_0_to_1m(),
-            length_range_0_to_1m(),
-            angle_range_0_to_pi(),
-        ])
     }
 
     // ── planar constructor: happy path (step-1) ───────────────────────────────
