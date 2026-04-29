@@ -1801,3 +1801,182 @@ structure S {
         "expected S.v = Undef on poisoned sampled field, got {val:?}"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Step-23: runtime-invariant violations must surface as
+// W_FIELD_SAMPLED_INVALID_CONFIG warnings rather than panicking the eval
+// loop via the `assert!`s in `interp::interpolate_Nd`.  Each test uses a
+// configuration that would have hit one of those assertions before
+// step-24 added pre-flight invariant checks in `build_sampled_field`.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// `data` slice is shorter than the axis grid implied by `bounds`+`spacing`
+/// (3-node grid, 2 data values).  Without step-24's invariant check,
+/// `interp::interpolate_1d`'s `assert!(grid.len() == values.len())` would
+/// panic the eval loop.  Pins: pre-flight check in `build_sampled_field`
+/// turns the mismatch into a `W_FIELD_SAMPLED_INVALID_CONFIG` warning,
+/// the field's lambda becomes `Value::Undef`, and any sample call returns
+/// `Undef`.
+#[test]
+fn eval_sampled_field_with_mismatched_data_length_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    // Must run to completion: any `assert!` panic in interp would surface
+    // here as a panic message and fail the test (no `#[should_panic]`).
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("data length") || msg.contains("data"),
+        "diagnostic should mention 'data length' or 'data', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("3") || msg.contains("axis grid"),
+        "diagnostic should mention the grid shape '3' or 'axis grid', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// Zero-length `bounds` span collapses the axis grid to a single node
+/// (`linspace_inclusive(1.0, 1.0, 1.0) → [1.0]`).  Without step-24's
+/// invariant check, `interp::interpolate_1d`'s
+/// `assert!(grid.len() >= 2)` would panic the eval loop.  Pins: pre-flight
+/// check in `build_sampled_field` turns this into a
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning and the sample returns
+/// `Undef`.
+#[test]
+fn eval_sampled_field_with_degenerate_axis_grid_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(1.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("axis") || msg.contains("at least 2") || msg.contains("nodes"),
+        "diagnostic should mention 'axis', 'at least 2', or 'nodes', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// Non-positive `spacing` (`0.0m`) collapses the axis grid to a single
+/// node via `linspace_inclusive`'s defensive `spacing <= 0.0` guard.
+/// Without step-24's invariant check, the resulting 1-node grid would
+/// trip `interp::interpolate_1d`'s `assert!(grid.len() >= 2)` and panic
+/// the eval loop.  Pins: pre-flight check in `build_sampled_field`
+/// turns this into a `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose
+/// message names the `spacing` slot, and the sample returns `Undef`.
+#[test]
+fn eval_sampled_field_with_non_positive_spacing_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 0.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("spacing"),
+        "diagnostic should mention 'spacing', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
