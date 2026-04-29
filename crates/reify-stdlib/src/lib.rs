@@ -20,6 +20,7 @@ mod matrix;
 mod mechanism;
 mod numeric;
 mod orientation;
+mod snapshot;
 mod trig;
 
 /// Evaluate a built-in stdlib function by name.
@@ -54,6 +55,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = mechanism::eval_mechanism(name, args) {
+        return v;
+    }
+    if let Some(v) = snapshot::eval_snapshot(name, args) {
         return v;
     }
     Value::Undef
