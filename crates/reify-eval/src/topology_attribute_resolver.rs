@@ -375,6 +375,16 @@ where
 ///     roles colliding on `local_index` after a populator reassignment.
 ///     Distinct from a post-split cluster where every matched candidate
 ///     shares one parent and only `mod_history` differs.
+///   - All matched attributes share the same `mod_history` — a degenerate
+///     cluster that can only arise from a populator bug. In a legitimate
+///     post-split cluster each child has a distinct `split_index` in its
+///     `mod_history`, so uniform `mod_history` across all matches means no
+///     `split_index` exists to disambiguate the elements. Routed to
+///     `Unresolved` via the canonical "matched N sub-shapes" diagnostic so
+///     the populator bug surfaces to the user, instead of producing a
+///     children list whose elements are genuinely indistinguishable (the
+///     future task-10 `split_by(...)` selector would have no `split_index`
+///     to act on).
 ///
 /// Children list inside the returned variant is the `matches` ids in
 /// candidate-encounter order — which matches per-parent record-stream
@@ -389,6 +399,13 @@ fn try_cluster_after_split(
         return None;
     }
     if !matches.windows(2).all(|w| w[0].1.same_parent_as(w[1].1)) {
+        return None;
+    }
+    // Require at least one pair with distinct mod_history. If every consecutive
+    // pair is identical the entire slice is uniform (Vec equality is transitive),
+    // meaning no split_index distinguishes the elements. That is a populator bug,
+    // not a genuine post-split cluster; fall through to Unresolved.
+    if !matches.windows(2).any(|w| w[0].1.mod_history != w[1].1.mod_history) {
         return None;
     }
     emit_split_children_diagnostic(selector_span, matches.len(), diagnostics);
