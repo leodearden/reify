@@ -246,6 +246,58 @@ structure S {
     }
 }
 
+/// `forall v in vents: ...` over a collection sub *without* a count
+/// constraint should emit zero CompiledConstraints and zero errors. Pins
+/// PRD criterion 7's "no decls when count is undef" half — at compile
+/// time we cannot statically resolve the count, so we defer to a future
+/// SchemaNode-style abstraction (out of scope for task 2364).
+///
+/// TODO(future): once SchemaNode-style re-elaboration is in place, this
+/// test should be updated to assert that the constraints are emitted
+/// once the count becomes known at graph-build time. For now we only
+/// pin the silent-skip half of the criterion.
+#[test]
+fn forall_constraint_over_undef_count_collection_sub_emits_no_decls_no_error() {
+    let source = r#"
+structure Vent {
+    param mass : Scalar = 10kg
+}
+structure S {
+    sub vents : List<Vent>
+    forall v in vents: constraint v.mass < 50kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for undef-count forall, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    let forall_constraints_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@"))
+        })
+        .count();
+
+    assert_eq!(
+        forall_constraints_count, 0,
+        "expected zero forall@* constraints when count is undef, got {}",
+        forall_constraints_count
+    );
+}
+
 /// `forall v in []: constraint v > 0` should emit zero CompiledConstraints
 /// and zero errors. Pins PRD criterion 6 (empty collection produces no
 /// decls, no diagnostic). The empty literal is a degenerate but legal
