@@ -28,9 +28,11 @@
 //!     pinning PRD line 62 against the real handle space.
 //!
 //! (c) Imported-geometry fallback. Querying against an unallocated
-//!     handle id that the kernel never minted (`GeometryHandleId(99999)`)
-//!     returns `FallbackToComputed` because no candidate carries an
-//!     entry in the table.
+//!     handle id derived to live above the kernel's allocation range
+//!     (max of all extracted face/edge handles + 1000) returns
+//!     `FallbackToComputed` because no candidate carries an entry in the
+//!     table. An explicit precondition assertion confirms the derived id
+//!     is absent before the resolver call.
 
 use reify_eval::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute, seed_primitive_attributes,
@@ -174,13 +176,22 @@ fn resolver_dispatches_against_seeded_box_attributes() {
     );
 
     // ─── (c) Imported-geometry fallback against a real handle space ──
-    // `GeometryHandleId(99999)` is not minted by the kernel for this
-    // box (the kernel allocates ids sequentially starting from 1, and
-    // the box only produces a handful of faces and edges). It therefore
-    // has no entry in the table, so `resolve_unique_by_attribute`
-    // returns `FallbackToComputed` — the imported-geometry signal —
-    // without emitting a diagnostic.
-    let unallocated = [GeometryHandleId(99999)];
+    // Derive an id that sits above the kernel's allocation range: take
+    // the max of all extracted face/edge handle ids and add 1000.
+    // The +1000 buffer absorbs plausible future allocator changes
+    // (pool pre-warming, non-zero starting offsets). An explicit
+    // precondition assertion verifies the derived id is absent from the
+    // table before the resolver call, so any future violation fails
+    // loudly rather than silently flipping FallbackToComputed →
+    // Resolved/Unresolved.
+    let unallocated = GeometryHandleId(
+        face_handles.iter().chain(edge_handles.iter()).map(|h| h.0).max().unwrap_or(0) + 1000,
+    );
+    assert!(
+        table.lookup(unallocated).is_none(),
+        "test precondition: derived id {:?} must not exist in the attribute table",
+        unallocated,
+    );
     let query_any = AttributeQuery {
         user_label: Some("anything".to_string()),
         role_and_index: Some((Role::Side, 0)),
@@ -188,7 +199,7 @@ fn resolver_dispatches_against_seeded_box_attributes() {
     };
     let mut diagnostics = Vec::new();
     let result_c =
-        resolve_unique_by_attribute(&table, &unallocated, &query_any, span, &mut diagnostics);
+        resolve_unique_by_attribute(&table, &[unallocated], &query_any, span, &mut diagnostics);
     assert_eq!(
         result_c,
         AttributeResolution::FallbackToComputed,
