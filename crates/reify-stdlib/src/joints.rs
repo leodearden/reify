@@ -3512,6 +3512,52 @@ mod tests {
         }
     }
 
+    // ── transform_at on spherical: invalid motion-var (step-9) ───────────────
+
+    /// `transform_at(spherical, motion)` returns Undef whenever `motion` is
+    /// not a finite, non-zero `Value::Orientation`. Covers:
+    ///   (a) bare Real
+    ///   (b) Vector(4) (the wrong "quaternion-ish" shape)
+    ///   (c) List of three angles (Euler-tuple shape, deliberately rejected)
+    ///   (d) Orientation with NaN in any component
+    ///   (e) Orientation with Inf in any component
+    ///   (f) Orientation with all-zero components (zero-norm quaternion)
+    #[test]
+    fn transform_at_spherical_invalid_motion_var_returns_undef() {
+        let sj = spherical_joint();
+
+        let cases: Vec<(&str, Value)> = vec![
+            // (a) bare Real
+            ("bare Real(0.5)", Value::Real(0.5)),
+            // (b) Vector(4) — wrong container even though component count matches
+            ("Vector(4)", Value::Vector(vec![
+                Value::Real(0.0), Value::Real(0.0), Value::Real(0.0), Value::Real(1.0),
+            ])),
+            // (c) Euler-tuple shape (List of three angles) — deliberately rejected
+            ("List(3 angles)", Value::List(vec![
+                Value::angle(0.1), Value::angle(0.2), Value::angle(0.3),
+            ])),
+            // (d) NaN components
+            ("Orientation w=NaN", Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+            ("Orientation x=NaN", Value::Orientation { w: 1.0, x: f64::NAN, y: 0.0, z: 0.0 }),
+            ("Orientation y=NaN", Value::Orientation { w: 1.0, x: 0.0, y: f64::NAN, z: 0.0 }),
+            ("Orientation z=NaN", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NAN }),
+            // (e) Inf components
+            ("Orientation w=Inf", Value::Orientation { w: f64::INFINITY, x: 0.0, y: 0.0, z: 0.0 }),
+            ("Orientation x=Inf", Value::Orientation { w: 1.0, x: f64::INFINITY, y: 0.0, z: 0.0 }),
+            ("Orientation z=-Inf", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NEG_INFINITY }),
+            // (f) zero-norm quaternion (normalize_quaternion returns None)
+            ("Orientation all-zero", Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 }),
+        ];
+
+        for (label, motion) in &cases {
+            assert!(
+                eval_builtin("transform_at", &[sj.clone(), motion.clone()]).is_undef(),
+                "transform_at(spherical, {label}) should return Undef but didn't"
+            );
+        }
+    }
+
     // ── transform_at on spherical: identity quaternion (step-5) ──────────────
 
     #[test]
