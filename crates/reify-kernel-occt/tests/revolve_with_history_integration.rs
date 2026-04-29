@@ -299,3 +299,117 @@ fn full_revolve_with_history_reports_no_caps() {
         );
     }
 }
+
+/// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
+/// synthesis post-pass (task 2636) beyond the rectangular profile to verify
+/// it generalises correctly.
+///
+/// Triangle vertices in the XZ plane (Y=0):
+///   p1 = (15mm, 0, 0mm) — bottom-left
+///   p2 = (25mm, 0, 0mm) — bottom-right
+///   p3 = (20mm, 0, 10mm) — apex
+///
+/// Profile edges:
+///   e0 = p1→p2 — purely radial (Δz=0, perpendicular to Z)  → 1 synthesized record
+///   e1 = p2→p3 — slanted (OCCT Generated() reports)         → 1 OCCT record
+///   e2 = p3→p1 — slanted (OCCT Generated() reports)         → 1 OCCT record
+///
+/// Expected results:
+///   - positive-volume solid (cone frustum with annular base)
+///   - no caps (full revolution)
+///   - face_generated.len() == 3 (one record per profile edge)
+///   - parent_subshape_index covers {0, 1, 2} exactly once
+///   - all result_subshape_index values in range
+#[test]
+fn full_revolve_triangle_profile_synthesis_regression() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+
+    // Triangle in XZ plane: (15mm,0mm), (25mm,0mm), (20mm,10mm).
+    // Bottom edge (e0) is radial; the two slanted edges (e1, e2) are covered
+    // by OCCT's Generated().
+    let profile_id = kernel
+        .make_triangle_profile_at_for_test(
+            0.015, 0.0,   // p1: x=15mm, z=0mm
+            0.025, 0.0,   // p2: x=25mm, z=0mm
+            0.020, 0.010, // p3: x=20mm, z=10mm
+            0.0,          // cy=0 (XZ plane)
+        )
+        .expect("triangle profile should build");
+
+    // Full 360° revolve about +Z at origin.
+    let (result_handle, history) = kernel
+        .revolve_with_history(
+            profile_id,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            2.0 * std::f64::consts::PI,
+        )
+        .expect("revolve_with_history should succeed for triangle profile");
+
+    // (i) Result is a positive-volume solid.
+    let vol = kernel
+        .query(&GeometryQuery::Volume(result_handle))
+        .expect("volume query should succeed");
+    let vol_si = vol.as_f64().expect("volume should be numeric");
+    assert!(
+        vol_si > 0.0,
+        "triangle full-revolve solid must have positive volume, got {vol_si}"
+    );
+
+    // (ii) No caps (full-revolution invariant).
+    assert!(
+        history.start_cap_face_indices.is_empty(),
+        "full revolution should produce no start caps, got {:?}",
+        history.start_cap_face_indices
+    );
+    assert!(
+        history.end_cap_face_indices.is_empty(),
+        "full revolution should produce no end caps, got {:?}",
+        history.end_cap_face_indices
+    );
+
+    // (iii) Exactly 3 face_generated records (one per profile edge).
+    assert_eq!(
+        history.face_generated.len(),
+        3,
+        "triangle profile (1 radial + 2 slanted) should produce exactly 3 \
+         face_generated records, got {} ({:?})",
+        history.face_generated.len(),
+        history.face_generated
+    );
+
+    // (iv) parent_subshape_index covers {0, 1, 2} exactly once each.
+    {
+        use std::collections::HashSet;
+        let covered: HashSet<u32> = history
+            .face_generated
+            .iter()
+            .map(|r| r.parent_subshape_index)
+            .collect();
+        assert_eq!(
+            covered,
+            [0u32, 1, 2].into_iter().collect::<HashSet<_>>(),
+            "triangle profile edges {{0,1,2}} must each appear exactly once \
+             in face_generated, got covered = {:?}",
+            covered
+        );
+    }
+
+    // (v) All result_subshape_index values in range.
+    let result_faces = kernel
+        .extract_faces(result_handle)
+        .expect("extract_faces on triangle revolve result should succeed");
+    let result_face_count = result_faces.len() as u32;
+    for r in &history.face_generated {
+        assert!(
+            r.result_subshape_index < result_face_count,
+            "face_generated result_subshape_index {} out of range; result has {} faces",
+            r.result_subshape_index,
+            result_face_count
+        );
+    }
+}
