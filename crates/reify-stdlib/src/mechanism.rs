@@ -41,6 +41,15 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             // and 5-arg (explicit parent + pose) forms all delegate to
             // the same `append_body` core after substituting defaults
             // for any omitted argument.
+            //
+            // Validation surface (each guard short-circuits to
+            // Value::Undef BEFORE any state mutation; pinned by the
+            // step-11 input-validation test block):
+            //   args.len() ∈ {3, 4, 5}                  → arity guard
+            //   args[0] is a Map with kind="mechanism"  → mechanism guard
+            //   args[2] is a joint value                → at-arg guard
+            //   args[3] is a joint value or world       → parent guard (4/5-arg)
+            //   args[4] is a Value::Transform           → pose guard (5-arg)
             if !matches!(args.len(), 3 | 4 | 5) {
                 return Some(Value::Undef);
             }
