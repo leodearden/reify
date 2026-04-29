@@ -830,6 +830,36 @@ mod tests {
         );
     }
 
+    // ── sweep() steps == 1 single-snapshot-at-lower semantic ─────────────
+
+    /// `sweep(m, j, range, Int(1))` returns a single snapshot at
+    /// `range.lower`. Pins the design choice (the spec is silent for
+    /// n=1; lower is consistent with how a 0-step→1-step extension
+    /// would naturally extend the sequence — a single sample of any
+    /// sequence canonically takes the start).
+    #[test]
+    fn sweep_steps_one_returns_single_snapshot_at_lower() {
+        let (m, j) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+        let result = eval_builtin(
+            "sweep",
+            &[m.clone(), j.clone(), r, Value::Int(1)],
+        );
+        let list = match result {
+            Value::List(l) => l,
+            other => panic!("expected Value::List, got {:?}", other),
+        };
+        assert_eq!(list.len(), 1, "sweep with steps=1 should yield exactly 1 snapshot");
+
+        // Single element equals snapshot(m, [bind(j, length(0.0))]).
+        let bind_lo = eval_builtin("bind", &[j, Value::length(0.0)]);
+        let snap_lo = eval_builtin("snapshot", &[m, Value::List(vec![bind_lo])]);
+        assert_eq!(
+            list[0], snap_lo,
+            "sweep with steps=1 single element should equal snapshot(m, [bind(j, lower)])"
+        );
+    }
+
     /// `sweep(m, joint, unbounded_range, steps)` returns Undef when
     /// either range bound is `None`.
     #[test]
