@@ -14,14 +14,42 @@
 //!   - `sweep(m, joint, range, steps)`        → List<Snapshot>
 //!   - `sweep_grid(m, dims_list)`             → List<Snapshot>
 
+use std::collections::BTreeMap;
+
 use reify_types::Value;
 
 /// Evaluate a sweep stdlib function by name.
 ///
 /// Returns `Some(Value)` for known function names (including
 /// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
-pub(crate) fn eval_sweep(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "dim" => {
+            // Minimal happy-path impl. Validation guards (arity, joint
+            // kind, range/dimension/steps shape) are layered on in
+            // step-4; for now the SweepDim Map is constructed
+            // unconditionally from the three positional args.
+            make_sweep_dim(args[0].clone(), args[1].clone(), args[2].clone())
+        }
+        _ => return None,
+    })
+}
+
+/// Build a SweepDim `Value::Map` with the standard four-key layout:
+/// `kind`, `joint`, `range`, `steps` (alphabetical, matching `BTreeMap`
+/// iteration). Mirrors `make_binding` in snapshot.rs and `make_joint` in
+/// joints.rs — the kind-discriminated Map convention used across the
+/// stdlib value types.
+fn make_sweep_dim(joint: Value, range: Value, steps: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("sweep_dim".to_string()),
+    );
+    m.insert(Value::String("joint".to_string()), joint);
+    m.insert(Value::String("range".to_string()), range);
+    m.insert(Value::String("steps".to_string()), steps);
+    Value::Map(m)
 }
 
 #[cfg(test)]
