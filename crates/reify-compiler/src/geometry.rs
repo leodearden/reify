@@ -1925,4 +1925,58 @@ mod tests {
                 .collect::<Vec<_>>()
         );
     }
+
+    // --- Regression pin: CSG vs kinematic `sweep` arity disambiguation (task 2529) ---
+
+    /// Helper: build a `FunctionCall` Expr with `n` numeric-literal args, named `name`.
+    fn make_call_with_arity(name: &str, n: usize) -> reify_syntax::Expr {
+        let args = (0..n)
+            .map(|_| reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                span: reify_types::SourceSpan::new(0, 1),
+            })
+            .collect();
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: name.to_string(),
+                args,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `is_geometry_let` must classify the 2-arg CSG `sweep(profile, path)` as
+    /// a geometry let (docs §3) and the 4-arg kinematic
+    /// `sweep(mechanism, joint, range, steps)` as NOT a geometry let
+    /// (docs §13.4) so the latter routes through eval-time dispatch.
+    #[test]
+    fn is_geometry_let_disambiguates_csg_vs_kinematic_sweep_by_arity() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        let csg_2 = make_call_with_arity("sweep", 2);
+        assert!(
+            is_geometry_let(&csg_2, &functions, &known),
+            "2-arg sweep (CSG profile/path) must classify as a geometry let"
+        );
+
+        let kinematic_4 = make_call_with_arity("sweep", 4);
+        assert!(
+            !is_geometry_let(&kinematic_4, &functions, &known),
+            "4-arg sweep (kinematic mechanism/joint/range/steps) must NOT \
+             classify as a geometry let — it routes via eval-time dispatch"
+        );
+
+        // Other arities (typos) still flow into compile_geometry_call's CSG arm
+        // so the user gets the strict "expects exactly 2 arguments" diagnostic.
+        for n in [0, 1, 3, 5] {
+            let other = make_call_with_arity("sweep", n);
+            assert!(
+                is_geometry_let(&other, &functions, &known),
+                "{n}-arg sweep must still classify as a geometry let so the \
+                 CSG arity diagnostic fires; only the 4-arg kinematic form \
+                 falls through"
+            );
+        }
+    }
 }
