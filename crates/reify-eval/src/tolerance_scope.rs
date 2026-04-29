@@ -27,7 +27,7 @@ use std::collections::{BTreeSet, HashMap};
 /// to, and the SI tolerance (metres) carried by the matching
 /// `RepresentationWithin` constraint.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ToleranceBinding {
+pub(crate) struct ToleranceBinding {
     pub subject_entity: String,
     pub si_tolerance: f64,
 }
@@ -52,7 +52,7 @@ pub struct ToleranceBinding {
 ///    where `si_value.is_finite()`. Non-finite values (NaN, ±Inf) have no semantics for a
 ///    tolerance — and worse, NaN would propagate into the scope and stick (NaN comparisons
 ///    always evaluate false, so `merge_with_min` could never displace it with a real value).
-pub fn extract_tolerance_bindings(
+pub(crate) fn extract_tolerance_bindings(
     purpose: &CompiledPurpose,
     bound_entity_ref: &str,
 ) -> Vec<ToleranceBinding> {
@@ -132,7 +132,7 @@ pub fn extract_tolerance_bindings(
 /// `PersistentMap` does not guarantee stable iteration across runs, so we
 /// sort. This mirrors the convention in `engine_purposes.rs::expand_purpose
 /// _reflective_placeholders` fallback scan.
-pub fn propagate_subject_to_descendants(
+pub(crate) fn propagate_subject_to_descendants(
     subject: &str,
     value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
 ) -> Vec<String> {
@@ -151,7 +151,7 @@ pub fn propagate_subject_to_descendants(
 /// Merge `additions` into `scope`, applying `min` per entity (tighter
 /// satisfies looser — same partial-order semantics as the cache-side
 /// `ToleranceBucket`). Entries new to `scope` are inserted as-is.
-pub fn merge_with_min<I: IntoIterator<Item = (String, f64)>>(
+pub(crate) fn merge_with_min<I: IntoIterator<Item = (String, f64)>>(
     scope: &mut HashMap<String, f64>,
     additions: I,
 ) {
