@@ -127,6 +127,8 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     let mut face_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
     let mut edge_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
 
+    let mut face_ctx =
+        SplitContext::new(splitting_feature_id, &face_child_counts, &mut face_split_counters);
     // Faces: Modified ∪ Generated.
     for record in history
         .face_modified
@@ -139,12 +141,12 @@ pub fn propagate_attributes_via_brepalgoapi_history(
             result_face_handles,
             record,
             "face",
-            splitting_feature_id,
-            &face_child_counts,
-            &mut face_split_counters,
+            &mut face_ctx,
         )?;
     }
 
+    let mut edge_ctx =
+        SplitContext::new(splitting_feature_id, &edge_child_counts, &mut edge_split_counters);
     // Edges: Modified ∪ Generated.
     for record in history
         .edge_modified
@@ -157,9 +159,7 @@ pub fn propagate_attributes_via_brepalgoapi_history(
             result_edge_handles,
             record,
             "edge",
-            splitting_feature_id,
-            &edge_child_counts,
-            &mut edge_split_counters,
+            &mut edge_ctx,
         )?;
     }
 
@@ -208,6 +208,30 @@ fn count_children_per_parent(
     counts
 }
 
+/// Bundles the three split-related inputs threaded through `propagate_one`
+/// and `maybe_append_split_entry` per geometry kind (faces vs edges).
+///
+/// - `feature_id`: stamped onto each new `ModEntry` appended on a split.
+/// - `child_counts`: maps `(parent_index, parent_subshape_index)` → count of
+///   same-kind result children; count > 1 identifies a split parent.
+/// - `split_counters`: accumulates the per-parent `split_index` across the
+///   Modified ∪ Generated record stream so each sibling gets a distinct index.
+struct SplitContext<'a> {
+    feature_id: &'a FeatureId,
+    child_counts: &'a HashMap<(u8, u32), usize>,
+    split_counters: &'a mut HashMap<(u8, u32), u32>,
+}
+
+impl<'a> SplitContext<'a> {
+    fn new(
+        feature_id: &'a FeatureId,
+        child_counts: &'a HashMap<(u8, u32), usize>,
+        split_counters: &'a mut HashMap<(u8, u32), u32>,
+    ) -> Self {
+        Self { feature_id, child_counts, split_counters }
+    }
+}
+
 /// If the parent at `(parent_index, parent_subshape_index)` has more than
 /// one same-kind result child (count > 1), append a fresh
 /// `ModEntry { splitting_feature_id, split_index }` to `attr` and bump
@@ -226,15 +250,13 @@ fn count_children_per_parent(
 fn maybe_append_split_entry(
     attr: &mut TopologyAttribute,
     parent_key: (u8, u32),
-    child_counts: &HashMap<(u8, u32), usize>,
-    split_counters: &mut HashMap<(u8, u32), u32>,
-    splitting_feature_id: &FeatureId,
+    ctx: &mut SplitContext<'_>,
 ) {
-    let count = child_counts.get(&parent_key).copied().unwrap_or(0);
+    let count = ctx.child_counts.get(&parent_key).copied().unwrap_or(0);
     if count > 1 {
-        let split_index = split_counters.entry(parent_key).or_insert(0);
+        let split_index = ctx.split_counters.entry(parent_key).or_insert(0);
         attr.mod_history.push(ModEntry {
-            splitting_feature_id: splitting_feature_id.clone(),
+            splitting_feature_id: ctx.feature_id.clone(),
             split_index: *split_index,
         });
         *split_index += 1;
@@ -249,16 +271,13 @@ fn maybe_append_split_entry(
 /// cloned attribute's `mod_history` before recording it.
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any index is out of range.
-#[allow(clippy::too_many_arguments)] // each arg threads a needed input; alternatives bundle them into a context struct only the caller would build
 fn propagate_one(
     table: &mut TopologyAttributeTable,
     parent_handles: &[&[GeometryHandleId]],
     result_handles: &[GeometryHandleId],
     record: &HistoryRecord,
     kind: &str,
-    splitting_feature_id: &FeatureId,
-    child_counts: &HashMap<(u8, u32), usize>,
-    split_counters: &mut HashMap<(u8, u32), u32>,
+    ctx: &mut SplitContext<'_>,
 ) -> Result<(), QueryError> {
     let parent_idx = record.parent_index as usize;
     if parent_idx >= parent_handles.len() {
@@ -299,13 +318,7 @@ fn propagate_one(
     if let Some(parent_attr) = table.lookup(parent_handle) {
         let mut attr_clone = parent_attr.clone();
         let parent_key = (record.parent_index, record.parent_subshape_index);
-        maybe_append_split_entry(
-            &mut attr_clone,
-            parent_key,
-            child_counts,
-            split_counters,
-            splitting_feature_id,
-        );
+        maybe_append_split_entry(&mut attr_clone, parent_key, ctx);
         table.record(result_handle, attr_clone);
     }
     Ok(())
