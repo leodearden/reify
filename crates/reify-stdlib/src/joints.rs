@@ -94,6 +94,24 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 args[4].clone(),
             )
         }
+        // 3-DOF spherical joint: free rotation in SO(3), no translation.
+        // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 4.
+        //
+        // Signature: spherical(range_angle: Range<Angle>) — single Range<Angle>
+        // bounding the swing magnitude (axis-angle / cone half-angle). The joint
+        // is axis-isotropic — there is no preferred direction — so no axis is
+        // stored. The motion variable for `transform_at` is a unit quaternion
+        // (`Value::Orientation`); Euler / axis-angle exposure is the user's
+        // responsibility via composition of `orient_euler` / `orient_axis_angle`
+        // and `orient_to_euler` / `orient_to_axis_angle`.
+        "spherical" => {
+            // step-2 minimal stub: accepts everything; step-4 adds the
+            // validation surface (arg count, range dimension, bounded).
+            // `first()` keeps this panic-safe on 0-arg calls — step-3's
+            // explicit `is_undef` regression pins drive the validation.
+            let range_angle = args.first().cloned().unwrap_or(Value::Undef);
+            make_spherical(range_angle)
+        }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
         //
@@ -773,6 +791,21 @@ fn make_planar(axis_x: Value, axis_y: Value, range_x: Value, range_y: Value, ran
     m.insert(Value::String("range_x".to_string()), range_x);
     m.insert(Value::String("range_y".to_string()), range_y);
     m.insert(Value::String("range_theta".to_string()), range_theta);
+    Value::Map(m)
+}
+
+/// Build a spherical joint `Value::Map` with the two-key layout:
+/// `"kind"`, `"range_angle"`.
+///
+/// Keys are in BTreeMap alphabetical order. The spherical joint is axis-isotropic
+/// (no preferred direction), so no axis is stored. The `range_angle` value is
+/// a `Value::Range` of `Angle`-dimensioned bounds — see PRD task 4 design
+/// decision: the range bounds the rotation magnitude (axis-angle / cone
+/// half-angle) regardless of the axis direction.
+fn make_spherical(range_angle: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("spherical".to_string()));
+    m.insert(Value::String("range_angle".to_string()), range_angle);
     Value::Map(m)
 }
 
