@@ -18,8 +18,10 @@
 //! via *multiple active purposes with overlapping subjects* (purpose A bound to
 //! `bracket`, purpose B bound to `bracket.head`, with B tighter).
 
+use crate::graph::ValueCellNode;
 use reify_compiler::CompiledPurpose;
-use reify_types::{CompiledExprKind, DimensionVector, Type, Value};
+use reify_types::{CompiledExprKind, DimensionVector, PersistentMap, Type, Value, ValueCellId};
+use std::collections::BTreeSet;
 
 /// One extracted tolerance scope root: the entity-ref the purpose was bound
 /// to, and the SI tolerance (metres) carried by the matching
