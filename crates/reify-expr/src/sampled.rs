@@ -91,6 +91,13 @@ pub fn sample_at_point(
         return Value::Undef;
     }
 
+    // 1D / 2D / 3D dispatch: the per-axis flat-data layout follows
+    // `interp.rs`'s row-major convention (axis-0 outermost). For
+    // `Regular2D` and `Regular3D` the elaborator (`engine_eval::build_sampled_field`)
+    // requires `data.len() == prod(axis_grids[i].len())` and `spacing`
+    // to be a `Value::List` of N Length scalars; failure to match either
+    // contract poisons the field to `Value::Undef` at elaboration time
+    // before any sample call reaches this dispatch.
     let method: InterpolationMethod = field.interpolation.into();
     let result: InterpolationResult = match field.kind {
         SampledGridKind::Regular1D => {
