@@ -662,6 +662,62 @@ mod tests {
         }
     }
 
+    // ── Off-diagonal JᵀJ regression guard (step-3) ─────────────────────
+
+    #[test]
+    fn newton_solve_2d_off_diagonal_jtj_converges() {
+        // Construct a 2-free-variable problem where the two Jacobian columns
+        // share components, so JᵀJ has a non-zero off-diagonal.
+        //
+        // Two stacked 12-element residuals (two "loops"):
+        //   r[3]  = 2*x[0] + x[1] - 4   (linear-x component of loop 0)
+        //   r[9]  = x[0]  + 3*x[1] - 5  (linear-x component of loop 1)
+        //
+        // Columns of the Jacobian:
+        //   c0 = [..., 2, ..., 1, ...]  (dr/dx0)
+        //   c1 = [..., 1, ..., 3, ...]  (dr/dx1)
+        //
+        // JᵀJ = [[c0·c0, c0·c1], [c1·c0, c1·c1]] = [[5, 5], [5, 10]]
+        //   → off-diagonal entry of 5, so mirroring in step-4 is exercised.
+        //
+        // Closed-form root: 2x+y=4, x+3y=5 ⟹ x=1.4, y=1.2.
+        let cfg = NewtonConfig::default();
+        let closure = |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            assert_eq!(x.len(), 2);
+            let mut r = vec![0.0; 12];
+            r[3] = 2.0 * x[0] + x[1] - 4.0;
+            r[9] = x[0] + 3.0 * x[1] - 5.0;
+            let mut c0 = vec![0.0; 12];
+            c0[3] = 2.0;
+            c0[9] = 1.0;
+            let mut c1 = vec![0.0; 12];
+            c1[3] = 1.0;
+            c1[9] = 3.0;
+            Some((r, vec![c0, c1]))
+        };
+        let outcome = newton_solve(vec![0.0, 0.0], closure, &cfg);
+        match outcome {
+            NewtonOutcome::Converged { x, iters, residual_norm } => {
+                assert!(
+                    (x[0] - 1.4).abs() < 1e-9,
+                    "expected x[0] ≈ 1.4, got {}",
+                    x[0]
+                );
+                assert!(
+                    (x[1] - 1.2).abs() < 1e-9,
+                    "expected x[1] ≈ 1.2, got {}",
+                    x[1]
+                );
+                assert!(iters >= 1, "expected at least 1 Newton iteration");
+                assert!(
+                    residual_norm < 1e-8,
+                    "expected tight residual at convergence, got {residual_norm}"
+                );
+            }
+            other => panic!("expected Converged, got {other:?}"),
+        }
+    }
+
     // ── position_rotation_norms partial-chunk contract (suggestion 3) ──
 
     /// Documented best-effort behavior on malformed input: the trailing
