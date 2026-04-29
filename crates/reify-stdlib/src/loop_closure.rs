@@ -19,6 +19,81 @@
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
 //! design rationale and convergence-tolerance defaults.
 
+use reify_types::Value;
+
+use crate::eval_builtin;
+
+/// Fold a chain of joint Maps into a single composed Transform.
+///
+/// `chain[i]` is a joint `Value::Map` (kind `"prismatic"`, `"revolute"`, or
+/// `"coupling"`); `values[i]` is its motion variable in SI units (metres for
+/// prismatic, radians for revolute; for coupling, in the parent's input
+/// coordinate — the coupling's `transform_at` arm wraps it via the parent
+/// kind's helper).
+///
+/// Composition is left-to-right: `T_total = T_0 * T_1 * ... * T_{n-1}`,
+/// matching the semantics of nesting joints from base outward.  Returns
+/// `None` if any joint produces `Value::Undef` from `transform_at` (invalid
+/// joint Map, dimension mismatch, etc.) or if `chain.len() != values.len()`.
+pub fn chain_transform(chain: &[Value], values: &[f64]) -> Option<Value> {
+    if chain.len() != values.len() {
+        return None;
+    }
+    let mut acc = eval_builtin("transform3_identity", &[]);
+    if acc.is_undef() {
+        return None;
+    }
+    for (joint, &v) in chain.iter().zip(values.iter()) {
+        let v_value = value_for_joint(joint, v)?;
+        let next = eval_builtin("transform_at", &[joint.clone(), v_value]);
+        if next.is_undef() {
+            return None;
+        }
+        let composed = eval_builtin("transform_compose", &[acc, next]);
+        if composed.is_undef() {
+            return None;
+        }
+        acc = composed;
+    }
+    Some(acc)
+}
+
+/// Wrap a raw f64 motion variable in a dimensioned `Value` appropriate for
+/// the joint kind: `Value::length` for prismatic, `Value::angle` for revolute.
+/// Coupling joints delegate to their parent's kind.
+///
+/// Returns `None` for unknown kinds or malformed Maps.
+fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match kind {
+        "prismatic" => Some(Value::length(scalar)),
+        "revolute" => Some(Value::angle(scalar)),
+        "coupling" => {
+            let parent_map = match map.get(&Value::String("parent".to_string())) {
+                Some(Value::Map(pm)) => pm,
+                _ => return None,
+            };
+            let parent_kind = match parent_map.get(&Value::String("kind".to_string())) {
+                Some(Value::String(s)) => s.as_str(),
+                _ => return None,
+            };
+            match parent_kind {
+                "prismatic" => Some(Value::length(scalar)),
+                "revolute" => Some(Value::angle(scalar)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
