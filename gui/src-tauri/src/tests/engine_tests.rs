@@ -398,6 +398,37 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
 }
 
 #[test]
+fn get_mechanism_descriptors_snapshot_consumption_does_not_filter() {
+    // Step 3: MULTI_SNAPSHOT_SOURCE has m0/m1/m2 body chain plus s1/s2 snapshot
+    // lets that read from m2.  snapshot() consumption must NOT make m2 an
+    // intermediate mechanism — it should still appear as the one terminal
+    // descriptor.  Pins the design decision: body()-only filter.
+    let mut session = make_session();
+    session
+        .load_from_source(MULTI_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load multi-snapshot source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "snapshot consumption must not filter the mechanism; expected 1 descriptor, got {:?}",
+        descriptors.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        descriptors[0].name, "m2",
+        "the terminal mechanism should be m2; got {:?}",
+        descriptors[0].name
+    );
+    assert_eq!(
+        descriptors[0].bodies_count, 2,
+        "m2 should have bodies_count=2; got {}",
+        descriptors[0].bodies_count
+    );
+}
+
+#[test]
 fn get_mechanism_descriptors_filters_intermediate_body_chain_cells() {
     // Step 1 RED: HAPPY_MECHANISM_SOURCE has m0/m1/m2 where m0 is consumed by
     // body(m0,...) → m1, and m1 is consumed by body(m1,...) → m2.  Only the
