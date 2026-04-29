@@ -655,6 +655,84 @@ mod tests {
     }
 
     #[test]
+    fn propagate_returns_query_failed_when_edge_record_has_parent_subshape_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = minimal_parent_result_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        // Parent 0 has only 1 edge, so subshape 99 is out of range.
+        let history = history_with_single_edge_modified(HistoryRecord {
+            parent_index: 0,
+            parent_subshape_index: 99,
+            result_subshape_index: 0,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for edge parent_subshape_index out of range");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("edge"),
+                    "edge-record error message should identify edge kind, got {msg:?}",
+                );
+                assert!(
+                    msg.contains("parent_subshape_index 99"),
+                    "error message should mention the offending parent_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn propagate_returns_query_failed_when_edge_record_has_result_subshape_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = minimal_parent_result_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        // Result has only 1 edge, so subshape 7 is out of range.
+        let history = history_with_single_edge_modified(HistoryRecord {
+            parent_index: 0,
+            parent_subshape_index: 0,
+            result_subshape_index: 7,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for edge result_subshape_index out of range");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("edge"),
+                    "edge-record error message should identify edge kind, got {msg:?}",
+                );
+                assert!(
+                    msg.contains("result_subshape_index 7"),
+                    "error message should mention the offending result_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn propagate_succeeds_silently_on_empty_history() {
         // No records — propagation is a no-op and must not error even
         // when parent/result handle slices are empty.
