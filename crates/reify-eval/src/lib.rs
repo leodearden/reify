@@ -19,12 +19,14 @@ mod engine_purposes;
 mod geometry_ops;
 pub mod graph;
 pub mod journal;
+pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
 pub mod topology_attribute_propagation;
 pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
+pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::propagate_attributes_via_brepalgoapi_history;
 
@@ -406,11 +408,15 @@ pub struct Engine {
     /// `TopologyAttribute` records (per-feature `feature_id`, `role`,
     /// `local_index`, optional `user_label`, `mod_history`).
     ///
-    /// Currently always empty — task 2590 added the field + accessor as the
-    /// foundation; tasks 5-8 wire per-op auto-population during
-    /// `execute_realization_ops`, and task 2 (#2570) wires selector lookup
-    /// against this table. Tasks 9-10 retire `feature_tag_table` once the
-    /// attribute path covers all selector vocabulary.
+    /// Populated by `Engine::execute_realization_ops` for primitive ops
+    /// (Box / Cylinder / Sphere) via `seed_primitive_attributes_for_handle`
+    /// (task 6, #2574); auto-population for sweep / local-feature / boolean
+    /// ops lands in PRD tasks 5 / 7 / 8. Cleared and repopulated on each
+    /// `build()` / `build_snapshot()` / `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call (per-build, not per-realization). Task 2
+    /// (#2570) wires selector lookup against this table; tasks 9-10 retire
+    /// `feature_tag_table` once the attribute path covers all selector
+    /// vocabulary.
     topology_attribute_table: TopologyAttributeTable,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
