@@ -103,6 +103,11 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
 
+// OCCT messaging (for synthesis-gap diagnostics)
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <TCollection_ExtendedString.hxx>
+
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -604,16 +609,20 @@ static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
 /// This preserves the `local_index = parent_subshape_index` invariant that
 /// `populate_revolve_attributes` (crates/reify-eval) relies on.
 ///
-/// INVARIANT CAVEAT: `local_index = parent_subshape_index` holds only when
-/// each profile edge index appears exactly once in face_generated. If OCCT's
-/// Generated() reports two records for the same edge (possible in degenerate
-/// sweeps with self-touching profiles), or if a synthesized record collides
-/// with an OCCT-reported one (prevented by the `tracked_parent_edges` guard
-/// but theoretically possible if OCCT partially reports a radial edge), the
-/// stable-sort will place duplicates adjacently but positions will diverge
-/// from parent_subshape_index and populate_revolve_attributes will assign
-/// misaligned local_index values silently. Well-formed CAD profiles (distinct
-/// edges, no self-intersection) are not expected to trigger this path.
+/// SILENT-DROPS: any non-degenerate, untracked profile edge that exits the
+/// synthesis loop without producing a face_generated record (axial path 4,
+/// slanted path 5, or inner matching-loop fall-through path 6) increments
+/// `SweepOpHistory::unmatched_radial_edge_count`. After the synthesis loop
+/// completes, if the counter is non-zero, one OCCT `Message_Warning` is
+/// emitted via `Message::DefaultMessenger()` summarising the count. The
+/// counter is surfaced to Rust callers via the `SweepOpHistoryRecords`
+/// field `unmatched_radial_edge_count` so integration tests can assert it
+/// is zero for well-formed profiles.
+///
+/// DUPLICATE DETECTION: if `parent_subshape_index` values are not distinct
+/// in face_generated after sorting, duplicates are dropped by the
+/// `revolve_synthesis_post_sort_and_dedup` helper (step-6) and the count
+/// is exposed via `SweepOpHistory::duplicate_parent_subshape_index_count`.
 ///
 /// MATCHING CAVEAT (same-z radial edges): the face-matching logic is greedy
 /// (first untracked face whose normal is parallel to the axis AND whose
@@ -681,10 +690,14 @@ static void synthesize_full_revolution_radial_face_records(
 
         double dot = std::abs(edge_vec.Dot(axis_dir));
         if (dot > 1.0 - DIR_TOL) {
-            continue; // Axial — OCCT Generated() should have caught this.
+            // Axial — OCCT Generated() should have caught this.
+            ++history.unmatched_radial_edge_count;
+            continue;
         }
         if (dot > DIR_TOL) {
-            continue; // Slanted — OCCT reports conical sweeps correctly.
+            // Slanted — OCCT reports conical sweeps correctly.
+            ++history.unmatched_radial_edge_count;
+            continue;
         }
 
         // Purely radial edge. Compute its midpoint axial coordinate.
@@ -692,6 +705,7 @@ static void synthesize_full_revolution_radial_face_records(
         double target_axial = compute_axial_coord(midpoint, axis);
 
         // Scan result faces for the matching annular-disk face.
+        bool matched = false;
         for (Standard_Integer j = 1; j <= n_faces; ++j) {
             const uint32_t face_idx_0 = static_cast<uint32_t>(j - 1);
             if (tracked_result_faces.count(face_idx_0)) {
@@ -750,8 +764,24 @@ static void synthesize_full_revolution_radial_face_records(
             history.face_generated.push_back(edge_idx_0);
             history.face_generated.push_back(face_idx_0);
             tracked_result_faces.insert(face_idx_0);
+            matched = true;
             break;
         }
+        if (!matched) {
+            // Path 6: inner face-matching loop found no candidate.
+            ++history.unmatched_radial_edge_count;
+        }
+    }
+
+    // Emit a single OCCT warning if any profile edges went unmatched.
+    if (history.unmatched_radial_edge_count > 0) {
+        std::ostringstream oss;
+        oss << "synthesize_full_revolution_radial_face_records: "
+            << history.unmatched_radial_edge_count
+            << " unmatched profile edge(s) — silent gap in face_generated";
+        Message::DefaultMessenger()->Send(
+            TCollection_ExtendedString(oss.str().c_str()),
+            Message_Warning);
     }
 
     // Stable-sort face_generated in groups of 3 by parent_subshape_index
