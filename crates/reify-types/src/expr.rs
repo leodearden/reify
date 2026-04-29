@@ -1973,6 +1973,119 @@ mod tests {
 
     // ── end task-2552 tests ───────────────────────────────────────────────────
 
+    // ── task-2629 step-1 tests ────────────────────────────────────────────
+
+    /// task-2629 step-1: `map_value_refs` rewrites every `ValueRef` cell ID
+    /// matching the predicate, recomputing `content_hash` on every node it
+    /// rewrites — distinct from `remap_cell` (which mutates in place and
+    /// leaves stale ancestor hashes).
+    ///
+    /// Builds `BinOp(Lt, ValueRef("S.vents[0]","mass"), Literal(50kg))`,
+    /// rewrites `S.vents[0]` → `S.vents[2]`, and asserts the resulting
+    /// expr is `BinOp(Lt, ValueRef("S.vents[2]","mass"), Literal(50kg))`
+    /// with a fresh content_hash that differs from the input.
+    ///
+    /// RED before step-2: `map_value_refs` does not yet exist.
+    #[test]
+    fn map_value_refs_rewrites_nested_value_ref_and_recomputes_hash() {
+        let from_id = ValueCellId::new("S.vents[0]", "mass");
+        let to_id = ValueCellId::new("S.vents[2]", "mass");
+        let mass_ty = Type::Scalar {
+            dimension: crate::DimensionVector::MASS,
+        };
+
+        let lhs = CompiledExpr::value_ref(from_id.clone(), mass_ty.clone());
+        let rhs = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 50.0,
+                dimension: crate::DimensionVector::MASS,
+            },
+            mass_ty.clone(),
+        );
+        let original = CompiledExpr::binop(BinOp::Lt, lhs, rhs, Type::Bool);
+        let original_hash = original.content_hash;
+
+        let rewritten = original.map_value_refs(&mut |id| {
+            if id.entity == "S.vents[0]" {
+                ValueCellId::new("S.vents[2]", id.member)
+            } else {
+                id
+            }
+        });
+
+        // Top-level shape preserved.
+        assert!(
+            matches!(&rewritten.kind, CompiledExprKind::BinOp { op: BinOp::Lt, .. }),
+            "rewritten expr must remain BinOp(Lt, ...)"
+        );
+        match &rewritten.kind {
+            CompiledExprKind::BinOp { left, right, .. } => {
+                match &left.kind {
+                    CompiledExprKind::ValueRef(id) => {
+                        assert_eq!(*id, to_id, "left ValueRef must be rewritten to S.vents[2].mass");
+                    }
+                    other => panic!("expected left ValueRef, got {other:?}"),
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(_) => {}
+                    other => panic!("expected right Literal, got {other:?}"),
+                }
+            }
+            other => panic!("expected BinOp, got {other:?}"),
+        }
+        assert_eq!(rewritten.result_type, Type::Bool);
+
+        // The content_hash was recomputed (differs from the input).
+        assert_ne!(
+            rewritten.content_hash, original_hash,
+            "content_hash must differ after rewrite"
+        );
+
+        // Reproducibility: two equivalent rewrites produce equal hashes.
+        let lhs2 = CompiledExpr::value_ref(from_id.clone(), mass_ty.clone());
+        let rhs2 = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 50.0,
+                dimension: crate::DimensionVector::MASS,
+            },
+            mass_ty,
+        );
+        let original2 = CompiledExpr::binop(BinOp::Lt, lhs2, rhs2, Type::Bool);
+        let rewritten2 = original2.map_value_refs(&mut |id| {
+            if id.entity == "S.vents[0]" {
+                ValueCellId::new("S.vents[2]", id.member)
+            } else {
+                id
+            }
+        });
+        assert_eq!(
+            rewritten.content_hash, rewritten2.content_hash,
+            "two equivalent rewrites must yield identical hashes"
+        );
+    }
+
+    /// task-2629 step-1: `map_value_refs` is a no-op (clone-only) on Literal
+    /// nodes — it simply rebuilds the literal node with its existing hash.
+    ///
+    /// RED before step-2.
+    #[test]
+    fn map_value_refs_noop_on_literal() {
+        let original = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let original_hash = original.content_hash;
+        // Identity transform on cells; should still yield the same hash.
+        let rewritten = original.map_value_refs(&mut |id| id);
+        match &rewritten.kind {
+            CompiledExprKind::Literal(Value::Int(n)) => assert_eq!(n, 42),
+            other => panic!("expected Literal(Int(42)), got {other:?}"),
+        }
+        assert_eq!(
+            rewritten.content_hash, original_hash,
+            "identity rewrite on Literal must preserve content_hash"
+        );
+    }
+
+    // ── end task-2629 step-1 tests ───────────────────────────────────────
+
     /// step-3 (task-2289): structurally-equal placeholders share content_hash;
     /// structurally-different placeholders (different `query_kind`) differ.
     #[test]
