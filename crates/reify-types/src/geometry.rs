@@ -1000,6 +1000,25 @@ pub enum BooleanOpParents<'a> {
     },
 }
 
+/// Debug-build invariant check shared by `BooleanOpParents::NAry` accessors.
+/// Panics in debug builds (no-op in release) when `faces.len() != edges.len()`,
+/// using `BooleanOpParentsError::LengthMismatch`'s Display impl as the
+/// canonical wording. Module-private: the only callers are the in-module
+/// `face_slices` / `edge_slices` accessors.
+fn debug_check_nary_invariant(
+    faces: &[&[GeometryHandleId]],
+    edges: &[&[GeometryHandleId]],
+) {
+    debug_assert!(
+        faces.len() == edges.len(),
+        "{}",
+        BooleanOpParentsError::LengthMismatch {
+            faces: faces.len(),
+            edges: edges.len(),
+        },
+    );
+}
+
 impl<'a> BooleanOpParents<'a> {
     /// Checked constructor for the [`NAry`][Self::NAry] variant.
     ///
@@ -1044,20 +1063,13 @@ impl<'a> BooleanOpParents<'a> {
     /// For [`NAry`][Self::NAry] instances, length correctness is the caller's
     /// responsibility when using direct enum-literal construction. Use
     /// [`try_nary`][Self::try_nary] or [`nary`][Self::nary] to obtain a
-    /// checked instance. A `debug_assert_eq!` fires in debug builds if a
+    /// checked instance. A `debug_assert!` fires in debug builds if a
     /// direct-literal construction is called with mismatched lengths.
     pub fn face_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { faces, .. } => &faces[..],
             Self::NAry { faces, edges } => {
-                debug_assert_eq!(
-                    faces.len(),
-                    edges.len(),
-                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
-                     each parent must have an entry in both slices",
-                    faces.len(),
-                    edges.len()
-                );
+                debug_check_nary_invariant(faces, edges);
                 faces
             }
         }
@@ -1069,20 +1081,13 @@ impl<'a> BooleanOpParents<'a> {
     /// For [`NAry`][Self::NAry] instances, length correctness is the caller's
     /// responsibility when using direct enum-literal construction. Use
     /// [`try_nary`][Self::try_nary] or [`nary`][Self::nary] to obtain a
-    /// checked instance. A `debug_assert_eq!` fires in debug builds if a
+    /// checked instance. A `debug_assert!` fires in debug builds if a
     /// direct-literal construction is called with mismatched lengths.
     pub fn edge_slices(&self) -> &[&'a [GeometryHandleId]] {
         match self {
             Self::Binary { edges, .. } => &edges[..],
             Self::NAry { faces, edges } => {
-                debug_assert_eq!(
-                    faces.len(),
-                    edges.len(),
-                    "BooleanOpParents::NAry: faces.len() ({}) != edges.len() ({}); \
-                     each parent must have an entry in both slices",
-                    faces.len(),
-                    edges.len()
-                );
+                debug_check_nary_invariant(faces, edges);
                 edges
             }
         }
