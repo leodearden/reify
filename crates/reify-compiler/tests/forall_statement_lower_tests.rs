@@ -904,6 +904,71 @@ structure S {
     );
 }
 
+/// `forall v in vents: connect v.inlet -> air_channel` over a collection sub
+/// *without* a count constraint should emit zero CompiledConnections and zero
+/// errors. Pins PRD criterion 7's "no decls when count is undef" half for the
+/// Connect form. At compile time we cannot resolve the count of `vents`, so
+/// elaboration is deferred silently.
+///
+/// TODO(future): once SchemaNode-style re-elaboration is in place, this
+/// test should be updated to assert that the connections are emitted once
+/// the count becomes known at graph-build time.
+#[test]
+fn forall_connect_over_undef_count_collection_sub_emits_no_connections_no_error() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for undef-count forall connect, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        0,
+        "expected zero connections when count is undef, got {}: {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    // No forall@v[*] labels in constraints either.
+    let forall_label_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@v["))
+        })
+        .count();
+    assert_eq!(
+        forall_label_count, 0,
+        "expected zero forall@v[*] constraint labels from undef-count forall connect, got {}",
+        forall_label_count
+    );
+}
+
 /// `forall v in []: connect v.inlet -> hub` should emit zero CompiledConnections
 /// and zero errors. Pins PRD criterion 6 for the Connect form: an empty
 /// collection is vacuously satisfied — no connections are emitted, no
