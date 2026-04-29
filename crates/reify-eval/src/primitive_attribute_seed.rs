@@ -61,6 +61,29 @@
 //! - `user_label` is always `None` here. The user-facing `name = "..."`
 //!   syntax (PRD line 50) is absorbed by later authoring layers.
 //! - `mod_history` is always empty. Splits/labels arrive in tasks 3-4.
+//!
+//! ## Shared-FeatureId limitation across primitives in one realization
+//!
+//! Every primitive op inside a single realization currently shares one
+//! `FeatureId` (derived once from the realization's `RealizationNodeId`
+//! by `Engine::execute_realization_ops`). When a realization contains
+//! multiple primitives — e.g.
+//! `let body = box(...); let lid = cylinder(...); union(body, lid)` —
+//! both primitives' seeded entries carry the same `feature_id`, so any
+//! reverse lookup keyed on `(feature_id, role, local_index)` will be
+//! ambiguous between them (lookup-by-`GeometryHandleId` is unaffected
+//! and remains the contract this seeder upholds).
+//!
+//! This is intentional for task 6 (#2574): the `RealizationNodeId` is
+//! the only feature-identity granularity that has landed so far, and
+//! widening it to a per-let-binding `FeatureId` (e.g.
+//! `Body#realization[0]/let[body]`) requires the AST → IR threading
+//! that PRD §6.5 sketches but tasks 9-10 (selector vocabulary +
+//! `feature_tag_table` retirement) are intended to deliver. The
+//! primitive seeder will follow that thread once it lands; until then,
+//! the shared-FeatureId contract is the documented status quo.
+
+use std::collections::HashMap;
 
 use reify_types::{
     CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError,
@@ -180,18 +203,36 @@ pub fn seed_primitive_attributes(
         GeometryOp::Cylinder { .. } => {
             // A cylinder emits 3 faces in OCCT's TopExp order: side, top
             // cap, bottom cap (order varies by OCCT version). Classify
-            // each via `GeometryQuery::FaceNormal`'s z-component. Each
-            // role appears exactly once, so local_index is always 0.
+            // each via `GeometryQuery::FaceNormal`'s z-component.
+            //
+            // For the canonical 3-face case each role appears exactly
+            // once and `local_index` is 0 for every entry. Per-role
+            // counters preserve that invariant while remaining safe
+            // against degenerate kernel outputs (e.g. an unusual face
+            // split or a future OCCT version that emits more than one
+            // face with the same classification): each subsequent face
+            // of the same role gets the next sequential `local_index`,
+            // mirroring the construction-order discipline used for
+            // Box/Sphere `Role::Side`. This guarantees the seeder never
+            // writes two rows with identical `(feature_id, role,
+            // local_index)`, keeping reverse lookups unambiguous.
+            let mut role_counts: HashMap<Role, u32> = HashMap::new();
             for &face_id in face_handles.iter() {
                 let normal_value = kernel.query(&GeometryQuery::FaceNormal(face_id))?;
                 let nz = parse_normal_z(&normal_value)?;
                 let role = classify_cylinder_face_role(nz);
+                let local_index = {
+                    let counter = role_counts.entry(role).or_insert(0);
+                    let assigned = *counter;
+                    *counter += 1;
+                    assigned
+                };
                 table.record(
                     face_id,
                     TopologyAttribute {
                         feature_id: feature_id.clone(),
                         role,
-                        local_index: 0,
+                        local_index,
                         user_label: None,
                         mod_history: Vec::new(),
                     },
