@@ -1278,6 +1278,35 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    #[test]
+    fn node_id_display_forwards_to_inner_variant() {
+        use reify_types::ResolutionNodeId;
+
+        // Value variant
+        let inner_v = ValueCellId::new("Bracket", "x");
+        let node_v = NodeId::Value(inner_v.clone());
+        assert_eq!(format!("{}", node_v), format!("{}", inner_v));
+        assert_eq!(format!("{}", node_v), "Bracket.x");
+
+        // Constraint variant
+        let inner_c = ConstraintNodeId::new("Bracket", 0);
+        let node_c = NodeId::Constraint(inner_c.clone());
+        assert_eq!(format!("{}", node_c), format!("{}", inner_c));
+        assert_eq!(format!("{}", node_c), "Bracket#constraint[0]");
+
+        // Realization variant
+        let inner_r = RealizationNodeId::new("Bracket", 1);
+        let node_r = NodeId::Realization(inner_r.clone());
+        assert_eq!(format!("{}", node_r), format!("{}", inner_r));
+        assert_eq!(format!("{}", node_r), "Bracket#realization[1]");
+
+        // Resolution variant
+        let inner_s = ResolutionNodeId::new("Bracket", 2);
+        let node_s = NodeId::Resolution(inner_s.clone());
+        assert_eq!(format!("{}", node_s), format!("{}", inner_s));
+        assert_eq!(format!("{}", node_s), "Bracket#resolution[2]");
+    }
+
     // --- invalidate_dependents tests ---
 
     #[test]
