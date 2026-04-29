@@ -471,13 +471,21 @@ mod tests {
     //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
         BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
-        HistoryRecord, QueryError, Role, SweepOpHistoryRecords, TopologyAttributeTable,
+        HistoryRecord, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute,
+        TopologyAttributeTable,
     };
 
     use super::{
         populate_extrude_attributes, populate_revolve_attributes,
         propagate_attributes_via_brepalgoapi_history,
     };
+
+    /// Synthetic FeatureId reused by every split-detection test as the
+    /// `splitting_feature_id` parameter to
+    /// `propagate_attributes_via_brepalgoapi_history`.
+    fn fuse_feature_id() -> FeatureId {
+        FeatureId::new("Fuse#realization[0]")
+    }
 
     /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
     /// `face_modified` entry and every other vector empty.
@@ -516,6 +524,22 @@ mod tests {
             parent_edges: [vec![GeometryHandleId(3)], vec![GeometryHandleId(4)]],
             result_faces: vec![GeometryHandleId(11)],
             result_edges: vec![GeometryHandleId(12)],
+        }
+    }
+
+    /// One face/edge per parent + 3 result faces — used by split-detection
+    /// tests that need a parent's records to point at multiple result
+    /// sub-shapes (count > 1 ⇒ split).
+    fn split_layout() -> MinimalLayout {
+        MinimalLayout {
+            parent_faces: [vec![GeometryHandleId(1)], vec![GeometryHandleId(2)]],
+            parent_edges: [vec![GeometryHandleId(3)], vec![GeometryHandleId(4)]],
+            result_faces: vec![
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+                GeometryHandleId(13),
+            ],
+            result_edges: vec![GeometryHandleId(15)],
         }
     }
 
@@ -796,6 +820,102 @@ mod tests {
         )
         .expect("empty history with Binary parents should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
+    }
+
+    /// step-1 (RED) — split parent with two `face_modified` records.
+    ///
+    /// A single parent face (parent 0, subshape 0) is mapped to TWO distinct
+    /// result faces by the boolean op. Per the v0.2 invariant: each child
+    /// inherits the parent's `(feature_id, role, local_index, user_label)`
+    /// AND gets a fresh `ModEntry { splitting_feature_id, split_index }`
+    /// appended to its `mod_history`. The first child (record 0) gets
+    /// `split_index = 0`; the second (record 1) gets `split_index = 1`.
+    #[test]
+    fn propagate_appends_mod_entry_for_split_parent_with_two_face_modified_records() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = split_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        // Seed the parent face with a non-empty user_label (so we can pin the
+        // user_label is also propagated unchanged).
+        let parent_handle = layout.parent_faces[0][0];
+        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        table.record(
+            parent_handle,
+            TopologyAttribute {
+                feature_id: parent_feature_id.clone(),
+                role: Role::Side,
+                local_index: 7,
+                user_label: Some("seam".to_string()),
+                mod_history: Vec::new(),
+            },
+        );
+
+        // Two face_modified records pointing the SAME parent at two distinct
+        // result faces — the split signature.
+        let history = BooleanOpHistoryRecords {
+            face_modified: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 1,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 2,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let splitting = fuse_feature_id();
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+            &splitting,
+        )
+        .expect("propagation should succeed for a well-formed split history");
+
+        // (a) result_faces[1] — first child, split_index = 0.
+        let attr_1 = table
+            .lookup(layout.result_faces[1])
+            .expect("result face 1 should have a propagated entry");
+        assert_eq!(attr_1.feature_id, parent_feature_id);
+        assert_eq!(attr_1.role, Role::Side);
+        assert_eq!(attr_1.local_index, 7);
+        assert_eq!(attr_1.user_label, Some("seam".to_string()));
+        assert_eq!(
+            attr_1.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting.clone(),
+                split_index: 0,
+            }],
+            "first child of split parent must carry split_index=0"
+        );
+
+        // (b) result_faces[2] — second child, split_index = 1.
+        let attr_2 = table
+            .lookup(layout.result_faces[2])
+            .expect("result face 2 should have a propagated entry");
+        assert_eq!(attr_2.feature_id, parent_feature_id);
+        assert_eq!(attr_2.role, Role::Side);
+        assert_eq!(attr_2.local_index, 7);
+        assert_eq!(attr_2.user_label, Some("seam".to_string()));
+        assert_eq!(
+            attr_2.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting,
+                split_index: 1,
+            }],
+            "second child of split parent must carry split_index=1"
+        );
     }
 
     // -- populate_extrude_attributes tests (task 5a, step-11) --
