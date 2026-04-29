@@ -1272,6 +1272,10 @@ structure S {
             .filter_map(|c| c.label.as_deref())
             .collect::<Vec<_>>()
     );
+
+    // Confirm the source actually contains a ForallConstraint (panics if parse
+    // demoted the body, which would make the zero-emissions check vacuously green).
+    find_forall_constraint_span(source, "S");
 }
 
 /// `forall v in vents: connect v.inlet -> air_channel` over a collection sub
