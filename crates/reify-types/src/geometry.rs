@@ -981,6 +981,53 @@ pub struct BooleanOpHistoryRecords {
     pub edge_deleted: Vec<DeletedRecord>,
 }
 
+/// All Modified / Generated / Deleted history records for a single
+/// **single-parent sweep operation** (extrude / revolve, currently;
+/// sweep / loft in task 5b).
+///
+/// Mirrors `BooleanOpHistoryRecords` but for ops with one parent profile
+/// instead of two operands; `parent_index` on the inner records is
+/// always `0` and is included only for layout-uniformity with the
+/// boolean variant. The two extra fields `start_cap_face_indices` and
+/// `end_cap_face_indices` capture the cap-face information that is
+/// **not** exposed via Modified/Generated maps but is available via
+/// `BRepBuilderAPI_Sweep::FirstShape()` and `LastShape()`.
+///
+/// Cap orientation conventions (per `populate_extrude_attributes` /
+/// `populate_revolve_attributes`):
+///   - For extrude: `start_cap_face_indices` → `Cap(Top)` (the
+///     swept-end face / `LastShape()`-derived; chosen so a positive-Z
+///     prism's "top" face matches gravitational orientation),
+///     `end_cap_face_indices` → `Cap(Bottom)`.
+///   - For revolve: `start_cap_face_indices` → `Cap(Start)` (profile at
+///     angle 0, FirstShape), `end_cap_face_indices` → `Cap(End)`
+///     (profile at the angle endpoint, LastShape). Both lists are empty
+///     for full-2π revolutions.
+///
+/// Returned by `OcctKernel::extrude_with_history` and
+/// `OcctKernel::revolve_with_history` (task 5a). Consumed by
+/// `reify_eval::populate_extrude_attributes` and
+/// `populate_revolve_attributes` to seed `TopologyAttributeTable`
+/// entries on the result handles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepOpHistoryRecords {
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+    /// Result-face indices (into the result shape's TopExp face map)
+    /// that correspond to the profile-as-placed cap (extrude bottom /
+    /// revolve start).
+    pub start_cap_face_indices: Vec<u32>,
+    /// Result-face indices (into the result shape's TopExp face map)
+    /// that correspond to the swept-end cap (extrude top / revolve
+    /// end). Empty for full-2π revolutions where the start and end
+    /// profile coincide and no cap face exists.
+    pub end_cap_face_indices: Vec<u32>,
+}
+
 /// Typed wrapper for the per-parent face/edge handle slices passed to
 /// [`reify_eval::propagate_attributes_via_brepalgoapi_history`].
 ///
