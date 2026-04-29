@@ -473,6 +473,16 @@ pub(crate) fn elaborate_forall_connect(
                 // forall span. The plain arm uses `chain_decl.span`; here the
                 // forall span subsumes the chain body's span and is the
                 // user-visible site.
+                //
+                // INTENTIONAL PLACEMENT — this guard is INSIDE the outer
+                // per-element loop. For `forall v in []: chain ...` (PRD
+                // criterion 6), the outer loop iterates zero times so this
+                // guard is never reached and no diagnostic is emitted. For a
+                // non-empty forall with a malformed chain body (e.g. only one
+                // chain element), the guard fires once per outer-loop element.
+                // Do NOT hoist this guard outside the loop for "efficiency" —
+                // doing so would fire the diagnostic for the empty-list case
+                // (breaking criterion 6) and for the undef-count deferred case.
                 if cd.elements.len() < 2 {
                     diagnostics.push(
                         Diagnostic::error("chain statement requires at least two elements")
