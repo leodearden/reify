@@ -68,31 +68,39 @@ pub(crate) fn deactivate_if_not_auto(
     }
 }
 
-/// Rewrite `<sub_name>[0]` → `<sub_name>[i]` in a flat port-name template.
+/// Rewrite the FIRST occurrence of `<sub_name>[0]` → `<sub_name>[i]` in a
+/// flat port-name template.
 ///
 /// Used by the forall-Connect runtime re-emission path (task 2690) to
 /// substitute the captured placeholder element index into each per-element
 /// `CompiledConnection`'s `left_port` / `right_port`.
+///
+/// # Single-replacement contract (task 2690 amendment)
+///
+/// The captured templates come from `connect.rs::resolve_port_name`, which
+/// returns a flat string with at most one bracketed index per side and bails
+/// on nested `IndexAccess`. The placeholder substitution is therefore expected
+/// to occur exactly once on each side. We use `replacen(.., 1)` rather than
+/// `replace(..)` so that pathological-but-legal port names — for example a
+/// user-written explicit `vents[0]` reference appearing alongside the
+/// `[0]` placeholder, or a name that incidentally repeats `<sub_name>[0]` —
+/// do NOT have additional occurrences silently rewritten. This tightens the
+/// contract to "rewrite the placeholder once" and prevents surprises where
+/// the bound variable was substituted into both sides of a literal-bearing
+/// port name.
 ///
 /// # Substring-rewrite divergence
 ///
 /// The compile-time placeholder element shape is `<sub>[0]` for the deferred
 /// capture path, mirroring the Constraint-arm's
 /// `<parent>.<sub>[0]` cell-id rewrite (see `engine_edit.rs` Constraint arm
-/// and `types.rs::CompiledForallBody::Constraint` docstring at lines 386-394).
-/// This substring-based rewrite has the same edge-case divergence vs. the
-/// resolved (non-deferred) Connect path: a user-written `coll[0]` reference
-/// in a connect body will be rewritten too, even when the user intended the
-/// literal index. The compile-time error path in `connect.rs::resolve_port_name`
-/// would have caught a malformed port name on the captured `[0]` placeholder
-/// at compile time; once captured, this helper trusts the template verbatim.
-///
-/// The substring is anchored on `sub_name` (not just `[0]`) to reduce the
-/// risk of accidentally rewriting a literal `[0]` elsewhere in the port name.
+/// and `types.rs::CompiledForallBody::Connect` docstring). The substring is
+/// anchored on `sub_name` (not just `[0]`) to reduce the risk of accidentally
+/// rewriting a literal `[0]` elsewhere in the port name.
 pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -> String {
     let placeholder = format!("{}[0]", sub_name);
     let target = format!("{}[{}]", sub_name, i);
-    template.replace(&placeholder, &target)
+    template.replacen(&placeholder, &target, 1)
 }
 
 /// Re-elaborate the active and inactive branches of a single guarded group
@@ -1697,6 +1705,24 @@ impl Engine {
                                 t.collection_sub_name,
                                 t_idx,
                             );
+                            // `port_mappings` is identical across every
+                            // per-element emission. Hoist a single owned
+                            // copy outside the loop, clone from it on
+                            // earlier iterations, and `mem::take` it on
+                            // the last iteration so the final emission
+                            // moves rather than clones. Saves one
+                            // allocation per re-emission for `new_count
+                            // >= 1` (N alloc → 1 alloc + (N-1) clones).
+                            // For `new_count == 0` the owned copy is
+                            // never read; skip the hoist in that path
+                            // to preserve the prior zero-allocation
+                            // behaviour. (task-2690 amendment.)
+                            let mut port_mappings_owned: Vec<(String, String)> =
+                                if new_count > 0 {
+                                    port_mappings.clone()
+                                } else {
+                                    Vec::new()
+                                };
 
                             for i in 0..new_count {
                                 let rewritten_left = rewrite_port_placeholder(
@@ -1731,13 +1757,18 @@ impl Engine {
                                     .graph
                                     .constraints
                                     .insert(cnid.clone(), node);
+                                let port_mappings_for_this = if i + 1 == new_count {
+                                    std::mem::take(&mut port_mappings_owned)
+                                } else {
+                                    port_mappings_owned.clone()
+                                };
                                 new_snapshot.graph.connections.push(CompiledConnection {
                                     left_port: rewritten_left,
                                     operator: *operator,
                                     right_port: rewritten_right,
                                     connector_sub: None,
                                     compatibility_constraint: cnid.clone(),
-                                    port_mappings: port_mappings.clone(),
+                                    port_mappings: port_mappings_for_this,
                                     frame_constraint: None,
                                     span: t.span,
                                 });
