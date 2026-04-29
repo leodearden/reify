@@ -43,11 +43,12 @@ use crate::eval_builtin;
 
 /// Fold a chain of joint Maps into a single composed Transform.
 ///
-/// `chain[i]` is a joint `Value::Map` (kind `"prismatic"`, `"revolute"`, or
-/// `"coupling"`); `values[i]` is its motion variable in SI units (metres for
-/// prismatic, radians for revolute; for coupling, in the parent's input
-/// coordinate — the coupling's `transform_at` arm wraps it via the parent
-/// kind's helper).
+/// `chain[i]` is a joint `Value::Map` (any kind in `joints::JOINT_KINDS`);
+/// `values[i]` is its motion variable in SI units (metres for prismatic,
+/// radians for revolute; for coupling, in the parent's input coordinate —
+/// the coupling's `transform_at` arm wraps it via the parent kind's helper;
+/// for fixed (0-DOF), `values[i]` is ignored and the joint contributes an
+/// identity Transform to the composition).
 ///
 /// Composition is left-to-right: `T_total = T_0 * T_1 * ... * T_{n-1}`,
 /// matching the semantics of nesting joints from base outward.  Returns
