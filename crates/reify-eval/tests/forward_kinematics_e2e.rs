@@ -168,14 +168,10 @@ fn forward_kinematics_two_link_chain_e2e() {
     let half = std::f64::consts::FRAC_PI_8;
     let qw = half.cos();
     let qz = half.sin();
-    let matches_pos = (rw - qw).abs() < 1e-6
-        && rx.abs() < 1e-6
-        && ry.abs() < 1e-6
-        && (rz - qz).abs() < 1e-6;
-    let matches_neg = (rw + qw).abs() < 1e-6
-        && rx.abs() < 1e-6
-        && ry.abs() < 1e-6
-        && (rz + qz).abs() < 1e-6;
+    let matches_pos =
+        (rw - qw).abs() < 1e-6 && rx.abs() < 1e-6 && ry.abs() < 1e-6 && (rz - qz).abs() < 1e-6;
+    let matches_neg =
+        (rw + qw).abs() < 1e-6 && rx.abs() < 1e-6 && ry.abs() < 1e-6 && (rz + qz).abs() < 1e-6;
     assert!(
         matches_pos || matches_neg,
         "t_b rotation should be quaternion(R_z(π/4)) ≈ ({qw}, 0, 0, {qz}) up to sign, \

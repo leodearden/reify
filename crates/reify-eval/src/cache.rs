@@ -614,9 +614,7 @@ impl CacheStore {
     /// forwarders); only Pending entries written via
     /// [`CacheStore::mark_pending_with_cause`] populate this field.
     pub fn pending_cause(&self, node: &NodeId) -> Option<NodeId> {
-        self.caches
-            .get(node)
-            .and_then(|e| e.pending_cause.clone())
+        self.caches.get(node).and_then(|e| e.pending_cause.clone())
     }
 
     /// Canonical reader for cache freshness.
@@ -671,7 +669,10 @@ impl CacheStore {
     #[must_use = "set_freshness returns false when the node is absent; check or explicitly discard"]
     pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
         assert!(
-            !matches!(freshness, Freshness::Pending { .. } | Freshness::Failed { .. }),
+            !matches!(
+                freshness,
+                Freshness::Pending { .. } | Freshness::Failed { .. }
+            ),
             "set_freshness must not be passed Pending or Failed; use mark_pending/mark_pending_with_cause or mark_failed instead"
         );
         if let Some(entry) = self.caches.get_mut(node) {
@@ -754,7 +755,8 @@ impl CacheStore {
         still_refining: bool,
         generation: u64,
     ) -> Freshness {
-        let (f, _) = self.derive_output_freshness_from_trace_with_cause(trace, still_refining, generation);
+        let (f, _) =
+            self.derive_output_freshness_from_trace_with_cause(trace, still_refining, generation);
         f
     }
 
@@ -780,7 +782,8 @@ impl CacheStore {
         still_refining: bool,
         generation: u64,
     ) -> Freshness {
-        let (f, _) = self.derive_output_freshness_for_node_with_cause(node_id, still_refining, generation);
+        let (f, _) =
+            self.derive_output_freshness_for_node_with_cause(node_id, still_refining, generation);
         f
     }
 
@@ -939,11 +942,15 @@ pub fn derive_output_freshness(
     }
     // §9.2 carve-out: Failed input → Pending output (chain handled at the _with_cause layer).
     if saw_failed {
-        return Freshness::Pending { last_substantive: ResultRef::none() };
+        return Freshness::Pending {
+            last_substantive: ResultRef::none(),
+        };
     }
     // §7.2 line 748: Pending input → Pending output (chain forwarded at _with_cause layer).
     if saw_pending {
-        return Freshness::Pending { last_substantive: ResultRef::none() };
+        return Freshness::Pending {
+            last_substantive: ResultRef::none(),
+        };
     }
     // §7.2 main rule: Intermediate input → Intermediate output.
     if saw_intermediate {
@@ -1005,7 +1012,9 @@ pub fn derive_output_freshness_with_cause(
     // §9.2 carve-out: any Failed input → Pending output, with Failed NodeId as chain root.
     if let Some(cause) = failed_cause {
         return (
-            Freshness::Pending { last_substantive: ResultRef::none() },
+            Freshness::Pending {
+                last_substantive: ResultRef::none(),
+            },
             Some(cause),
         );
     }
@@ -1014,7 +1023,9 @@ pub fn derive_output_freshness_with_cause(
     // `(Pending, None)` (sentinel for "chain incomplete").
     if saw_pending {
         return (
-            Freshness::Pending { last_substantive: ResultRef::none() },
+            Freshness::Pending {
+                last_substantive: ResultRef::none(),
+            },
             pending_cause,
         );
     }
@@ -2637,8 +2648,7 @@ mod tests {
         );
 
         // (b) The entry must accept warm state donation (entry exists → donate returns true).
-        let donated =
-            store.donate_warm_state(&node, reify_types::OpaqueState::new(0xBEEFu32, 8));
+        let donated = store.donate_warm_state(&node, reify_types::OpaqueState::new(0xBEEFu32, 8));
         assert!(
             donated,
             "donate_warm_state must return true for the synthetic realization entry"
@@ -2791,10 +2801,7 @@ mod tests {
         );
 
         // Row 2: still_refining=true, some input non-Final → Intermediate
-        let inputs_with_non_final = [
-            Freshness::Final,
-            Freshness::Intermediate { generation: 3 },
-        ];
+        let inputs_with_non_final = [Freshness::Final, Freshness::Intermediate { generation: 3 }];
         assert_eq!(
             derive_output_freshness(true, inputs_with_non_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
@@ -2850,7 +2857,11 @@ mod tests {
             DependencyTrace::default(),
             Freshness::Intermediate { generation: 5 },
         );
-        assert_eq!(outcome1, EvalOutcome::Changed, "cold start must return Changed");
+        assert_eq!(
+            outcome1,
+            EvalOutcome::Changed,
+            "cold start must return Changed"
+        );
         assert_eq!(
             store.freshness(&node),
             Freshness::Intermediate { generation: 5 },
@@ -2936,11 +2947,8 @@ mod tests {
         );
 
         // Case 1: 'b' is Intermediate → output should be Intermediate{7}
-        let result = store.derive_output_freshness_for_node(
-            &NodeId::Value(out_id.clone()),
-            false,
-            7,
-        );
+        let result =
+            store.derive_output_freshness_for_node(&NodeId::Value(out_id.clone()), false, 7);
         assert_eq!(
             result,
             Freshness::Intermediate { generation: 7 },
@@ -2948,15 +2956,9 @@ mod tests {
         );
 
         // Case 2: make 'b' Final → output should be Final
-        let _ = store.set_freshness(
-            &NodeId::Value(b_id.clone()),
-            Freshness::Final,
-        );
-        let result2 = store.derive_output_freshness_for_node(
-            &NodeId::Value(out_id.clone()),
-            false,
-            7,
-        );
+        let _ = store.set_freshness(&NodeId::Value(b_id.clone()), Freshness::Final);
+        let result2 =
+            store.derive_output_freshness_for_node(&NodeId::Value(out_id.clone()), false, 7);
         assert_eq!(
             result2,
             Freshness::Final,
@@ -2979,7 +2981,11 @@ mod tests {
 
         // Intermediate input → Intermediate output (§7.2 unchanged for this row).
         assert_eq!(
-            derive_output_freshness(false, [Freshness::Intermediate { generation: 0 }].into_iter(), g),
+            derive_output_freshness(
+                false,
+                [Freshness::Intermediate { generation: 0 }].into_iter(),
+                g
+            ),
             Freshness::Intermediate { generation: g },
             "Intermediate input must yield Intermediate output"
         );
@@ -2987,15 +2993,33 @@ mod tests {
         // Pending input → Pending output (§7.2 line 748 + §9.2 line 890 carve-out).
         // Chain forwarding is at the `_with_cause` layer; the pure helper drops the chain.
         assert_eq!(
-            derive_output_freshness(false, [Freshness::Pending { last_substantive: ResultRef::none() }].into_iter(), g),
-            Freshness::Pending { last_substantive: ResultRef::none() },
+            derive_output_freshness(
+                false,
+                [Freshness::Pending {
+                    last_substantive: ResultRef::none()
+                }]
+                .into_iter(),
+                g
+            ),
+            Freshness::Pending {
+                last_substantive: ResultRef::none()
+            },
             "Pending input must yield Pending output per §7.2 line 748 (downstream subtree quieted)"
         );
 
         // Failed input → Pending output (§9.2 line 890 carve-out).
         assert_eq!(
-            derive_output_freshness(false, [Freshness::Failed { error: ErrorRef::new("type mismatch") }].into_iter(), g),
-            Freshness::Pending { last_substantive: ResultRef::none() },
+            derive_output_freshness(
+                false,
+                [Freshness::Failed {
+                    error: ErrorRef::new("type mismatch")
+                }]
+                .into_iter(),
+                g
+            ),
+            Freshness::Pending {
+                last_substantive: ResultRef::none()
+            },
             "Failed input must yield Pending output per §9.2 line 890 carve-out"
         );
     }
@@ -3016,14 +3040,18 @@ mod tests {
             false,
             [(
                 leaf.clone(),
-                Freshness::Failed { error: ErrorRef::new("boom") },
+                Freshness::Failed {
+                    error: ErrorRef::new("boom"),
+                },
                 None,
             )],
             g,
         );
         assert_eq!(
             fresh,
-            Freshness::Pending { last_substantive: ResultRef::none() },
+            Freshness::Pending {
+                last_substantive: ResultRef::none()
+            },
             "Failed input must yield Pending output per §9.2"
         );
         assert_eq!(
@@ -3038,7 +3066,9 @@ mod tests {
             false,
             [(
                 mid.clone(),
-                Freshness::Pending { last_substantive: ResultRef::none() },
+                Freshness::Pending {
+                    last_substantive: ResultRef::none(),
+                },
                 Some(leaf.clone()),
             )],
             g,
@@ -3054,12 +3084,13 @@ mod tests {
         );
 
         // (c) All-Final inputs → (Final, None)
-        let (fresh3, cause3) = derive_output_freshness_with_cause(
-            false,
-            [(leaf.clone(), Freshness::Final, None)],
-            g,
+        let (fresh3, cause3) =
+            derive_output_freshness_with_cause(false, [(leaf.clone(), Freshness::Final, None)], g);
+        assert_eq!(
+            fresh3,
+            Freshness::Final,
+            "All-Final inputs must yield Final"
         );
-        assert_eq!(fresh3, Freshness::Final, "All-Final inputs must yield Final");
         assert_eq!(cause3, None, "All-Final inputs have no chain cause");
     }
 
@@ -3097,7 +3128,9 @@ mod tests {
         );
 
         // A trace that only reads `a` (Final) → should yield Final
-        let trace_a_only = DependencyTrace { reads: vec![a_id.clone()] };
+        let trace_a_only = DependencyTrace {
+            reads: vec![a_id.clone()],
+        };
         assert_eq!(
             store.derive_output_freshness_from_trace(&trace_a_only, false, 7),
             Freshness::Final,
@@ -3105,7 +3138,9 @@ mod tests {
         );
 
         // A trace that reads `b` (Intermediate) → should yield Intermediate
-        let trace_b_only = DependencyTrace { reads: vec![b_id.clone()] };
+        let trace_b_only = DependencyTrace {
+            reads: vec![b_id.clone()],
+        };
         assert_eq!(
             store.derive_output_freshness_from_trace(&trace_b_only, false, 7),
             Freshness::Intermediate { generation: 7 },
@@ -3135,7 +3170,9 @@ mod tests {
         let b_id = ValueCellId::new("T", "b");
 
         // Cold-start: trace reads `a`
-        let trace_a = DependencyTrace { reads: vec![a_id.clone()] };
+        let trace_a = DependencyTrace {
+            reads: vec![a_id.clone()],
+        };
         store.record_evaluation_with_freshness(
             node.clone(),
             CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
@@ -3150,7 +3187,9 @@ mod tests {
         );
 
         // Early cutoff: same hash, but different trace (reads `b` now)
-        let trace_b = DependencyTrace { reads: vec![b_id.clone()] };
+        let trace_b = DependencyTrace {
+            reads: vec![b_id.clone()],
+        };
         let outcome = store.record_evaluation_with_freshness(
             node.clone(),
             CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
@@ -3158,7 +3197,11 @@ mod tests {
             trace_b,
             Freshness::Final,
         );
-        assert_eq!(outcome, EvalOutcome::Unchanged, "same hash must trigger early cutoff");
+        assert_eq!(
+            outcome,
+            EvalOutcome::Unchanged,
+            "same hash must trigger early cutoff"
+        );
         // Early-cutoff path must still overwrite the trace with the newly supplied one
         assert_eq!(
             store.get(&node).unwrap().dependency_trace.reads,
@@ -3193,7 +3236,9 @@ mod tests {
 
         // Call record_evaluation_propagating_freshness with a trace that reads `a`.
         // version=7 → generation derived as version.0=7 per §7.1 (single source of truth).
-        let trace = DependencyTrace { reads: vec![a_id.clone()] };
+        let trace = DependencyTrace {
+            reads: vec![a_id.clone()],
+        };
         let out_node = NodeId::Value(out_id.clone());
         let outcome = store.record_evaluation_propagating_freshness(
             out_node.clone(),
@@ -3202,7 +3247,11 @@ mod tests {
             trace,
             false, // still_refining
         );
-        assert_eq!(outcome, EvalOutcome::Changed, "cold start must return Changed");
+        assert_eq!(
+            outcome,
+            EvalOutcome::Changed,
+            "cold start must return Changed"
+        );
         // Freshness must be derived from `a`'s Intermediate state → Intermediate{generation: 7}
         assert_eq!(
             store.freshness(&out_node),
@@ -3369,9 +3418,7 @@ mod tests {
 
         // Present entry → flips freshness, sets cause, bumps counter.
         store.put(mid_node.clone(), make_seed_entry());
-        let entry = store
-            .get(&mid_node)
-            .expect("seeded entry must be present");
+        let entry = store.get(&mid_node).expect("seeded entry must be present");
         let prev_hash = entry.result_hash;
 
         assert!(
@@ -3540,14 +3587,18 @@ mod tests {
         macro_rules! assert_agree {
             ($store:expr, $trace:expr, $sr:expr, $g:expr, $label:expr) => {{
                 let for_node = $store.derive_output_freshness_for_node(&out, $sr, $g);
-                let for_node_cause = $store.derive_output_freshness_for_node_with_cause(&out, $sr, $g).0;
+                let for_node_cause = $store
+                    .derive_output_freshness_for_node_with_cause(&out, $sr, $g)
+                    .0;
                 assert_eq!(
                     for_node, for_node_cause,
                     "derive_output_freshness_for_node vs _with_cause disagree for {}",
                     $label
                 );
                 let from_trace = $store.derive_output_freshness_from_trace($trace, $sr, $g);
-                let from_trace_cause = $store.derive_output_freshness_from_trace_with_cause($trace, $sr, $g).0;
+                let from_trace_cause = $store
+                    .derive_output_freshness_from_trace_with_cause($trace, $sr, $g)
+                    .0;
                 assert_eq!(
                     from_trace, from_trace_cause,
                     "derive_output_freshness_from_trace vs _with_cause disagree for {}",
@@ -3559,7 +3610,9 @@ mod tests {
         // Row 1: all-Final (simplest path through the classifier)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            let trace = DependencyTrace {
+                reads: vec![a_id.clone(), b_id.clone()],
+            };
             assert_agree!(store, &trace, sr, g, "all-Final");
         }
 
@@ -3567,25 +3620,28 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_pending(&NodeId::Value(b_id.clone()));
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            let trace = DependencyTrace {
+                reads: vec![a_id.clone(), b_id.clone()],
+            };
             assert_agree!(store, &trace, sr, g, "one-Pending");
         }
 
         // Row 3: Failed input (exercises §9.2 carve-out — most likely divergence point)
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
-            store.mark_failed(
-                &NodeId::Value(b_id.clone()),
-                ErrorRef::new("x"),
-            );
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("x"));
+            let trace = DependencyTrace {
+                reads: vec![a_id.clone(), b_id.clone()],
+            };
             assert_agree!(store, &trace, sr, g, "one-Failed");
         }
 
         // Row 4: still_refining=true (exercises the Pending-when-still-refining branch)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            let trace = DependencyTrace {
+                reads: vec![a_id.clone(), b_id.clone()],
+            };
             assert_agree!(store, &trace, true, g, "all-Final-still-refining");
         }
     }

@@ -33,9 +33,9 @@
 //!   needed in the donation/checkout path).
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::warm_pool::WarmStatePool;
-use reify_eval::Engine;
 use reify_test_support::{bracket_compiled_module, parse_and_compile};
 use reify_types::{OpaqueState, RealizationNodeId, ValueCellId};
 
@@ -127,9 +127,8 @@ fn edit_source_donates_warm_state_for_removed_value_cell() {
 
     // (6) checkout(volume) returns the originally-donated payload (downcast equality).
     let checked_out = engine.warm_pool_mut().checkout(&volume_node);
-    let state = checked_out.expect(
-        "warm_pool.checkout must return Some for the donated cell after edit_source",
-    );
+    let state = checked_out
+        .expect("warm_pool.checkout must return Some for the donated cell after edit_source");
     assert_eq!(
         state.downcast::<u32>(),
         Some(0xDEADBEEFu32),
@@ -185,9 +184,10 @@ fn donation_reuse_remove_then_reappear_seeds_cache_warm_state() {
     let entry = cache.get(&volume_node).expect(
         "after edit_source re-adds `volume`, its cache entry must exist (eval populated it)",
     );
-    let warm = entry.warm_state.as_ref().expect(
-        "post-checkout-and-seed cache entry must carry the donated warm_state",
-    );
+    let warm = entry
+        .warm_state
+        .as_ref()
+        .expect("post-checkout-and-seed cache entry must carry the donated warm_state");
     assert_eq!(
         warm.downcast_ref::<u32>().copied(),
         Some(0xDEADBEEFu32),

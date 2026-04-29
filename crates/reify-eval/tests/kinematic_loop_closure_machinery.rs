@@ -97,8 +97,6 @@ fn loop_closure_machinery_solves_single_prismatic_loop_e2e() {
                 cfg.tol_pos_m * 2.0
             );
         }
-        other => panic!(
-            "expected Converged on single-prismatic loop closure, got {other:?}"
-        ),
+        other => panic!("expected Converged on single-prismatic loop closure, got {other:?}"),
     }
 }

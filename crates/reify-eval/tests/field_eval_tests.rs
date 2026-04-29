@@ -318,9 +318,7 @@ structure def S {
     }
 
     let (pre_a, pre_b, pre_f1, pre_f2) = {
-        let snapshot = engine
-            .snapshot()
-            .expect("snapshot should exist after eval");
+        let snapshot = engine.snapshot().expect("snapshot should exist after eval");
         (
             extract_lambda_arc(snapshot, &composed_a_id),
             extract_lambda_arc(snapshot, &composed_b_id),
@@ -340,9 +338,7 @@ structure def S {
         .expect("edit_param(S.k) should succeed");
 
     let (post_a, post_b, post_f1, post_f2) = {
-        let snapshot = engine
-            .snapshot()
-            .expect("snapshot should exist after edit");
+        let snapshot = engine.snapshot().expect("snapshot should exist after edit");
         (
             extract_lambda_arc(snapshot, &composed_a_id),
             extract_lambda_arc(snapshot, &composed_b_id),

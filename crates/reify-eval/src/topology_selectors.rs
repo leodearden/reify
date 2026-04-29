@@ -192,10 +192,16 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     max_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
-    filter_by_value(kernel, &edges, "edges_by_length", GeometryQuery::EdgeLength, |id, value| {
-        let len = expect_real("EdgeLength", id, value)?;
-        Ok(len >= min_m && len <= max_m)
-    })
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_by_length",
+        GeometryQuery::EdgeLength,
+        |id, value| {
+            let len = expect_real("EdgeLength", id, value)?;
+            Ok(len >= min_m && len <= max_m)
+        },
+    )
 }
 
 /// Return the subset of `extract_edges(parent_handle)` whose length lies in
@@ -231,10 +237,16 @@ pub fn edges_by_length_with_tags<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(parent_handle)?;
     record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(kernel, &edges, "edges_by_length_with_tags", GeometryQuery::EdgeLength, |id, value| {
-        let len = expect_real("EdgeLength", id, value)?;
-        Ok(len >= min_m && len <= max_m)
-    })
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_by_length_with_tags",
+        GeometryQuery::EdgeLength,
+        |id, value| {
+            let len = expect_real("EdgeLength", id, value)?;
+            Ok(len >= min_m && len <= max_m)
+        },
+    )
 }
 
 /// Return the subset of `extract_faces(handle)` whose surface area lies in
@@ -257,10 +269,16 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
-    filter_by_value(kernel, &faces, "faces_by_area", GeometryQuery::SurfaceArea, |id, value| {
-        let area = expect_real("SurfaceArea", id, value)?;
-        Ok(area >= min_m2 && area <= max_m2)
-    })
+    filter_by_value(
+        kernel,
+        &faces,
+        "faces_by_area",
+        GeometryQuery::SurfaceArea,
+        |id, value| {
+            let area = expect_real("SurfaceArea", id, value)?;
+            Ok(area >= min_m2 && area <= max_m2)
+        },
+    )
 }
 
 /// Return the subset of `extract_faces(parent_handle)` whose surface area lies
@@ -298,10 +316,16 @@ pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(parent_handle)?;
     record_subshape_tags(table, &faces, parent_tag);
-    filter_by_value(kernel, &faces, "faces_by_area_with_tags", GeometryQuery::SurfaceArea, |id, value| {
-        let area = expect_real("SurfaceArea", id, value)?;
-        Ok(area >= min_m2 && area <= max_m2)
-    })
+    filter_by_value(
+        kernel,
+        &faces,
+        "faces_by_area_with_tags",
+        GeometryQuery::SurfaceArea,
+        |id, value| {
+            let area = expect_real("SurfaceArea", id, value)?;
+            Ok(area >= min_m2 && area <= max_m2)
+        },
+    )
 }
 
 /// Parse a `Value::String` that the kernel formatted as JSON
@@ -444,18 +468,24 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         )
     })?;
     let faces = kernel.extract_faces(handle)?;
-    filter_by_value(kernel, &faces, "faces_by_normal", GeometryQuery::FaceNormal, |id, value| {
-        let raw = parse_xyz_value(value, "FaceNormal")?;
-        let normal = normalize3(raw).ok_or_else(|| {
-            QueryError::QueryFailed(format!(
-                "FaceNormal({:?}) returned a degenerate (near-zero) normal",
-                id
-            ))
-        })?;
-        let cos = dot3(normal, target).clamp(-1.0, 1.0);
-        let angle = cos.acos();
-        Ok(angle <= angular_tol_rad)
-    })
+    filter_by_value(
+        kernel,
+        &faces,
+        "faces_by_normal",
+        GeometryQuery::FaceNormal,
+        |id, value| {
+            let raw = parse_xyz_value(value, "FaceNormal")?;
+            let normal = normalize3(raw).ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                    id
+                ))
+            })?;
+            let cos = dot3(normal, target).clamp(-1.0, 1.0);
+            let angle = cos.acos();
+            Ok(angle <= angular_tol_rad)
+        },
+    )
 }
 
 /// Return the subset of `extract_edges(handle)` whose midpoint tangent is
@@ -497,16 +527,22 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     // we use |cos|.
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
-    filter_by_value(kernel, &edges, "edges_parallel_to", GeometryQuery::EdgeTangent, |id, value| {
-        let raw = parse_xyz_value(value, "EdgeTangent")?;
-        let tan = normalize3(raw).ok_or_else(|| {
-            QueryError::QueryFailed(format!(
-                "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
-                id
-            ))
-        })?;
-        Ok(dot3(tan, axis).abs() >= cos_tol)
-    })
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_parallel_to",
+        GeometryQuery::EdgeTangent,
+        |id, value| {
+            let raw = parse_xyz_value(value, "EdgeTangent")?;
+            let tan = normalize3(raw).ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
+                    id
+                ))
+            })?;
+            Ok(dot3(tan, axis).abs() >= cos_tol)
+        },
+    )
 }
 
 /// Return the subset of `extract_edges(parent_handle)` whose midpoint tangent
@@ -558,16 +594,22 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(parent_handle)?;
     record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(kernel, &edges, "edges_parallel_to_with_tags", GeometryQuery::EdgeTangent, |id, value| {
-        let raw = parse_xyz_value(value, "EdgeTangent")?;
-        let tan = normalize3(raw).ok_or_else(|| {
-            QueryError::QueryFailed(format!(
-                "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
-                id
-            ))
-        })?;
-        Ok(dot3(tan, axis).abs() >= cos_tol)
-    })
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_parallel_to_with_tags",
+        GeometryQuery::EdgeTangent,
+        |id, value| {
+            let raw = parse_xyz_value(value, "EdgeTangent")?;
+            let tan = normalize3(raw).ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
+                    id
+                ))
+            })?;
+            Ok(dot3(tan, axis).abs() >= cos_tol)
+        },
+    )
 }
 
 /// Return the subset of `extract_edges(handle)` that lie entirely within
@@ -596,10 +638,16 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
     tol_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
-    filter_by_value(kernel, &edges, "edges_at_height", GeometryQuery::BoundingBox, |_id, value| {
-        let (zmin, zmax) = parse_bbox_z_extents(value)?;
-        Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
-    })
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_at_height",
+        GeometryQuery::BoundingBox,
+        |_id, value| {
+            let (zmin, zmax) = parse_bbox_z_extents(value)?;
+            Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
+        },
+    )
 }
 
 /// Return the subset of `extract_edges(parent_handle)` that lie entirely within
@@ -630,10 +678,16 @@ pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(parent_handle)?;
     record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(kernel, &edges, "edges_at_height_with_tags", GeometryQuery::BoundingBox, |_id, value| {
-        let (zmin, zmax) = parse_bbox_z_extents(value)?;
-        Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
-    })
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_at_height_with_tags",
+        GeometryQuery::BoundingBox,
+        |_id, value| {
+            let (zmin, zmax) = parse_bbox_z_extents(value)?;
+            Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
+        },
+    )
 }
 
 /// Resolve a `FeatureTag` to a unique candidate geometry handle.
@@ -843,10 +897,7 @@ mod tests {
     }
 
     impl GeometryKernel for CountingKernel {
-        fn execute(
-            &mut self,
-            _op: &GeometryOp,
-        ) -> Result<GeometryHandle, GeometryError> {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
             unimplemented!("CountingKernel does not implement execute")
         }
 
@@ -855,10 +906,7 @@ mod tests {
             self.lookup(query)
         }
 
-        fn query_many(
-            &self,
-            queries: &[GeometryQuery],
-        ) -> Result<Vec<Value>, QueryError> {
+        fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
             self.query_many_calls.fetch_add(1, Ordering::SeqCst);
             // Look up directly from the staged responses so per-element
             // `query` is *not* called — the assertion `query_calls == 0`
@@ -949,21 +997,22 @@ mod tests {
         ];
         let mut kernel = CountingKernel::new()
             .with_faces(face_ids.clone())
-            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
-            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(
+                face_ids[0],
+                Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()),
+            )
+            .with_response(
+                face_ids[1],
+                Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()),
+            )
             .with_response(
                 face_ids[2],
                 Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()),
             );
 
         let source = GeometryHandleId(1);
-        let result = faces_by_normal(
-            &mut kernel,
-            source,
-            [0.0, 0.0, 1.0],
-            1f64.to_radians(),
-        )
-        .expect("selector should succeed");
+        let result = faces_by_normal(&mut kernel, source, [0.0, 0.0, 1.0], 1f64.to_radians())
+            .expect("selector should succeed");
 
         assert_eq!(result, vec![face_ids[0]], "expected only the +Z face");
         assert_eq!(
@@ -990,21 +1039,22 @@ mod tests {
         ];
         let mut kernel = CountingKernel::new()
             .with_edges(edge_ids.clone())
-            .with_response(edge_ids[0], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(
+                edge_ids[0],
+                Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()),
+            )
             .with_response(
                 edge_ids[1],
                 Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()),
             )
-            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+            .with_response(
+                edge_ids[2],
+                Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()),
+            );
 
         let source = GeometryHandleId(1);
-        let result = edges_parallel_to(
-            &mut kernel,
-            source,
-            [1.0, 0.0, 0.0],
-            1f64.to_radians(),
-        )
-        .expect("selector should succeed");
+        let result = edges_parallel_to(&mut kernel, source, [1.0, 0.0, 0.0], 1f64.to_radians())
+            .expect("selector should succeed");
 
         assert_eq!(
             result,
@@ -1040,10 +1090,14 @@ mod tests {
             .with_response(face_ids[2], Value::Real(600e-6));
 
         let source = GeometryHandleId(1);
-        let result = faces_by_area(&mut kernel, source, 199e-6, 201e-6)
-            .expect("selector should succeed");
+        let result =
+            faces_by_area(&mut kernel, source, 199e-6, 201e-6).expect("selector should succeed");
 
-        assert_eq!(result, vec![face_ids[0]], "expected only the 200e-6 m^2 face");
+        assert_eq!(
+            result,
+            vec![face_ids[0]],
+            "expected only the 200e-6 m^2 face"
+        );
         assert_eq!(
             kernel.query_many_calls(),
             1,
@@ -1123,10 +1177,7 @@ mod tests {
     }
 
     impl GeometryKernel for FixedReplyQueryManyKernel {
-        fn execute(
-            &mut self,
-            _op: &GeometryOp,
-        ) -> Result<GeometryHandle, GeometryError> {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
             unimplemented!("FixedReplyQueryManyKernel does not implement execute")
         }
 
@@ -1134,10 +1185,7 @@ mod tests {
             unimplemented!("FixedReplyQueryManyKernel only supports query_many")
         }
 
-        fn query_many(
-            &self,
-            _queries: &[GeometryQuery],
-        ) -> Result<Vec<Value>, QueryError> {
+        fn query_many(&self, _queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
             Ok(self.canned_reply.clone())
         }
 
@@ -1235,13 +1283,9 @@ mod tests {
             .with_response(edge_ids[1], Value::Real(0.002))
             .with_response(edge_ids[2], Value::Real(0.003));
 
-        let values = query_per_subshape(
-            &kernel,
-            &edge_ids,
-            "test_label",
-            GeometryQuery::EdgeLength,
-        )
-        .expect("query_per_subshape should succeed");
+        let values =
+            query_per_subshape(&kernel, &edge_ids, "test_label", GeometryQuery::EdgeLength)
+                .expect("query_per_subshape should succeed");
 
         assert_eq!(
             values,
@@ -1275,13 +1319,8 @@ mod tests {
             canned_reply: vec![Value::Real(0.001), Value::Real(0.002)],
         };
 
-        let err = query_per_subshape(
-            &kernel,
-            &edge_ids,
-            "my_selector",
-            GeometryQuery::EdgeLength,
-        )
-        .expect_err("query_per_subshape must reject length-mismatched query_many output");
+        let err = query_per_subshape(&kernel, &edge_ids, "my_selector", GeometryQuery::EdgeLength)
+            .expect_err("query_per_subshape must reject length-mismatched query_many output");
 
         match err {
             QueryError::QueryFailed(msg) => {
@@ -1331,9 +1370,21 @@ mod tests {
         let id3 = GeometryHandleId(3);
 
         let shared_span = SourceSpan::new(0, 10);
-        let tag1 = FeatureTag { source_span: shared_span, step_kind: StepKind::Primitive, sub_index: 0 };
-        let tag2 = FeatureTag { source_span: shared_span, step_kind: StepKind::Primitive, sub_index: 1 };
-        let tag3 = FeatureTag { source_span: shared_span, step_kind: StepKind::Primitive, sub_index: 2 };
+        let tag1 = FeatureTag {
+            source_span: shared_span,
+            step_kind: StepKind::Primitive,
+            sub_index: 0,
+        };
+        let tag2 = FeatureTag {
+            source_span: shared_span,
+            step_kind: StepKind::Primitive,
+            sub_index: 1,
+        };
+        let tag3 = FeatureTag {
+            source_span: shared_span,
+            step_kind: StepKind::Primitive,
+            sub_index: 2,
+        };
 
         let mut table = FeatureTagTable::default();
         table.record(id1, tag1);
@@ -1342,10 +1393,23 @@ mod tests {
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let selector_span = SourceSpan::new(10, 20);
-        let result = resolve_unique_by_tag(&table, &[id1, id2, id3], tag2, selector_span, &mut diagnostics);
+        let result = resolve_unique_by_tag(
+            &table,
+            &[id1, id2, id3],
+            tag2,
+            selector_span,
+            &mut diagnostics,
+        );
 
-        assert_eq!(result, Some(id2), "should return the uniquely-matching handle");
-        assert!(diagnostics.is_empty(), "no diagnostics on a clean unique match");
+        assert_eq!(
+            result,
+            Some(id2),
+            "should return the uniquely-matching handle"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics on a clean unique match"
+        );
     }
 
     /// Zero-match path: no candidates carry the target tag.
@@ -1362,26 +1426,52 @@ mod tests {
 
         // Both handles carry a non-target tag (sub_index differs from target).
         let tag_source_span = SourceSpan::new(100, 110);
-        let tag1 = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Boolean, sub_index: 5 };
-        let tag2 = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Boolean, sub_index: 6 };
+        let tag1 = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Boolean,
+            sub_index: 5,
+        };
+        let tag2 = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Boolean,
+            sub_index: 6,
+        };
 
         let mut table = FeatureTagTable::default();
         table.record(id1, tag1);
         table.record(id2, tag2);
 
         // Target tag is distinct from both (sub_index 99 not present).
-        let target_tag = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Boolean, sub_index: 99 };
+        let target_tag = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Boolean,
+            sub_index: 99,
+        };
         let selector_span = SourceSpan::new(200, 210);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = resolve_unique_by_tag(&table, &[id1, id2], target_tag, selector_span, &mut diagnostics);
+        let result = resolve_unique_by_tag(
+            &table,
+            &[id1, id2],
+            target_tag,
+            selector_span,
+            &mut diagnostics,
+        );
 
         assert!(result.is_none(), "zero matches should return None");
-        assert_eq!(diagnostics.len(), 1, "exactly one diagnostic on zero matches");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "exactly one diagnostic on zero matches"
+        );
 
         let diag = &diagnostics[0];
         assert_eq!(diag.severity, Severity::Warning, "should be a warning");
-        assert_eq!(diag.code, Some(DiagnosticCode::TopologyTagStale), "must carry TopologyTagStale code");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::TopologyTagStale),
+            "must carry TopologyTagStale code"
+        );
         assert!(
             diag.message.contains("matched 0 "),
             "message should contain 'matched 0 ' to pin the exact count, got: {:?}",
@@ -1412,7 +1502,11 @@ mod tests {
 
         // All three handles carry the SAME target tag — ambiguous split scenario.
         let tag_source_span = SourceSpan::new(50, 60);
-        let target_tag = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Sweep, sub_index: 7 };
+        let target_tag = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Sweep,
+            sub_index: 7,
+        };
 
         let mut table = FeatureTagTable::default();
         table.record(id1, target_tag);
@@ -1421,14 +1515,28 @@ mod tests {
 
         let selector_span = SourceSpan::new(300, 310);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = resolve_unique_by_tag(&table, &[id1, id2, id3], target_tag, selector_span, &mut diagnostics);
+        let result = resolve_unique_by_tag(
+            &table,
+            &[id1, id2, id3],
+            target_tag,
+            selector_span,
+            &mut diagnostics,
+        );
 
         assert!(result.is_none(), "multiple matches should return None");
-        assert_eq!(diagnostics.len(), 1, "must fire exactly one diagnostic regardless of match count");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "must fire exactly one diagnostic regardless of match count"
+        );
 
         let diag = &diagnostics[0];
         assert_eq!(diag.severity, Severity::Warning, "should be a warning");
-        assert_eq!(diag.code, Some(DiagnosticCode::TopologyTagStale), "must carry TopologyTagStale code");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::TopologyTagStale),
+            "must carry TopologyTagStale code"
+        );
         assert!(
             diag.message.contains("matched 3 "),
             "message must contain 'matched 3 ' to pin the exact count, got: {:?}",
@@ -1459,7 +1567,11 @@ mod tests {
         let id1 = GeometryHandleId(50);
 
         let tag_source_span = SourceSpan::new(400, 410);
-        let target_tag = FeatureTag { source_span: tag_source_span, step_kind: StepKind::Primitive, sub_index: 0 };
+        let target_tag = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Primitive,
+            sub_index: 0,
+        };
 
         let mut table = FeatureTagTable::default();
         table.record(id1, target_tag);
@@ -1469,7 +1581,13 @@ mod tests {
 
         // Pass the SAME id three times — an unguarded resolver would count n=3 and
         // emit a spurious W_TOPOLOGY_TAG_STALE warning instead of returning Some(id1).
-        let result = resolve_unique_by_tag(&table, &[id1, id1, id1], target_tag, selector_span, &mut diagnostics);
+        let result = resolve_unique_by_tag(
+            &table,
+            &[id1, id1, id1],
+            target_tag,
+            selector_span,
+            &mut diagnostics,
+        );
 
         assert_eq!(
             result,
@@ -1632,10 +1750,16 @@ mod tests {
         let id_nomatch = GeometryHandleId(200);
 
         let tag_source_span = SourceSpan::new(600, 620);
-        let target_tag =
-            FeatureTag { source_span: tag_source_span, step_kind: StepKind::Primitive, sub_index: 0 };
-        let other_tag =
-            FeatureTag { source_span: tag_source_span, step_kind: StepKind::Primitive, sub_index: 1 };
+        let target_tag = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Primitive,
+            sub_index: 0,
+        };
+        let other_tag = FeatureTag {
+            source_span: tag_source_span,
+            step_kind: StepKind::Primitive,
+            sub_index: 1,
+        };
 
         let mut table = FeatureTagTable::default();
         table.record(id_match, target_tag);

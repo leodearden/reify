@@ -45,8 +45,8 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 /// Build an `Engine` with the constraint checker and a mock kernel
 /// that returns `Value::Bool(reply)` for any handle-id query.
 fn engine_with_mock_kernel(reply: bool) -> Engine {
-    let kernel = MockGeometryKernel::new()
-        .with_query_result(GeometryHandleId(1), Value::Bool(reply));
+    let kernel =
+        MockGeometryKernel::new().with_query_result(GeometryHandleId(1), Value::Bool(reply));
     let checker = reify_constraints::SimpleConstraintChecker;
     Engine::new(Box::new(checker), Some(Box::new(kernel)))
 }
@@ -61,8 +61,7 @@ fn engine_with_mock_kernel(reply: bool) -> Engine {
 /// no kernel access.
 #[test]
 fn is_watertight_let_resolves_to_bool_true_via_kernel_reply() {
-    let source =
-        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(body)\n}";
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(body)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(true);
 
@@ -82,8 +81,7 @@ fn is_watertight_let_resolves_to_bool_true_via_kernel_reply() {
 /// shape with `let manifold = is_manifold(body)` instead.
 #[test]
 fn is_manifold_let_resolves_to_bool_true_via_kernel_reply() {
-    let source =
-        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let manifold = is_manifold(body)\n}";
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let manifold = is_manifold(body)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(true);
 
@@ -103,8 +101,7 @@ fn is_manifold_let_resolves_to_bool_true_via_kernel_reply() {
 /// shape with `let orientable = is_orientable(body)` instead.
 #[test]
 fn is_orientable_let_resolves_to_bool_true_via_kernel_reply() {
-    let source =
-        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let orientable = is_orientable(body)\n}";
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let orientable = is_orientable(body)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(true);
 
@@ -129,8 +126,7 @@ fn is_orientable_let_resolves_to_bool_true_via_kernel_reply() {
 /// through `engine_build.rs::post_process_conformance_queries`.
 #[test]
 fn is_watertight_let_honours_kernel_bool_false_reply() {
-    let source =
-        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(body)\n}";
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(body)\n}";
     let compiled = compile_no_errors(source);
     // No `: Watertight` bound on the structure, so the escape hatch is
     // skipped and the kernel's Bool(false) reply is honoured.
@@ -215,8 +211,7 @@ fn watertight_user_assertion_short_circuits_kernel_query() {
 /// degrade gracefully rather than crashing the build.
 #[test]
 fn is_watertight_with_literal_int_arg_falls_through_to_undef() {
-    let source =
-        "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(42)\n}";
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let watertight = is_watertight(42)\n}";
     let compiled = compile_no_errors(source);
     // Kernel is configured with Bool(true) — but the literal-arg guard in
     // `try_eval_conformance_query` must short-circuit to None *before* the
@@ -325,9 +320,7 @@ fn tessellate_realizations_honours_user_assertion_escape_hatch() {
 #[test]
 fn box_is_watertight_manifold_orientable_via_occt() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping box_is_watertight_manifold_orientable_via_occt: OCCT not available"
-        );
+        eprintln!("skipping box_is_watertight_manifold_orientable_via_occt: OCCT not available");
         return;
     }
     let source = "structure def Bracket {\n    \

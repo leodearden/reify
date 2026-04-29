@@ -165,7 +165,11 @@ fn faces_by_normal_exactly_aligned_face_at_zero_tolerance_is_accepted() {
 
     let result = topology_selectors::faces_by_normal(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0)
         .expect("faces_by_normal should succeed for aligned face");
-    assert_eq!(result, vec![face], "exactly-aligned face must be accepted at zero tolerance");
+    assert_eq!(
+        result,
+        vec![face],
+        "exactly-aligned face must be accepted at zero tolerance"
+    );
 }
 
 #[test]
@@ -245,8 +249,7 @@ fn faces_by_normal_returns_query_failed_when_normal_is_real() {
         .with_extracted_faces(parent, vec![f])
         .with_face_normal_result(f, Value::Real(1.0)); // intentionally wrong type
 
-    let result =
-        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
         "expected Err(QueryFailed) for non-string FaceNormal value, got {:?}",
@@ -270,9 +273,8 @@ fn edges_parallel_to_anti_parallel_tangent_is_accepted() {
         );
 
     // Target axis is +x with 0.1 rad tolerance; anti-parallel -x tangent is accepted.
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1)
-            .expect("edges_parallel_to should succeed");
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1)
+        .expect("edges_parallel_to should succeed");
     assert_eq!(
         result,
         vec![edge],
@@ -285,8 +287,7 @@ fn edges_parallel_to_zero_axis_returns_query_failed() {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
 
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [0.0, 0.0, 0.0], 0.1);
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [0.0, 0.0, 0.0], 0.1);
     match result {
         Err(QueryError::QueryFailed(msg)) => {
             assert!(
@@ -326,8 +327,7 @@ fn edges_parallel_to_returns_query_failed_when_tangent_is_real() {
         .with_extracted_edges(parent, vec![e])
         .with_edge_tangent_result(e, Value::Real(1.0)); // intentionally wrong type
 
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
         "expected Err(QueryFailed) for non-string EdgeTangent value, got {:?}",
@@ -368,9 +368,8 @@ fn edges_at_height_z_window_inclusive_at_endpoints() {
 
     // Full tolerance tol=0.005 — both boundary edges are exactly at distance
     // tol from the target plane, so the <= predicate must include them.
-    let all =
-        topology_selectors::edges_at_height(&mut kernel, parent, 0.005, 0.005)
-            .expect("edges_at_height should succeed with tol=0.005");
+    let all = topology_selectors::edges_at_height(&mut kernel, parent, 0.005, 0.005)
+        .expect("edges_at_height should succeed with tol=0.005");
     assert_eq!(
         all,
         vec![e_low, e_at_target, e_high],
@@ -379,9 +378,8 @@ fn edges_at_height_z_window_inclusive_at_endpoints() {
 
     // Tighter tolerance tol=0.0049 — boundary edges are now just outside the
     // window (0.005 > 0.0049) and only the on-target edge survives.
-    let at_target_only =
-        topology_selectors::edges_at_height(&mut kernel, parent, 0.005, 0.0049)
-            .expect("edges_at_height should succeed with tol=0.0049");
+    let at_target_only = topology_selectors::edges_at_height(&mut kernel, parent, 0.005, 0.0049)
+        .expect("edges_at_height should succeed with tol=0.0049");
     assert_eq!(
         at_target_only,
         vec![e_at_target],
@@ -447,8 +445,7 @@ fn faces_by_normal_malformed_json_returns_query_failed() {
         .with_extracted_faces(parent, vec![f])
         .with_face_normal_result(f, Value::String("not-valid-json".into()));
 
-    let result =
-        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
     match result {
         Err(QueryError::QueryFailed(msg)) => {
             assert!(
@@ -456,7 +453,10 @@ fn faces_by_normal_malformed_json_returns_query_failed() {
                 "error should mention malformed JSON or FaceNormal, got: {msg:?}"
             );
         }
-        other => panic!("expected Err(QueryFailed) for malformed JSON, got {:?}", other),
+        other => panic!(
+            "expected Err(QueryFailed) for malformed JSON, got {:?}",
+            other
+        ),
     }
 }
 
@@ -473,8 +473,7 @@ fn faces_by_normal_well_formed_xyz_missing_z_returns_query_failed() {
         .with_extracted_faces(parent, vec![f])
         .with_face_normal_result(f, Value::String("{\"x\":1.0,\"y\":0.0}".into()));
 
-    let result =
-        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
         "expected Err(QueryFailed) for missing-z face normal JSON, got {:?}",
@@ -492,13 +491,9 @@ fn faces_by_normal_degenerate_face_normal_returns_query_failed() {
 
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_faces(parent, vec![f])
-        .with_face_normal_result(
-            f,
-            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()),
-        );
+        .with_face_normal_result(f, Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()));
 
-    let result =
-        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
     match result {
         Err(QueryError::QueryFailed(msg)) => {
             assert!(
@@ -523,8 +518,7 @@ fn edges_parallel_to_malformed_tangent_json_returns_query_failed() {
         .with_extracted_edges(parent, vec![e])
         .with_edge_tangent_result(e, Value::String("{bad json}".into()));
 
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
     match result {
         Err(QueryError::QueryFailed(msg)) => {
             assert!(
@@ -552,8 +546,7 @@ fn edges_parallel_to_well_formed_xyz_missing_z_returns_query_failed() {
         .with_extracted_edges(parent, vec![e])
         .with_edge_tangent_result(e, Value::String("{\"x\":1.0,\"y\":0.0}".into()));
 
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
         "expected Err(QueryFailed) for missing-z edge tangent JSON, got {:?}",

@@ -126,10 +126,17 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     let b_snap_hash = b_snap.result_hash;
     let b_snap_value = match &b_snap.result {
         CachedResult::Value(v, _) => v.clone(),
-        other => panic!("expected b to hold CachedResult::Value after eval, got {:?}", other),
+        other => panic!(
+            "expected b to hold CachedResult::Value after eval, got {:?}",
+            other
+        ),
     };
     // Sanity check: b = a + c = 5.0 + 3.0 = 8.0.
-    assert_eq!(b_snap_value, Value::Real(8.0), "b must equal 8.0 after cold eval");
+    assert_eq!(
+        b_snap_value,
+        Value::Real(8.0),
+        "b must equal 8.0 after cold eval"
+    );
 
     // ── 2. Inject mixed-freshness state ────────────────────────────────────
     {
@@ -154,7 +161,9 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     // Verify injected state.
     assert_eq!(
         engine.cache_store().freshness(&b_node),
-        Freshness::Pending { last_substantive: reify_types::ResultRef::of_hash(b_snap_hash) },
+        Freshness::Pending {
+            last_substantive: reify_types::ResultRef::of_hash(b_snap_hash)
+        },
         "b must be Pending after injection"
     );
 
@@ -278,7 +287,10 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     );
     let b_after_value = match &b_after.result {
         CachedResult::Value(v, _) => v.clone(),
-        other => panic!("expected b to still hold CachedResult::Value, got {:?}", other),
+        other => panic!(
+            "expected b to still hold CachedResult::Value, got {:?}",
+            other
+        ),
     };
     assert_eq!(
         b_after_value, b_snap_value,

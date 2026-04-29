@@ -149,7 +149,9 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
         engine
             .cache_store()
             .derive_output_freshness_for_node(&b_node, false, g),
-        Freshness::Pending { last_substantive: ResultRef::none() },
+        Freshness::Pending {
+            last_substantive: ResultRef::none()
+        },
         "Row 5: still_refining=false, Pending input → Pending (arch §7.2 line 748: \
          Pending naturally quiets the downstream subtree)"
     );
@@ -161,14 +163,17 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
     // so the downstream subtree is naturally quieted. The chain root (the failing
     // NodeId) is recovered via `derive_output_freshness_for_node_with_cause`
     // (exercised in Row 7).
-    let _ = engine
-        .cache_store_mut()
-        .mark_failed(&NodeId::Value(a_id.clone()), ErrorRef::new("synthetic failure"));
+    let _ = engine.cache_store_mut().mark_failed(
+        &NodeId::Value(a_id.clone()),
+        ErrorRef::new("synthetic failure"),
+    );
     assert_eq!(
         engine
             .cache_store()
             .derive_output_freshness_for_node(&b_node, false, g),
-        Freshness::Pending { last_substantive: ResultRef::none() },
+        Freshness::Pending {
+            last_substantive: ResultRef::none()
+        },
         "Row 6: still_refining=false, Failed input → Pending (arch §9.2 line 890 carve-out: \
          downstream of Failed is Pending so the subtree is naturally quieted)"
     );
@@ -188,7 +193,9 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
         .derive_output_freshness_for_node_with_cause(&b_node, false, g);
     assert_eq!(
         fresh,
-        Freshness::Pending { last_substantive: ResultRef::none() },
+        Freshness::Pending {
+            last_substantive: ResultRef::none()
+        },
         "Row 7: Failed input must produce Pending output (parity with the pure helper)"
     );
     assert_eq!(

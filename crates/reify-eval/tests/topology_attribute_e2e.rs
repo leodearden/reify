@@ -34,8 +34,8 @@ use std::collections::{HashMap, HashSet};
 use reify_eval::propagate_attributes_via_brepalgoapi_history;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpParents, FeatureId, GeometryHandleId, GeometryOp,
-    RealizationNodeId, Role, TopologyAttribute, TopologyAttributeTable, Value,
+    BooleanOpParents, FeatureId, GeometryHandleId, GeometryOp, RealizationNodeId, Role,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.

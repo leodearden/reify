@@ -4,13 +4,13 @@ pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeRe
 pub mod demand;
 pub mod deps;
 pub mod dirty;
-pub mod freshness_walk;
-pub mod gating;
 mod engine_admin;
 mod engine_build;
 mod engine_constraints;
 mod engine_edit;
 mod engine_eval;
+pub mod freshness_walk;
+pub mod gating;
 #[doc(hidden)]
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
@@ -1264,9 +1264,9 @@ structure S {
         // The spy now holds the most-recent ResolutionProblem (eval, edit_param, or
         // resolve_concurrent_edit, depending on the trigger).
         let guard = captured.lock().unwrap();
-        let problem = guard.as_ref().unwrap_or_else(|| {
-            panic!("solver should have been called during {trigger_label}")
-        });
+        let problem = guard
+            .as_ref()
+            .unwrap_or_else(|| panic!("solver should have been called during {trigger_label}"));
 
         assert!(
             Arc::ptr_eq(&engine.functions, &problem.functions),
@@ -1319,24 +1319,21 @@ structure S {
     fn resolve_concurrent_edit_resolution_problem_shares_functions_arc_with_engine() {
         use reify_test_support::mm;
         use std::collections::{HashMap, HashSet};
-        assert_problem_shares_functions_arc(
-            "resolve_concurrent_edit",
-            |engine, limit_id| {
-                let setup = engine
-                    .prepare_concurrent_edit(limit_id, mm(3.0))
-                    .expect("prepare_concurrent_edit must succeed after eval");
-                let mut result = ConcurrentEditResult {
-                    values: setup.values.clone(),
-                    snapshot_values: setup.snapshot_values.clone(),
-                    node_results: Vec::new(),
-                    actual_eval_set: Vec::new(),
-                    skipped: HashSet::new(),
-                    resolved_params: HashMap::new(),
-                    diagnostics: Vec::new(),
-                };
-                engine.resolve_concurrent_edit(&setup, &mut result);
-            },
-        );
+        assert_problem_shares_functions_arc("resolve_concurrent_edit", |engine, limit_id| {
+            let setup = engine
+                .prepare_concurrent_edit(limit_id, mm(3.0))
+                .expect("prepare_concurrent_edit must succeed after eval");
+            let mut result = ConcurrentEditResult {
+                values: setup.values.clone(),
+                snapshot_values: setup.snapshot_values.clone(),
+                node_results: Vec::new(),
+                actual_eval_set: Vec::new(),
+                skipped: HashSet::new(),
+                resolved_params: HashMap::new(),
+                diagnostics: Vec::new(),
+            };
+            engine.resolve_concurrent_edit(&setup, &mut result);
+        });
     }
 
     // ── EngineError::DimensionMismatch Display regression (task-2442) ────────
@@ -1440,7 +1437,7 @@ structure S {
     ///   divergence detected.
     #[test]
     fn engine_new_wires_warm_pool_through_from_env_or_default() {
-        use crate::warm_pool::{WarmStatePool, BUDGET_ENV_VAR};
+        use crate::warm_pool::{BUDGET_ENV_VAR, WarmStatePool};
         use reify_test_support::mocks::MockConstraintChecker;
 
         // Snapshot the env var before engine construction so both sides share a

@@ -82,7 +82,11 @@ impl<V> ToleranceBucket<V> {
             "ToleranceBucket: tolerance must be finite and non-negative, got {tol}"
         );
         // Reject if any existing entry already satisfies this tolerance.
-        if self.entries.iter().any(|(cached_tol, _)| *cached_tol <= tol) {
+        if self
+            .entries
+            .iter()
+            .any(|(cached_tol, _)| *cached_tol <= tol)
+        {
             return false;
         }
         // The rejection rule above guarantees every remaining entry has `cached_tol > tol`,
@@ -153,7 +157,10 @@ mod tests {
         let mut bucket = ToleranceBucket::<u32>::new();
         assert!(bucket.insert(0.01, 1u32));
         assert_eq!(bucket.len(), 1);
-        assert!(!bucket.insert(0.01, 2u32), "equal-tolerance insert must be rejected");
+        assert!(
+            !bucket.insert(0.01, 2u32),
+            "equal-tolerance insert must be rejected"
+        );
         assert_eq!(bucket.len(), 1, "bucket must be unchanged after rejection");
         assert_eq!(bucket.lookup(0.01), Some(&1u32));
     }
@@ -180,13 +187,13 @@ mod tests {
         // 0.01 is tighter than 0.1 → succeeds; reachable at its exact tol.
         assert!(bucket.insert(0.01, 2u8));
         assert_eq!(bucket.lookup(0.01), Some(&2u8));
-        assert_eq!(bucket.lookup(0.1), Some(&1u8));   // loosest satisfying 0.1 is still 0.1
+        assert_eq!(bucket.lookup(0.1), Some(&1u8)); // loosest satisfying 0.1 is still 0.1
 
         // 0.001 is tighter than both → succeeds; reachable at its exact tol.
         assert!(bucket.insert(0.001, 3u8));
         assert_eq!(bucket.lookup(0.001), Some(&3u8)); // tightest entry, exact tol
-        assert_eq!(bucket.lookup(0.01), Some(&2u8));  // loosest satisfying 0.01 is 0.01
-        assert_eq!(bucket.lookup(0.1), Some(&1u8));   // loosest satisfying 0.1 is 0.1
+        assert_eq!(bucket.lookup(0.01), Some(&2u8)); // loosest satisfying 0.01 is 0.01
+        assert_eq!(bucket.lookup(0.1), Some(&1u8)); // loosest satisfying 0.1 is 0.1
     }
 
     #[cfg(debug_assertions)]
@@ -244,13 +251,29 @@ mod tests {
             assert!(result, "insert #{i} must succeed for tol={tol}");
         }
         // After 6 inserts, eviction must have kept len at SOFT_CAPACITY (5).
-        assert_eq!(bucket.len(), SOFT_CAPACITY, "bucket len must equal SOFT_CAPACITY after overflow");
+        assert_eq!(
+            bucket.len(),
+            SOFT_CAPACITY,
+            "bucket len must equal SOFT_CAPACITY after overflow"
+        );
         // The loosest entry "v1" (1.0) must have been evicted.
         // The next-loosest "v2" (0.5) is now the loosest in the bucket.
         // lookup(2.0): loosest satisfying should be 0.5 = "v2" (not "v1").
-        assert_eq!(bucket.lookup(2.0), Some(&"v2"), "v1 (1.0) should be evicted; loosest is now v2 (0.5)");
-        assert_eq!(bucket.lookup(0.6), Some(&"v2"), "0.5 <= 0.6, so v2 is loosest satisfying");
-        assert_eq!(bucket.lookup(1.0), Some(&"v2"), "no entry at 1.0 after eviction; loosest <= 1.0 is 0.5 = v2");
+        assert_eq!(
+            bucket.lookup(2.0),
+            Some(&"v2"),
+            "v1 (1.0) should be evicted; loosest is now v2 (0.5)"
+        );
+        assert_eq!(
+            bucket.lookup(0.6),
+            Some(&"v2"),
+            "0.5 <= 0.6, so v2 is loosest satisfying"
+        );
+        assert_eq!(
+            bucket.lookup(1.0),
+            Some(&"v2"),
+            "no entry at 1.0 after eviction; loosest <= 1.0 is 0.5 = v2"
+        );
     }
 
     #[test]
@@ -261,8 +284,16 @@ mod tests {
         // evicts the loosest (largest) entry — testing pop() fires on every overflow,
         // not just the first.
         let tols = [
-            1.0, 0.5, 0.25, 0.125, 0.0625,
-            0.03125, 0.015625, 0.0078125, 0.00390625, 0.001953125,
+            1.0,
+            0.5,
+            0.25,
+            0.125,
+            0.0625,
+            0.03125,
+            0.015625,
+            0.0078125,
+            0.00390625,
+            0.001953125,
         ];
         let mut bucket = ToleranceBucket::<u32>::new();
         for (i, &tol) in tols.iter().enumerate() {
@@ -331,7 +362,11 @@ mod tests {
         // Second insert: the existing 0.001 entry satisfies 0.01 (0.001 <= 0.01),
         // so the insert must be rejected (per PRD "Insert when no entry satisfies").
         assert!(!bucket.insert(0.01, "loose"));
-        assert_eq!(bucket.len(), 1, "bucket must be unchanged after rejected insert");
+        assert_eq!(
+            bucket.len(),
+            1,
+            "bucket must be unchanged after rejected insert"
+        );
         assert_eq!(bucket.lookup(0.01), Some(&"tight"));
         assert_eq!(bucket.lookup(0.001), Some(&"tight"));
     }

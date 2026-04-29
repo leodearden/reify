@@ -706,11 +706,8 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// The `pending` guard owns the pool borrow, so callers do not need to pass
 /// both a `&mut WarmStatePool` and a separate sink map — both are accessed
 /// through the guard, which also ensures re-donation on early-return / panic.
-fn checkout_added_warm_seeds<'a, I, T, F>(
-    pending: &mut PendingWarmSeedsGuard<'_>,
-    ids: I,
-    wrap: F,
-) where
+fn checkout_added_warm_seeds<'a, I, T, F>(pending: &mut PendingWarmSeedsGuard<'_>, ids: I, wrap: F)
+where
     I: IntoIterator<Item = &'a T>,
     T: Clone + 'a,
     F: Fn(T) -> NodeId,
@@ -4099,10 +4096,10 @@ mod tests {
     /// across early-return / panic / `?` between steps (4c) and (14b).
     #[test]
     fn pending_warm_seeds_guard_redonates_remaining_entries_on_drop() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
         use reify_types::OpaqueState;
-        use super::PendingWarmSeedsGuard;
 
         let mut pool = WarmStatePool::new(1024);
         assert_eq!(pool.used_bytes(), 0);
@@ -4111,7 +4108,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(node_id.clone(), OpaqueState::new(0xDEADBEEFu32, 16), std::time::Instant::now());
+            pending.insert(
+                node_id.clone(),
+                OpaqueState::new(0xDEADBEEFu32, 16),
+                std::time::Instant::now(),
+            );
             // Guard goes out of scope here, triggering Drop — no drain called
         }
 
@@ -4140,10 +4141,10 @@ mod tests {
     /// of the two original sizes (not double).
     #[test]
     fn pending_warm_seeds_guard_drain_into_cache_or_repool_makes_drop_inert() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
         use reify_types::{ConstraintNodeId, OpaqueState};
-        use super::PendingWarmSeedsGuard;
 
         let mut pool = WarmStatePool::new(4096);
         let mut cache = CacheStore::new();
@@ -4153,8 +4154,16 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(val_nid.clone(), OpaqueState::new(0xAAu8, 100), std::time::Instant::now());
-            pending.insert(con_nid.clone(), OpaqueState::new(0xBBu8, 50), std::time::Instant::now());
+            pending.insert(
+                val_nid.clone(),
+                OpaqueState::new(0xAAu8, 100),
+                std::time::Instant::now(),
+            );
+            pending.insert(
+                con_nid.clone(),
+                OpaqueState::new(0xBBu8, 50),
+                std::time::Instant::now(),
+            );
             // Neither node has a cache entry → drain MUST re-donate both to pool.
             pending.drain_into_cache_or_repool(&mut cache);
             // Guard drops here with an empty map → Drop is a no-op.
@@ -4189,10 +4198,10 @@ mod tests {
     /// Pins variant-symmetry of the Drop re-donation path.
     #[test]
     fn pending_warm_seeds_guard_drop_preserves_payload_bytes_for_each_entry() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
         use reify_types::{ConstraintNodeId, OpaqueState, RealizationNodeId};
-        use super::PendingWarmSeedsGuard;
 
         let mut pool = WarmStatePool::new(4096);
 
@@ -4202,9 +4211,21 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(val_nid.clone(), OpaqueState::new(0xDEADu32, 8), std::time::Instant::now());
-            pending.insert(con_nid.clone(), OpaqueState::new(0xBEEFu32, 16), std::time::Instant::now());
-            pending.insert(rea_nid.clone(), OpaqueState::new(0xFEEDu32, 24), std::time::Instant::now());
+            pending.insert(
+                val_nid.clone(),
+                OpaqueState::new(0xDEADu32, 8),
+                std::time::Instant::now(),
+            );
+            pending.insert(
+                con_nid.clone(),
+                OpaqueState::new(0xBEEFu32, 16),
+                std::time::Instant::now(),
+            );
+            pending.insert(
+                rea_nid.clone(),
+                OpaqueState::new(0xFEEDu32, 24),
+                std::time::Instant::now(),
+            );
             // No drain — Drop fires with all three entries
         }
 
@@ -4252,11 +4273,11 @@ mod tests {
     /// and the subsequent guard Drop is inert (map was emptied by drain).
     #[test]
     fn pending_warm_seeds_guard_drain_cache_hit_makes_drop_inert() {
-        use crate::cache::{CachedResult, CacheStore, NodeCache, NodeId};
+        use super::PendingWarmSeedsGuard;
+        use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
         use crate::deps::DependencyTrace;
         use crate::warm_pool::WarmStatePool;
         use reify_types::{DeterminacyState, Freshness, OpaqueState, Value, VersionId};
-        use super::PendingWarmSeedsGuard;
 
         const PAYLOAD: u32 = 0xCAFEBABE;
         const SIZE: usize = 8;
@@ -4276,7 +4297,10 @@ mod tests {
                 VersionId(0),
             ),
         );
-        assert!(cache.get(&nid).is_some(), "cache entry must exist before drain");
+        assert!(
+            cache.get(&nid).is_some(),
+            "cache entry must exist before drain"
+        );
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
@@ -4337,10 +4361,10 @@ mod tests {
     /// dispatch in `drain_into_cache_or_repool`.
     #[test]
     fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
         use reify_types::OpaqueState;
-        use super::PendingWarmSeedsGuard;
 
         const PAYLOAD: u32 = 0xDEAD_BEEF;
         const SIZE: usize = 8;
@@ -4401,8 +4425,7 @@ mod tests {
             "cache-miss: warm-state payload must be preserved through drain → re-pool"
         );
         assert_eq!(
-            recovered_stamp,
-            stamp,
+            recovered_stamp, stamp,
             "cache-miss: re-donated entry's LRU stamp must EQUAL the originally-staged \
              stamp (donate_preserving_lru must NOT refresh to Instant::now())"
         );
@@ -4421,11 +4444,11 @@ mod tests {
     /// required.
     #[test]
     fn pending_warm_seeds_guard_redonates_on_panic() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
         use reify_types::OpaqueState;
         use std::panic::{self, AssertUnwindSafe};
-        use super::PendingWarmSeedsGuard;
 
         let mut pool = WarmStatePool::new(1024);
         let node_id = NodeId::Value(ValueCellId::new("T", "panic_node"));
@@ -4476,12 +4499,12 @@ mod tests {
     ///    path). Drop fires with an empty map and must emit **zero** `WARN`s.
     #[test]
     fn pending_warm_seeds_guard_drop_emits_warn_when_safety_net_fires() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
         use reify_test_support::CountingSubscriberBuilder;
         use reify_types::OpaqueState;
         use std::sync::atomic::Ordering;
-        use super::PendingWarmSeedsGuard;
 
         // ---- Arm 1: safety-net fires (non-empty Drop) ----
         {
@@ -4554,11 +4577,11 @@ mod tests {
     /// log-aggregator queries; body wording is verified by code review.
     #[test]
     fn pending_warm_seeds_guard_drop_warn_emits_count_field() {
-        use crate::warm_pool::WarmStatePool;
+        use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
         use reify_test_support::warn_capturing_subscriber;
         use reify_types::OpaqueState;
-        use super::PendingWarmSeedsGuard;
 
         let (subscriber, capture) = warn_capturing_subscriber();
 
@@ -4588,7 +4611,9 @@ mod tests {
         // (whether the visitor stores "1" or "1usize" in a future version,
         // parse::<usize>() resolves both correctly).
         assert_eq!(
-            event_fields.get("count").and_then(|s| s.parse::<usize>().ok()),
+            event_fields
+                .get("count")
+                .and_then(|s| s.parse::<usize>().ok()),
             Some(1usize),
             "safety-net WARN's `count` field must parse as 1 for a single staged \
              entry; got fields: {event_fields:?}"
@@ -4634,11 +4659,11 @@ mod tests {
     /// newer than Y and Y would be evicted — the test would flip.
     #[test]
     fn pending_warm_seeds_guard_drain_preserves_lru_stamp_for_repooled_entries() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
         use reify_types::OpaqueState;
         use std::time::Duration;
-        use super::PendingWarmSeedsGuard;
 
         // Budget just fits X+Y (200) but not X+Y+Z (400).
         let mut pool = WarmStatePool::new(300);
@@ -4665,7 +4690,9 @@ mod tests {
             pending.insert(node_x.clone(), x_state, x_stamp);
 
             // Step 5: donate Y directly (Y's stamp is fresh / newer than x_stamp).
-            pending.pool_mut().donate(node_y.clone(), OpaqueState::new(0xBBu8, 100));
+            pending
+                .pool_mut()
+                .donate(node_y.clone(), OpaqueState::new(0xBBu8, 100));
             // pool holds Y (100 bytes); X is still in the guard's staging map.
 
             // Step 6: drain — X has no cache entry → cache-miss → donate_preserving_lru.
@@ -4701,12 +4728,12 @@ mod tests {
     /// guard is dropped during a panic unwind instead of calling `drain_…`.
     #[test]
     fn pending_warm_seeds_guard_drop_preserves_lru_stamp_on_panic() {
+        use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
         use reify_types::OpaqueState;
         use std::panic::{self, AssertUnwindSafe};
         use std::time::Duration;
-        use super::PendingWarmSeedsGuard;
 
         let mut pool = WarmStatePool::new(300);
         let node_x = NodeId::Value(ValueCellId::new("T", "x"));
@@ -4733,7 +4760,9 @@ mod tests {
                 let mut guard = PendingWarmSeedsGuard::new(pool_ref);
                 guard.insert(nid_x.clone(), x_state, x_stamp);
                 // Donate Y directly so it has a newer stamp than x_stamp.
-                guard.pool_mut().donate(nid_y.clone(), OpaqueState::new(0xBBu8, 100));
+                guard
+                    .pool_mut()
+                    .donate(nid_y.clone(), OpaqueState::new(0xBBu8, 100));
                 panic!("simulated mid-edit panic before drain");
             }));
             assert!(result.is_err(), "catch_unwind must catch the panic");

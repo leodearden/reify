@@ -467,10 +467,7 @@ impl WarmStatePool {
     ///
     /// Returns `None` when the entry is absent or has been LRU-evicted. A second call for
     /// the same node returns `None` (take semantics identical to [`checkout`](Self::checkout)).
-    pub fn checkout_with_lru_stamp(
-        &mut self,
-        node_id: &NodeId,
-    ) -> Option<(OpaqueState, Instant)> {
+    pub fn checkout_with_lru_stamp(&mut self, node_id: &NodeId) -> Option<(OpaqueState, Instant)> {
         let entry = self.pool.remove(node_id)?;
         self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         Some((entry.state, entry.last_accessed))
@@ -756,7 +753,11 @@ mod tests {
         // Second call is idempotent — does not consume the entry.
         assert!(pool.contains(&node));
         assert_eq!(pool.len(), 1, "contains must not remove entries");
-        assert_eq!(pool.used_bytes(), 100, "contains must not modify used_bytes");
+        assert_eq!(
+            pool.used_bytes(),
+            100,
+            "contains must not modify used_bytes"
+        );
 
         // After checkout (destructive): no longer present.
         pool.checkout(&node);
@@ -841,9 +842,18 @@ mod tests {
     #[test]
     fn from_env_value_unlimited_disables_budget() {
         // All three case variants must work
-        assert_eq!(WarmStatePool::from_env_value(Some("unlimited")).budget_bytes(), None);
-        assert_eq!(WarmStatePool::from_env_value(Some("UNLIMITED")).budget_bytes(), None);
-        assert_eq!(WarmStatePool::from_env_value(Some("Unlimited")).budget_bytes(), None);
+        assert_eq!(
+            WarmStatePool::from_env_value(Some("unlimited")).budget_bytes(),
+            None
+        );
+        assert_eq!(
+            WarmStatePool::from_env_value(Some("UNLIMITED")).budget_bytes(),
+            None
+        );
+        assert_eq!(
+            WarmStatePool::from_env_value(Some("Unlimited")).budget_bytes(),
+            None
+        );
     }
 
     #[test]
@@ -911,8 +921,14 @@ mod tests {
         // Pure LRU order: A and C (oldest) must be evicted; B and D retained
         assert!(pool.checkout(&node_a).is_none(), "A should be LRU-evicted");
         assert!(pool.checkout(&node_c).is_none(), "C should be LRU-evicted");
-        assert!(pool.checkout(&node_b).is_some(), "B should be retained (recently accessed)");
-        assert!(pool.checkout(&node_d).is_some(), "D should be retained (just added)");
+        assert!(
+            pool.checkout(&node_b).is_some(),
+            "B should be retained (recently accessed)"
+        );
+        assert!(
+            pool.checkout(&node_d).is_some(),
+            "D should be retained (just added)"
+        );
     }
 
     #[test]
@@ -1024,7 +1040,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, WarmPoolEvent::Donated { .. }))
             .count();
-        assert_eq!(evicted_count, 2, "expected 2 evictions for the oversized donation");
+        assert_eq!(
+            evicted_count, 2,
+            "expected 2 evictions for the oversized donation"
+        );
         assert_eq!(donated_count, 1, "expected 1 donated event");
         // The last event should be Donated (evictions precede the donation)
         assert!(
@@ -1043,7 +1062,10 @@ mod tests {
         assert!(!first_drain.is_empty(), "first drain should have events");
 
         let second_drain = pool.drain_events();
-        assert!(second_drain.is_empty(), "second drain should be empty after clearing");
+        assert!(
+            second_drain.is_empty(),
+            "second drain should be empty after clearing"
+        );
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -1091,10 +1113,26 @@ mod tests {
         );
         pool.donate_with_cost(node_neg.clone(), OpaqueState::new(0u8, 10), -1.0);
 
-        assert_eq!(pool.cost_per_byte_of(&node_nan), Some(0.0), "NaN clamped to 0.0");
-        assert_eq!(pool.cost_per_byte_of(&node_inf), Some(0.0), "+inf clamped to 0.0");
-        assert_eq!(pool.cost_per_byte_of(&node_neg_inf), Some(0.0), "-inf clamped to 0.0");
-        assert_eq!(pool.cost_per_byte_of(&node_neg), Some(0.0), "negative clamped to 0.0");
+        assert_eq!(
+            pool.cost_per_byte_of(&node_nan),
+            Some(0.0),
+            "NaN clamped to 0.0"
+        );
+        assert_eq!(
+            pool.cost_per_byte_of(&node_inf),
+            Some(0.0),
+            "+inf clamped to 0.0"
+        );
+        assert_eq!(
+            pool.cost_per_byte_of(&node_neg_inf),
+            Some(0.0),
+            "-inf clamped to 0.0"
+        );
+        assert_eq!(
+            pool.cost_per_byte_of(&node_neg),
+            Some(0.0),
+            "negative clamped to 0.0"
+        );
     }
 
     // --- Task 2345 step-1: WarmStatePool::checkout tests ---
@@ -1290,8 +1328,8 @@ mod tests {
     #[test]
     #[cfg(not(debug_assertions))]
     fn events_buffer_emits_tracing_warn_once_per_session_on_overflow() {
-        use std::sync::atomic::Ordering;
         use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
         // NOTE: This test performs MAX_BUFFERED_EVENTS * 2 + 100 ≈ 131 k donations.
         // Two full overflow rounds are the minimum needed to verify the warn-once
         // invariant: a single overflow would not distinguish "warn exactly once" from
@@ -1310,8 +1348,7 @@ mod tests {
 
             // Donate enough events to overflow at least twice.
             for i in 0..(WarmStatePool::MAX_BUFFERED_EVENTS * 2 + 100) {
-                let node =
-                    NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+                let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
                 pool.donate(node, OpaqueState::new(0u8, 1));
             }
         });
@@ -1415,8 +1452,7 @@ mod tests {
             // Donate TEST_CAP+1 events: the (TEST_CAP+1)-th push takes events.len()
             // to TEST_CAP+1 > TEST_CAP, firing exactly one auto-trim round and one warn.
             for i in 0..=TEST_CAP {
-                let node =
-                    NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+                let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
                 pool.donate(node, OpaqueState::new(0u8, 1));
             }
         });

@@ -304,7 +304,12 @@ mod tests {
         let b = ValueCellId::new(e, "b");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(
             &mut cache,
             &b,
@@ -322,8 +327,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -352,7 +356,12 @@ mod tests {
         let c = ValueCellId::new(e, "c");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(
             &mut cache,
             &b,
@@ -375,8 +384,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -425,8 +433,18 @@ mod tests {
         let d = ValueCellId::new(e, "d");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
-        put_value_entry(&mut cache, &c, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
+        put_value_entry(
+            &mut cache,
+            &c,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(
             &mut cache,
             &b,
@@ -451,8 +469,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -529,8 +546,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
         assert!(
             updated.contains(&b_node),
             "sanity: b must be updated by the walk, got: {:?}",
@@ -740,7 +756,9 @@ mod tests {
         assert!(cache.mark_failed(&b_node, b_error.clone()));
         assert_eq!(
             cache.freshness(&b_node),
-            Freshness::Failed { error: b_error.clone() },
+            Freshness::Failed {
+                error: b_error.clone()
+            },
             "sanity: b must be Failed before the walk"
         );
         assert_eq!(
@@ -755,8 +773,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         // (i) b's freshness must STILL be Failed — the walk must skip it as
         //     a write target (re-derivation would destroy the chain root).
@@ -847,8 +864,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         assert!(
             updated.contains(&b_node),
@@ -1016,7 +1032,12 @@ mod tests {
 
         let mut cache = CacheStore::new();
         // Seed `a` with Intermediate so the walk has something to propagate from.
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
 
         // Insert the Realization entry directly via cache.put. No test-instrumentation
         // feature needed — this is inside the in-crate mod tests block.
@@ -1026,7 +1047,9 @@ mod tests {
             NodeCache::new(
                 CachedResult::GeometryHandle(GeometryHandleId(0)),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace { reads: vec![a.clone()] },
+                DependencyTrace {
+                    reads: vec![a.clone()],
+                },
                 VersionId(1),
             ),
         );
@@ -1042,7 +1065,9 @@ mod tests {
         // per cache.rs:561).
         assert_eq!(
             cache.freshness(&r_node),
-            Freshness::Failed { error: r_error.clone() },
+            Freshness::Failed {
+                error: r_error.clone()
+            },
             "sanity: R must be Failed before the walk"
         );
         assert_eq!(
@@ -1061,8 +1086,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         // (i) R's freshness must STILL be Failed — the walk must skip it as a
         //     write target (re-derivation would silently flip Failed → Final,
@@ -1124,7 +1148,12 @@ mod tests {
         let d = ValueCellId::new(e, "d");
 
         let mut cache = CacheStore::new();
-        put_value_entry(&mut cache, &a, Freshness::Intermediate { generation: 1 }, vec![]);
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
         put_value_entry(
             &mut cache,
             &b,
@@ -1156,8 +1185,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
 
         // (i) b, c, d must all be Final after the walk.
         assert_eq!(

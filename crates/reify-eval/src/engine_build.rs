@@ -648,11 +648,9 @@ impl Engine {
                     }
                     Err(e) => {
                         let err_msg = format!("geometry error: {}", e);
-                        diagnostics.push(
-                            Diagnostic::error(err_msg.clone()).with_label(
-                                DiagnosticLabel::new(realization_span, "in this realization"),
-                            ),
-                        );
+                        diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                            DiagnosticLabel::new(realization_span, "in this realization"),
+                        ));
                         // Arch §9.1 lines 868–877: surface the kernel error to the
                         // caller so the realization NodeId can be marked Failed in
                         // the eval cache and a single EventKind::Failed event emitted.
@@ -944,7 +942,11 @@ mod tests {
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
-        assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "expected no error diagnostics, got: {:?}",
+            errors
+        );
         // Pin the expected warning count so unrelated warning regressions still
         // fail the test instead of being silently absorbed by the
         // error-severity filter above. Per primitive op that succeeds at the
@@ -964,7 +966,9 @@ mod tests {
             warnings
         );
         assert!(
-            warnings[0].message.contains("topology-attribute seeding failed"),
+            warnings[0]
+                .message
+                .contains("topology-attribute seeding failed"),
             "the single warning must be the seeder's auxiliary-metadata failure, got: {:?}",
             warnings[0].message
         );
@@ -1321,7 +1325,11 @@ mod tests {
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
-        assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "expected no error diagnostics, got: {:?}",
+            errors
+        );
         // Pin the expected warning count (one seeder extract-failure per
         // successful primitive op). See the happy-path test for the rationale.
         let warnings: Vec<_> = diagnostics
@@ -1337,7 +1345,9 @@ mod tests {
             warnings
         );
         assert!(
-            warnings[0].message.contains("topology-attribute seeding failed"),
+            warnings[0]
+                .message
+                .contains("topology-attribute seeding failed"),
             "the single warning must be the seeder's auxiliary-metadata failure, got: {:?}",
             warnings[0].message
         );
@@ -1558,7 +1568,9 @@ mod tests {
             warnings
         );
         assert!(
-            warnings.iter().all(|w| w.message.contains("topology-attribute seeding failed")),
+            warnings
+                .iter()
+                .all(|w| w.message.contains("topology-attribute seeding failed")),
             "every warning must be a seeder auxiliary-metadata failure, got: {:?}",
             warnings
         );
