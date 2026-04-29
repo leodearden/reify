@@ -54,6 +54,38 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 5 {
                 return Some(Value::Undef);
             }
+            // Validate axis_x: dimensionless Vector3, finite, non-zero.
+            let comps_x = match validate_axis(&args[0]) {
+                Some(c) => c,
+                None => return Some(Value::Undef),
+            };
+            // Validate axis_y: dimensionless Vector3, finite, non-zero.
+            let comps_y = match validate_axis(&args[1]) {
+                Some(c) => c,
+                None => return Some(Value::Undef),
+            };
+            // Perpendicularity check: |dot(unit_x, unit_y)| < 1e-9.
+            // Normalise each axis first so the dot product is in cos-angle units.
+            let mag_x = (comps_x[0] * comps_x[0] + comps_x[1] * comps_x[1] + comps_x[2] * comps_x[2]).sqrt();
+            let unit_x = [comps_x[0] / mag_x, comps_x[1] / mag_x, comps_x[2] / mag_x];
+            let mag_y = (comps_y[0] * comps_y[0] + comps_y[1] * comps_y[1] + comps_y[2] * comps_y[2]).sqrt();
+            let unit_y = [comps_y[0] / mag_y, comps_y[1] / mag_y, comps_y[2] / mag_y];
+            let dot = unit_x[0] * unit_y[0] + unit_x[1] * unit_y[1] + unit_x[2] * unit_y[2];
+            if dot.abs() >= 1e-9 {
+                return Some(Value::Undef);
+            }
+            // Validate range_x: bounded, LENGTH-dimensioned.
+            if validate_range(&args[2], DimensionVector::LENGTH).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate range_y: bounded, LENGTH-dimensioned.
+            if validate_range(&args[3], DimensionVector::LENGTH).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate range_theta: bounded, ANGLE-dimensioned.
+            if validate_range(&args[4], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
             make_planar(
                 args[0].clone(),
                 args[1].clone(),
