@@ -119,6 +119,9 @@ where
 /// `selector_label` is forwarded to `query_per_subshape` and embedded in
 /// any `check_query_many_len` error message, so each caller should pass its
 /// own distinct label (e.g. `"edges_by_length"` vs `"edges_by_length_with_tags"`).
+///
+/// `id` is supplied so predicate-side error messages can name the offending
+/// sub-shape; predicates that don't need it may use `_id`.
 fn filter_by_value<K, Q, F>(
     kernel: &K,
     ids: &[GeometryHandleId],
@@ -441,10 +444,8 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         )
     })?;
     let faces = kernel.extract_faces(handle)?;
-    let values = query_per_subshape(kernel, &faces, "faces_by_normal", GeometryQuery::FaceNormal)?;
-    let mut out = Vec::with_capacity(faces.len());
-    for (id, normal_value) in faces.iter().zip(values) {
-        let raw = parse_xyz_value(&normal_value, "FaceNormal")?;
+    filter_by_value(kernel, &faces, "faces_by_normal", GeometryQuery::FaceNormal, |id, value| {
+        let raw = parse_xyz_value(value, "FaceNormal")?;
         let normal = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
                 "FaceNormal({:?}) returned a degenerate (near-zero) normal",
@@ -453,11 +454,8 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
         })?;
         let cos = dot3(normal, target).clamp(-1.0, 1.0);
         let angle = cos.acos();
-        if angle <= angular_tol_rad {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+        Ok(angle <= angular_tol_rad)
+    })
 }
 
 /// Return the subset of `extract_edges(handle)` whose midpoint tangent is
@@ -1545,24 +1543,36 @@ mod tests {
     /// surfaces verbatim from `filter_by_value` — the helper does not swallow or
     /// transform closure errors.
     ///
-    /// Stages one id with a non-`Value::Real` response so `expect_real` returns
-    /// `Err(QueryError::QueryFailed(...))`.  Asserts:
+    /// Stages two ids: the first has a non-`Value::Real` response (triggers
+    /// `expect_real` → `Err`); the second has a valid `Value::Real` (would pass
+    /// if ever reached).  A `Cell<usize>` counter inside the predicate proves
+    /// short-circuit behaviour: after the `Err` the counter is exactly 1,
+    /// demonstrating the second id was never visited.
+    ///
+    /// Also asserts:
     ///   (i)  the returned error message contains `"non-real value"` and the id,
     ///   (ii) `kernel.query_many_calls() == 1` (the batched call fired before the
     ///        predicate loop, so the error is a predicate error, not a kernel error),
     ///   (iii) `kernel.query_calls() == 0` (no per-element fallback).
     #[test]
     fn filter_by_value_propagates_predicate_error() {
-        let id = GeometryHandleId(1010);
-        let kernel = CountingKernel::new()
-            .with_response(id, Value::String("not real".into()));
+        use std::cell::Cell;
 
+        let id1 = GeometryHandleId(1010);
+        let id2 = GeometryHandleId(1011);
+        // id1 triggers the error; id2 has a valid Real that would pass if visited.
+        let kernel = CountingKernel::new()
+            .with_response(id1, Value::String("not real".into()))
+            .with_response(id2, Value::Real(0.5));
+
+        let call_count = Cell::new(0usize);
         let err = filter_by_value(
             &kernel,
-            &[id],
+            &[id1, id2],
             "test_label",
             GeometryQuery::EdgeLength,
             |id, value| {
+                call_count.set(call_count.get() + 1);
                 let _ = expect_real("EdgeLength", id, value)?;
                 Ok(true)
             },
@@ -1584,6 +1594,11 @@ mod tests {
             }
             other => panic!("expected QueryFailed, got {:?}", other),
         }
+        assert_eq!(
+            call_count.get(),
+            1,
+            "predicate must be invoked exactly once (short-circuit on first Err, second id never visited)"
+        );
         assert_eq!(
             kernel.query_many_calls(),
             1,
