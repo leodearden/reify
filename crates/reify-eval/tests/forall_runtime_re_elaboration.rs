@@ -909,3 +909,154 @@ fn edit_param_count_undef_to_known_emits_per_element_forall_connections() {
         }
     }
 }
+
+/// task-2690 step-11: pins the count-decrease + fingerprint contract for the
+/// forall-Connect runtime re-emission path. Mirror of the Constraint-arm
+/// `edit_param_count_decrease_removes_stale_forall_constraints_and_changes_fingerprint`
+/// test for the Connect arm.
+///
+/// Sequence:
+/// 1. Initial `eval()` — count Undef ⇒ `graph.connections` empty (the only
+///    connection in the fixture is forall-deferred).
+/// 2. `edit_param(S.n, Int(3))` — capture `fingerprint_3`, assert exactly 3
+///    forall-Connect entries with `left_port` covering
+///    `vents[0..2].inlet` and 3 `forall_connect@v[*]` constraint labels.
+/// 3. `edit_param(S.n, Int(1))` — assert exactly 1 entry with
+///    `left_port == "vents[0].inlet"`. Assert that no entry with
+///    `left_port == "vents[1].inlet"` or `vents[2].inlet"` remains in the
+///    `connections` Vec — this is the "removal not overwrite" contract for
+///    the Connect arm. Assert `fingerprint_3 != fingerprint_1`.
+/// 4. `edit_param(S.n, Int(0))` — assert no forall-Connect entries remain
+///    (drain-then-no-emit). Assert `fingerprint_1 != fingerprint_0`.
+#[test]
+fn edit_param_count_decrease_removes_stale_forall_connections_and_changes_fingerprint() {
+    let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
+    let mut engine = fresh_engine();
+    let n_id = ValueCellId::new("S", "n");
+
+    // (1) Initial eval — count Undef ⇒ zero forall-emitted connections.
+    let _ = engine.eval(&module);
+    let initial_snap = engine.snapshot().expect("snapshot after initial eval");
+    assert!(
+        collect_forall_connect_connections(initial_snap).is_empty(),
+        "expected zero forall-emitted connections when count is Undef"
+    );
+    assert_eq!(
+        initial_snap.graph.connections.len(),
+        0,
+        "expected total connections.len() == 0 when count is Undef (only \
+         connection in fixture is forall-deferred), got {}",
+        initial_snap.graph.connections.len()
+    );
+
+    // (2) edit_param(n, 3) ⇒ 3 per-element forall connections.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(3))
+        .expect("edit_param to 3 should succeed");
+    let snap_3 = engine.snapshot().expect("snapshot after edit n=3");
+    let conns_3 = collect_forall_connect_connections(snap_3);
+    assert_eq!(
+        conns_3.len(),
+        3,
+        "expected 3 forall-Connect entries after edit_param to Int(3) (got {})",
+        conns_3.len()
+    );
+    for (i, c) in conns_3.iter().enumerate() {
+        assert_eq!(
+            c.left_port,
+            format!("vents[{}].inlet", i),
+            "forall-Connect[{}] left_port mismatch after n=3",
+            i
+        );
+        assert_eq!(
+            c.right_port, "air_channel",
+            "forall-Connect[{}] right_port mismatch after n=3",
+            i
+        );
+    }
+    let fingerprint_3 = snap_3.topology_fingerprint;
+
+    // (3) edit_param(n, 1) ⇒ only forall-Connect[0] remains.
+    let _ = engine
+        .edit_param(n_id.clone(), Value::Int(1))
+        .expect("edit_param to 1 should succeed");
+    let snap_1 = engine.snapshot().expect("snapshot after edit n=1");
+    let conns_1 = collect_forall_connect_connections(snap_1);
+    assert_eq!(
+        conns_1.len(),
+        1,
+        "expected exactly 1 forall-Connect entry after count decrease to Int(1) \
+         (got {})",
+        conns_1.len()
+    );
+    assert_eq!(
+        conns_1[0].left_port, "vents[0].inlet",
+        "expected the lone forall-Connect entry to be vents[0].inlet"
+    );
+
+    // Verify vents[1].inlet / vents[2].inlet are *gone* from the connections
+    // Vec — this is the "removal not overwrite" contract for the Connect arm.
+    let stale_left_ports: Vec<&'static str> = ["vents[1].inlet", "vents[2].inlet"]
+        .iter()
+        .filter(|missing| {
+            snap_1
+                .graph
+                .connections
+                .iter()
+                .any(|c| c.left_port.as_str() == **missing)
+        })
+        .copied()
+        .collect();
+    assert!(
+        stale_left_ports.is_empty(),
+        "stale forall-Connect entries should be removed but found {:?}",
+        stale_left_ports
+    );
+
+    // Also verify the corresponding compatibility constraints (forall_connect@v[1],
+    // forall_connect@v[2]) are gone from graph.constraints — the drain block must
+    // remove BOTH the Vec entry and the synthetic compat constraint.
+    let stale_labels: Vec<String> = ["forall_connect@v[1]", "forall_connect@v[2]"]
+        .iter()
+        .filter(|missing| {
+            snap_1
+                .graph
+                .constraints
+                .iter()
+                .any(|(_, n)| n.label.as_deref() == Some(**missing))
+        })
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        stale_labels.is_empty(),
+        "stale forall-Connect compatibility-constraint labels should be removed \
+         but found {:?}",
+        stale_labels
+    );
+
+    let fingerprint_1 = snap_1.topology_fingerprint;
+    assert_ne!(
+        fingerprint_3, fingerprint_1,
+        "topology_fingerprint must change across count transition 3 -> 1 \
+         (Connect arm); fingerprint must mix in the connections-set hash, \
+         and the connections set has changed."
+    );
+
+    // (4) edit_param(n, 0) ⇒ zero forall-Connect entries.
+    let _ = engine
+        .edit_param(n_id, Value::Int(0))
+        .expect("edit_param to 0 should succeed");
+    let snap_0 = engine.snapshot().expect("snapshot after edit n=0");
+    let conns_0 = collect_forall_connect_connections(snap_0);
+    assert!(
+        conns_0.is_empty(),
+        "expected zero forall-Connect entries after edit_param to Int(0), got {} \
+         entries",
+        conns_0.len()
+    );
+    let fingerprint_0 = snap_0.topology_fingerprint;
+    assert_ne!(
+        fingerprint_1, fingerprint_0,
+        "topology_fingerprint must change across count transition 1 -> 0 (Connect arm)"
+    );
+}
