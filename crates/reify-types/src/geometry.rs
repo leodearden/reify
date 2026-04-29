@@ -2044,6 +2044,211 @@ mod tests {
         assert_eq!(records.face_generated.len(), 1);
     }
 
+    // --- task 5a (#2573): AttributeHistory enum + execute_with_history default ---
+
+    #[test]
+    fn attribute_history_variants_construct_and_match() {
+        // None — used by non-OCCT kernels and non-attributable ops.
+        let none = AttributeHistory::None;
+        match &none {
+            AttributeHistory::None => {}
+            _ => panic!("expected AttributeHistory::None"),
+        }
+
+        // Extrude — wraps SweepOpHistoryRecords.
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..SweepOpHistoryRecords::default()
+        });
+        match &extrude {
+            AttributeHistory::Extrude(records) => {
+                assert_eq!(records.start_cap_face_indices, vec![5_u32]);
+                assert_eq!(records.end_cap_face_indices, vec![6_u32]);
+            }
+            _ => panic!("expected AttributeHistory::Extrude"),
+        }
+
+        // Revolve — same shape as Extrude but a distinct variant so the
+        // dispatch site can route per-op.
+        let revolve = AttributeHistory::Revolve(SweepOpHistoryRecords::default());
+        match &revolve {
+            AttributeHistory::Revolve(records) => {
+                assert!(records.start_cap_face_indices.is_empty());
+                assert!(records.end_cap_face_indices.is_empty());
+            }
+            _ => panic!("expected AttributeHistory::Revolve"),
+        }
+    }
+
+    #[test]
+    fn attribute_history_variants_are_distinct_via_partial_eq() {
+        let none = AttributeHistory::None;
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords::default());
+        let revolve = AttributeHistory::Revolve(SweepOpHistoryRecords::default());
+
+        assert_ne!(none, extrude);
+        assert_ne!(none, revolve);
+        // Same SweepOpHistoryRecords payload, different enum tag → !=.
+        assert_ne!(extrude, revolve);
+    }
+
+    #[test]
+    fn attribute_history_clone_round_trips() {
+        let extrude = AttributeHistory::Extrude(SweepOpHistoryRecords {
+            start_cap_face_indices: vec![1, 2],
+            end_cap_face_indices: vec![3],
+            ..SweepOpHistoryRecords::default()
+        });
+        let cloned = extrude.clone();
+        assert_eq!(extrude, cloned);
+    }
+
+    #[test]
+    fn attribute_history_debug_includes_variant_name() {
+        let dbg = format!("{:?}", AttributeHistory::None);
+        assert!(dbg.contains("None"), "expected None in {dbg}");
+        let dbg = format!(
+            "{:?}",
+            AttributeHistory::Extrude(SweepOpHistoryRecords::default())
+        );
+        assert!(dbg.contains("Extrude"), "expected Extrude in {dbg}");
+        let dbg = format!(
+            "{:?}",
+            AttributeHistory::Revolve(SweepOpHistoryRecords::default())
+        );
+        assert!(dbg.contains("Revolve"), "expected Revolve in {dbg}");
+    }
+
+    #[test]
+    fn geometry_kernel_execute_with_history_default_returns_none_history() {
+        // Verify that the default `execute_with_history` impl on `GeometryKernel`
+        // forwards to `execute(op)?` and pairs the resulting handle with
+        // `AttributeHistory::None`. Non-OCCT/non-overriding kernels and
+        // non-attributable ops must route through this default unchanged.
+        struct ExecuteOnlyKernel {
+            next_id: u64,
+        }
+
+        impl GeometryKernel for ExecuteOnlyKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                let id = self.next_id;
+                self.next_id += 1;
+                Ok(GeometryHandle {
+                    id: GeometryHandleId(id),
+                    repr: ReprKind::Solid,
+                })
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                unimplemented!("ExecuteOnlyKernel only supports execute")
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!()
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!()
+            }
+        }
+
+        let mut kernel = ExecuteOnlyKernel { next_id: 1 };
+
+        // Non-attributable op — expect None.
+        let op = GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        };
+        let (handle, history) = kernel
+            .execute_with_history(&op)
+            .expect("execute_with_history default must succeed when execute does");
+        assert_eq!(handle.id, GeometryHandleId(1));
+        assert_eq!(history, AttributeHistory::None);
+
+        // Attributable op (Extrude) — default impl still returns None because
+        // the kernel does not override execute_with_history. Overriding kernels
+        // (OcctKernelHandle, step-8/10) supply the Extrude/Revolve variant.
+        let op = GeometryOp::Extrude {
+            profile: GeometryHandleId(99),
+            distance: Value::Real(5.0),
+        };
+        let (handle, history) = kernel
+            .execute_with_history(&op)
+            .expect("default impl must succeed for any GeometryOp execute supports");
+        assert_eq!(handle.id, GeometryHandleId(2));
+        assert_eq!(history, AttributeHistory::None);
+
+        // Same for Revolve.
+        let op = GeometryOp::Revolve {
+            profile: GeometryHandleId(99),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::PI,
+        };
+        let (handle, history) = kernel.execute_with_history(&op).unwrap();
+        assert_eq!(handle.id, GeometryHandleId(3));
+        assert_eq!(history, AttributeHistory::None);
+    }
+
+    #[test]
+    fn geometry_kernel_execute_with_history_default_propagates_execute_error() {
+        struct AlwaysFailKernel;
+
+        impl GeometryKernel for AlwaysFailKernel {
+            fn execute(
+                &mut self,
+                _op: &GeometryOp,
+            ) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("simulated".into()))
+            }
+
+            fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                unimplemented!()
+            }
+
+            fn export(
+                &self,
+                _handle: GeometryHandleId,
+                _format: ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                unimplemented!()
+            }
+
+            fn tessellate(
+                &self,
+                _handle: GeometryHandleId,
+                _tolerance: f64,
+            ) -> Result<Mesh, TessError> {
+                unimplemented!()
+            }
+        }
+
+        let mut kernel = AlwaysFailKernel;
+        let op = GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        };
+        let err = kernel
+            .execute_with_history(&op)
+            .expect_err("execute_with_history must propagate execute errors");
+        match err {
+            GeometryError::OperationFailed(msg) => assert!(msg.contains("simulated")),
+            other => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
     #[test]
     fn mod_entry_constructs_with_feature_id_and_split_index() {
         let entry = ModEntry {
