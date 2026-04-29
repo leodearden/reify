@@ -46,6 +46,29 @@ fn find_forall_constraint_span(
     panic!("no ForallConstraint found in structure {}", structure_name);
 }
 
+/// Recover the `MemberDecl::ForallConnect` span by re-parsing `source`,
+/// finding the structure named `structure_name`, and returning the span of
+/// the first ForallConnect member encountered. Panics if not found.
+fn find_forall_connect_span(
+    source: &str,
+    structure_name: &str,
+) -> reify_types::SourceSpan {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Structure(s) = decl {
+            if s.name == structure_name {
+                for m in &s.members {
+                    if let reify_syntax::MemberDecl::ForallConnect(f) = m {
+                        return f.span;
+                    }
+                }
+            }
+        }
+    }
+    panic!("no ForallConnect found in structure {}", structure_name);
+}
+
 /// `forall v in [1, 2, 3]: constraint v > 0` should emit exactly 3
 /// CompiledConstraints, each comparing the substituted literal element
 /// against 0 (BinOp::Gt with Literal(Int) on the left), and each carrying a
@@ -617,4 +640,84 @@ structure S {
         "expected zero forall@* constraints from empty-list forall, got {}",
         forall_constraints_count
     );
+}
+
+/// `forall v in vents: connect v.inlet -> air_channel` over a 3-element
+/// collection sub of a structure with a port should emit exactly 3
+/// CompiledConnections, each with `left_port == "vents[<i>].inlet"`,
+/// `right_port == "air_channel"`, and `span == forall_decl.span`. Pins
+/// PRD criterion 8: forall over a connection statement emits one
+/// connection per element, with the bound var substituted by an indexed
+/// access into the collection sub. The indexed-sub-component port name
+/// formatting (`vents[0].inlet`) flows through the existing dotted-port-name
+/// branch in `compile_connection`, mirroring the `motor.shaft` style.
+#[test]
+fn forall_connect_emits_per_element_connections() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forall connect over collection sub, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        3,
+        "expected exactly 3 CompiledConnections (one per forall element), got {}: \
+         left_ports = {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| c.left_port.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // Recover the source forall span; every emitted connection must carry it.
+    let forall_span = find_forall_connect_span(source, "S");
+
+    for (i, conn) in template.connections.iter().enumerate() {
+        let expected_left = format!("vents[{}].inlet", i);
+        assert_eq!(
+            conn.left_port, expected_left,
+            "expected left_port == {:?} for element {}, got {:?}",
+            expected_left, i, conn.left_port
+        );
+        assert_eq!(
+            conn.right_port, "air_channel",
+            "expected right_port == 'air_channel' for element {}, got {:?}",
+            i, conn.right_port
+        );
+        assert_eq!(
+            conn.operator,
+            reify_syntax::ConnectOp::Forward,
+            "expected ConnectOp::Forward for element {}, got {:?}",
+            i, conn.operator
+        );
+        assert_eq!(
+            conn.span, forall_span,
+            "expected forall-emitted connection span to equal source forall span \
+             for element {}, got connection.span = {:?}, forall_span = {:?}",
+            i, conn.span, forall_span
+        );
+    }
 }
