@@ -796,7 +796,7 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// runtime slice membership, so those arms **must be kept in sync with
 /// this constant** when a new kind is added.
 /// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar"];
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
