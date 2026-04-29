@@ -260,6 +260,15 @@ fn kinematic_stdlib_smoke_e2e() {
         1e-15,
         "t_composed_op translation matches t_composed",
     );
+    // Dimension-tag regression guard (operator path): restores the dim-tag
+    // coverage that the previous bit-exact assert_eq!(t_co_op, t_co) provided
+    // implicitly through Value equality. assert_vec3_close is blind to dim tags
+    // because Value::as_f64() strips them.
+    assert_vec3_dim(
+        t_co_op_trans,
+        DimensionVector::LENGTH,
+        "t_composed_op translation dim",
+    );
 
     // t_inv = inverse(t_unit_x) → translation [-1mm, 0, 0]
     let t_in = get_value(v, "t_inv");
