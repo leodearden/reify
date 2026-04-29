@@ -254,15 +254,10 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
     max_m2: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(handle)?;
-    let values = query_per_subshape(kernel, &faces, "faces_by_area", GeometryQuery::SurfaceArea)?;
-    let mut out = Vec::with_capacity(faces.len());
-    for (id, value) in faces.iter().zip(values.iter()) {
-        let area = expect_real("SurfaceArea", *id, value)?;
-        if area >= min_m2 && area <= max_m2 {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+    filter_by_value(kernel, &faces, "faces_by_area", GeometryQuery::SurfaceArea, |id, value| {
+        let area = expect_real("SurfaceArea", id, value)?;
+        Ok(area >= min_m2 && area <= max_m2)
+    })
 }
 
 /// Return the subset of `extract_faces(parent_handle)` whose surface area lies
@@ -300,20 +295,10 @@ pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(parent_handle)?;
     record_subshape_tags(table, &faces, parent_tag);
-    let values = query_per_subshape(
-        kernel,
-        &faces,
-        "faces_by_area_with_tags",
-        GeometryQuery::SurfaceArea,
-    )?;
-    let mut out = Vec::with_capacity(faces.len());
-    for (id, value) in faces.iter().zip(values.iter()) {
-        let area = expect_real("SurfaceArea", *id, value)?;
-        if area >= min_m2 && area <= max_m2 {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+    filter_by_value(kernel, &faces, "faces_by_area_with_tags", GeometryQuery::SurfaceArea, |id, value| {
+        let area = expect_real("SurfaceArea", id, value)?;
+        Ok(area >= min_m2 && area <= max_m2)
+    })
 }
 
 /// Parse a `Value::String` that the kernel formatted as JSON
@@ -509,27 +494,21 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
         )
     })?;
     // Threshold on |dot|: edges accepted iff |t · axis| >= cos(tol).
+    // Note: cos is monotone-decreasing on [0, π], so angle <= tol is
+    // equivalent to cos(angle) >= cos(tol); for the sign-tolerant variant
+    // we use |cos|.
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(handle)?;
-    let values = query_per_subshape(kernel, &edges, "edges_parallel_to", GeometryQuery::EdgeTangent)?;
-    let mut out = Vec::with_capacity(edges.len());
-    for (id, tan_value) in edges.iter().zip(values) {
-        let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
+    filter_by_value(kernel, &edges, "edges_parallel_to", GeometryQuery::EdgeTangent, |id, value| {
+        let raw = parse_xyz_value(value, "EdgeTangent")?;
         let tan = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
                 "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
                 id
             ))
         })?;
-        let abs_dot = dot3(tan, axis).abs();
-        // Note: cos is monotone-decreasing on [0, π], so the condition
-        // angle <= tol is equivalent to cos(angle) >= cos(tol). For the
-        // sign-tolerant variant we use |cos|.
-        if abs_dot >= cos_tol {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+        Ok(dot3(tan, axis).abs() >= cos_tol)
+    })
 }
 
 /// Return the subset of `extract_edges(parent_handle)` whose midpoint tangent
@@ -570,6 +549,9 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    // Axis validation happens BEFORE extract_edges / table mutation:
+    // "fail before kernel touch" contract pinned by
+    // edges_parallel_to_with_tags_zero_axis_errors_before_table_mutation.
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),
@@ -578,27 +560,16 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     let cos_tol = angular_tol_rad.cos();
     let edges = kernel.extract_edges(parent_handle)?;
     record_subshape_tags(table, &edges, parent_tag);
-    let values = query_per_subshape(
-        kernel,
-        &edges,
-        "edges_parallel_to_with_tags",
-        GeometryQuery::EdgeTangent,
-    )?;
-    let mut out = Vec::with_capacity(edges.len());
-    for (id, tan_value) in edges.iter().zip(values) {
-        let raw = parse_xyz_value(&tan_value, "EdgeTangent")?;
+    filter_by_value(kernel, &edges, "edges_parallel_to_with_tags", GeometryQuery::EdgeTangent, |id, value| {
+        let raw = parse_xyz_value(value, "EdgeTangent")?;
         let tan = normalize3(raw).ok_or_else(|| {
             QueryError::QueryFailed(format!(
                 "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
                 id
             ))
         })?;
-        let abs_dot = dot3(tan, axis).abs();
-        if abs_dot >= cos_tol {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+        Ok(dot3(tan, axis).abs() >= cos_tol)
+    })
 }
 
 /// Return the subset of `extract_edges(handle)` that lie entirely within
@@ -627,15 +598,10 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
     tol_m: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(handle)?;
-    let values = query_per_subshape(kernel, &edges, "edges_at_height", GeometryQuery::BoundingBox)?;
-    let mut out = Vec::with_capacity(edges.len());
-    for (id, bbox_value) in edges.iter().zip(values) {
-        let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
-        if (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+    filter_by_value(kernel, &edges, "edges_at_height", GeometryQuery::BoundingBox, |_id, value| {
+        let (zmin, zmax) = parse_bbox_z_extents(value)?;
+        Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
+    })
 }
 
 /// Return the subset of `extract_edges(parent_handle)` that lie entirely within
@@ -666,20 +632,10 @@ pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let edges = kernel.extract_edges(parent_handle)?;
     record_subshape_tags(table, &edges, parent_tag);
-    let values = query_per_subshape(
-        kernel,
-        &edges,
-        "edges_at_height_with_tags",
-        GeometryQuery::BoundingBox,
-    )?;
-    let mut out = Vec::with_capacity(edges.len());
-    for (id, bbox_value) in edges.iter().zip(values) {
-        let (zmin, zmax) = parse_bbox_z_extents(&bbox_value)?;
-        if (zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m {
-            out.push(*id);
-        }
-    }
-    Ok(out)
+    filter_by_value(kernel, &edges, "edges_at_height_with_tags", GeometryQuery::BoundingBox, |_id, value| {
+        let (zmin, zmax) = parse_bbox_z_extents(value)?;
+        Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
+    })
 }
 
 /// Resolve a `FeatureTag` to a unique candidate geometry handle.
