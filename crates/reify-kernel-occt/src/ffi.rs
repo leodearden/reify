@@ -211,7 +211,7 @@ pub mod ffi {
         /// Count of non-degenerate, untracked profile edges that did not produce a
         /// face_generated record during the full-revolution synthesis post-pass.
         /// Always 0 for prism ops and partial revolves; non-zero indicates a gap.
-        fn sweep_op_history_unmatched_radial_edge_count(history: &SweepOpHistory) -> u32;
+        fn sweep_op_history_unsynthesized_profile_edge_count(history: &SweepOpHistory) -> u32;
         /// Count of face_generated records dropped by the post-sort dedup pass
         /// because their parent_subshape_index duplicated the preceding record.
         /// Zero for a well-formed sweep.

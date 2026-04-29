@@ -7,7 +7,6 @@
 
 // stdlib
 #include <algorithm>
-#include <limits>
 #include <numeric>
 #include <set>
 #include <string>
@@ -623,19 +622,19 @@ static void revolve_synthesis_post_sort_and_dedup(
 
     // (2) In-place dedup: compact sorted[], dropping records whose
     //     parent_subshape_index equals the preceding kept record.
-    //     Gate on rec_idx > 0 rather than a SENTINEL value so that a
-    //     hypothetical parent_subshape_index == UINT32_MAX is handled
-    //     correctly (no false duplicate on the first record).
+    //     Gate on write_idx > 0 so prev_parent is only read after being set,
+    //     which remains correct if record 0 is ever skipped by future
+    //     filtering (unlike rec_idx > 0, which would compare against the
+    //     uninitialized-sentinel 0 for position 1 after position 0 is skipped).
     const std::size_t n_sorted = sorted.size();
     std::size_t write_idx = 0;
     uint32_t prev_parent = 0; // value irrelevant; only read when write_idx > 0
     for (std::size_t i = 0; i < n_sorted; i += 3) {
-        const std::size_t rec_idx = i / 3;
         uint32_t cur_parent = sorted[i + 1];
-        if (rec_idx > 0 && cur_parent == prev_parent) {
+        if (write_idx > 0 && cur_parent == prev_parent) {
             ++out_duplicate_count;
         } else {
-            // Safe: write_idx <= rec_idx, so destination never aliases unread src.
+            // Safe: write_idx <= i/3, so destination never aliases unread src.
             sorted[write_idx * 3 + 0] = sorted[i + 0];
             sorted[write_idx * 3 + 1] = sorted[i + 1];
             sorted[write_idx * 3 + 2] = sorted[i + 2];
@@ -681,13 +680,13 @@ static void revolve_synthesis_post_sort_and_dedup(
 /// SILENT-DROPS: any non-degenerate, untracked profile edge that exits the
 /// synthesis loop without producing a face_generated record (axial path 4,
 /// slanted path 5, or inner matching-loop fall-through path 6) increments
-/// `SweepOpHistory::unmatched_radial_edge_count`. After the synthesis loop
+/// `SweepOpHistory::unsynthesized_profile_edge_count`. After the synthesis loop
 /// completes, if the counter is non-zero, one OCCT `Message_Warning` is
 /// emitted via `Message::DefaultMessenger()` summarising the count. The
 /// warning emission is best-effort (the OCCT messenger contract is not
 /// tested directly; only the counter field is asserted in integration
 /// tests). The counter is surfaced to Rust callers via the
-/// `SweepOpHistoryRecords` field `unmatched_radial_edge_count` so
+/// `SweepOpHistoryRecords` field `unsynthesized_profile_edge_count` so
 /// integration tests can assert it is zero for well-formed profiles.
 ///
 /// DUPLICATE DETECTION: if `parent_subshape_index` values are not distinct
@@ -763,12 +762,12 @@ static void synthesize_full_revolution_radial_face_records(
         double dot = std::abs(edge_vec.Dot(axis_dir));
         if (dot > 1.0 - DIR_TOL) {
             // Axial — OCCT Generated() should have caught this.
-            ++history.unmatched_radial_edge_count;
+            ++history.unsynthesized_profile_edge_count;
             continue;
         }
         if (dot > DIR_TOL) {
             // Slanted — OCCT reports conical sweeps correctly.
-            ++history.unmatched_radial_edge_count;
+            ++history.unsynthesized_profile_edge_count;
             continue;
         }
 
@@ -841,16 +840,16 @@ static void synthesize_full_revolution_radial_face_records(
         }
         if (!matched) {
             // Path 6: inner face-matching loop found no candidate.
-            ++history.unmatched_radial_edge_count;
+            ++history.unsynthesized_profile_edge_count;
         }
     }
 
-    // Emit a single OCCT warning if any profile edges went unmatched.
-    if (history.unmatched_radial_edge_count > 0) {
+    // Emit a single OCCT warning if any profile edges went unsynthesized.
+    if (history.unsynthesized_profile_edge_count > 0) {
         std::ostringstream oss;
         oss << "synthesize_full_revolution_radial_face_records: "
-            << history.unmatched_radial_edge_count
-            << " unmatched profile edge(s) — silent gap in face_generated";
+            << history.unsynthesized_profile_edge_count
+            << " unsynthesized profile edge(s) — silent gap in face_generated";
         Message::DefaultMessenger()->Send(
             TCollection_ExtendedString(oss.str().c_str()),
             Message_Warning);
@@ -1107,8 +1106,8 @@ rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& 
     return to_rust_vec(history.end_cap_face_indices);
 }
 
-uint32_t sweep_op_history_unmatched_radial_edge_count(const SweepOpHistory& history) {
-    return history.unmatched_radial_edge_count;
+uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory& history) {
+    return history.unsynthesized_profile_edge_count;
 }
 
 uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history) {

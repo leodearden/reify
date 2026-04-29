@@ -574,8 +574,8 @@ impl OcctKernel {
             let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
                 .into_iter()
                 .collect();
-            let unmatched_radial_edge_count =
-                ffi::ffi::sweep_op_history_unmatched_radial_edge_count(&history);
+            let unsynthesized_profile_edge_count =
+                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
             // Take the result shape last, after all record buffers have
@@ -592,7 +592,7 @@ impl OcctKernel {
                 edge_deleted,
                 start_cap_face_indices,
                 end_cap_face_indices,
-                unmatched_radial_edge_count,
+                unsynthesized_profile_edge_count,
                 duplicate_parent_subshape_index_count,
             };
             (result_shape, records)
@@ -701,8 +701,8 @@ impl OcctKernel {
             let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
                 .into_iter()
                 .collect();
-            let unmatched_radial_edge_count =
-                ffi::ffi::sweep_op_history_unmatched_radial_edge_count(&history);
+            let unsynthesized_profile_edge_count =
+                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
             // Take the result shape last, after all record buffers have
@@ -719,7 +719,7 @@ impl OcctKernel {
                 edge_deleted,
                 start_cap_face_indices,
                 end_cap_face_indices,
-                unmatched_radial_edge_count,
+                unsynthesized_profile_edge_count,
                 duplicate_parent_subshape_index_count,
             };
             (result_shape, records)

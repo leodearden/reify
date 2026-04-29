@@ -191,7 +191,7 @@ uint32_t boolean_op_history_silent_drop_count(const BooleanOpHistory& history);
 /// time because the algorithm's tracking maps are tied to its lifetime —
 /// once it goes out of scope the maps are gone.
 ///
-/// Diagnostic counters (full-revolution only): `unmatched_radial_edge_count`
+/// Diagnostic counters (full-revolution only): `unsynthesized_profile_edge_count`
 /// counts non-degenerate, untracked profile edges that did not produce a
 /// `face_generated` record in the synthesis post-pass (see
 /// `synthesize_full_revolution_radial_face_records`). When non-zero, one OCCT
@@ -231,7 +231,7 @@ struct SweepOpHistory {
     /// Always 0 for prism operations and for partial revolves; only
     /// incremented by the full-revolution radial-face synthesis post-pass.
     /// Zero for well-formed profiles; non-zero indicates a synthesis gap.
-    uint32_t unmatched_radial_edge_count = 0;
+    uint32_t unsynthesized_profile_edge_count = 0;
     /// Count of `face_generated` records dropped by `revolve_synthesis_
     /// post_sort_and_dedup` because their `parent_subshape_index` duplicated
     /// the immediately preceding record's (after stable-sort). Always 0 for
@@ -329,7 +329,7 @@ rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& 
 /// Count of non-degenerate, untracked profile edges that did not produce a
 /// face_generated record during the full-revolution synthesis post-pass.
 /// Always 0 for prism operations and for partial revolves.
-uint32_t sweep_op_history_unmatched_radial_edge_count(const SweepOpHistory& history);
+uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory& history);
 /// Count of face_generated records dropped by the post-sort dedup pass because
 /// their parent_subshape_index duplicated the preceding record (after stable-sort).
 /// Zero for a well-formed full revolve.

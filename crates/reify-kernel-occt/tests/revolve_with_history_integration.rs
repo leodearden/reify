@@ -400,14 +400,14 @@ fn full_revolve_with_history_reports_no_caps() {
     }
 
     // (f) Diagnostic counter: for a well-formed rect profile every profile
-    //     edge must produce a face_generated record — no unmatched radial
+    //     edge must produce a face_generated record — no unsynthesized profile
     //     edges expected.
     assert_eq!(
-        history.unmatched_radial_edge_count,
+        history.unsynthesized_profile_edge_count,
         0,
-        "full revolve of rect profile must report 0 unmatched radial edges, \
+        "full revolve of rect profile must report 0 unsynthesized profile edges, \
          got {} (face_generated = {:?})",
-        history.unmatched_radial_edge_count,
+        history.unsynthesized_profile_edge_count,
         history.face_generated
     );
 
@@ -595,14 +595,14 @@ fn full_revolve_triangle_profile_synthesis_regression() {
     }
 
     // (vii) Diagnostic counter: for a well-formed triangle profile every
-    //       profile edge must produce a face_generated record — no unmatched
-    //       radial edges expected.
+    //       profile edge must produce a face_generated record — no unsynthesized
+    //       profile edges expected.
     assert_eq!(
-        history.unmatched_radial_edge_count,
+        history.unsynthesized_profile_edge_count,
         0,
-        "full revolve of triangle profile must report 0 unmatched radial edges, \
+        "full revolve of triangle profile must report 0 unsynthesized profile edges, \
          got {} (face_generated = {:?})",
-        history.unmatched_radial_edge_count,
+        history.unsynthesized_profile_edge_count,
         history.face_generated
     );
 
@@ -708,7 +708,7 @@ fn full_revolve_synthesis_keeps_per_edge_record_ordering_stable_across_dimension
 /// — just above `DIR_TOL = 1e-6`, so the synthesis post-pass classifies
 /// it as "slanted" (path 5) and won't synthesise a record.
 ///
-/// Assertion: `unmatched_radial_edge_count == 3 - face_generated.len()`
+/// Assertion: `unsynthesized_profile_edge_count == 3 - face_generated.len()`
 /// (every profile edge without a synthesised record must bump the counter).
 /// This is OCCT-version-agnostic: if OCCT covers the edge via Generated()
 /// both sides are 0; if it doesn't, both sides equal the gap. Either way
@@ -718,7 +718,7 @@ fn full_revolve_synthesis_keeps_per_edge_record_ordering_stable_across_dimension
 /// assertion fires (`0 != 1`), confirming the failing state. After step-4
 /// the assertion is fully meaningful.
 #[test]
-fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
+fn full_revolve_misclassified_radial_edge_counter_best_effort() {
     if !OCCT_AVAILABLE {
         return;
     }
@@ -746,9 +746,9 @@ fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
         .expect("revolve_with_history should succeed for slightly-slanted triangle");
 
     eprintln!(
-        "misclassified-radial-edge test: unmatched_radial_edge_count={}, \
+        "misclassified-radial-edge test: unsynthesized_profile_edge_count={}, \
          face_generated.len()={}, face_generated={:?}",
-        history.unmatched_radial_edge_count,
+        history.unsynthesized_profile_edge_count,
         history.face_generated.len(),
         history.face_generated
     );
@@ -786,11 +786,11 @@ fn full_revolve_misclassified_radial_edge_increments_unmatched_counter() {
     // increment path is no longer exercised here.  A dedicated synthesis-loop
     // fixture (not yet implemented) would provide a fully deterministic path.
     assert_eq!(
-        history.unmatched_radial_edge_count as usize,
+        history.unsynthesized_profile_edge_count as usize,
         3 - history.face_generated.len(),
         "every profile edge without a synthesised face_generated record must \
-         increment unmatched_radial_edge_count; counter={}, face_generated.len()={}",
-        history.unmatched_radial_edge_count,
+         increment unsynthesized_profile_edge_count; counter={}, face_generated.len()={}",
+        history.unsynthesized_profile_edge_count,
         history.face_generated.len()
     );
 }

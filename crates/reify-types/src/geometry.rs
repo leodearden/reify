@@ -1142,13 +1142,13 @@ pub struct SweepOpHistoryRecords {
     /// volume is bounded regardless of how many edges are missing).
     ///
     /// **Integration test guard:** integration tests for well-formed profiles
-    /// should assert `unmatched_radial_edge_count == 0`. The self-consistency
-    /// test `full_revolve_misclassified_radial_edge_increments_unmatched_counter`
+    /// should assert `unsynthesized_profile_edge_count == 0`. The self-consistency
+    /// test `full_revolve_misclassified_radial_edge_counter_best_effort`
     /// validates the increment path via a synthetic near-axial edge
     /// (`dot ≈ 2e-6`, just over `DIR_TOL = 1e-6`), using the assertion
-    /// `unmatched_radial_edge_count == n_profile_edges − face_generated.len()`
+    /// `unsynthesized_profile_edge_count == n_profile_edges − face_generated.len()`
     /// so the test is agnostic to whether OCCT covers the edge independently.
-    pub unmatched_radial_edge_count: u32,
+    pub unsynthesized_profile_edge_count: u32,
     /// Count of `face_generated` records dropped by the post-sort dedup pass
     /// because their `parent_subshape_index` duplicated the immediately
     /// preceding record (after stable-sort by `parent_subshape_index`).
@@ -2140,7 +2140,7 @@ mod tests {
             }],
             start_cap_face_indices: vec![5, 6],
             end_cap_face_indices: vec![7],
-            unmatched_radial_edge_count: 0,
+            unsynthesized_profile_edge_count: 0,
             duplicate_parent_subshape_index_count: 0,
         };
         assert_eq!(records.face_modified.len(), 1);
@@ -2168,7 +2168,7 @@ mod tests {
             edge_deleted: Vec::new(),
             start_cap_face_indices: vec![5],
             end_cap_face_indices: vec![6],
-            unmatched_radial_edge_count: 0,
+            unsynthesized_profile_edge_count: 0,
             duplicate_parent_subshape_index_count: 0,
         };
         let cloned = records.clone();
