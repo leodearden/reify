@@ -102,9 +102,8 @@ fn mechanism_builder_happy_path_e2e() {
 /// Source: a `Kinematic` structure that constructs a closed chain via the
 /// parent-conflict path. Joint `j_x` is recorded with parent `j_a` in the
 /// first `body()` call and then re-recorded with a different parent `j_b`
-/// in the second call — the build-time DAG validation must surface this
-/// as `error="closed_chain"` with both ancestor paths captured on the
-/// resulting Mechanism Map.
+/// in the second call — v0.2 behaviour: this is a valid closed chain;
+/// the Mechanism Map carries a `loop_closures` entry instead of an error.
 ///
 /// Bindings:
 ///   `j_a` = `prismatic(vec3(1,0,0), 0mm..1000mm)` — X-axis translation
@@ -112,7 +111,7 @@ fn mechanism_builder_happy_path_e2e() {
 ///   `j_x` = `revolute(vec3(0,0,1), 0rad..3.14rad)` — Z-axis rotation
 ///   `m0`  = `mechanism()`
 ///   `m1`  = `body(m0, "solid_a", j_x, j_a)` — records j_x → j_a
-///   `m2`  = `body(m1, "solid_b", j_x, j_b)` — conflicts: j_x already → j_a
+///   `m2`  = `body(m1, "solid_b", j_x, j_b)` — closing edge: j_x already → j_a
 const CLOSED_CHAIN_SOURCE: &str = r#"
 structure def Kinematic {
     let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
@@ -124,22 +123,20 @@ structure def Kinematic {
 }
 "#;
 
-/// Closed-chain e2e: parse, compile, eval a source that triggers the
+/// Closed-chain e2e (v0.2): parse, compile, eval a source that triggers the
 /// parent-conflict closed-chain path and assert the Mechanism Map carries
-/// `error="closed_chain"` with non-empty `error_path1` and `error_path2`.
-/// Locks in that closed-chain detection survives the full parse → compile →
-/// eval round-trip — no compile-time pruning, no eval-pipeline glue that
-/// could mangle the structured-error fields.
+/// a `loop_closures` entry instead of an `error` field.
 ///
-/// No `Diagnostic` is expected on the eval pipeline yet — that emission
-/// step is deferred to a future snapshot/eval-pipeline integration (see
-/// the design-decision note in the task plan and the
-/// `DiagnosticCode::KinematicClosedChain` reservation in
-/// `reify-types/src/diagnostics.rs`). Eval errors are still asserted
-/// absent so a regression that began emitting an unrelated Error
-/// diagnostic would surface here.
+/// Locks in that loop-closure recording survives the full parse → compile →
+/// eval round-trip — no compile-time pruning, no eval-pipeline glue that
+/// could mangle the `loop_closures` Map structure. Assertions mirror the
+/// unit-test contract in `mechanism.rs::tests::parent_conflict_records_
+/// loop_closure_constraint`.
+///
+/// No `Diagnostic` is expected on the eval pipeline — closed chains are now
+/// valid v0.2 mechanisms. Eval errors are still asserted absent.
 #[test]
-fn mechanism_builder_closed_chain_e2e() {
+fn mechanism_builder_closed_chain_records_loop_closure_e2e() {
     let compiled = parse_and_compile_with_stdlib(CLOSED_CHAIN_SOURCE);
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
@@ -147,8 +144,7 @@ fn mechanism_builder_closed_chain_e2e() {
     let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics yet \
-         (Diagnostic emission for closed_chain is deferred); got: {eval_errors:?}"
+        "eval should produce no Error-severity diagnostics; got: {eval_errors:?}"
     );
 
     let v = &result.values;
@@ -158,61 +154,53 @@ fn mechanism_builder_closed_chain_e2e() {
         other => panic!("m2 should be a Map, got {other:?}"),
     };
 
+    // v0.2: closed chains are valid — no error key.
     assert_eq!(
         map.get(&Value::String("kind".to_string())),
         Some(&Value::String("mechanism".to_string())),
-        "m2.kind should still be 'mechanism' on errored Mechanism"
-    );
-    assert_eq!(
-        map.get(&Value::String("error".to_string())),
-        Some(&Value::String("closed_chain".to_string())),
-        "m2.error should be 'closed_chain' for the parent-conflict scenario"
-    );
-
-    let path1 = match map.get(&Value::String("error_path1".to_string())) {
-        Some(Value::List(p)) => p,
-        other => panic!("m2.error_path1 should be a List, got {other:?}"),
-    };
-    let path2 = match map.get(&Value::String("error_path2".to_string())) {
-        Some(Value::List(p)) => p,
-        other => panic!("m2.error_path2 should be a List, got {other:?}"),
-    };
-    assert!(
-        !path1.is_empty(),
-        "m2.error_path1 should be non-empty (walks world → ... → j_a → j_x)"
+        "m2.kind should be 'mechanism'"
     );
     assert!(
-        !path2.is_empty(),
-        "m2.error_path2 should be non-empty (walks world → ... → j_b → j_x)"
+        !map.contains_key(&Value::String("error".to_string())),
+        "m2 must NOT have an 'error' key in v0.2 (closed chains are valid); \
+         got error={:?}",
+        map.get(&Value::String("error".to_string()))
     );
 
-    // Pin path1.last() / path2.last() to the actual j_x Value produced
-    // by the eval pipeline. Mirrors the unit-test assertion in
-    // `mechanism.rs::tests::closed_chain_via_parent_conflict_emits_
-    // error_with_both_paths`, which pins the full path content. At
-    // the e2e boundary we additionally guard the Value-equality
-    // round-trip so a future eval-pipeline glue change that wrapped
-    // path elements differently (e.g. boxing the joint Map, attaching
-    // a span, swapping `kind` strings) would surface here.
-    let j_x = get_value(v, "j_x");
+    // Both bodies are present (closing body IS appended).
+    let bodies = match map.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b,
+        other => panic!("m2.bodies should be a List, got {other:?}"),
+    };
+    assert_eq!(bodies.len(), 2, "m2.bodies should have exactly 2 records");
+
+    // loop_closures has exactly one entry.
+    let loop_closures = match map.get(&Value::String("loop_closures".to_string())) {
+        Some(Value::List(lc)) => lc,
+        other => panic!("m2.loop_closures should be a List, got {other:?}"),
+    };
     assert_eq!(
-        path1.last(),
-        Some(j_x),
-        "m2.error_path1 should terminate at j_x (the conflicting joint)"
-    );
-    assert_eq!(
-        path2.last(),
-        Some(j_x),
-        "m2.error_path2 should terminate at j_x (the conflicting joint)"
+        loop_closures.len(),
+        1,
+        "m2.loop_closures should have exactly one entry"
     );
 
-    // The non-terminal entries of each path should be the parent
-    // joints in canonical top-down order: path1 = [world, j_a, j_x],
-    // path2 = [world, j_b, j_x]. Pin the parent joint in each path so
-    // a regression that swapped j_a/j_b or dropped the world-prepend
-    // would surface here as well.
+    let lc = match &loop_closures[0] {
+        Value::Map(m) => m,
+        other => panic!("loop_closures[0] should be a Map, got {other:?}"),
+    };
+    assert_eq!(
+        lc.get(&Value::String("kind".to_string())),
+        Some(&Value::String("loop_closure".to_string())),
+        "loop_closure entry kind should be 'loop_closure'"
+    );
+
+    // Pin path_a = [world, j_a, j_x] and path_b = [world, j_b, j_x] using
+    // the actual joint Values resolved from the eval result. Mirrors the
+    // unit-test path-pinning idiom in mechanism.rs::tests.
     let j_a = get_value(v, "j_a");
     let j_b = get_value(v, "j_b");
+    let j_x = get_value(v, "j_x");
     let world = Value::Map({
         let mut m = std::collections::BTreeMap::new();
         m.insert(
@@ -221,14 +209,23 @@ fn mechanism_builder_closed_chain_e2e() {
         );
         m
     });
+
+    let path_a = match lc.get(&Value::String("path_a".to_string())) {
+        Some(Value::List(p)) => p,
+        other => panic!("loop_closure path_a should be a List, got {other:?}"),
+    };
+    let path_b = match lc.get(&Value::String("path_b".to_string())) {
+        Some(Value::List(p)) => p,
+        other => panic!("loop_closure path_b should be a List, got {other:?}"),
+    };
     assert_eq!(
-        path1,
+        path_a,
         &vec![world.clone(), j_a.clone(), j_x.clone()],
-        "m2.error_path1 should be [world, j_a, j_x]"
+        "loop_closure path_a should be [world, j_a, j_x]"
     );
     assert_eq!(
-        path2,
+        path_b,
         &vec![world, j_b.clone(), j_x.clone()],
-        "m2.error_path2 should be [world, j_b, j_x]"
+        "loop_closure path_b should be [world, j_b, j_x]"
     );
 }
