@@ -69,6 +69,19 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             match kind {
                 "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
+                // 0-DOF fixed joint: always the identity Transform regardless of
+                // the second argument. The second arg is accepted but ignored —
+                // design decision: a 0-DOF joint has no motion variable to validate,
+                // and preserving the two-argument call shape keeps the dispatch
+                // table and parse/compile pipeline unaffected.
+                "fixed" => Value::Transform {
+                    rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                    translation: Box::new(Value::Vector(vec![
+                        Value::length(0.0),
+                        Value::length(0.0),
+                        Value::length(0.0),
+                    ])),
+                },
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
