@@ -29,6 +29,7 @@ pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
 pub mod tolerance_bucket;
+pub mod tolerance_scope;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
@@ -356,6 +357,23 @@ pub struct Engine {
     /// Currently active purposes: maps purpose name → injected constraint IDs.
     /// Used by deactivate_purpose to remove the injected constraints.
     active_purposes: HashMap<String, Vec<ConstraintNodeId>>,
+    /// Per-purpose entity bindings: maps purpose name → bound entity_ref.
+    /// Populated/cleared in lockstep with `active_purposes`. Required for
+    /// `recompute_tolerance_scope` (task 2647) — `active_purposes` only
+    /// records injected ConstraintNodeIds, but the tolerance-scope rebuild
+    /// needs the original `(purpose_name → entity_ref)` mapping. See
+    /// `crates/reify-eval/src/tolerance_scope.rs` and the design decision
+    /// "Track per-purpose bound entity_ref via a new sibling HashMap" in
+    /// `.task/plan.json`.
+    active_purpose_bindings: HashMap<String, String>,
+    /// Active tolerance scope: maps entity_ref → SI tolerance (metres).
+    /// Rebuilt from scratch on every `activate_purpose` / `deactivate_purpose`
+    /// call. The map's value at `entity_ref` is the *minimum* tolerance
+    /// across all currently-active purposes whose subject prefix-scan
+    /// covers `entity_ref` (tighter wins; same partial-order semantics as
+    /// the cache-side `ToleranceBucket`). See task 2647 / PRD
+    /// `docs/prds/v0_2/per-purpose-tolerance.md`.
+    active_tolerance_scope: HashMap<String, f64>,
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
