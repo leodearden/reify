@@ -599,6 +599,28 @@ impl Engine {
         self.cache.freshness(node)
     }
 
+    /// Return the chain-root [`NodeId`] that caused `node` to be Pending, if
+    /// one has been recorded.
+    ///
+    /// This is the **stable, always-public** read path that GUI and LSP
+    /// consumers use to identify the originating failed cell without reaching
+    /// into the test-instrumentation-gated [`cache_store()`](Self::cache_store).
+    ///
+    /// Mirrors the design of [`Engine::freshness()`] — always public, no cfg
+    /// gate. See arch §9.2 lines 880-890 and the `pending_cause` side-table
+    /// contract at `cache.rs:147-156`.
+    ///
+    /// Returns `None` in three cases:
+    /// - `node` has no cache entry (unknown node; identical to
+    ///   [`CacheStore::pending_cause`]'s "default to None" behaviour).
+    /// - `node` is a Failed root — Failed entries do NOT record a cause
+    ///   because they are themselves the chain root, not forwarders.
+    /// - `node`'s cache entry was written via the bulk `mark_pending` path
+    ///   (cache.rs:482-513) that intentionally omits a cause.
+    pub fn pending_cause(&self, node: &NodeId) -> Option<NodeId> {
+        self.cache.pending_cause(node)
+    }
+
     /// **Test-instrumentation only — not a stable public metric.**
     ///
     /// Immutable access to the engine's warm-state pool. Per arch §4.3 / §6.4,
