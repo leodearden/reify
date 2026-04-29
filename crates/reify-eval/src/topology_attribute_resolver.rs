@@ -210,4 +210,53 @@ mod tests {
         assert_eq!(result, AttributeResolution::Resolved(h(20)));
         assert!(diagnostics.is_empty(), "no diagnostics expected on a unique role/idx match");
     }
+
+    /// step-5 — user_label preference rule (PRD line 62).
+    ///
+    /// Companion sub-cases:
+    /// - When user_label uniquely matches handle 30 (whose role/idx do NOT
+    ///   match the query's role/idx), user_label wins → Resolved(30).
+    /// - When user_label is set but matches NO candidate, fall through to
+    ///   the role/idx branch → Resolved(31).
+    #[test]
+    fn user_label_preferred_over_role_and_index_when_both_apply() {
+        let mut table = TopologyAttributeTable::default();
+        // handle 30 — has the user_label, but mismatched role/idx.
+        table.record(h(30), attr(Role::Side, 7, Some("top")));
+        // handle 31 — no user_label, but matches the queried role/idx.
+        table.record(h(31), attr(Role::Cap(CapKind::Top), 0, None));
+        let candidates = [h(30), h(31)];
+
+        // (a) user_label match exists → user_label wins, role/idx ignored.
+        let query_a = AttributeQuery {
+            user_label: Some("top".to_string()),
+            role_and_index: Some((Role::Cap(CapKind::Top), 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result_a =
+            resolve_unique_by_attribute(&table, &candidates, &query_a, span(), &mut diagnostics);
+        assert_eq!(
+            result_a,
+            AttributeResolution::Resolved(h(30)),
+            "user_label match wins over role/idx match per PRD line 62"
+        );
+        assert!(diagnostics.is_empty());
+
+        // (b) user_label matches nothing → fall through to role/idx branch.
+        let query_b = AttributeQuery {
+            user_label: Some("nonexistent".to_string()),
+            role_and_index: Some((Role::Cap(CapKind::Top), 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result_b =
+            resolve_unique_by_attribute(&table, &candidates, &query_b, span(), &mut diagnostics);
+        assert_eq!(
+            result_b,
+            AttributeResolution::Resolved(h(31)),
+            "missing user_label falls through to role/idx branch"
+        );
+        assert!(diagnostics.is_empty());
+    }
 }
