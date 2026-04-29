@@ -488,17 +488,16 @@ pub(crate) fn compile_entity(
                 // overwritten by the rejected cluster's child-template members.
                 // "First cluster wins" in the pre-pass is symmetric with "first
                 // cluster wins" in pass 2. (task 2613)
-                if let Some(first_arm) = m.arms.first() {
-                    if let Some(name) = arm_member_name(&first_arm.member) {
-                        if !seen_match_arm_cluster_names.insert(name.to_string()) {
-                            // Duplicate cluster name — skip pre-pass registration.
-                            // Pass 2 will emit the diagnostic.
-                            continue;
-                        }
-                    }
-                    // No arm_member_name (e.g. unsupported arm kind): do not insert
-                    // into seen_match_arm_cluster_names; let pass 2 emit its diagnostic.
+                if let Some(first_arm) = m.arms.first()
+                    && let Some(name) = arm_member_name(&first_arm.member)
+                    && !seen_match_arm_cluster_names.insert(name.to_string())
+                {
+                    // Duplicate cluster name — skip pre-pass registration.
+                    // Pass 2 will emit the diagnostic.
+                    continue;
                 }
+                // No arm_member_name (e.g. unsupported arm kind): do not insert
+                // into seen_match_arm_cluster_names; let pass 2 emit its diagnostic.
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_syntax::MemberDecl::Sub(sub) => {
