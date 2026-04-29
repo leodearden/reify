@@ -2577,20 +2577,47 @@ mod tests {
     /// Minimal well-formed `(joint, value_arg)` fixture for each kind in `JOINT_KINDS`.
     ///
     /// Shared by `transform_at_dispatches_for_every_joint_kind` and
-    /// `joint_jacobian_dispatches_for_every_joint_kind` so there is exactly one
-    /// `_ => panic!` remediation site to update when a new kind is added to
-    /// `JOINT_KINDS`.
+    /// Returns a `Vec` of `(joint, value_arg)` pairs for each kind so that a
+    /// kind may yield multiple variants when multiple code paths must be covered.
+    ///
+    /// For `"coupling"` two variants are returned — one with a prismatic parent
+    /// and one with a revolute parent — so that both branches in `transform_at`
+    /// (`length_input` vs `trig_input`) and both paths in `joint_jacobian_value`
+    /// are exercised by the dispatch-coverage tests.
+    ///
+    /// After building each coupling value the fixture asserts it is non-Undef.
+    /// This localises the failure to `couple` itself rather than letting a
+    /// regression in `couple` surface as a misleading dispatch-test failure.
+    ///
+    /// Consumer tests should use a nested loop:
+    /// ```ignore
+    /// for &kind in JOINT_KINDS {
+    ///     for (joint, value_arg) in joint_kind_minimal_fixture(kind) { ... }
+    /// }
+    /// ```
     ///
     /// `value_arg` is the motion-variable input for `transform_at`; it is unused
     /// by `joint_jacobian` (which is a constant w.r.t. the motion variable).
-    fn joint_kind_minimal_fixture(kind: &str) -> (Value, Value) {
+    fn joint_kind_minimal_fixture(kind: &str) -> Vec<(Value, Value)> {
         match kind {
-            "prismatic" => (prismatic_x_joint(), Value::length(0.0)),
-            "revolute"  => (revolute_z_joint(),  Value::angle(0.0)),
-            "coupling"  => (
-                eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]),
-                Value::length(0.0),
-            ),
+            "prismatic" => vec![(prismatic_x_joint(), Value::length(0.0))],
+            "revolute"  => vec![(revolute_z_joint(),  Value::angle(0.0))],
+            "coupling"  => {
+                let coupling_p = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+                assert!(
+                    !coupling_p.is_undef(),
+                    "couple fixture itself returned Undef — fix couple before checking dispatch"
+                );
+                let coupling_r = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0)]);
+                assert!(
+                    !coupling_r.is_undef(),
+                    "couple fixture itself returned Undef — fix couple before checking dispatch"
+                );
+                vec![
+                    (coupling_p, Value::length(0.0)),
+                    (coupling_r, Value::angle(0.0)),
+                ]
+            }
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
                  add a minimal well-formed fixture here and confirm that both \
@@ -2613,14 +2640,15 @@ mod tests {
     #[test]
     fn transform_at_dispatches_for_every_joint_kind() {
         for &kind in JOINT_KINDS {
-            let (joint, value_arg) = joint_kind_minimal_fixture(kind);
-            let result = eval_builtin("transform_at", &[joint, value_arg]);
-            assert!(
-                !result.is_undef(),
-                "transform_at(kind='{kind}', minimal-well-formed-input) returned Undef. \
-                 Either add a dispatch arm in transform_at for kind='{kind}', \
-                 or remove '{kind}' from JOINT_KINDS."
-            );
+            for (joint, value_arg) in joint_kind_minimal_fixture(kind) {
+                let result = eval_builtin("transform_at", &[joint, value_arg]);
+                assert!(
+                    !result.is_undef(),
+                    "transform_at(kind='{kind}', minimal-well-formed-input) returned Undef. \
+                     Either add a dispatch arm in transform_at for kind='{kind}', \
+                     or remove '{kind}' from JOINT_KINDS."
+                );
+            }
         }
     }
 
@@ -2638,14 +2666,15 @@ mod tests {
     #[test]
     fn joint_jacobian_dispatches_for_every_joint_kind() {
         for &kind in JOINT_KINDS {
-            let (joint, _value_arg) = joint_kind_minimal_fixture(kind);
-            let result = eval_builtin("joint_jacobian", &[joint]);
-            assert!(
-                !result.is_undef(),
-                "joint_jacobian(kind='{kind}', minimal-well-formed-input) returned Undef. \
-                 Either add a dispatch arm in joint_jacobian_value for kind='{kind}', \
-                 or remove '{kind}' from JOINT_KINDS."
-            );
+            for (joint, _value_arg) in joint_kind_minimal_fixture(kind) {
+                let result = eval_builtin("joint_jacobian", &[joint]);
+                assert!(
+                    !result.is_undef(),
+                    "joint_jacobian(kind='{kind}', minimal-well-formed-input) returned Undef. \
+                     Either add a dispatch arm in joint_jacobian_value for kind='{kind}', \
+                     or remove '{kind}' from JOINT_KINDS."
+                );
+            }
         }
     }
 
