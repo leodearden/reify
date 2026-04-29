@@ -721,3 +721,100 @@ structure def S {
         );
     }
 }
+
+/// `forall v in vents: chain v.a -> v.b -> v.c` over a 3-element collection
+/// sub of a structure with 3 chain-compatible ports should desugar to
+/// `count * (chain_len - 1)` = 6 CompiledConnections, in element-major
+/// order: each element's pairwise chain is emitted contiguously before
+/// the next element starts. Each emitted connection carries
+/// `span = forall_decl.span`. Pins step-18's pairwise per-element
+/// desugaring of a chain body inside a forall.
+#[test]
+fn forall_connect_chain_body_emits_per_element_pairwise_connections() {
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 1mm }
+    port c : in T { param d : Length = 1mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    forall v in vents: chain v.a -> v.b -> v.c
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forall chain over collection sub, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // 3 elements × 2 windows(2) pairs per chain = 6 CompiledConnections.
+    assert_eq!(
+        template.connections.len(),
+        6,
+        "expected 6 CompiledConnections (3 elements × 2 chain pairs), got {}: \
+         (left -> right) = {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    let forall_span = find_forall_connect_span(source, "S");
+
+    // Element-major pairwise pattern: per-element chain pairs emitted in
+    // source order, contiguously, before the next element starts.
+    let expected: Vec<(String, String)> = (0..3)
+        .flat_map(|i| {
+            vec![
+                (format!("vents[{}].a", i), format!("vents[{}].b", i)),
+                (format!("vents[{}].b", i), format!("vents[{}].c", i)),
+            ]
+        })
+        .collect();
+
+    for (k, conn) in template.connections.iter().enumerate() {
+        let (exp_l, exp_r) = &expected[k];
+        assert_eq!(
+            conn.left_port.as_str(),
+            exp_l.as_str(),
+            "connection {} left_port mismatch: expected {:?}, got {:?}",
+            k,
+            exp_l,
+            conn.left_port
+        );
+        assert_eq!(
+            conn.right_port.as_str(),
+            exp_r.as_str(),
+            "connection {} right_port mismatch: expected {:?}, got {:?}",
+            k,
+            exp_r,
+            conn.right_port
+        );
+        assert_eq!(
+            conn.operator,
+            reify_syntax::ConnectOp::Forward,
+            "expected ConnectOp::Forward for connection {}, got {:?}",
+            k,
+            conn.operator
+        );
+        assert_eq!(
+            conn.span, forall_span,
+            "expected forall-emitted chain connection {} span to equal source \
+             forall span; got connection.span = {:?}, forall_span = {:?}",
+            k, conn.span, forall_span
+        );
+    }
+}
