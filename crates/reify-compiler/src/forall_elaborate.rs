@@ -27,6 +27,127 @@
 use super::*;
 use std::collections::HashMap;
 
+/// Resolve the collection expression of a `forall` decl to a Vec of
+/// per-element replacement ASTs.
+///
+/// Returns `Some(elements)` when:
+///   * The collection is a `ListLiteral` (any length) — elements are the
+///     literal items.
+///   * The collection is an `Ident(name)` referring to a collection sub
+///     whose `__count_<name>` cell resolves to a literal `Int` — elements
+///     are `IndexAccess { Ident(name), NumberLiteral(i) }` for `i ∈ 0..count`.
+///
+/// Returns `None` (caller emits zero decls) when:
+///   * The collection is an `Ident` for a collection sub whose count cell
+///     is missing or non-literal (PRD criterion 7's silent-skip half — defers
+///     re-elaboration to future SchemaNode work).
+///   * The collection is some other expression that type-checks to
+///     `Type::List(_)` or `Type::Set(_)` (a List/Set value whose count
+///     isn't statically known — same defer case).
+///   * The collection's compiled type is `Type::Error` (anti-cascade — the
+///     upstream error has already been emitted by `compile_expr`).
+///
+/// Emits a diagnostic and returns `None` when:
+///   * The collection's compiled type is anything else (Int, Bool, Scalar,
+///     etc.) — a genuinely non-iterable collection expression.
+///
+/// Diagnostic wording mirrors the expression-form forall/exists at
+/// `expr.rs:1791-1799` for symmetry: `cannot iterate over non-collection
+/// type '<ty>' in forall: expected List<_> or Set<_>` with label
+/// `not iterable` anchored at the collection expression's span.
+fn resolve_forall_elements(
+    collection: &reify_syntax::Expr,
+    sub_components: &[SubComponentDecl],
+    value_cells: &[ValueCellDecl],
+    scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<reify_syntax::Expr>> {
+    use reify_syntax::{Expr, ExprKind};
+
+    match &collection.kind {
+        ExprKind::ListLiteral(items) => Some(items.clone()),
+        ExprKind::Ident(name) => {
+            // Try to resolve as a collection sub first.
+            if let Some(sub) = sub_components
+                .iter()
+                .find(|s| s.name == *name && s.is_collection)
+            {
+                let count = sub
+                    .count_cell
+                    .as_ref()
+                    .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id))?;
+                let coll_span = collection.span;
+                return Some(
+                    (0..count)
+                        .map(|i| Expr {
+                            kind: ExprKind::IndexAccess {
+                                object: Box::new(Expr {
+                                    kind: ExprKind::Ident(name.clone()),
+                                    span: coll_span,
+                                }),
+                                index: Box::new(Expr {
+                                    kind: ExprKind::NumberLiteral(i as f64),
+                                    span: coll_span,
+                                }),
+                            },
+                            span: coll_span,
+                        })
+                        .collect(),
+                );
+            }
+            // Ident doesn't refer to a collection sub — fall through to the
+            // type-check path below so a List<T>-typed param defers silently
+            // and a non-collection ident emits a non-iterable diagnostic.
+            diagnose_non_iterable_or_skip(collection, scope, enum_defs, functions, diagnostics);
+            None
+        }
+        _ => {
+            diagnose_non_iterable_or_skip(collection, scope, enum_defs, functions, diagnostics);
+            None
+        }
+    }
+}
+
+/// Type-check a non-statically-resolvable collection expression and either
+/// emit a `cannot iterate over non-collection type` diagnostic or defer
+/// silently.
+///
+/// Called from `resolve_forall_elements` for the Ident-but-not-collection-sub
+/// and the catch-all branches. Anti-cascade: when `compile_expr` produces
+/// `Type::Error`, suppress the new diagnostic (the upstream error already
+/// surfaces the root cause). For valid `List<_>` / `Set<_>` types whose
+/// count isn't statically known, defer silently — re-elaboration on count
+/// change is future SchemaNode work (PRD criterion 7).
+fn diagnose_non_iterable_or_skip(
+    collection: &reify_syntax::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let compiled = compile_expr(collection, scope, enum_defs, functions, diagnostics);
+    let ty = &compiled.result_type;
+    if ty.is_error() {
+        // Upstream error already emitted; do not pile on.
+        return;
+    }
+    if matches!(ty, Type::List(_) | Type::Set(_)) {
+        // Valid collection type but count not statically known — defer
+        // silently. Future SchemaNode-style re-elaboration will pick this up
+        // once the count becomes known at graph-build time.
+        return;
+    }
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "cannot iterate over non-collection type '{}' in forall: expected List<_> or Set<_>",
+            ty
+        ))
+        .with_label(DiagnosticLabel::new(collection.span, "not iterable")),
+    );
+}
+
 /// Resolve a collection sub's count cell to a literal `i64` count.
 ///
 /// Mirrors the Literal-or-ValueRef-to-Literal chain at
@@ -89,51 +210,22 @@ pub(crate) fn elaborate_forall_constraint(
     guard_index: &mut u32,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use reify_syntax::{Expr, ExprKind, ForallConstraintBody};
+    use reify_syntax::ForallConstraintBody;
 
     // Resolve the collection expression to a Vec of per-element replacements.
-    //   * `ListLiteral(items)` → element AST = `items[i]`.
-    //   * `Ident(name)` referencing a collection sub with a literally-resolved
-    //     count cell → element AST = `IndexAccess { object: Ident(name), index: NumberLiteral(i) }`.
-    //   * Anything else → emit zero decls. PRD criterion 7's "no decls when
-    //     count is undef" half. Non-iterable diagnostic is added in step-20;
-    //     re-elaboration on count change is out of scope (future SchemaNode work).
-    let elements: Vec<reify_syntax::Expr> = match &decl.collection.kind {
-        ExprKind::ListLiteral(items) => items.clone(),
-        ExprKind::Ident(name) => {
-            // Look up the matching collection sub and resolve its count.
-            let sub = sub_components
-                .iter()
-                .find(|s| s.name == *name && s.is_collection);
-            let count = sub
-                .and_then(|s| s.count_cell.as_ref())
-                .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
-            let Some(count) = count else {
-                // Cannot statically resolve count — emit zero decls silently.
-                // (Step-20 adds the non-iterable diagnostic for genuinely
-                // mistyped collection expressions; here we defer to support
-                // future re-elaboration on count change.)
-                return;
-            };
-            let coll_span = decl.collection.span;
-            (0..count)
-                .map(|i| Expr {
-                    kind: ExprKind::IndexAccess {
-                        object: Box::new(Expr {
-                            kind: ExprKind::Ident(name.clone()),
-                            span: coll_span,
-                        }),
-                        index: Box::new(Expr {
-                            kind: ExprKind::NumberLiteral(i as f64),
-                            span: coll_span,
-                        }),
-                    },
-                    span: coll_span,
-                })
-                .collect()
-        }
-        // Step-20: non-iterable diagnostic. For now, silently skip.
-        _ => return,
+    // The shared helper handles all four cases: ListLiteral, Ident-as-
+    // collection-sub, deferred (silently skip), and non-iterable (emit a
+    // diagnostic). See `resolve_forall_elements` for full semantics.
+    let Some(elements) = resolve_forall_elements(
+        &decl.collection,
+        sub_components,
+        value_cells,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    ) else {
+        return;
     };
 
     for (i, element) in elements.iter().enumerate() {
@@ -275,47 +367,22 @@ pub(crate) fn elaborate_forall_connect(
     connector_index: &mut u32,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use reify_syntax::{Expr, ExprKind, ForallConnectBody};
+    use reify_syntax::ForallConnectBody;
 
-    // Resolve the collection expression to per-element replacement ASTs.
-    // Mirrors the dispatch in `elaborate_forall_constraint`. Anything that
-    // can't be resolved at compile time emits zero decls silently. Re-elaboration
-    // on count change is deferred to future SchemaNode work (PRD criterion 7).
-    let elements: Vec<Expr> = match &decl.collection.kind {
-        ExprKind::ListLiteral(items) => items.clone(),
-        ExprKind::Ident(name) => {
-            let sub = sub_components
-                .iter()
-                .find(|s| s.name == *name && s.is_collection);
-            let count = sub
-                .and_then(|s| s.count_cell.as_ref())
-                .and_then(|count_id| resolve_count_cell_literal(value_cells, count_id));
-            let Some(count) = count else {
-                // PRD criterion 7: silent skip when count is undef. Step-20
-                // adds a non-iterable diagnostic for genuinely mistyped
-                // collection expressions; here we defer to support future
-                // re-elaboration on count change.
-                return;
-            };
-            let coll_span = decl.collection.span;
-            (0..count)
-                .map(|i| Expr {
-                    kind: ExprKind::IndexAccess {
-                        object: Box::new(Expr {
-                            kind: ExprKind::Ident(name.clone()),
-                            span: coll_span,
-                        }),
-                        index: Box::new(Expr {
-                            kind: ExprKind::NumberLiteral(i as f64),
-                            span: coll_span,
-                        }),
-                    },
-                    span: coll_span,
-                })
-                .collect()
-        }
-        // Step-20: non-iterable diagnostic. For now, silently skip.
-        _ => return,
+    // Resolve the collection expression via the shared helper. See
+    // `resolve_forall_elements` for the four-case semantics: ListLiteral,
+    // Ident-as-collection-sub, deferred (silently skip), and non-iterable
+    // (emit diagnostic).
+    let Some(elements) = resolve_forall_elements(
+        &decl.collection,
+        sub_components,
+        value_cells,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    ) else {
+        return;
     };
 
     // Build the read-only `ConnectContext` once. The accumulator is rebuilt
