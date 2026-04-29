@@ -102,12 +102,6 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             if steps == 0 {
                 return Some(Value::List(vec![]));
             }
-            // steps == 1 is wired in step-14; for now it falls through
-            // to the >=2 arm where (steps - 1) == 0 would divide by
-            // zero — so guard with Undef.
-            if steps == 1 {
-                return Some(Value::Undef);
-            }
             // Range bounds in SI units; validation above guarantees
             // both are present and finite.
             let (lo_si, up_si) = match &args[2] {
@@ -121,9 +115,30 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                 },
                 _ => return Some(Value::Undef),
             };
-            // Linearly-interpolated motion values, evenly spaced from
-            // range.lower (i=0) to range.upper (i=steps-1). Each
-            // interpolated f64 is wrapped back into a dimensioned
+            // steps == 1: avoid the divide-by-zero in the i/(steps-1)
+            // formula by short-circuiting to a single snapshot at
+            // range.lower (design decision pinned by step-13).
+            if steps == 1 {
+                let wrapped = match wrap_value_for_driving_joint(&args[1], lo_si) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
+                let binding = eval_builtin("bind", &[args[1].clone(), wrapped]);
+                if binding.is_undef() {
+                    return Some(Value::Undef);
+                }
+                let snap = eval_builtin(
+                    "snapshot",
+                    &[args[0].clone(), Value::List(vec![binding])],
+                );
+                if snap.is_undef() {
+                    return Some(Value::Undef);
+                }
+                return Some(Value::List(vec![snap]));
+            }
+            // steps >= 2: linearly-interpolated motion values, evenly
+            // spaced from range.lower (i=0) to range.upper (i=steps-1).
+            // Each interpolated f64 is wrapped back into a dimensioned
             // Value::length / Value::angle per joint kind, then bound
             // and passed to snapshot() — keeping the FK walk and
             // unbound-joint midpoint fallback in one place.
