@@ -615,8 +615,8 @@ mod tests {
         );
     }
 
-    /// step-9 (task #2653) — role/idx multi-match where ALL matched
-    /// candidates share the same parent-key routes to AmbiguousAfterSplit.
+    /// Role/idx multi-match where ALL matched candidates share the same
+    /// parent-key routes to AmbiguousAfterSplit.
     ///
     /// Two candidates h(60), h(61) carry identical
     /// `(feature_id, role, local_index, user_label)` but distinct
@@ -673,8 +673,8 @@ mod tests {
         );
     }
 
-    /// step-11 (task #2653) — user_label multi-match where ALL matched
-    /// candidates share the parent-key routes to AmbiguousAfterSplit.
+    /// User_label multi-match where ALL matched candidates share the
+    /// parent-key routes to AmbiguousAfterSplit.
     ///
     /// Pins that the user_label branch participates in clustering detection
     /// symmetrically with the role/idx branch — i.e. a labelled face that
@@ -724,8 +724,8 @@ mod tests {
         );
     }
 
-    /// step-13 (task #2653) — multi-match with mixed parent-keys must
-    /// stay Unresolved (genuine ambiguity, not a split).
+    /// Multi-match with mixed parent-keys must stay Unresolved (genuine
+    /// ambiguity, not a split).
     ///
     /// Two candidates share `(role, local_index) = (Role::Side, 0)` but
     /// originate from distinct features ("Boss" vs "Slot"). Per PRD line
@@ -775,7 +775,7 @@ mod tests {
         );
     }
 
-    /// step-9 — zero-match unresolved diagnostic emission.
+    /// Zero-match unresolved diagnostic emission.
     ///
     /// At least one candidate has an attribute entry (so we are NOT in the
     /// imported-geometry fallback case), but the query asks for a role/idx
@@ -859,7 +859,7 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
-    /// step-13 — `feature_id` constrains BOTH match branches.
+    /// `feature_id` constrains BOTH match branches.
     ///
     /// Two candidates share `(role, local_index) = (Role::Side, 0)` but
     /// originate from different features ("Boss" vs "Slot"). With no
