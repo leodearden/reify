@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_types::{
-    ContentHash, ConstraintNodeId, Diagnostic, ModulePath, Satisfaction, SourceSpan, VersionId,
+    ContentHash, ConstraintNodeId, Diagnostic, Freshness, ModulePath, Satisfaction, SourceSpan,
+    VersionId,
 };
 use tower_lsp::lsp_types::{self, Url};
 
@@ -177,13 +178,24 @@ pub fn compute_diagnostics_with_state(
         .collect();
 
     // Convert non-constraint eval diagnostics from check result.
-    // Skip constraint checker messages (format: "constraint {id} violated")
-    // since we generate span-aware versions below.
+    // Skip constraint checker messages (formats: "constraint {id} violated" and, when
+    // a label is present, "constraint {label} violated") since we generate span-aware
+    // versions below.
+    //
+    // When a constraint has a label (e.g. `forall@v[0]` from forall_elaborate.rs),
+    // `engine_constraints::labeled_diagnostics` rewrites the message to replace the raw
+    // ConstraintNodeId with the label — producing `"constraint forall@v[0] violated"`.
+    // We must therefore include both the id-format AND the label-format in the filter set
+    // to correctly skip those messages and avoid double-emission.
     let violated_messages: std::collections::HashSet<String> = check_result
         .constraint_results
         .iter()
         .filter(|e| e.satisfaction == Satisfaction::Violated)
-        .map(|e| format!("constraint {} violated", e.id))
+        .flat_map(|e| {
+            let id_msg = format!("constraint {} violated", e.id);
+            let label_msg = e.label.as_deref().map(|l| format!("constraint {} violated", l));
+            std::iter::once(id_msg).chain(label_msg)
+        })
         .collect();
     for diag in &check_result.diagnostics {
         if !violated_messages.contains(&diag.message) {
@@ -207,7 +219,19 @@ pub fn compute_diagnostics_with_state(
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 
-    // Generate explicit diagnostics for constraint violations with source spans
+    // Generate explicit diagnostics for constraint violations with source spans.
+    //
+    // Per-element forall provenance (PRD criterion 10,
+    // docs/prds/forall-statement-form.md): when a constraint originates from a
+    // `forall` statement, `forall_elaborate.rs` emits one `CompiledConstraint`
+    // per element with `label = Some("forall@<var>[<idx>]")` (e.g. `forall@v[0]`).
+    // That label propagates unchanged through
+    // `ConstraintCheckEntry.label` and surfaces verbatim in the LSP diagnostic
+    // message via the `Some(label)` branch below — the resulting message is
+    // `"constraint violated: forall@v[<idx>]"`.  No parsing or reformatting of the
+    // label is required; the index is the per-element provenance carrier.
+    // Regression-lock: `forall_per_element_constraint_violation_surfaces_element_index`
+    // (this file) pins this contract end-to-end.
     for entry in &check_result.constraint_results {
         if entry.satisfaction == Satisfaction::Violated {
             let msg = match &entry.label {
@@ -225,6 +249,62 @@ pub fn compute_diagnostics_with_state(
                 message: msg,
                 ..Default::default()
             });
+        }
+    }
+
+    // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
+    //
+    // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
+    // ordering is deterministic — same compile-defined cell order on every call.
+    // Using a HashMap would yield entries in unstable order, causing flapping in
+    // snapshot tests and non-deterministic output for the user.
+    //
+    // Final → no emission (success state, no diagnostic by definition).
+    // Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
+    //   not actionable in an editor — LSP diagnostics are for states users can act on).
+    // Pending → WARNING with code "computation-pending" (upstream dependency failed).
+    // Failed → ERROR with code "computation-failed" (this cell's computation broke).
+    //
+    // Constraint violations are intentionally NOT emitted here — they route through
+    // `Satisfaction::Violated` (arch §9.3), not `Freshness::Failed`. The separation
+    // regression test `constraint_violation_does_not_produce_computation_failed` pins this.
+    //
+    // This block is only in `compute_diagnostics_with_state` (persistent engine).
+    // The stateless `compute_diagnostics` has no persistent engine, so it has no
+    // freshness state to report and this block is intentionally absent there.
+    for template in &compiled.templates {
+        for vc in &template.value_cells {
+            match state.engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
+                Freshness::Failed { error } => {
+                    let range = convert::span_to_range(source, vc.span);
+                    diagnostics.push(lsp_types::Diagnostic {
+                        range,
+                        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                        code: Some(lsp_types::NumberOrString::String(
+                            "computation-failed".to_string(),
+                        )),
+                        source: Some("reify".to_string()),
+                        message: format!("computation failed: {}", error.message()),
+                        ..Default::default()
+                    });
+                }
+                Freshness::Pending { .. } => {
+                    let range = convert::span_to_range(source, vc.span);
+                    diagnostics.push(lsp_types::Diagnostic {
+                        range,
+                        severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                        code: Some(lsp_types::NumberOrString::String(
+                            "computation-pending".to_string(),
+                        )),
+                        source: Some("reify".to_string()),
+                        message: "computation pending: upstream dependency failed".to_string(),
+                        ..Default::default()
+                    });
+                }
+                Freshness::Final | Freshness::Intermediate { .. } => {
+                    // No diagnostic — Final is success, Intermediate is transient (arch §7.2).
+                }
+            }
         }
     }
 
@@ -890,6 +970,111 @@ structure S {
         }
     }
 
+    // --- forall per-element constraint violation regression lock ---
+
+    /// Regression-lock test: a `forall` constraint that fails for every element of its
+    /// iteration set must surface exactly one ERROR diagnostic per element, with the
+    /// element index encoded in the diagnostic message as `forall@<var>[<idx>]`.
+    ///
+    /// This pins the end-to-end contract for PRD criterion 10
+    /// (docs/prds/forall-statement-form.md): the compiler emits one
+    /// `CompiledConstraint` per element with label `forall@v[<idx>]`
+    /// (see `forall_elaborate.rs`, the `forall@<var>[<idx>]` label format), and the LSP
+    /// surfaces that label verbatim via `format!("constraint violated: {}", label)`
+    /// in `compute_diagnostics_with_state`.
+    ///
+    /// The compiler-layer counterpart is `forall_constraint_label_encodes_element_index`
+    /// (crates/reify-compiler/tests/forall_statement_lower_tests.rs).
+    /// Together the two tests pin the contract end-to-end.
+    #[test]
+    fn forall_per_element_constraint_violation_surfaces_element_index() {
+        let source = "structure S {\n    forall v in [1, 2, 3]: constraint v > 100\n}";
+        let mut state = EvalState::new();
+        let uri = test_uri();
+
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        // Collect ERROR diagnostics whose message encodes the forall element index.
+        let forall_violation_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.starts_with("constraint violated: forall@v[")
+            })
+            .collect();
+
+        // Guard: if any ERROR diagnostic is NOT a constraint-violation, the source
+        // likely failed to parse or compile.  Fail fast with the full dump so the real
+        // root cause is visible rather than a misleading count-mismatch on an empty list.
+        let parse_or_compile_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && !d.message.starts_with("constraint violated:")
+            })
+            .collect();
+        assert!(
+            parse_or_compile_errors.is_empty(),
+            "unexpected non-constraint ERROR diagnostics (parse/compile failure?): {:#?}",
+            parse_or_compile_errors
+        );
+
+        // All three elements (indices 0, 1, 2) must appear — one diagnostic each.
+        assert_eq!(
+            forall_violation_diags.len(),
+            3,
+            "expected exactly 3 forall per-element violation diagnostics (one per index 0..=2); \
+             got {}: {:#?}",
+            forall_violation_diags.len(),
+            forall_violation_diags
+        );
+
+        // Each index must be present exactly once.
+        for idx in 0..3usize {
+            let substr = format!("forall@v[{}]", idx);
+            let count = forall_violation_diags
+                .iter()
+                .filter(|d| d.message.contains(&substr))
+                .count();
+            assert_eq!(
+                count, 1,
+                "expected exactly one diagnostic containing \"{}\"; got {}; diagnostics: {:#?}",
+                substr, count, forall_violation_diags
+            );
+        }
+
+        // Each per-element diagnostic must carry source == "reify".
+        for diag in &forall_violation_diags {
+            assert_eq!(
+                diag.source,
+                Some("reify".to_string()),
+                "per-element forall violation diagnostic must have source == \"reify\"; got: {:#?}",
+                diag
+            );
+        }
+
+        // Sanity: constraint violations must NOT route through the freshness channel
+        // (arch §9.3); no `computation-failed` diagnostic may be present.
+        let computation_failed_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code
+                    == Some(lsp_types::NumberOrString::String(
+                        "computation-failed".to_string(),
+                    ))
+            })
+            .collect();
+        assert!(
+            computation_failed_diags.is_empty(),
+            "forall constraint violations must NEVER produce 'computation-failed' diagnostics \
+             (arch §9.3 separation); got: {:#?}",
+            computation_failed_diags
+        );
+    }
+
     // --- step-5 regression lock: eval diagnostics never use constraint-violation format ---
 
     /// Regression lock — circular let-binding emitter: `eval()` must never emit diagnostics
@@ -1173,6 +1358,275 @@ structure S {
             diags
         );
         assert_no_violation_format(&diags, "solver_no_progress");
+    }
+
+    // --- task #2337 step-17: freshness diagnostic tests ---
+
+    /// Helper: build an EvalState whose engine has been pre-evaluated with
+    /// bracket_source and a forced panic on `cell_id`.  The engine has gone
+    /// through two full `eval()` passes:
+    ///   1. Cold eval (all cells → Final).
+    ///   2. Hot eval with forced panic on `cell_id` (cell → Failed; cells
+    ///      that depend on it → Pending via §9.2 propagation).
+    ///
+    /// The returned EvalState has `last_content_hash` and `version_counter`
+    /// pre-set so that the NEXT call to `compute_diagnostics_with_state` with
+    /// the same bracket_source takes the **eval_cached** path (not cold-start).
+    /// This avoids the cold-start branch recreating the engine (which would
+    /// discard the freshness state we just set up).
+    ///
+    /// `test-instrumentation` feature is enabled in dev-deps (Cargo.toml line 29).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    fn build_eval_state_with_failed_cell(cell_id: ValueCellId) -> EvalState {
+        let source = reify_test_support::bracket_source();
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+        // Pass 1: cold eval — initialises the cache (all cells → Final).
+        let _ = engine.eval(&compiled);
+
+        // Inject forced panic and run a second full eval.
+        engine.set_panic_on_eval(cell_id);
+        let _ = engine.eval(&compiled);
+        // After pass 2: `cell_id` is Failed; its dependents are Pending.
+
+        // Package into EvalState with matching hash so next call uses eval_cached.
+        let mut state = EvalState::new();
+        state.engine = engine;
+        state.last_content_hash = Some(compiled.content_hash);
+        state.version_counter = 2;
+        state
+    }
+
+    /// (a) `compute_diagnostics_with_state` must emit exactly one ERROR diagnostic
+    /// with `code == "computation-failed"` for a cell whose freshness is Failed
+    /// (forced-panic via test-instrumentation).
+    ///
+    /// This test is intentionally RED before step-18 adds the freshness-diagnostic
+    /// emission block to `compute_diagnostics_with_state`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[test]
+    fn compute_diagnostics_with_state_emits_failed_diagnostic_for_failed_cell() {
+        // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
+        let volume_id = ValueCellId::new("Bracket", "volume");
+        let mut state = build_eval_state_with_failed_cell(volume_id.clone());
+
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        // eval_cached path: content unchanged, engine initialized.
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        let failed_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code
+                    == Some(lsp_types::NumberOrString::String(
+                        "computation-failed".to_string(),
+                    ))
+            })
+            .collect();
+
+        assert!(
+            !failed_diags.is_empty(),
+            "expected at least one 'computation-failed' ERROR diagnostic (got 0); \
+             all diagnostics: {:#?}",
+            result.diagnostics
+        );
+
+        // Pin that Bracket.volume's source span is among the failed diagnostics.
+        // Re-compile with the same pipeline to get the canonical cell span.  This
+        // avoids a hardcoded line number (which would drift if bracket_source changes)
+        // and is resilient to stdlib templates adding extra let cells in the future.
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let volume_span = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.value_cells.iter())
+            .find(|vc| vc.id == volume_id)
+            .map(|vc| vc.span)
+            .expect("Bracket.volume cell must be present in compiled bracket_source");
+        let volume_range = convert::span_to_range(source, volume_span);
+
+        let covers_volume = failed_diags.iter().any(|d| d.range == volume_range);
+        assert!(
+            covers_volume,
+            "expected a 'computation-failed' diagnostic anchored at Bracket.volume's range \
+             ({:?}); failed diagnostics: {:#?}",
+            volume_range,
+            failed_diags
+        );
+        assert_eq!(
+            failed_diags
+                .iter()
+                .find(|d| d.range == volume_range)
+                .unwrap()
+                .severity,
+            Some(DiagnosticSeverity::ERROR),
+            "computation-failed diagnostic for Bracket.volume must have ERROR severity"
+        );
+    }
+
+    /// (b) `compute_diagnostics_with_state` must emit at least one WARNING diagnostic
+    /// with `code == "computation-pending"` for a cell that is Pending because its
+    /// upstream dependency failed (Failed leaf → Pending consumer, arch §9.2).
+    ///
+    /// Setup: use a custom let-chain source (`S.base` → `S.derived`) so that
+    /// `set_panic_on_eval(S.base)` (a let cell) causes `S.base` to fail and
+    /// `S.derived` to become Pending.
+    ///
+    /// Note: `set_panic_on_eval` only affects `let` cells (evaluated in the
+    /// let-binding evaluation loop) — not `param` cells.  Hence we use a
+    /// dedicated let-chain source rather than bracket_source (where `width` is
+    /// a param and would not be affected by `set_panic_on_eval`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[test]
+    fn compute_diagnostics_with_state_emits_pending_diagnostic_for_pending_cell() {
+        // Source with a let-chain: S.derived depends on S.base.
+        // Forcing S.base (a let) to fail makes S.derived Pending (arch §9.2).
+        // Module name "test" matches what compute_diagnostics_with_state derives
+        // from "file:///test.ri" (strip ".ri" suffix).
+        let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
+        let base_id = ValueCellId::new("S", "base");
+
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+        // Pass 1: cold eval — initialises cache (all cells → Final).
+        let _ = engine.eval(&compiled);
+
+        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
+        engine.set_panic_on_eval(base_id);
+        let _ = engine.eval(&compiled);
+
+        // Package into EvalState with matching hash so next call uses eval_cached.
+        let mut state = EvalState::new();
+        state.engine = engine;
+        state.last_content_hash = Some(compiled.content_hash);
+        state.version_counter = 2;
+
+        let uri = test_uri();
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        let pending_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code
+                    == Some(lsp_types::NumberOrString::String(
+                        "computation-pending".to_string(),
+                    ))
+            })
+            .collect();
+
+        assert!(
+            !pending_diags.is_empty(),
+            "expected at least one 'computation-pending' WARNING diagnostic \
+             (S.derived is Pending because S.base failed), \
+             got zero; all diagnostics: {:#?}",
+            result.diagnostics
+        );
+        for d in &pending_diags {
+            assert_eq!(
+                d.severity,
+                Some(DiagnosticSeverity::WARNING),
+                "computation-pending diagnostic must have WARNING severity, got {:?}",
+                d.severity
+            );
+        }
+    }
+
+    /// (c) A normal evaluation (all cells Final) must produce zero freshness-code
+    /// diagnostics.  This covers both Final (success) and the Intermediate case
+    /// (Intermediate → no emission, arch §7.2): since a completed eval leaves all
+    /// cells Final, no computation-* diagnostics should appear.
+    ///
+    /// This test passes both before and after step-18 (it is a negative assertion
+    /// that guards against spurious fresh-start emission).
+    #[test]
+    fn normal_eval_emits_no_freshness_diagnostics() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        let freshness_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(&d.code,
+                Some(lsp_types::NumberOrString::String(s))
+                    if s == "computation-failed" || s == "computation-pending"
+            ))
+            .collect();
+
+        assert!(
+            freshness_diags.is_empty(),
+            "normal (all-Final) eval must produce zero freshness-code diagnostics; \
+             got: {:#?}",
+            freshness_diags
+        );
+    }
+
+    /// (d) **Separation regression** — constraint-violation source must NOT produce
+    /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
+    /// diagnostics must still appear.
+    ///
+    /// Guards arch §9.3: constraint violations route through `Satisfaction::Violated`,
+    /// NOT through `Freshness::Failed`.  This test passes both before and after
+    /// step-18, ensuring the implementation never routes violations through the
+    /// freshness channel.
+    #[test]
+    fn constraint_violation_does_not_produce_computation_failed() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source_violating = reify_test_support::bracket_source_violating();
+
+        let result = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+
+        // (i) The existing constraint-violated diagnostic must be present.
+        let constraint_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .collect();
+        assert!(
+            !constraint_errors.is_empty(),
+            "violating source must produce at least one constraint-violated ERROR; \
+             got: {:#?}",
+            result.diagnostics
+        );
+
+        // (ii) Zero `computation-failed` diagnostics — constraint violations
+        //      must NEVER route through the freshness channel.
+        let computation_failed_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code
+                    == Some(lsp_types::NumberOrString::String(
+                        "computation-failed".to_string(),
+                    ))
+            })
+            .collect();
+        assert!(
+            computation_failed_diags.is_empty(),
+            "constraint-violation source must produce ZERO 'computation-failed' diagnostics \
+             (arch §9.3 separation); got: {:#?}",
+            computation_failed_diags
+        );
     }
 
 }

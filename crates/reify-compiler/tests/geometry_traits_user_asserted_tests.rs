@@ -256,7 +256,7 @@ structure def Hybrid : Watertight + Elastic {
 /// `W_TRAIT_USER_ASSERTED` warning whose message names the trait.
 ///
 /// This pins the helper's full alphabet against drift — if `GEOMETRY_MARKER_TRAITS`
-/// in the compiler diverges from `EXPECTED_GEOMETRY_TRAITS` in the test fixture,
+/// in `crates/reify-compiler/src/geometry_traits.rs` diverges from `EXPECTED_GEOMETRY_TRAITS` in the test fixture,
 /// one of these sub-tests will fail.
 #[test]
 fn every_stdlib_geometry_marker_emits_one_user_asserted_warning_when_declared_explicitly() {

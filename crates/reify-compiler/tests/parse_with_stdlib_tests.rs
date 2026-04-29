@@ -76,26 +76,6 @@ fn enum_names_empty_prelude_yields_no_items() {
 
 // ─── step-5: reify_compiler::parse_with_stdlib end-to-end ─────────────────
 
-/// Walk every expression node in a parsed module's structures and apply
-/// `visitor` to it.  Used to count `EnumAccess` nodes for the parse_with_stdlib
-/// integration test.
-fn walk_struct_exprs<F: FnMut(&reify_syntax::ExprKind)>(
-    module: &reify_syntax::ParsedModule,
-    visitor: &mut F,
-) {
-    for decl in &module.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
-            for member in &s.members {
-                if let reify_syntax::MemberDecl::Param(p) = member
-                    && let Some(default) = &p.default
-                {
-                    visitor(&default.kind);
-                }
-            }
-        }
-    }
-}
-
 /// `reify_compiler::parse_with_stdlib` parses a source referencing
 /// `CorrosionClass.C5` and `BiocompatibilityClass.USP_Class_VI` (both
 /// declared only in the stdlib prelude — NOT in this source string) and
@@ -132,28 +112,28 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
         parsed.errors
     );
 
-    // (b) Two EnumAccess nodes — CorrosionClass.C5 and BiocompatibilityClass.USP_Class_VI.
+    // (b) Exactly two EnumAccess nodes — CorrosionClass.C5 and
+    // BiocompatibilityClass.USP_Class_VI. Collected into a Vec and sorted so
+    // that order differences between fixture changes do not matter, while
+    // duplicate emission (e.g. the parser emitting CorrosionClass.C5 twice)
+    // is still caught — a duplicate would make the Vec longer than expected
+    // and fail the assert_eq.
     let mut enum_accesses: Vec<(String, String)> = Vec::new();
-    walk_struct_exprs(&parsed, &mut |kind| {
-        if let ExprKind::EnumAccess { type_name, variant } = kind {
+    reify_test_support::visit_structure_member_root_exprs(&parsed, |expr| {
+        if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
             enum_accesses.push((type_name.clone(), variant.clone()));
         }
     });
+    enum_accesses.sort();
+    let mut expected: Vec<(String, String)> = vec![
+        ("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string()),
+        ("CorrosionClass".to_string(), "C5".to_string()),
+    ];
+    expected.sort();
     assert_eq!(
-        enum_accesses.len(),
-        2,
-        "expected exactly 2 EnumAccess nodes (CorrosionClass.C5 + BiocompatibilityClass.USP_Class_VI), got: {:?}",
-        enum_accesses
-    );
-    assert!(
-        enum_accesses.contains(&("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string())),
-        "expected EnumAccess for BiocompatibilityClass.USP_Class_VI, got: {:?}",
-        enum_accesses
-    );
-    assert!(
-        enum_accesses.contains(&("CorrosionClass".to_string(), "C5".to_string())),
-        "expected EnumAccess for CorrosionClass.C5, got: {:?}",
-        enum_accesses
+        enum_accesses, expected,
+        "expected exactly the prelude EnumAccess entries (sorted), got: {:?}, expected: {:?}",
+        enum_accesses, expected
     );
 
     // (c) Zero error-severity diagnostics from compile_with_stdlib.

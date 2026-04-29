@@ -20,6 +20,10 @@ export function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: str
     type_name: null,
     has_mesh: false,
     trait_geometry: false,
+    // Default to 'final' so existing tests keep passing without per-call change.
+    // Matches the engine-side Freshness::default() = Final (value.rs:2170).
+    // Tests that exercise non-Final freshness override this field explicitly.
+    freshness: 'final',
     children: [],
     ...overrides,
   };

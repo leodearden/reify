@@ -54,7 +54,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 pub fn parse_with_prelude_enums(
     source: &str,
     module_path: ModulePath,
-    prelude_enum_names: &[&str],
+    prelude_enum_names: &[&'static str],
 ) -> ParsedModule {
     let mut ts_parser = tree_sitter::Parser::new();
     ts_parser
@@ -85,7 +85,7 @@ struct Lowering<'a> {
     /// Interior mutability so that `&self` expression-lowering methods can emit diagnostics.
     errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
-    known_enums: HashSet<String>,
+    known_enums: HashSet<&'a str>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
 }
@@ -104,10 +104,10 @@ impl<'a> Lowering<'a> {
     /// `lower_source_file` then unions the current source's own enum names
     /// into the same set.  `HashSet::insert` deduplicates any overlap
     /// silently — see `parse_with_prelude_enums` for the full contract.
-    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&str]) -> Self {
-        let mut known_enums: HashSet<String> = HashSet::new();
-        for name in prelude_enum_names {
-            known_enums.insert((*name).to_string());
+    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&'static str]) -> Self {
+        let mut known_enums: HashSet<&'a str> = HashSet::new();
+        for &name in prelude_enum_names {
+            known_enums.insert(name);
         }
         Self {
             source,
@@ -205,7 +205,7 @@ impl<'a> Lowering<'a> {
                 && let Some(name_node) = child.child_by_field_name("name")
             {
                 self.known_enums
-                    .insert(self.node_text(name_node).to_string());
+                    .insert(self.node_text(name_node));
             }
         }
 
@@ -2703,6 +2703,8 @@ mod tests {
                 MemberDecl::MetaBlock(_) => "meta".into(),
                 MemberDecl::ForallConnect(_) => "forall_connect".into(),
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
+                // Not produced by the tree-sitter parser yet (task 2372).
+                MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
             })
             .collect();
         assert_eq!(
@@ -2887,6 +2889,8 @@ mod tests {
                 MemberDecl::MetaBlock(m) => m.span,
                 MemberDecl::ForallConnect(f) => f.span,
                 MemberDecl::ForallConstraint(f) => f.span,
+                // Not produced by the tree-sitter parser yet (task 2372).
+                MemberDecl::MatchArmDeclGroup(g) => g.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!(
@@ -3017,6 +3021,8 @@ mod tests {
                         text
                     );
                 }
+                // Not produced by the tree-sitter parser yet (task 2372).
+                MemberDecl::MatchArmDeclGroup(_) => {}
             }
         }
 
@@ -3074,6 +3080,8 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
                 MemberDecl::ForallConnect(f) => (f.span, f.content_hash),
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
+                // Not produced by the tree-sitter parser yet (task 2372).
+                MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(
@@ -3185,6 +3193,8 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
                 MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
+                // Not produced by the tree-sitter parser yet (task 2372).
+                MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -3202,6 +3212,8 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
                 MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
+                // Not produced by the tree-sitter parser yet (task 2372).
+                MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
@@ -3442,6 +3454,19 @@ mod tests {
     /// Helper: locate the first `EnumAccess` expression in a parsed module's
     /// structure declarations.  Returns the matched `(type_name, variant)`
     /// pair, or `None` if no `EnumAccess` is present.
+    ///
+    /// NOTE (task 2559): a shared `reify_test_support::visit_structure_member_root_exprs`
+    /// helper exists but cannot be called from inside `reify-syntax`'s own
+    /// `#[cfg(test)]` module. The `reify-syntax` ↔ `reify-test-support`
+    /// dev-dep cycle causes `cargo test -p reify-syntax` to compile
+    /// `reify-syntax` twice (once as the test binary with `cfg(test)`, once
+    /// as the library that `reify-test-support` links against). The two
+    /// `ParsedModule`/`Expr` instantiations are nominally distinct, so a
+    /// `visit_structure_member_root_exprs(&module, ...)` call from here fails to
+    /// type-check (E0308: "multiple different versions of crate
+    /// `reify_syntax` in the dependency graph"). Out-of-crate call sites
+    /// (e.g. `crates/reify-compiler/tests/parse_with_stdlib_tests.rs`) DO
+    /// use the shared helper.
     fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
         for decl in &module.declarations {
             if let Declaration::Structure(s) = decl {
@@ -3542,6 +3567,83 @@ mod tests {
         let from_prelude_access =
             find_first_enum_access(&from_prelude).expect("parse_with_prelude_enums() EnumAccess");
         assert_eq!(from_parse_access, from_prelude_access);
+    }
+
+    /// (d) Regression guard for the `HashSet<&'a str>` borrow-through contract
+    /// (task 2558).  Pins two invariants:
+    ///
+    /// 1. Functional correctness when the same `static` prelude slice is reused
+    ///    across two consecutive `parse_with_prelude_enums` calls
+    ///    (lifetime-mixing regression: both calls must resolve correctly without
+    ///    interference from a prior call's internal state).
+    /// 2. Mixed-source resolution: in the second call a source-declared enum
+    ///    (`SourceEnum`) and a prelude-supplied enum (`PreludeEnumB`) must BOTH
+    ///    lower to `EnumAccess` in the same parse.
+    ///
+    /// Note: the `&[&'static str]` API-surface constraint is enforced by the
+    /// compiler — a non-`'static` borrow at a call site will not compile.  This
+    /// test does not add dedicated coverage for that property (the compiler is
+    /// the authoritative check).  The no-allocation guarantee is a manual
+    /// profiling check (per task description), not encoded here.
+    #[test]
+    fn parse_with_prelude_enums_borrows_static_names_across_calls() {
+        static PRELUDE: &[&str] = &["PreludeEnumA", "PreludeEnumB"];
+
+        // First call — prelude-only enum (no source enum declarations).
+        let source1 = "structure S1 { let v = PreludeEnumA.X }";
+        let module1 = parse_with_prelude_enums(
+            source1,
+            reify_types::ModulePath::single("test_borrow_call1"),
+            PRELUDE,
+        );
+        assert!(
+            module1.errors.is_empty(),
+            "call 1 parse errors: {:?}",
+            module1.errors
+        );
+        let (type1, variant1) =
+            find_first_enum_access(&module1).expect("call 1: expected EnumAccess");
+        assert_eq!(type1, "PreludeEnumA");
+        assert_eq!(variant1, "X");
+
+        // Second call — source-declared enum + prelude enum, same PRELUDE slice.
+        // Both PreludeEnumB.Z and SourceEnum.Y must resolve to EnumAccess.
+        let source2 =
+            "enum SourceEnum { Y }\nstructure S2 { let v = PreludeEnumB.Z\n let w = SourceEnum.Y }";
+        let module2 = parse_with_prelude_enums(
+            source2,
+            reify_types::ModulePath::single("test_borrow_call2"),
+            PRELUDE,
+        );
+        assert!(
+            module2.errors.is_empty(),
+            "call 2 parse errors: {:?}",
+            module2.errors
+        );
+
+        // Collect all EnumAccess let-decl values from S2.
+        let mut accesses: Vec<(String, String)> = Vec::new();
+        for decl in &module2.declarations {
+            if let Declaration::Structure(s) = decl {
+                for member in &s.members {
+                    if let MemberDecl::Let(l) = member {
+                        if let ExprKind::EnumAccess { type_name, variant } = &l.value.kind {
+                            accesses.push((type_name.clone(), variant.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            accesses.contains(&("PreludeEnumB".to_string(), "Z".to_string())),
+            "expected PreludeEnumB.Z → EnumAccess; got: {:?}",
+            accesses
+        );
+        assert!(
+            accesses.contains(&("SourceEnum".to_string(), "Y".to_string())),
+            "expected SourceEnum.Y → EnumAccess; got: {:?}",
+            accesses
+        );
     }
 
     #[test]

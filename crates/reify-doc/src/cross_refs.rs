@@ -84,8 +84,10 @@ mod tests {
     #[test]
     fn cross_refs_serde_round_trip_with_populated_maps() {
         let mut r = CrossRefs::default();
-        r.trait_to_conformers
-            .insert("Rigid".to_string(), vec!["Bolt".to_string(), "Spring".to_string()]);
+        r.trait_to_conformers.insert(
+            "Rigid".to_string(),
+            vec!["Bolt".to_string(), "Spring".to_string()],
+        );
         r.entity_to_containers
             .insert("Wheel".to_string(), vec!["Robot".to_string()]);
 

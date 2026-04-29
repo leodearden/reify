@@ -411,6 +411,7 @@ impl TopologyTemplateBuilder {
             is_recursive: self.is_recursive,
             annotations: self.annotations,
             pragmas: self.pragmas,
+            match_arm_groups: vec![],
         }
     }
 }

@@ -643,18 +643,35 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// observable in production logs, distinguishing them from the normal
     /// (silent) success path.
     ///
+    /// **Diagnostic:** when fired from inside `edit_source`, this WARN typically
+    /// indicates a panic or early-return between steps (4c) and (14b).  Other
+    /// call sites that drop without draining (e.g. unit tests) trigger the same
+    /// WARN benignly.
+    ///
     /// # Double-panic note
     ///
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
     /// **before** calling `pool.donate_preserving_lru`.  Both are on the
     /// double-panic hot path: if `Drop` fires during stack-unwinding from
-    /// another panic, either the `warn!` dispatch (formatting / subscriber
-    /// routing) or `donate_preserving_lru` could theoretically panic, both
-    /// triggering an unconditional `std::process::abort`.  In practice the
-    /// risk is essentially zero — `tracing::warn!` does not heap-allocate
-    /// when no subscriber matches, and `donate_preserving_lru` only panics
-    /// in debug builds when the events buffer is at its cap (65 536 entries)
-    /// — but both are documented here for completeness.
+    /// another panic, either the `warn!` dispatch or `donate_preserving_lru`
+    /// could theoretically panic, triggering an unconditional
+    /// `std::process::abort`.
+    ///
+    /// `tracing::warn!` is unlikely to panic in well-behaved subscribers, but
+    /// does dispatch (and may allocate) when a subscriber is attached — a
+    /// buggy subscriber could in principle panic on the unwind path.
+    /// `donate_preserving_lru` only panics in debug builds when the events
+    /// buffer is at its cap (65 536 entries).  Both risks are documented here
+    /// for completeness.
+    ///
+    /// # Test-context note
+    ///
+    /// Unit tests that intentionally exercise the staging-without-drain path
+    /// (dropping a non-empty `PendingWarmSeedsGuard` without calling
+    /// `drain_into_cache_or_repool`) will trigger this WARN.  Its appearance
+    /// in test output is benign — it is the correct, observable signal that the
+    /// safety net fired — and is distinct from the production diagnostic
+    /// described above.
     fn drop(&mut self) {
         let len = self.map.len();
         if len == 0 {
@@ -664,8 +681,8 @@ impl Drop for PendingWarmSeedsGuard<'_> {
             target: "reify_eval::engine_edit",
             count = len,
             "PendingWarmSeedsGuard safety-net fired: re-donating staged \
-             warm-pool entries from Drop (likely panic / early-return \
-             between edit_source steps 4c and 14b)"
+             warm-pool entries from Drop (fires if a panic unwinds between \
+             staging warm seeds and the post-eval drain in production)"
         );
         for (nid, (state, stamp)) in self.map.drain() {
             self.pool.donate_preserving_lru(nid, state, stamp);
@@ -759,7 +776,7 @@ impl Engine {
         new_value: reify_types::Value,
     ) -> Result<EvalResult, EngineError> {
         // Arc::clone is O(1) — a refcount bump. The merged table (user functions +
-        // prelude) was sealed into Arc<Vec<CompiledFunction>> by eval() or edit_source().
+        // prelude) was sealed into Arc<[CompiledFunction]> by eval() or edit_source().
         // The local binding satisfies the borrow checker: evaluate_let_bindings and
         // other callers take &mut self, which would conflict with an immutable borrow
         // of self.functions. The Arc keeps the table alive for the binding's scope.
@@ -4368,6 +4385,79 @@ mod tests {
                  empty map (drain already consumed the entry)"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2516 S6 — Drop WARN structured-field schema
+    // -----------------------------------------------------------------------
+
+    /// Dropping a guard with a non-empty staging map emits a WARN event whose
+    /// structured-field schema includes `count` (entry count, regression-locked).
+    ///
+    /// This test pins the *schema* — which fields are present and what value
+    /// `count` carries — but does **not** assert the message-body wording.
+    /// It combines a positive `contains_key("count")` check, a value-pin
+    /// `assert_eq!(…, Some(1usize))` (parsed from the captured string to be
+    /// invariant to visitor integer formatting), and a schema-size pin
+    /// `assert_eq!(event_fields.len(), 1)` that locks the total field count to
+    /// exactly one, catching any future unintended field additions.
+    ///
+    /// Structured fields with actionable, varying values are the unit of
+    /// log-aggregator queries; body wording is verified by code review.
+    #[test]
+    fn pending_warm_seeds_guard_drop_warn_emits_count_field() {
+        use crate::warm_pool::WarmStatePool;
+        use crate::cache::NodeId;
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::OpaqueState;
+        use super::PendingWarmSeedsGuard;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut pool = WarmStatePool::new(1024);
+            let nid = NodeId::Value(ValueCellId::new("T", "count_field_test"));
+            let mut pending = PendingWarmSeedsGuard::new(&mut pool);
+            pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
+            // Drop fires with a non-empty map → safety-net WARN must fire.
+        });
+
+        // Exactly one WARN should fire.
+        capture.assert_count(1);
+
+        let all_fields = capture.fields_by_event();
+        let event_fields = &all_fields[0];
+
+        // Regression-lock: `count` (established actionable field) must be present.
+        assert!(
+            event_fields.contains_key("count"),
+            "safety-net WARN must include the `count` structured field; \
+             got fields: {event_fields:?}"
+        );
+
+        // Value-pin: `count` must equal 1 for a single staged entry.
+        // Parsed from the captured string to be invariant to visitor formatting
+        // (whether the visitor stores "1" or "1usize" in a future version,
+        // parse::<usize>() resolves both correctly).
+        assert_eq!(
+            event_fields.get("count").and_then(|s| s.parse::<usize>().ok()),
+            Some(1usize),
+            "safety-net WARN's `count` field must parse as 1 for a single staged \
+             entry; got fields: {event_fields:?}"
+        );
+
+        // Schema-size pin: the safety-net WARN's structured-field schema is exactly
+        // {`count`}. This is strictly stronger than singling out an arbitrary
+        // unrelated field name (e.g. `!contains_key("cap")`): it fails on ANY
+        // unintended additional field (which is the regression we actually care
+        // about), and it would not pass without the positive `count` assertion
+        // above.
+        assert_eq!(
+            event_fields.len(),
+            1,
+            "safety-net WARN must emit exactly one structured field (`count`); \
+             got fields: {event_fields:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

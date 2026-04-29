@@ -41,7 +41,7 @@ pub fn render_json(model: &DocModel, compact: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::render_json;
-    use crate::model::{DocModel, ItemDoc, ModuleDoc};
+    use crate::model::{DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc};
 
     /// Build a small `DocModel` with one `ModuleDoc` containing a single
     /// `Trait` item.  Used by all formatter tests below.
@@ -50,13 +50,15 @@ mod tests {
             modules: vec![ModuleDoc {
                 path: "m".to_string(),
                 doc: None,
-                items: vec![ItemDoc::Trait {
-                    name: "T".to_string(),
-                    doc: None,
-                    is_pub: true,
-                    annotations: vec![],
-                    pragmas: vec![],
-                    members: vec![],
+                items: vec![ItemDoc {
+                    header: ItemHeader {
+                        name: "T".to_string(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Trait { members: vec![] },
                 }],
                 annotations: vec![],
                 pragmas: vec![],
@@ -119,21 +121,29 @@ mod tests {
                 path: "regression".to_string(),
                 doc: None,
                 items: vec![
-                    ItemDoc::TypeAlias {
-                        name: "Meters".to_string(),
-                        doc: None,
-                        is_pub: true,
-                        annotations: vec![],
-                        pragmas: vec![],
-                        type_repr: "f64".to_string(),
+                    ItemDoc {
+                        header: ItemHeader {
+                            name: "Meters".to_string(),
+                            doc: None,
+                            is_pub: true,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::TypeAlias {
+                            type_repr: "f64".to_string(),
+                        },
                     },
-                    ItemDoc::ConstraintDef {
-                        name: "voltage_safe".to_string(),
-                        doc: None,
-                        is_pub: true,
-                        annotations: vec![],
-                        pragmas: vec![],
-                        expr_repr: "v <= 5.5 V".to_string(),
+                    ItemDoc {
+                        header: ItemHeader {
+                            name: "voltage_safe".to_string(),
+                            doc: None,
+                            is_pub: true,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::ConstraintDef {
+                            expr_repr: "v <= 5.5 V".to_string(),
+                        },
                     },
                 ],
                 annotations: vec![],

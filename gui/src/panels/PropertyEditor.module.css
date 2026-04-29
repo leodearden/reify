@@ -181,3 +181,26 @@
   color: var(--reify-text-muted, #6c7086);
   background: rgba(108, 112, 134, 0.1);
 }
+
+/* Freshness badge — only rendered for non-Final variants (Final = no badge per arch §7.1). */
+.freshnessBadge {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-weight: 500;
+}
+
+.freshnessBadge[data-freshness="intermediate"] {
+  color: var(--reify-accent, #89b4fa);
+  background: rgba(137, 180, 250, 0.1);
+}
+
+.freshnessBadge[data-freshness="pending"] {
+  color: var(--reify-warning, #fab387);
+  background: rgba(250, 179, 135, 0.1);
+}
+
+.freshnessBadge[data-freshness="failed"] {
+  color: var(--reify-error, #f38ba8);
+  background: rgba(243, 139, 168, 0.1);
+}

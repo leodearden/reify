@@ -18,7 +18,7 @@ pub fn empty_problem() -> ResolutionProblem {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     }
 }
 
@@ -916,6 +916,166 @@ impl GeometryKernel for FailingMockGeometryKernel {
         Err(TessError::TessellationFailed(
             "should not reach: execute always fails".into(),
         ))
+    }
+}
+
+/// Per-variant call counters for [`CountingMockKernel`].
+///
+/// Holds an `AtomicUsize` for each tracked `GeometryQuery` variant plus a
+/// grand `total` counter that increments on every `query()` call. Counters
+/// are exposed as plain `usize` via read-only accessor methods so callers
+/// never need to import `Ordering`.
+///
+/// Held behind `Arc<QueryCounts>` so the test can clone the Arc *before*
+/// moving the kernel into a `Box<dyn GeometryKernel>` and inspect the counts
+/// after the move.
+#[derive(Default)]
+pub struct QueryCounts {
+    total: AtomicUsize,
+    is_watertight: AtomicUsize,
+    is_manifold: AtomicUsize,
+    is_orientable: AtomicUsize,
+}
+
+impl QueryCounts {
+    /// Total number of `query()` calls across all variants.
+    pub fn total(&self) -> usize {
+        self.total.load(Ordering::SeqCst)
+    }
+
+    /// Number of `GeometryQuery::IsWatertight` calls.
+    pub fn is_watertight(&self) -> usize {
+        self.is_watertight.load(Ordering::SeqCst)
+    }
+
+    /// Number of `GeometryQuery::IsManifold` calls.
+    pub fn is_manifold(&self) -> usize {
+        self.is_manifold.load(Ordering::SeqCst)
+    }
+
+    /// Number of `GeometryQuery::IsOrientable` calls.
+    pub fn is_orientable(&self) -> usize {
+        self.is_orientable.load(Ordering::SeqCst)
+    }
+}
+
+/// A [`MockGeometryKernel`] wrapper that counts every `query()` round-trip.
+///
+/// ## What is counted
+///
+/// Only `query()` calls are intercepted. Per the list below:
+///
+/// * **Counted** — `query()` (grand `total` + per-variant counter for
+///   `IsWatertight`, `IsManifold`, `IsOrientable`).
+/// * **Counted via default** — `query_many()` (the trait default forwards
+///   per-element to `query()`, so each element is counted; see section below).
+/// * **Forwarded uncounted** — `execute`, `export`, `tessellate`,
+///   `extract_edges`, and `extract_faces` are delegated to the inner kernel
+///   without touching any counter.
+///
+/// ## Arc-sharing contract
+///
+/// The counters live in an `Arc<QueryCounts>`. Call [`CountingMockKernel::counts`]
+/// to clone the Arc *before* moving the kernel into `Box<dyn GeometryKernel>`.
+/// After the move the test can still read the counters from the saved Arc —
+/// this is the pattern used by integration tests that pass the kernel to
+/// `Engine::new`.
+///
+/// ## `query_many` is NOT overridden
+///
+/// The trait default for `query_many` forwards per-element to `query()`.
+/// Overriding it to delegate to `self.inner.query_many` would bypass our
+/// counting intercept. By leaving the default in place each element routes
+/// through our override and is counted.
+pub struct CountingMockKernel {
+    inner: MockGeometryKernel,
+    counts: Arc<QueryCounts>,
+}
+
+impl CountingMockKernel {
+    /// Wrap `inner` in a counting kernel with fresh zero counters.
+    pub fn new(inner: MockGeometryKernel) -> Self {
+        Self {
+            inner,
+            counts: Arc::new(QueryCounts::default()),
+        }
+    }
+
+    /// Clone the shared counter view.
+    ///
+    /// The returned `Arc` remains valid after `self` is moved into a
+    /// `Box<dyn GeometryKernel>`, making it safe to capture before passing
+    /// the kernel to `Engine::new`.
+    pub fn counts(&self) -> Arc<QueryCounts> {
+        Arc::clone(&self.counts)
+    }
+
+    /// Convenience accessor — equivalent to `self.counts().total()`.
+    ///
+    /// Preferred by unit tests that only need the grand total and don't
+    /// need to hold an Arc across a kernel move.
+    pub fn total_query_count(&self) -> usize {
+        self.counts.total()
+    }
+}
+
+impl GeometryKernel for CountingMockKernel {
+    fn execute(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<GeometryHandle, GeometryError> {
+        self.inner.execute(op)
+    }
+
+    fn query(
+        &self,
+        query: &GeometryQuery,
+    ) -> Result<Value, QueryError> {
+        self.counts.total.fetch_add(1, Ordering::SeqCst);
+        match query {
+            GeometryQuery::IsWatertight(_) => {
+                self.counts.is_watertight.fetch_add(1, Ordering::SeqCst);
+            }
+            GeometryQuery::IsManifold(_) => {
+                self.counts.is_manifold.fetch_add(1, Ordering::SeqCst);
+            }
+            GeometryQuery::IsOrientable(_) => {
+                self.counts.is_orientable.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        self.inner.query(query)
+    }
+
+    fn extract_edges(
+        &mut self,
+        h: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_edges(h)
+    }
+
+    fn extract_faces(
+        &mut self,
+        h: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_faces(h)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+
+    fn tessellate(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        self.inner.tessellate(handle, tolerance)
     }
 }
 
@@ -2734,7 +2894,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         let result1 = spy.solve(&problem1);
         assert!(
@@ -2748,7 +2908,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
         let result2 = spy.solve(&problem2);
         assert!(
@@ -3095,5 +3255,94 @@ mod tests {
             .with_face_normal_result(handle, normal.clone());
         let result = kernel.query(&GeometryQuery::FaceNormal(handle)).unwrap();
         assert_eq!(result, normal);
+    }
+
+    // ── CountingMockKernel tests ──────────────────────────────────────────────
+
+    #[test]
+    fn counting_mock_kernel_total_increments_per_query() {
+        let handle = GeometryHandleId(1);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+
+        assert_eq!(kernel.total_query_count(), 3);
+        assert_eq!(kernel.counts().total(), 3);
+    }
+
+    #[test]
+    fn counting_mock_kernel_per_variant_counters_track_only_their_variant() {
+        let handle = GeometryHandleId(2);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsManifold(handle)).unwrap();
+        kernel.query(&GeometryQuery::IsOrientable(handle)).unwrap();
+        kernel.query(&GeometryQuery::Volume(handle)).unwrap();
+
+        let counts = kernel.counts();
+        assert_eq!(counts.is_watertight(), 1);
+        assert_eq!(counts.is_manifold(), 1);
+        assert_eq!(counts.is_orientable(), 1);
+        assert_eq!(counts.total(), 4, "Volume contributes to total but not to any per-variant counter");
+    }
+
+    #[test]
+    fn counting_mock_kernel_query_proxies_inner_result() {
+        let handle = GeometryHandleId(3);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        let result = kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+        assert_eq!(result, Value::Bool(true), "CountingMockKernel must not change the inner kernel's result");
+    }
+
+    #[test]
+    fn counting_mock_kernel_counts_arc_survives_kernel_move_into_box() {
+        let handle = GeometryHandleId(4);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+        let counts = kernel.counts();
+
+        // Move the kernel into a Box<dyn GeometryKernel>, simulating the
+        // integration-test use case (Engine::new consumes the kernel).
+        let boxed: Box<dyn GeometryKernel> = Box::new(kernel);
+        boxed.query(&GeometryQuery::IsWatertight(handle)).unwrap();
+
+        // The Arc<QueryCounts> captured before the move should still see the increment.
+        assert_eq!(counts.is_watertight(), 1);
+    }
+
+    #[test]
+    fn counting_mock_kernel_query_many_routes_through_query_intercept() {
+        // Pins the doc-comment invariant: the trait default for `query_many`
+        // forwards per-element to `query()`, so each element passes through
+        // our counting intercept. This test will fail if either
+        // `CountingMockKernel` or the inner `MockGeometryKernel` ever gains
+        // an explicit `query_many` override that bypasses `query()`.
+        let handle = GeometryHandleId(5);
+        let inner = MockGeometryKernel::new()
+            .with_query_result(handle, Value::Bool(true));
+        let kernel = CountingMockKernel::new(inner);
+
+        kernel
+            .query_many(&[
+                GeometryQuery::IsWatertight(handle),
+                GeometryQuery::IsManifold(handle),
+            ])
+            .unwrap();
+
+        let counts = kernel.counts();
+        assert_eq!(counts.is_watertight(), 1, "IsWatertight element must be counted");
+        assert_eq!(counts.is_manifold(), 1, "IsManifold element must be counted");
+        assert_eq!(counts.total(), 2, "both elements contribute to grand total");
     }
 }

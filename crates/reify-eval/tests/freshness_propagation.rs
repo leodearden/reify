@@ -161,12 +161,9 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
     // so the downstream subtree is naturally quieted. The chain root (the failing
     // NodeId) is recovered via `derive_output_freshness_for_node_with_cause`
     // (exercised in Row 7).
-    let _ = engine.cache_store_mut().set_freshness(
-        &NodeId::Value(a_id.clone()),
-        Freshness::Failed {
-            error: ErrorRef::new("synthetic failure"),
-        },
-    );
+    let _ = engine
+        .cache_store_mut()
+        .mark_failed(&NodeId::Value(a_id.clone()), ErrorRef::new("synthetic failure"));
     assert_eq!(
         engine
             .cache_store()
@@ -183,12 +180,9 @@ fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
     // the chain root in its `pending_cause` side-table. See arch §9.2 lines 880-890
     // and the plan #2330 design decision on side-table storage.
     let a_node = NodeId::Value(a_id.clone());
-    let _ = engine.cache_store_mut().set_freshness(
-        &a_node,
-        Freshness::Failed {
-            error: ErrorRef::new("synthetic failure for chain root"),
-        },
-    );
+    let _ = engine
+        .cache_store_mut()
+        .mark_failed(&a_node, ErrorRef::new("synthetic failure for chain root"));
     let (fresh, cause) = engine
         .cache_store()
         .derive_output_freshness_for_node_with_cause(&b_node, false, g);

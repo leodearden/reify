@@ -67,6 +67,7 @@ fn value_data_serializes_with_expected_fields() {
         determinacy: "determined".to_string(),
         entity_path: "Bracket".to_string(),
         kind: "Param".to_string(),
+        freshness: "final".to_string(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));
@@ -708,4 +709,87 @@ fn persistent_view_state_json_uses_camel_case_keys() {
 fn persistent_view_state_ipc_contract() {
     use crate::types::PersistentViewState;
     super::assert_ipc_contract::<PersistentViewState>();
+}
+
+/// `ValueData` must carry a `freshness: String` JSON field.
+///
+/// The field defaults to `"final"` (matching `Freshness::default() = Final`).
+/// This pin guards the wire-shape contract added by task #2337.
+#[test]
+fn value_data_serializes_with_freshness_field() {
+    let val = ValueData {
+        cell_id: "Bracket.width".to_string(),
+        name: "width".to_string(),
+        value: "80".to_string(),
+        unit: "mm".to_string(),
+        determinacy: "determined".to_string(),
+        entity_path: "Bracket".to_string(),
+        kind: "Param".to_string(),
+        freshness: "final".to_string(),
+    };
+    let v = serde_json::to_value(&val).unwrap();
+    assert_eq!(
+        v["freshness"],
+        serde_json::json!("final"),
+        "ValueData must serialize freshness field as 'final'"
+    );
+}
+
+/// `EntityTreeNode` must carry a `freshness: String` JSON field.
+///
+/// The field defaults to `"final"` per the task #2337 design decision on
+/// `Freshness::default() = Final`. This pin guards the wire-shape contract.
+#[test]
+fn entity_tree_node_serializes_with_freshness_field() {
+    let node = EntityTreeNode {
+        entity_path: "Bracket".to_string(),
+        kind: "structure".to_string(),
+        type_name: None,
+        display_name: None,
+        has_mesh: false,
+        trait_geometry: false,
+        children: vec![],
+        freshness: "final".to_string(),
+    };
+    let v = serde_json::to_value(&node).unwrap();
+    assert_eq!(
+        v["freshness"],
+        serde_json::json!("final"),
+        "EntityTreeNode must serialize freshness field as 'final'"
+    );
+}
+
+/// `format_freshness` must return lowercase wire strings matching the
+/// pattern already established by `format_determinacy`. The frontend reads
+/// these strings as CSS `data-freshness` attribute values (task #2337
+/// design decision: tag-only string collapse).
+#[test]
+fn format_freshness_returns_lowercase_strings() {
+    use crate::types::format_freshness;
+    use reify_types::{ErrorRef, Freshness, ResultRef};
+
+    // Final → "final"
+    assert_eq!(format_freshness(&Freshness::Final), "final");
+
+    // Intermediate (generation ignored at wire layer) → "intermediate"
+    assert_eq!(
+        format_freshness(&Freshness::Intermediate { generation: 7 }),
+        "intermediate"
+    );
+
+    // Pending (last_substantive ignored at wire layer) → "pending"
+    assert_eq!(
+        format_freshness(&Freshness::Pending {
+            last_substantive: ResultRef::none()
+        }),
+        "pending"
+    );
+
+    // Failed (error payload ignored at wire layer) → "failed"
+    assert_eq!(
+        format_freshness(&Freshness::Failed {
+            error: ErrorRef::new("test-error-x")
+        }),
+        "failed"
+    );
 }

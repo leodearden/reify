@@ -284,6 +284,7 @@ describe('App initial state loading', () => {
           determinacy: 'determined',
           entity_path: 'Bracket.width',
           kind: 'parameter',
+          freshness: 'final',
         },
       ],
       constraints: [],
@@ -480,6 +481,7 @@ describe('App async mount/cleanup race conditions', () => {
         determinacy: 'determined',
         entity_path: 'Test.testval',
         kind: 'parameter',
+        freshness: 'final',
       }],
       constraints: [],
       files: [{ path: '/test.ri', content: '' }],
@@ -595,6 +597,7 @@ describe('App navigation wiring', () => {
         determinacy: 'determined',
         entity_path: 'Bracket.width',
         kind: 'parameter',
+        freshness: 'final',
       },
     ],
     constraints: [
@@ -1371,6 +1374,7 @@ describe('App handleSetParameter error handling', () => {
           determinacy: 'determined',
           entity_path: 'Bracket.width',
           kind: 'parameter',
+          freshness: 'final',
         }],
         constraints: [],
         files: [],
@@ -2075,6 +2079,7 @@ describe('App end-to-end toast integration', () => {
           determinacy: 'determined',
           entity_path: 'Bracket.width',
           kind: 'parameter',
+          freshness: 'final',
         }],
         constraints: [],
         files: [],
@@ -2782,7 +2787,7 @@ describe('App viewport multi-selection modifier routing', () => {
 
 describe('App DesignTree wiring', () => {
   function makeNode(entity_path: string, children: any[] = []) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
   }
 
   it('renders DesignTree in the side panel', async () => {
@@ -2952,7 +2957,7 @@ describe('App DesignTree wiring', () => {
 
 describe('App — view selector and COW integration', () => {
   function makeNode(entity_path: string, children: any[] = []) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
   }
 
   it('pressing "2" (no modifiers) switches to the second view in ViewSelector order', async () => {
@@ -3032,7 +3037,7 @@ describe('Viewport wiring', () => {
 
 describe('Viewport view sync', () => {
   function makeNode(entity_path: string) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children: [] };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children: [] };
   }
 
   it('initial viewId tracks viewStateStore.activeViewId ("auto:default")', async () => {
@@ -3198,7 +3203,7 @@ describe('App persistence wiring — file open (step-29)', () => {
 
 describe('App persistence wiring — debounced save (step-31)', () => {
   function makeNode(entity_path: string, children: any[] = []) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
   }
 
   /**
@@ -3325,7 +3330,7 @@ describe('App persistence wiring — debounced save (step-31)', () => {
 
 describe('App persistence wiring — Save views action (step-33)', () => {
   function makeNode(entity_path: string, children: any[] = []) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
   }
 
   /** Open a file via Ctrl+O and wait for persistence to be queried. */
@@ -3467,7 +3472,7 @@ describe('App persistence wiring — camera state restoration (step-37)', () => 
 
 describe('App persistence wiring — fuzzy-rebind notification (step-35)', () => {
   function makeNode(entity_path: string, children: any[] = []) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
   }
 
   /**
@@ -3728,7 +3733,7 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
 
 describe('App persistence wiring — flush on file switch', () => {
   function makeNode(entity_path: string, children: any[] = []) {
-    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
   }
 
   async function flushHandleOpen() {

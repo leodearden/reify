@@ -351,7 +351,7 @@ fn detect_let_cycle<'a>(
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     values: &ValueMap,
-    functions: Arc<Vec<CompiledFunction>>,
+    functions: Arc<[CompiledFunction]>,
 ) -> Option<ResolutionProblem> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -578,7 +578,7 @@ fn eval_guarded_group_param_cell(
 pub(crate) fn elaborate_field(
     field: &reify_compiler::CompiledField,
     values: &ValueMap,
-    functions: &Arc<Vec<CompiledFunction>>,
+    functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> Value {
     let lambda_value = match &field.source {
@@ -1532,17 +1532,25 @@ impl Engine {
                     }
 
                     // Check cache reuse (not dirty, no override)
+                    // Preserve existing freshness (Failed/Pending) — see the
+                    // analogous let-cell block comment for rationale (arch §7.1/§9.2).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
                     {
                         let val = val.clone();
+                        let preserved_freshness = entry.freshness.clone();
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache
-                            .record_evaluation(node_id.clone(), result, version, trace);
+                        self.cache.record_evaluation_with_freshness(
+                            node_id.clone(),
+                            result,
+                            version,
+                            trace,
+                            preserved_freshness,
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -1659,17 +1667,25 @@ impl Engine {
 
                     // Check if cache entry still exists and is not dirty.
                     // For params without overrides, we can reuse cached values.
+                    // Preserve existing freshness (Failed/Pending) — see the
+                    // let-cell block comment for rationale (arch §7.1/§9.2).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
                     {
                         let val = val.clone();
+                        let preserved_freshness = entry.freshness.clone();
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache
-                            .record_evaluation(node_id.clone(), result, version, trace);
+                        self.cache.record_evaluation_with_freshness(
+                            node_id.clone(),
+                            result,
+                            version,
+                            trace,
+                            preserved_freshness,
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -1811,16 +1827,33 @@ impl Engine {
                     // Check if cache entry still exists and is not dirty.
                     // If so, the node's dependencies haven't changed, so we
                     // can reuse the cached result and update its basis_version.
+                    //
+                    // Freshness preservation: use `record_evaluation_with_freshness`
+                    // with the *existing* freshness rather than `record_evaluation`
+                    // (which hard-codes `Freshness::Final`). A cell that is
+                    // `Failed { error }` or `Pending { .. }` because of a prior
+                    // computation failure must retain that state when it is not
+                    // re-evaluated — its inputs have not changed, so the failure
+                    // would recur if the cell were executed. Resetting to `Final`
+                    // would silently discard the failure state and suppress the
+                    // freshness-diagnostic block that reads these states downstream.
+                    // See arch §7.1 / §9.2 and task #2337 step-18.
                     if !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
                         && let CachedResult::Value(ref val, _) = entry.result
                     {
                         let val = val.clone();
+                        let preserved_freshness = entry.freshness.clone();
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache
-                            .record_evaluation(node_id.clone(), result, version, trace);
+                        self.cache.record_evaluation_with_freshness(
+                            node_id.clone(),
+                            result,
+                            version,
+                            trace,
+                            preserved_freshness,
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -2021,7 +2054,10 @@ impl Engine {
             });
 
             // Snapshot test-instrumentation panic-injection state for this cell
-            // so the closure does not need to borrow `self`.
+            // so the closure does not need to borrow `self`. The field and
+            // this read site are both `#[cfg(any(test, feature =
+            // "test-instrumentation"))]`-gated — absent in production builds.
+            #[cfg(any(test, feature = "test-instrumentation"))]
             let force_panic = self.panic_on_eval_cells.contains(cell_id);
 
             // Arch §7.2 line 748 / §9.2 line 890 — pre-eval Pending gate.
@@ -2109,12 +2145,17 @@ impl Engine {
             // `EventKind::Failed` event — rather than crashing the engine.
             //
             // The test-instrumentation hook (`panic_on_eval_cells` /
-            // `set_panic_on_eval`) panics with a known sentinel BEFORE calling
-            // `eval_expr`, so the same boundary serves both the production path
-            // (a panic raised inside `eval_expr` itself) and the test path.
+            // `set_panic_on_eval`, `force_panic` above) panics with a known
+            // sentinel BEFORE calling `eval_expr`, so the same boundary serves
+            // both the production path (a panic raised inside `eval_expr`
+            // itself) and the test path. The `force_panic` variable and the
+            // `if force_panic { panic!(…) }` branch are both
+            // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
+            // are absent in production builds.
             let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                 .with_determinacy(&snapshot.values);
             let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                #[cfg(any(test, feature = "test-instrumentation"))]
                 if force_panic {
                     panic!(
                         "test-instrumentation forced panic for {:?}",

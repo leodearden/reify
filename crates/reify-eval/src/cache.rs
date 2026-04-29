@@ -544,14 +544,15 @@ impl CacheStore {
     /// auto-creation is intentionally not supported (no value/result/trace
     /// to seed).
     ///
-    /// # Warning: do not pass `Freshness::Failed` directly
+    /// # Precondition: do not pass `Freshness::Failed`
     ///
     /// `mark_failed` must be used instead of `set_freshness(node,
     /// Freshness::Failed { error })`. This helper centralises the
     /// "Failed nodes are chain roots" invariant (including the chain-clearing
     /// side effect); `set_freshness` would silently allow downstream
     /// callers to skip recording the chain root and to leak a stale
-    /// `pending_cause`.
+    /// `pending_cause`. This precondition is enforced via `assert!` in all
+    /// builds (task #2592, parity with the Pending guard from task #2451).
     pub fn mark_failed(&mut self, node: &NodeId, error: reify_types::ErrorRef) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Failed { error };
@@ -627,7 +628,7 @@ impl CacheStore {
     /// has no value/result/trace to seed (see task #2326 design decision). Use
     /// `put(node, NodeCache::new(...))` to insert a fresh entry.
     ///
-    /// # Precondition: do not pass `Freshness::Pending`
+    /// # Precondition: do not pass `Freshness::Pending` or `Freshness::Failed`
     ///
     /// `mark_pending` or `mark_pending_with_cause` must be used instead of
     /// `set_freshness(node, Freshness::Pending { ... })` when transitioning a node
@@ -636,12 +637,19 @@ impl CacheStore {
     /// `pending_transition_count` (a diagnostic counter). This precondition is
     /// enforced via `assert!` in all builds (task #2451 S1).
     ///
+    /// `mark_failed` must be used instead of `set_freshness(node,
+    /// Freshness::Failed { ... })` when transitioning a node to the Failed state.
+    /// That helper centralises the "Failed nodes are chain roots" invariant (clearing
+    /// `pending_cause` so no stale diagnostic chain leaks through). This precondition
+    /// is enforced via `assert!` in all builds (task #2592, parity with the Pending
+    /// guard above).
+    ///
     /// **S2 audit (task #2451):** production write paths in `concurrent.rs` and
     /// `engine_edit.rs` already route all Pending transitions through `mark_pending`
-    /// / `mark_pending_with_cause` (tasks #2326, #2335). `CacheStore::caches` is a
-    /// private field with no public `get_mut` accessor, so external code cannot
-    /// write `freshness` directly. This precondition therefore covers all production
-    /// write sites.
+    /// / `mark_pending_with_cause` (tasks #2326, #2335) and all Failed transitions
+    /// through `mark_failed`. `CacheStore::caches` is a private field with no public
+    /// `get_mut` accessor, so external code cannot write `freshness` directly. These
+    /// preconditions therefore cover all production write sites.
     ///
     /// `restore_final` and `mark_pending` continue to coexist as domain-specific
     /// helpers. `mark_pending` additionally captures `result_hash` into
@@ -651,8 +659,8 @@ impl CacheStore {
     #[must_use = "set_freshness returns false when the node is absent; check or explicitly discard"]
     pub fn set_freshness(&mut self, node: &NodeId, freshness: Freshness) -> bool {
         assert!(
-            !matches!(freshness, Freshness::Pending { .. }),
-            "set_freshness must not be passed Pending; use mark_pending or mark_pending_with_cause instead"
+            !matches!(freshness, Freshness::Pending { .. } | Freshness::Failed { .. }),
+            "set_freshness must not be passed Pending or Failed; use mark_pending/mark_pending_with_cause or mark_failed instead"
         );
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = freshness;
@@ -2651,7 +2659,7 @@ mod tests {
 
     #[test]
     fn cache_store_set_freshness_returns_false_for_missing_and_writes_for_present() {
-        use reify_types::{ErrorRef, Freshness};
+        use reify_types::Freshness;
 
         // (a) Missing node → set_freshness returns false and store stays empty (no auto-create).
         let mut store = CacheStore::new();
@@ -2667,20 +2675,13 @@ mod tests {
         // (b) Present node → set_freshness returns true.
         let node = NodeId::Value(ValueCellId::new("T", "present"));
         store.put(node.clone(), make_test_node_cache(42, 1)); // starts with Freshness::Final
-        let result = store.set_freshness(
-            &node,
-            Freshness::Failed {
-                error: ErrorRef::new("boom"),
-            },
-        );
+        let result = store.set_freshness(&node, Freshness::Intermediate { generation: 1 });
         assert!(result, "set_freshness on present node must return true");
 
         // (c) Round-trip: canonical reader reflects the written value.
         assert_eq!(
             store.freshness(&node),
-            Freshness::Failed {
-                error: ErrorRef::new("boom"),
-            },
+            Freshness::Intermediate { generation: 1 },
             "freshness() must read back the value written by set_freshness()"
         );
     }
@@ -2705,6 +2706,30 @@ mod tests {
             &node,
             Freshness::Pending {
                 last_substantive: ResultRef::of_hash(ContentHash(0)),
+            },
+        );
+    }
+
+    // --- set_freshness precondition: Failed is forbidden (task #2592, step-1) ---
+
+    /// Pins the `set_freshness` precondition guard (S1): passing `Freshness::Failed`
+    /// must panic in all builds. Callers must use `mark_failed` instead, which also
+    /// clears `pending_cause` (ensuring Failed nodes are chain roots per arch §9.2).
+    /// Tasks #2451 + #2592.
+    #[test]
+    #[should_panic(expected = "Failed")]
+    fn set_freshness_panics_when_passed_failed() {
+        use reify_types::{ErrorRef, Freshness};
+
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(1, 1));
+
+        // Must panic — set_freshness must not accept Failed.
+        let _ = store.set_freshness(
+            &node,
+            Freshness::Failed {
+                error: ErrorRef::new("boom"),
             },
         );
     }
@@ -3421,12 +3446,15 @@ mod tests {
 
     /// Smoke-checks that the no-cause cache methods return exactly `.0` of their
     /// `_with_cause` cousins. After the step-4 refactor the no-cause variants are
-    /// `let (f, _) = self._with_cause(...); f` wrappers, so full truth-table
-    /// coverage would be a tautology. Two representative rows suffice to catch a
-    /// future regression where a method is accidentally hand-rolled again.
+    /// `let (f, _) = self._with_cause(...); f` wrappers, so these rows are
+    /// tautological by construction. Four rows pin the agreement at distinct
+    /// branches of the classifier: all-Final (simplest path), one-Pending
+    /// (non-trivial path), Failed §9.2 carve-out, and still_refining short-circuit.
+    /// If a method is ever accidentally hand-rolled again, at least one row will
+    /// diverge.
     #[test]
     fn derive_output_freshness_no_cause_variants_agree_with_with_cause() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_types::{DeterminacyState, ErrorRef, Freshness, Value, VersionId};
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
@@ -3504,6 +3532,24 @@ mod tests {
             store.mark_pending(&NodeId::Value(b_id.clone()));
             let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
             assert_agree!(store, &trace, sr, g, "one-Pending");
+        }
+
+        // Row 3: Failed input (exercises §9.2 carve-out — most likely divergence point)
+        {
+            let mut store = make_store(Freshness::Final, Freshness::Final);
+            store.mark_failed(
+                &NodeId::Value(b_id.clone()),
+                ErrorRef::new("x"),
+            );
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, sr, g, "one-Failed");
+        }
+
+        // Row 4: still_refining=true (exercises the Pending-when-still-refining branch)
+        {
+            let store = make_store(Freshness::Final, Freshness::Final);
+            let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
+            assert_agree!(store, &trace, true, g, "all-Final-still-refining");
         }
     }
 }

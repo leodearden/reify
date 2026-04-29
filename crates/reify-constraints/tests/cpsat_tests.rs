@@ -54,7 +54,7 @@ fn boolean_sat_3_params() {
         constraints: vec![(cnid("Part", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -96,7 +96,7 @@ fn boolean_infeasible_contradiction() {
         constraints: vec![(cnid("Part", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -151,7 +151,7 @@ fn implication_if_a_then_b() {
         constraints: vec![(cnid("Part", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -198,7 +198,7 @@ fn implication_forced_a_true_implies_b_true() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -271,7 +271,7 @@ fn cardinality_at_most_2_of_4() {
         ],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -338,7 +338,7 @@ fn enum_constraint_excludes_one_variant() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -412,7 +412,7 @@ fn integer_constraint_sum_equals_10() {
         ],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -484,7 +484,7 @@ fn all_different_3_ints() {
         ],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -530,7 +530,7 @@ fn empty_problem_returns_solved_empty() {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -562,7 +562,7 @@ fn make_int_problem_with_bounds(lo: f64, hi: f64) -> ResolutionProblem {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     }
 }
 
@@ -689,7 +689,7 @@ fn registry_integration_logical_solver() {
         constraints: vec![(cnid("Part", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = registry.solve(&problem);

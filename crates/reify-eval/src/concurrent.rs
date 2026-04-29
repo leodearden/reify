@@ -50,7 +50,7 @@ pub struct ConcurrentEditSetup {
     /// Shares the same Arc allocation as Engine::functions — assigned via Arc::clone
     /// in prepare_concurrent_edit, so no deep copy of the function table is made
     /// (task #1997).
-    pub functions: Arc<Vec<CompiledFunction>>,
+    pub functions: Arc<[CompiledFunction]>,
     /// Template-to-meta-entries mapping, populated from Engine::meta_map.
     /// Used to resolve MetaAccess expressions during concurrent evaluation.
     pub meta_map: Arc<HashMap<String, HashMap<String, String>>>,

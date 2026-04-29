@@ -1,17 +1,20 @@
 mod annotations;
 mod arg_check;
+pub mod auto_type_param;
 mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
 mod entity;
 mod expr;
+mod forall_elaborate;
 mod functions;
 mod geometry;
 mod geometry_boolean;
 mod geometry_curve;
 mod geometry_modify;
 mod geometry_transform;
+pub mod geometry_traits;
 pub mod geometry_traits_inference;
 mod guards;
 mod ice;
@@ -42,6 +45,8 @@ pub(crate) use conformance::*;
 pub(crate) use connect::*;
 pub(crate) use entity::*;
 pub(crate) use expr::*;
+#[allow(unused_imports)]
+pub(crate) use forall_elaborate::*;
 #[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
@@ -127,12 +132,9 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 /// and delegates to [`reify_syntax::parse_with_prelude_enums`].  This keeps
 /// hot edit-loop callers (LSP recompiles per keystroke, GUI engine
 /// reloads) from re-collecting the same `&'static str`s on every parse.
-///
-/// **TODO(perf):** the parser side still heap-allocates one `String` per
-/// name into its `known_enums: HashSet<String>` on every call.  A future
-/// optimization could thread the set through as `&HashSet<&'static str>`
-/// so the prelude side participates as a borrow.  N is small today; profile
-/// before changing the parser API.
+/// The parser accepts `&[&'static str]` and stores borrows rather than
+/// allocating owned `String`s, so the memoised slice flows through with
+/// zero per-call heap allocation.
 pub fn parse_with_stdlib(
     source: &str,
     module_path: reify_types::ModulePath,

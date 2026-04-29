@@ -19,6 +19,13 @@ test-instrumentation = []
 # Self-dev-dep enables `test-instrumentation`-gated accessors (e.g. Engine::last_guard_phase_group_evals) in integration tests; see src/engine_admin.rs
 reify-eval = { path = ".", features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
+# v0.2 persistent-naming-v2 (task 2590): integration tests in `tests/`
+# (e.g. topology_attribute_e2e.rs) drive `OcctKernelHandle::boolean_fuse_with_history`
+# and feed the resulting `BooleanOpHistoryRecords` (a `reify-types` type) into
+# `propagate_attributes_via_brepalgoapi_history`. Keeping reify-kernel-occt as a
+# dev-dep — not a normal dep — prevents OCCT from being pulled into every
+# transitive test compile of crates that dev-depend on `reify-test-support`
+# with the `eval-helpers` feature, preserving `scripts/occt-touching-crates.txt`.
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true

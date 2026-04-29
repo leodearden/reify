@@ -19,12 +19,16 @@ mod engine_purposes;
 mod geometry_ops;
 pub mod graph;
 pub mod journal;
+pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
+pub mod topology_attribute_propagation;
 pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
+pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use test_runner::{TestResult, TestStatus, run_tests};
+pub use topology_attribute_propagation::propagate_attributes_via_brepalgoapi_history;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +37,7 @@ use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
     Diagnostic, FeatureTagTable, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl,
-    Satisfaction, ValueCellId, ValueMap,
+    Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -326,7 +330,7 @@ pub struct Engine {
     /// Wrapped in Arc so per-call clones in eval(), edit_param(), and
     /// prepare_concurrent_edit() become O(1) refcount bumps rather than deep
     /// copies of the entire compiled function tree (task #1997).
-    functions: Arc<Vec<CompiledFunction>>,
+    functions: Arc<[CompiledFunction]>,
     /// Compiled purpose declarations from the last eval() call.
     /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
     compiled_purposes: Vec<CompiledPurpose>,
@@ -399,19 +403,45 @@ pub struct Engine {
     /// Exposed via `Engine::feature_tag_table()` so topology selectors and
     /// GUI consumers can correlate geometry handles back to source locations.
     feature_tag_table: FeatureTagTable,
+    /// v0.2 persistent-naming-v2 attribute store, keyed by
+    /// `GeometryHandleId`. Mirrors the `feature_tag_table` shape but holds
+    /// `TopologyAttribute` records (per-feature `feature_id`, `role`,
+    /// `local_index`, optional `user_label`, `mod_history`).
+    ///
+    /// Populated by `Engine::execute_realization_ops` for primitive ops
+    /// (Box / Cylinder / Sphere) via `seed_primitive_attributes_for_handle`
+    /// (task 6, #2574); auto-population for sweep / local-feature / boolean
+    /// ops lands in PRD tasks 5 / 7 / 8. Cleared and repopulated on each
+    /// `build()` / `build_snapshot()` / `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call (per-build, not per-realization). Task 2
+    /// (#2570) wires selector lookup against this table; tasks 9-10 retire
+    /// `feature_tag_table` once the attribute path covers all selector
+    /// vocabulary.
+    topology_attribute_table: TopologyAttributeTable,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
-    /// Populated only via `Engine::set_panic_on_eval` (cfg-gated to test /
-    /// `test-instrumentation` builds); the field itself is always present so
-    /// the struct layout is identical in test and production builds (same
-    /// trick used by `last_guard_phase_group_evals` etc.).
     ///
-    /// In production builds the set stays empty — the let-binding evaluator's
-    /// hot path costs only a single `HashSet::contains` check per cell. The
-    /// catch_unwind panic boundary in `evaluate_let_bindings` converts any
-    /// panic raised here (or by any other path inside `eval_expr`) into a
-    /// `Freshness::Failed { error }` write plus a single `EventKind::Failed`
-    /// event, per arch §9.1 line 868–877.
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** —
+    /// production builds carry no field, no allocation, no clone, and no
+    /// drop overhead. This deliberately deviates from the `last_*` precedent
+    /// (which keeps fields always-present for identical struct layout); here
+    /// the only write sites are already equivalently-gated accessors
+    /// (`set_panic_on_eval` / `remove_panic_on_eval` / `clear_panic_on_eval`
+    /// in `engine_admin.rs`) so gating the field itself is safe and the
+    /// hygiene benefit (no test-only state in production binaries) outweighs
+    /// the trivial cfg overhead. See task #2555 rationale.
+    ///
+    /// The read site (`let force_panic = …` + `if force_panic { panic!(…) }`)
+    /// in `evaluate_let_bindings` (`engine_eval.rs`) is gated with the same
+    /// predicate, so the `catch_unwind` boundary that converts the panic into
+    /// `Freshness::Failed { error }` + `EventKind::Failed` (arch §9.1
+    /// lines 868–877) is also absent in production builds.
+    ///
+    /// **Sole init site:** `Engine::with_prelude` in `engine_admin.rs`
+    /// (`panic_on_eval_cells: std::collections::HashSet::new()`). Any future
+    /// `Engine` constructor must add the same cfg-gated field initialiser, or
+    /// production builds will fail to compile due to a missing struct field.
+    #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
 }
 
@@ -592,7 +622,7 @@ pub(crate) fn build_meta_map(
 }
 
 /// Merge a module's user functions with the prelude function table into a new
-/// `Arc<Vec<CompiledFunction>>`.
+/// `Arc<[CompiledFunction]>`.
 ///
 /// # SHADOWING INVARIANT
 /// Module (user) functions are stored **first**, then prelude functions are
@@ -619,17 +649,15 @@ pub(crate) fn build_meta_map(
 ///
 /// # Performance
 /// The merged table is built once per `eval()`/`edit_source()` call into a
-/// local `Vec`, then sealed by `Arc::new`. Subsequent clones (e.g. in
+/// local `Vec`, then sealed by `.into()`. Subsequent clones (e.g. in
 /// `prepare_concurrent_edit`, `edit_param`) are O(1) refcount bumps.
 pub(crate) fn merge_functions(
     module: &CompiledModule,
     prelude: &[CompiledFunction],
-) -> Arc<Vec<CompiledFunction>> {
-    Arc::new({
-        let mut v = module.functions.clone();
-        v.extend(prelude.iter().cloned());
-        v
-    })
+) -> Arc<[CompiledFunction]> {
+    let mut v = module.functions.clone();
+    v.extend(prelude.iter().cloned());
+    v.into()
 }
 
 #[cfg(test)]
@@ -1128,9 +1156,9 @@ structure S {
     /// `Arc::strong_count >= 2`). This proves the per-call clone is O(1)
     /// (a refcount bump), not an O(N) deep clone of the entire function table.
     ///
-    /// Expected compile-failure before impl-1: `Engine.functions` is
-    /// `Vec<CompiledFunction>`, not `Arc<Vec<CompiledFunction>>`, so
-    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` is a type error
+    /// Expected compile-failure before impl-1: `Engine.functions` was
+    /// `Vec<CompiledFunction>`, not `Arc<[CompiledFunction]>`, so
+    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` was a type error
     /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before
     /// this test can compile (task #1997).
     #[test]
@@ -1164,13 +1192,19 @@ structure S {
 
     // ── Arc-sharing invariant: ResolutionProblem.functions (task #2286) ───────
 
-    /// Arc-sharing invariant: after `eval()`, the `ResolutionProblem.functions`
-    /// passed to the solver must share the *same* Arc allocation as
-    /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
-    /// `Arc::strong_count >= 2`). This proves the per-solver-call construction is
-    /// O(1) (a refcount bump), not an O(N) deep clone of the entire function table.
-    #[test]
-    fn eval_resolution_problem_shares_functions_arc_with_engine() {
+    /// Shared harness for the three `ResolutionProblem.functions`-sharing sentinel
+    /// tests. Builds the common spy-solver + thickness/limit module fixture, runs
+    /// `engine.eval(&module)` once (populating the spy with the eval-path problem),
+    /// then calls `drive(&mut engine, limit_id)` to trigger the variant-specific
+    /// code path, and finally asserts `Arc::ptr_eq` + `strong_count >= 2` on the
+    /// most-recently-captured problem.
+    ///
+    /// `trigger_label` is interpolated into assertion failure messages so each
+    /// calling test produces diagnostics as specific as the original inlined bodies.
+    fn assert_problem_shares_functions_arc<F>(trigger_label: &str, drive: F)
+    where
+        F: FnOnce(&mut Engine, reify_types::ValueCellId),
+    {
         use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
         use reify_test_support::{
             CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
@@ -1180,19 +1214,26 @@ structure S {
         use std::sync::Arc;
 
         let thickness_id = ValueCellId::new("S", "thickness");
+        let limit_id = ValueCellId::new("S", "limit");
+
+        // Solver returns thickness = 5mm each time it's called.
         let mut solved_values = HashMap::new();
-        solved_values.insert(thickness_id, mm(5.0));
+        solved_values.insert(thickness_id.clone(), mm(5.0));
 
         let spy = SpyConstraintSolver::new_solved(solved_values);
         let captured = spy.captured_problem();
 
+        // Template: auto thickness, regular param limit (default 2mm),
+        // constraint: thickness > limit.  This shape supports all three triggers
+        // (eval / edit_param(limit) / prepare+resolve_concurrent_edit(limit)).
         let template = TopologyTemplateBuilder::new("S")
             .auto_param("S", "thickness", Type::length())
+            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
             .constraint(
                 "S",
                 0,
                 None,
-                gt(value_ref("S", "thickness"), literal(mm(2.0))),
+                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
             )
             .build();
 
@@ -1203,188 +1244,87 @@ structure S {
         let mut engine =
             Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
+        // Initial eval — solver fires once; captured holds the eval-path problem.
         engine.eval(&module);
 
+        // Drive the engine into the variant-specific code path.
+        drive(&mut engine, limit_id);
+
+        // The spy now holds the most-recent ResolutionProblem (eval, edit_param, or
+        // resolve_concurrent_edit, depending on the trigger).
         let guard = captured.lock().unwrap();
-        let problem = guard
-            .as_ref()
-            .expect("solver should have been called during eval");
+        let problem = guard.as_ref().unwrap_or_else(|| {
+            panic!("solver should have been called during {trigger_label}")
+        });
 
         assert!(
             Arc::ptr_eq(&engine.functions, &problem.functions),
             "ResolutionProblem.functions must share the same Arc allocation as \
-            Engine.functions — proves the per-call clone is O(1) Arc::clone, not a \
-            deep clone of the function table (task #2286)"
+            Engine.functions in the {trigger_label} path — proves the construction \
+            is O(1) Arc::clone, not a deep clone (task #2286)"
         );
         assert!(
             Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
+            "strong_count must be >= 2 (engine + captured problem both hold a ref) \
+            in the {trigger_label} path; got {}",
             Arc::strong_count(&engine.functions)
         );
+    }
+
+    /// Arc-sharing invariant: after `eval()`, the `ResolutionProblem.functions`
+    /// passed to the solver must share the *same* Arc allocation as
+    /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
+    /// `Arc::strong_count >= 2`). This proves the per-solver-call construction is
+    /// O(1) (a refcount bump), not an O(N) deep clone of the entire function table.
+    ///
+    /// Note: the shared helper builds a 2-param (thickness + limit) module rather
+    /// than the minimal 1-param shape the eval invariant alone would require. This
+    /// is intentional — the fixture is shared across all three trigger variants;
+    /// see the comment at the top of `assert_problem_shares_functions_arc` for details.
+    #[test]
+    fn eval_resolution_problem_shares_functions_arc_with_engine() {
+        // The helper's own engine.eval(&module) call already fires the solver,
+        // so the eval-path problem is captured before drive is invoked.
+        assert_problem_shares_functions_arc("eval", |_engine, _limit_id| {});
     }
 
     /// Arc-sharing invariant: after `edit_param()`, the `ResolutionProblem.functions`
     /// passed to the solver must share the *same* Arc allocation as
     /// `Engine.functions`. This covers the inline construction site in
     /// `engine_edit.rs` (task #2286).
-    ///
-    /// The test builds a module with an auto-param `thickness` constrained to be
-    /// greater than a regular param `limit`. Calling `edit_param(limit, new_val)`
-    /// dirties the constraint and triggers re-resolution, so the spy captures the
-    /// new `ResolutionProblem` from the `edit_param` code path.
     #[test]
     fn edit_param_resolution_problem_shares_functions_arc_with_engine() {
-        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
-        use reify_test_support::{
-            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
-        };
-        use reify_types::{ModulePath, Type, ValueCellId};
-        use std::collections::HashMap;
-        use std::sync::Arc;
-
-        let thickness_id = ValueCellId::new("S", "thickness");
-        let limit_id = ValueCellId::new("S", "limit");
-
-        // Solver returns thickness = 5mm each time it's called.
-        let mut solved_values = HashMap::new();
-        solved_values.insert(thickness_id.clone(), mm(5.0));
-
-        let spy = SpyConstraintSolver::new_solved(solved_values);
-        let captured = spy.captured_problem();
-
-        // Template: auto thickness, regular param limit (default 2mm),
-        // constraint: thickness > limit.
-        let template = TopologyTemplateBuilder::new("S")
-            .auto_param("S", "thickness", Type::length())
-            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-            .constraint(
-                "S",
-                0,
-                None,
-                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
-            )
-            .build();
-
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-
-        // Initial eval — solver fires once.
-        engine.eval(&module);
-
-        // Editing `limit` dirties the constraint and triggers re-resolution via
-        // the engine_edit.rs path.
-        engine.edit_param(limit_id, mm(3.0)).unwrap();
-
-        // The spy now holds the problem from the most recent solver call
-        // (the edit_param re-resolution).
-        let guard = captured.lock().unwrap();
-        let problem = guard
-            .as_ref()
-            .expect("solver should have been called during edit_param");
-
-        assert!(
-            Arc::ptr_eq(&engine.functions, &problem.functions),
-            "ResolutionProblem.functions must share the same Arc allocation as \
-            Engine.functions in the edit_param path — proves the construction is \
-            O(1) Arc::clone, not a deep clone (task #2286)"
-        );
-        assert!(
-            Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
-            Arc::strong_count(&engine.functions)
-        );
+        use reify_test_support::mm;
+        assert_problem_shares_functions_arc("edit_param", |engine, limit_id| {
+            engine.edit_param(limit_id, mm(3.0)).unwrap();
+        });
     }
 
     /// Arc-sharing invariant: after `resolve_concurrent_edit()`, the
     /// `ResolutionProblem.functions` passed to the solver must share the *same*
     /// Arc allocation as `Engine.functions`. This covers the inline construction
     /// site in `concurrent.rs` (task #2286).
-    ///
-    /// Changing `limit` (a regular param that appears in the constraint) creates
-    /// a dirty cone on the constraint, causing `resolve_concurrent_edit` to fire
-    /// the solver. The spy captures the `ResolutionProblem` from that call.
     #[test]
     fn resolve_concurrent_edit_resolution_problem_shares_functions_arc_with_engine() {
-        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
-        use reify_test_support::{
-            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
-        };
-        use reify_types::{ModulePath, Type, ValueCellId};
+        use reify_test_support::mm;
         use std::collections::{HashMap, HashSet};
-        use std::sync::Arc;
-
-        let thickness_id = ValueCellId::new("S", "thickness");
-        let limit_id = ValueCellId::new("S", "limit");
-
-        // Solver returns thickness = 5mm each time it's called.
-        let mut solved_values = HashMap::new();
-        solved_values.insert(thickness_id.clone(), mm(5.0));
-
-        let spy = SpyConstraintSolver::new_solved(solved_values);
-        let captured = spy.captured_problem();
-
-        // Template: auto thickness, regular param limit (default 2mm),
-        // constraint: thickness > limit.
-        let template = TopologyTemplateBuilder::new("S")
-            .auto_param("S", "thickness", Type::length())
-            .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-            .constraint(
-                "S",
-                0,
-                None,
-                gt(value_ref("S", "thickness"), value_ref("S", "limit")),
-            )
-            .build();
-
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-
-        // Initial eval — solver fires once.
-        engine.eval(&module);
-
-        // Prepare a concurrent edit: change limit to 3mm (dirties the constraint).
-        let setup = engine
-            .prepare_concurrent_edit(limit_id, mm(3.0))
-            .expect("prepare_concurrent_edit must succeed after eval");
-
-        // Build a minimal ConcurrentEditResult using the setup's snapshot values.
-        let mut result = ConcurrentEditResult {
-            values: setup.values.clone(),
-            snapshot_values: setup.snapshot_values.clone(),
-            node_results: Vec::new(),
-            actual_eval_set: Vec::new(),
-            skipped: HashSet::new(),
-            resolved_params: HashMap::new(),
-            diagnostics: Vec::new(),
-        };
-
-        // resolve_concurrent_edit detects the dirty constraint and calls the solver.
-        engine.resolve_concurrent_edit(&setup, &mut result);
-
-        // The spy now holds the problem from the resolve_concurrent_edit call.
-        let guard = captured.lock().unwrap();
-        let problem = guard
-            .as_ref()
-            .expect("solver should have been called during resolve_concurrent_edit");
-
-        assert!(
-            Arc::ptr_eq(&engine.functions, &problem.functions),
-            "ResolutionProblem.functions must share the same Arc allocation as \
-            Engine.functions in the resolve_concurrent_edit path — proves the \
-            construction is O(1) Arc::clone, not a deep clone (task #2286)"
-        );
-        assert!(
-            Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
-            Arc::strong_count(&engine.functions)
+        assert_problem_shares_functions_arc(
+            "resolve_concurrent_edit",
+            |engine, limit_id| {
+                let setup = engine
+                    .prepare_concurrent_edit(limit_id, mm(3.0))
+                    .expect("prepare_concurrent_edit must succeed after eval");
+                let mut result = ConcurrentEditResult {
+                    values: setup.values.clone(),
+                    snapshot_values: setup.snapshot_values.clone(),
+                    node_results: Vec::new(),
+                    actual_eval_set: Vec::new(),
+                    skipped: HashSet::new(),
+                    resolved_params: HashMap::new(),
+                    diagnostics: Vec::new(),
+                };
+                engine.resolve_concurrent_edit(&setup, &mut result);
+            },
         );
     }
 

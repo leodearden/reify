@@ -542,6 +542,8 @@ fn all_spans_valid() {
             MemberDecl::ConstraintInst(ci) => ci.span,
             MemberDecl::ForallConnect(d) => d.span,
             MemberDecl::ForallConstraint(d) => d.span,
+            // Not produced by the tree-sitter parser yet (task 2372).
+            MemberDecl::MatchArmDeclGroup(g) => g.span,
         };
         assert!(span.start < span.end, "span should be non-empty");
     }

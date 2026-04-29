@@ -98,7 +98,7 @@ fn solve_simple_point_distance_constraint() {
         constraints: vec![(cnid("Point", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -215,7 +215,7 @@ fn solve_angle_constraint() {
         constraints: vec![(cnid("Angle", 0), constraint_expr)],
         current_values: current,
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -344,7 +344,7 @@ fn solve_parallel_constraint() {
         constraints: vec![(cnid("Parallel", 0), constraint_expr)],
         current_values: current,
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -467,7 +467,7 @@ fn solve_coincident_constraint() {
         constraints: vec![(cnid("Coin", 0), constraint_expr)],
         current_values: current,
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -548,7 +548,7 @@ fn solve_overconstrained_returns_infeasible() {
         constraints: vec![(cnid("Over", 0), c1), (cnid("Over", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -619,7 +619,7 @@ fn solve_underconstrained_solves_with_dof() {
         constraints: vec![(cnid("Under", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -693,7 +693,7 @@ fn solve_never_panics_on_valid_input() {
             constraints: vec![(cnid("NoPanic", 0), constraint_expr)],
             current_values: ValueMap::new(),
             objective: None,
-            functions: Arc::new(vec![]),
+            functions: vec![].into(),
         };
 
         solver.solve(&problem)
@@ -748,7 +748,7 @@ fn solve_unrecognized_pattern_falls_through() {
         constraints: vec![(cnid("Unknown", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -817,7 +817,7 @@ fn non_numeric_coord_returns_none() {
         constraints: vec![(cnid("Point", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     // With non-numeric coord, the pattern should NOT be recognized
@@ -895,7 +895,7 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
         constraints: vec![(cnid("Test", 0), constraint_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);
@@ -967,7 +967,7 @@ fn inconsistent_geometric_diagnostic_carries_constraint_unsatisfiable_code() {
         constraints: vec![(cnid("Over", 0), c1), (cnid("Over", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
     };
 
     let result = solver.solve(&problem);

@@ -241,8 +241,147 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 _ => Value::Undef,
             }
         }
+        "joint_jacobian" => {
+            // SE(3) twist column for a joint, returned as
+            // `Map { "angular": Vector3<DIMENSIONLESS>, "linear": Vector3<DIMENSIONLESS> }`.
+            //
+            // Per-kind formula (constant w.r.t. the motion variable for v0.1
+            // single-DOF joints):
+            //   prismatic → angular=[0,0,0], linear=axis_unit
+            //   revolute  → angular=axis_unit, linear=[0,0,0]
+            //   coupling  → ratio * parent_jacobian (component-wise).
+            //
+            // Validation mirrors `transform_at`'s coupling arm: parent kind must
+            // be prismatic/revolute (no nested couplings), ratio must be a
+            // finite `Value::Real`, axis must be a non-zero finite Vector3.
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            joint_jacobian_value(&args[0])
+        }
         _ => return None,
     })
+}
+
+/// Compute the SE(3) twist column for a joint Map.
+///
+/// Returns `Value::Map` on success, `Value::Undef` on any validation failure.
+///
+/// The coupling arm calls this recursively on its parent; termination is
+/// guaranteed because `couple` rejects coupling parents at construction and the
+/// nested-coupling guard inside this helper rejects any hand-built fixture
+/// that violates the invariant.
+fn joint_jacobian_value(value: &Value) -> Value {
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return Value::Undef,
+    };
+    match kind {
+        "prismatic" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz])
+        }
+        "revolute" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0])
+        }
+        "coupling" => {
+            let parent_map = match map.get(&Value::String("parent".to_string())) {
+                Some(Value::Map(pm)) => pm,
+                _ => return Value::Undef,
+            };
+            let ratio_f64 = match map.get(&Value::String("ratio".to_string())) {
+                Some(Value::Real(r)) => *r,
+                _ => return Value::Undef,
+            };
+            if !ratio_f64.is_finite() {
+                return Value::Undef;
+            }
+            // Defense-in-depth: reject nested coupling. `couple` rejects this at
+            // construction, but a hand-built Map could carry it. Mirrors
+            // `transform_at`'s parent-kind validation.
+            match parent_map.get(&Value::String("kind".to_string())) {
+                Some(Value::String(s))
+                    if matches!(s.as_str(), "prismatic" | "revolute") => {}
+                _ => return Value::Undef,
+            }
+            // Recurse to the parent's Jacobian (always single-DOF at depth 1).
+            let parent_jac = joint_jacobian_value(&Value::Map(parent_map.clone()));
+            scale_jacobian(&parent_jac, ratio_f64)
+        }
+        _ => Value::Undef,
+    }
+}
+
+/// Build a Jacobian Map with the standard `{ "angular", "linear" }` layout,
+/// where each value is a `Value::Vector` of three `Value::Real` components.
+fn make_jacobian(angular: [f64; 3], linear: [f64; 3]) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("angular".to_string()),
+        Value::Vector(vec![
+            Value::Real(angular[0]),
+            Value::Real(angular[1]),
+            Value::Real(angular[2]),
+        ]),
+    );
+    m.insert(
+        Value::String("linear".to_string()),
+        Value::Vector(vec![
+            Value::Real(linear[0]),
+            Value::Real(linear[1]),
+            Value::Real(linear[2]),
+        ]),
+    );
+    Value::Map(m)
+}
+
+/// Scale a Jacobian Map's `angular` and `linear` components by `ratio`.
+///
+/// Returns `Value::Map` on success, `Value::Undef` if any component is
+/// non-finite after scaling or the input shape is malformed.
+fn scale_jacobian(jac: &Value, ratio: f64) -> Value {
+    let m = match jac {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let read_vec3 = |key: &str| -> Option<[f64; 3]> {
+        match m.get(&Value::String(key.to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => {
+                let a = items[0].as_f64()?;
+                let b = items[1].as_f64()?;
+                let c = items[2].as_f64()?;
+                Some([a, b, c])
+            }
+            _ => None,
+        }
+    };
+    let ang = match read_vec3("angular") {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let lin = match read_vec3("linear") {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let scaled_ang = [ratio * ang[0], ratio * ang[1], ratio * ang[2]];
+    let scaled_lin = [ratio * lin[0], ratio * lin[1], ratio * lin[2]];
+    for v in scaled_ang.iter().chain(scaled_lin.iter()) {
+        if !v.is_finite() {
+            return Value::Undef;
+        }
+    }
+    make_jacobian(scaled_ang, scaled_lin)
 }
 
 /// Extract a dimensionless ratio from a `couple` ratio argument.
@@ -345,6 +484,34 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
             }
         }
         _ => None,
+    }
+}
+
+/// Canonical set of joint kinds recognized by the joints module.
+///
+/// Used by [`is_joint_value`] as the membership set for value-level
+/// joint discrimination. Per-kind dispatch arms in `transform_at` and
+/// `joint_jacobian_value` (this file) hardcode the same kind strings
+/// directly in `match` arms — Rust `match` patterns do not support
+/// runtime slice membership, so those arms **must be kept in sync with
+/// this constant** when a new kind is added.
+/// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling"];
+
+/// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
+/// the strings in [`JOINT_KINDS`] (`"prismatic"`, `"revolute"`,
+/// `"coupling"`). Used by `mechanism::body()` for `at`-arg validation
+/// and (combined with the world-sentinel check) for parent-arg validation.
+///
+/// Tied to `JOINT_KINDS` via `contains` so a future kind addition only
+/// needs to be made in the constant — the predicate follows automatically.
+pub(crate) fn is_joint_value(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => matches!(
+            m.get(&Value::String("kind".to_string())),
+            Some(Value::String(s)) if JOINT_KINDS.contains(&s.as_str())
+        ),
+        _ => false,
     }
 }
 
@@ -476,6 +643,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 mod tests {
     use crate::eval_builtin;
     use reify_types::Value;
+    use super::{is_joint_value, JOINT_KINDS};
 
     fn axis_x_unit() -> Value {
         Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
@@ -2050,4 +2218,466 @@ mod tests {
             "joint_range with 2 args should return Undef"
         );
     }
+
+    // ── joint_jacobian (step-23) ─────────────────────────────────────────────
+
+    /// Helper: extract a 3-component f64 vector from a Map at the given key.
+    fn jac_vec3_components(map: &Value, key: &str) -> [f64; 3] {
+        let inner = match map {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        let v = inner
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("missing key {:?}", key));
+        match v {
+            Value::Vector(items) if items.len() == 3 => [
+                items[0].as_f64().unwrap(),
+                items[1].as_f64().unwrap(),
+                items[2].as_f64().unwrap(),
+            ],
+            other => panic!("expected Vector3 at key {:?}, got {:?}", key, other),
+        }
+    }
+
+    /// Helper: dimension of a Map's vector value at `key`.
+    fn jac_vec3_dim(map: &Value, key: &str) -> reify_types::DimensionVector {
+        let inner = match map {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        let v = inner
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("missing key {:?}", key));
+        match v {
+            Value::Vector(items) if items.len() == 3 => items[0].dimension(),
+            other => panic!("expected Vector3 at key {:?}, got {:?}", key, other),
+        }
+    }
+
+    /// Assert two 3-component vectors are within tolerance.
+    fn assert_vec3_close(actual: [f64; 3], expected: [f64; 3], tol: f64, label: &str) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < tol,
+                "{}: component[{}] expected {}, got {}",
+                label,
+                i,
+                expected[i],
+                actual[i]
+            );
+        }
+    }
+
+    #[test]
+    fn joint_jacobian_prismatic_x_axis() {
+        // (a) prismatic with axis [1,0,0] → angular=[0,0,0], linear=[1,0,0].
+        let joint = prismatic_x_joint();
+        let result = eval_builtin("joint_jacobian", &[joint]);
+        let ang = jac_vec3_components(&result, "angular");
+        let lin = jac_vec3_components(&result, "linear");
+        assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "prismatic X angular");
+        assert_vec3_close(lin, [1.0, 0.0, 0.0], 1e-12, "prismatic X linear");
+        assert_eq!(
+            jac_vec3_dim(&result, "angular"),
+            reify_types::DimensionVector::DIMENSIONLESS,
+            "angular should be DIMENSIONLESS"
+        );
+        assert_eq!(
+            jac_vec3_dim(&result, "linear"),
+            reify_types::DimensionVector::DIMENSIONLESS,
+            "linear should be DIMENSIONLESS"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_revolute_z_axis() {
+        // (b) revolute with axis [0,0,1] → angular=[0,0,1], linear=[0,0,0].
+        let joint = revolute_z_joint();
+        let result = eval_builtin("joint_jacobian", &[joint]);
+        let ang = jac_vec3_components(&result, "angular");
+        let lin = jac_vec3_components(&result, "linear");
+        assert_vec3_close(ang, [0.0, 0.0, 1.0], 1e-12, "revolute Z angular");
+        assert_vec3_close(lin, [0.0, 0.0, 0.0], 1e-12, "revolute Z linear");
+        assert_eq!(
+            jac_vec3_dim(&result, "angular"),
+            reify_types::DimensionVector::DIMENSIONLESS,
+            "angular should be DIMENSIONLESS"
+        );
+        assert_eq!(
+            jac_vec3_dim(&result, "linear"),
+            reify_types::DimensionVector::DIMENSIONLESS,
+            "linear should be DIMENSIONLESS"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_prismatic_unnormalized_axis() {
+        // (c) prismatic with axis [2,0,0] (magnitude 2) is normalized to [1,0,0] in linear.
+        let axis = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let range = length_range_0_to_1m();
+        let joint = eval_builtin("prismatic", &[axis, range]);
+        let result = eval_builtin("joint_jacobian", &[joint]);
+        let ang = jac_vec3_components(&result, "angular");
+        let lin = jac_vec3_components(&result, "linear");
+        assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "unnormalized prismatic angular");
+        assert_vec3_close(
+            lin,
+            [1.0, 0.0, 0.0],
+            1e-12,
+            "unnormalized prismatic linear (should be unit-normalized)",
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_revolute_unnormalized_axis() {
+        // Mirror of (c) for revolute: axis [0,0,2] → angular=[0,0,1].
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let range = angle_range_0_to_pi();
+        let joint = eval_builtin("revolute", &[axis, range]);
+        let result = eval_builtin("joint_jacobian", &[joint]);
+        let ang = jac_vec3_components(&result, "angular");
+        let lin = jac_vec3_components(&result, "linear");
+        assert_vec3_close(
+            ang,
+            [0.0, 0.0, 1.0],
+            1e-12,
+            "unnormalized revolute angular (should be unit-normalized)",
+        );
+        assert_vec3_close(lin, [0.0, 0.0, 0.0], 1e-12, "unnormalized revolute linear");
+    }
+
+    #[test]
+    fn joint_jacobian_coupling_prismatic_ratio_2() {
+        // (d) coupling of prismatic-X with ratio=2 → linear=[2,0,0], angular=0.
+        let parent = prismatic_x_joint();
+        let c = eval_builtin("couple", &[parent, Value::Real(2.0)]);
+        let result = eval_builtin("joint_jacobian", &[c]);
+        let ang = jac_vec3_components(&result, "angular");
+        let lin = jac_vec3_components(&result, "linear");
+        assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "coupling prismatic angular");
+        assert_vec3_close(lin, [2.0, 0.0, 0.0], 1e-12, "coupling prismatic linear (ratio=2)");
+    }
+
+    #[test]
+    fn joint_jacobian_coupling_revolute_ratio_neg3() {
+        // (e) coupling of revolute-Z with ratio=-3 → angular=[0,0,-3], linear=0.
+        let parent = revolute_z_joint();
+        let c = eval_builtin("couple", &[parent, Value::Real(-3.0)]);
+        let result = eval_builtin("joint_jacobian", &[c]);
+        let ang = jac_vec3_components(&result, "angular");
+        let lin = jac_vec3_components(&result, "linear");
+        assert_vec3_close(
+            ang,
+            [0.0, 0.0, -3.0],
+            1e-12,
+            "coupling revolute angular (ratio=-3)",
+        );
+        assert_vec3_close(lin, [0.0, 0.0, 0.0], 1e-12, "coupling revolute linear");
+    }
+
+    #[test]
+    fn joint_jacobian_zero_args_returns_undef() {
+        // (f) wrong-arg count
+        assert!(
+            eval_builtin("joint_jacobian", &[]).is_undef(),
+            "joint_jacobian with 0 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_two_args_returns_undef() {
+        // (f) wrong-arg count
+        let joint = prismatic_x_joint();
+        assert!(
+            eval_builtin("joint_jacobian", &[joint, Value::Real(0.0)]).is_undef(),
+            "joint_jacobian with 2 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_non_map_arg_returns_undef() {
+        // (f) non-Map arg
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Real(1.0)]).is_undef(),
+            "joint_jacobian with non-Map arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_map_without_kind_returns_undef() {
+        // (f) Map without "kind" key
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "Map without kind key should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_map_with_unknown_kind_returns_undef() {
+        // (f) Map with kind not in {prismatic, revolute, coupling}
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        m.insert(Value::String("axis".to_string()), axis_x_unit());
+        m.insert(Value::String("range".to_string()), length_range_0_to_1m());
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "Map with unknown kind should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_prismatic_missing_axis_returns_undef() {
+        // (f) joint Map missing "axis" key
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("prismatic".to_string()));
+        m.insert(Value::String("range".to_string()), length_range_0_to_1m());
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "prismatic Map missing axis key should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_revolute_missing_axis_returns_undef() {
+        // (f) joint Map missing "axis" key
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("revolute".to_string()));
+        m.insert(Value::String("range".to_string()), angle_range_0_to_pi());
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "revolute Map missing axis key should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_coupling_missing_parent_returns_undef() {
+        // (f) coupling Map missing "parent" key
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(Value::String("ratio".to_string()), Value::Real(1.0));
+        m.insert(Value::String("offset".to_string()), Value::length(0.0));
+        // no "parent" key
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "coupling Map missing parent key should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_coupling_missing_ratio_returns_undef() {
+        // Defense-in-depth: hand-built coupling Map without ratio key
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(Value::String("parent".to_string()), prismatic_x_joint());
+        m.insert(Value::String("offset".to_string()), Value::length(0.0));
+        // no "ratio" key
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "coupling Map missing ratio key should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_prismatic_zero_axis_returns_undef() {
+        // Defense-in-depth: hand-built prismatic Map with zero-magnitude axis
+        // (`prismatic` constructor would reject this, but a hand-built Map
+        // could carry it).
+        use std::collections::BTreeMap;
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("prismatic".to_string()));
+        m.insert(Value::String("axis".to_string()), zero_axis);
+        m.insert(Value::String("range".to_string()), length_range_0_to_1m());
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
+            "prismatic Map with zero-magnitude axis should return Undef"
+        );
+    }
+
+    #[test]
+    fn joint_jacobian_coupling_nested_returns_undef() {
+        // Nested coupling: parent has kind="coupling" — `couple` rejects this
+        // at construction, but a hand-built coupling fixture could carry it.
+        // joint_jacobian must reject (consistent with `couple` and transform_at).
+        use std::collections::BTreeMap;
+        let inner = make_coupling_fixture(prismatic_x_joint(), Value::Real(1.0), Value::length(0.0));
+        let mut outer = BTreeMap::new();
+        outer.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        outer.insert(Value::String("parent".to_string()), inner);
+        outer.insert(Value::String("ratio".to_string()), Value::Real(1.0));
+        outer.insert(Value::String("offset".to_string()), Value::length(0.0));
+        assert!(
+            eval_builtin("joint_jacobian", &[Value::Map(outer)]).is_undef(),
+            "nested coupling should return Undef"
+        );
+    }
+
+    // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
+
+    /// All negative-case inputs for `is_joint_value` in one table-driven test.
+    /// Positive cases (one per kind in `JOINT_KINDS`) are covered by
+    /// `is_joint_value_aligns_with_joint_kinds` below.
+    #[test]
+    fn is_joint_value_negative_cases() {
+        use std::collections::BTreeMap;
+
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
+
+        let mut unknown_kind = BTreeMap::new();
+        unknown_kind.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+
+        let mut non_string_kind = BTreeMap::new();
+        non_string_kind.insert(Value::String("kind".to_string()), Value::Int(0));
+
+        let cases: Vec<(&str, Value)> = vec![
+            ("Real(1.0)", Value::Real(1.0)),
+            ("Int(0)", Value::Int(0)),
+            ("bare String 'prismatic'", Value::String("prismatic".to_string())),
+            ("Map without 'kind' key", Value::Map(no_kind)),
+            ("Map with kind='sliding' (not in JOINT_KINDS)", Value::Map(unknown_kind)),
+            ("Map with kind=Int(0)", Value::Map(non_string_kind)),
+        ];
+        for (label, v) in &cases {
+            assert!(!is_joint_value(v), "{label} should not be a joint value");
+        }
+    }
+
+    #[test]
+    fn is_joint_value_aligns_with_joint_kinds() {
+        use std::collections::BTreeMap;
+        // Every kind in JOINT_KINDS must be recognized as a joint value.
+        for &kind in JOINT_KINDS {
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("kind".to_string()), Value::String(kind.to_string()));
+            assert!(
+                is_joint_value(&Value::Map(m)),
+                "Map with kind='{}' (in JOINT_KINDS) should be a joint value",
+                kind
+            );
+        }
+        // A kind not in JOINT_KINDS must not be recognized.
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("not_a_joint".to_string()));
+        assert!(
+            !is_joint_value(&Value::Map(m)),
+            "Map with kind='not_a_joint' should not be a joint value"
+        );
+    }
+
+    /// Minimal well-formed `(joint, value_arg)` fixture for each kind in `JOINT_KINDS`.
+    ///
+    /// Shared by `transform_at_dispatches_for_every_joint_kind` and
+    /// `joint_jacobian_dispatches_for_every_joint_kind`.
+    ///
+    /// Returns a `Vec` of `(joint, value_arg)` pairs for each kind so that a
+    /// kind may yield multiple variants when multiple code paths must be covered.
+    ///
+    /// For `"coupling"` two variants are returned — one with a prismatic parent
+    /// and one with a revolute parent — so that both branches in `transform_at`
+    /// (`length_input` vs `trig_input`) and both paths in `joint_jacobian_value`
+    /// are exercised by the dispatch-coverage tests.
+    ///
+    /// After building each coupling value the fixture asserts it is non-Undef.
+    /// This localises the failure to `couple` itself rather than letting a
+    /// regression in `couple` surface as a misleading dispatch-test failure.
+    ///
+    /// Consumer tests should use a nested loop:
+    /// ```ignore
+    /// for &kind in JOINT_KINDS {
+    ///     for (joint, value_arg) in joint_kind_minimal_fixture(kind) { ... }
+    /// }
+    /// ```
+    ///
+    /// `value_arg` is the motion-variable input for `transform_at`; it is unused
+    /// by `joint_jacobian` (which is a constant w.r.t. the motion variable).
+    fn joint_kind_minimal_fixture(kind: &str) -> Vec<(Value, Value)> {
+        match kind {
+            "prismatic" => vec![(prismatic_x_joint(), Value::length(0.0))],
+            "revolute"  => vec![(revolute_z_joint(),  Value::angle(0.0))],
+            "coupling"  => {
+                let coupling_p = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+                assert!(
+                    !coupling_p.is_undef(),
+                    "couple fixture itself returned Undef — fix couple before checking dispatch"
+                );
+                let coupling_r = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0)]);
+                assert!(
+                    !coupling_r.is_undef(),
+                    "couple fixture itself returned Undef — fix couple before checking dispatch"
+                );
+                vec![
+                    (coupling_p, Value::length(0.0)),
+                    (coupling_r, Value::angle(0.0)),
+                ]
+            }
+            _ => panic!(
+                "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
+                 add a minimal well-formed fixture here and confirm that both \
+                 `transform_at` and `joint_jacobian_value` have matching dispatch arms"
+            ),
+        }
+    }
+
+    /// Guard against silent drift between `JOINT_KINDS` and the per-kind `match`
+    /// arms in `transform_at`.  For every kind in `JOINT_KINDS`, build a minimal
+    /// well-formed joint value and assert that `transform_at` does NOT return
+    /// `Value::Undef`.
+    ///
+    /// Two failure modes are caught:
+    /// 1. A new kind is added to `JOINT_KINDS` without a fixture in
+    ///    `joint_kind_minimal_fixture` → the `_` arm panics with a remediation
+    ///    message.
+    /// 2. A fixture exists but `transform_at` has no dispatch arm for the kind →
+    ///    the `is_undef` assertion fails.
+    #[test]
+    fn transform_at_dispatches_for_every_joint_kind() {
+        for &kind in JOINT_KINDS {
+            for (joint, value_arg) in joint_kind_minimal_fixture(kind) {
+                let result = eval_builtin("transform_at", &[joint, value_arg]);
+                assert!(
+                    !result.is_undef(),
+                    "transform_at(kind='{kind}', minimal-well-formed-input) returned Undef. \
+                     Either add a dispatch arm in transform_at for kind='{kind}', \
+                     or remove '{kind}' from JOINT_KINDS."
+                );
+            }
+        }
+    }
+
+    /// Guard against silent drift between `JOINT_KINDS` and the per-kind `match`
+    /// arms in `joint_jacobian_value`.  Mirrors
+    /// `transform_at_dispatches_for_every_joint_kind` but calls `joint_jacobian`
+    /// (which takes only the joint, no motion-variable argument).
+    ///
+    /// Two failure modes are caught:
+    /// 1. A new kind is added to `JOINT_KINDS` without a fixture in
+    ///    `joint_kind_minimal_fixture` → the `_` arm panics with a remediation
+    ///    message.
+    /// 2. A fixture exists but `joint_jacobian_value` has no dispatch arm for
+    ///    the kind → the `is_undef` assertion fails.
+    #[test]
+    fn joint_jacobian_dispatches_for_every_joint_kind() {
+        for &kind in JOINT_KINDS {
+            for (joint, _value_arg) in joint_kind_minimal_fixture(kind) {
+                let result = eval_builtin("joint_jacobian", &[joint]);
+                assert!(
+                    !result.is_undef(),
+                    "joint_jacobian(kind='{kind}', minimal-well-formed-input) returned Undef. \
+                     Either add a dispatch arm in joint_jacobian_value for kind='{kind}', \
+                     or remove '{kind}' from JOINT_KINDS."
+                );
+            }
+        }
+    }
+
 }

@@ -1,6 +1,7 @@
 mod classifier;
 mod cpsat;
 mod decompose;
+mod loop_closure;
 mod registry;
 mod slvs_sys;
 mod solver;
@@ -9,6 +10,7 @@ mod solvespace;
 pub use classifier::ConstraintClassifier;
 pub use cpsat::CpSatSolver;
 pub use decompose::{SubProblem, decompose_into_components};
+pub use loop_closure::*;
 pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
 pub use solvespace::SolveSpaceSolver;

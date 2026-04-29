@@ -8,7 +8,7 @@ use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
-    GeometryKernel, OptimizedImpl,
+    GeometryKernel, OptimizedImpl, TopologyAttributeTable,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -144,7 +144,7 @@ impl Engine {
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
             journal: EventJournal::new(),
-            functions: Arc::new(Vec::new()),
+            functions: Vec::<CompiledFunction>::new().into(),
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
@@ -159,8 +159,14 @@ impl Engine {
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
             warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
             feature_tag_table: FeatureTagTable::default(),
-            // Always-empty in production builds; populated only by the
-            // cfg-gated test-instrumentation accessor `set_panic_on_eval`.
+            // v0.2 persistent-naming-v2 attribute store. Always empty after
+            // construction — task 2590 added the field + accessor as the
+            // foundation; tasks 5-8 wire per-op auto-population.
+            topology_attribute_table: TopologyAttributeTable::default(),
+            // Only initialised in test / `test-instrumentation` builds; the
+            // field is absent in production (see lib.rs and engine_eval.rs
+            // for the matching cfg gates on the declaration and read site).
+            #[cfg(any(test, feature = "test-instrumentation"))]
             panic_on_eval_cells: std::collections::HashSet::new(),
         }
     }
@@ -173,6 +179,21 @@ impl Engine {
     /// array on `RealizationDecl`. See task 2323 for full design rationale.
     pub fn feature_tag_table(&self) -> &FeatureTagTable {
         &self.feature_tag_table
+    }
+
+    /// Return a reference to the v0.2 persistent-naming-v2 attribute table on
+    /// this engine.
+    ///
+    /// Maps each `GeometryHandleId` to a `TopologyAttribute` record
+    /// (`feature_id`, `role`, `local_index`, optional `user_label`,
+    /// `mod_history`). Per the task-2590 plan, the table is always empty
+    /// after construction; tasks 5-8 wire per-op auto-population during
+    /// `execute_realization_ops`, and task 2 (#2570) wires selector lookup
+    /// against this table. Once the attribute path covers all selector
+    /// vocabulary (tasks 9-10), `feature_tag_table` is retired and this
+    /// becomes the only naming store.
+    pub fn topology_attribute_table(&self) -> &TopologyAttributeTable {
+        &self.topology_attribute_table
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
@@ -560,6 +581,24 @@ impl Engine {
         &self.journal
     }
 
+    /// Return the current [`Freshness`] of `node` from the engine's cache.
+    ///
+    /// This is the **stable, always-public** read path that GUI and LSP
+    /// consumers use to surface computation state without reaching into the
+    /// test-instrumentation-gated [`cache_store()`](Self::cache_store).
+    ///
+    /// Mirrors the design of [`Engine::journal()`] — always public, no cfg gate.
+    /// See arch §7.1 lines 716-728 and the task #2337 design decision on
+    /// "Add a public `Engine::freshness` accessor on the Engine facade".
+    ///
+    /// Returns [`Freshness::Final`] (the default) when `node` has no cache
+    /// entry — identical to [`CacheStore::freshness`]'s own default behaviour,
+    /// so that "unknown = Final" is enforced in one place and callers never
+    /// need to handle a missing-node error path.
+    pub fn freshness(&self, node: &NodeId) -> reify_types::Freshness {
+        self.cache.freshness(node)
+    }
+
     /// **Test-instrumentation only — not a stable public metric.**
     ///
     /// Immutable access to the engine's warm-state pool. Per arch §4.3 / §6.4,
@@ -753,5 +792,90 @@ mod tests {
         // Idempotent on empty.
         engine.clear_panic_on_eval();
         assert!(engine.panic_on_eval_cells.is_empty());
+    }
+
+    /// `Engine::topology_attribute_table` returns a borrow of the v0.2
+    /// attribute table on the engine. After construction (both
+    /// `Engine::new` and `Engine::with_prelude`), the table must be empty
+    /// — that is the documented post-condition relied on by tasks 5-8
+    /// (which assume an empty table at the start of `execute_realization_ops`)
+    /// and by integration tests that seed the table by hand.
+    #[test]
+    fn topology_attribute_table_starts_empty_on_new_and_with_prelude() {
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        // Engine::new path.
+        let engine_new = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let table_new = engine_new.topology_attribute_table();
+        assert!(table_new.is_empty());
+        assert_eq!(table_new.len(), 0);
+
+        // Engine::with_prelude path (empty prelude).
+        let engine_wp = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let table_wp = engine_wp.topology_attribute_table();
+        assert!(table_wp.is_empty());
+        assert_eq!(table_wp.len(), 0);
+    }
+
+    /// `Engine::freshness` is a stable always-public read accessor (no cfg
+    /// gate) that returns `Freshness::Final` for unknown nodes and correctly
+    /// reflects the cache state after a forced-panic eval.
+    ///
+    /// (a) On a fresh engine with no eval, unknown node → `Freshness::Final`.
+    /// (b) After `set_panic_on_eval(cell)` + `eval()`, the cell's node →
+    ///     `Freshness::Failed { error }`.
+    ///
+    /// Step-1 test: this will fail until `Engine::freshness` is implemented
+    /// in step-2 (the method does not yet exist).
+    #[test]
+    fn freshness_returns_final_for_unknown_node_and_failed_after_forced_panic() {
+        use crate::cache::NodeId;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::{Freshness, ModulePath, Type, Value, ValueCellId};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // (a) Unknown node → Final (default) even before any eval.
+        let unknown = ValueCellId::new("Ghost", "x");
+        let unknown_node = NodeId::Value(unknown.clone());
+        assert_eq!(
+            engine.freshness(&unknown_node),
+            Freshness::Final,
+            "freshness of an unknown node must default to Freshness::Final"
+        );
+
+        // Build a 1-cell synthetic module: `let b = 1.0` in template T.
+        let b_id = ValueCellId::new("T", "b");
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .let_binding(
+                        "T",
+                        "b",
+                        Type::Real,
+                        reify_test_support::builders::literal(Value::Real(1.0)),
+                    )
+                    .build(),
+            )
+            .build();
+
+        // (b) Force a panic on `b`; after eval the cache must record Failed.
+        engine.set_panic_on_eval(b_id.clone());
+        let _ = engine.eval(&module);
+
+        let b_node = NodeId::Value(b_id.clone());
+        match engine.freshness(&b_node) {
+            Freshness::Failed { error } => {
+                assert!(
+                    !error.message().is_empty(),
+                    "Failed error message must be non-empty"
+                );
+            }
+            other => panic!(
+                "expected Freshness::Failed after forced-panic eval, got {:?}",
+                other
+            ),
+        }
     }
 }

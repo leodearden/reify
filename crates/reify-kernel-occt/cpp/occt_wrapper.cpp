@@ -266,6 +266,148 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
     });
 }
 
+// --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
+
+namespace {
+
+/// Walk `parent_map` (canonical TopExp 1-based order), querying
+/// `fuse.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
+/// For each child reported by Modified or Generated, look up its
+/// 0-based index in `result_map` (skipping unmapped children — they
+/// can occur when BRepAlgoAPI reports an internal sub-shape that the
+/// result `face_map`/`edge_map` doesn't expose). Push flat tuples into
+/// the corresponding output buffers.
+///
+/// Templated only over `parent_map` / `result_map` types so the same
+/// helper handles faces and edges; the type is `TopTools_IndexedMapOfShape`
+/// in both calls (shape kind is determined by which map was built).
+void emit_history_for_parent(
+    BRepAlgoAPI_Fuse& fuse,
+    const TopTools_IndexedMapOfShape& parent_map,
+    const TopTools_IndexedMapOfShape& result_map,
+    uint32_t parent_index,
+    std::vector<uint32_t>& out_modified,
+    std::vector<uint32_t>& out_generated,
+    std::vector<uint32_t>& out_deleted) {
+    const Standard_Integer n = parent_map.Extent();
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        const TopoDS_Shape& parent_sub = parent_map.FindKey(i);
+        const uint32_t parent_idx_0 = static_cast<uint32_t>(i - 1);
+
+        // Modified: parent sub-shape replaced by N result sub-shapes
+        // (split, merged, or otherwise transformed).
+        const TopTools_ListOfShape& modified = fuse.Modified(parent_sub);
+        for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
+            const TopoDS_Shape& child = it.Value();
+            Standard_Integer one_based = result_map.FindIndex(child);
+            if (one_based < 1) {
+                continue;
+            }
+            out_modified.push_back(parent_index);
+            out_modified.push_back(parent_idx_0);
+            out_modified.push_back(static_cast<uint32_t>(one_based - 1));
+        }
+
+        // Generated: parent sub-shape gives rise to NEW sub-shapes
+        // (e.g. fuse-section walls created from intersecting faces).
+        const TopTools_ListOfShape& generated = fuse.Generated(parent_sub);
+        for (TopTools_ListIteratorOfListOfShape it(generated); it.More(); it.Next()) {
+            const TopoDS_Shape& child = it.Value();
+            Standard_Integer one_based = result_map.FindIndex(child);
+            if (one_based < 1) {
+                continue;
+            }
+            out_generated.push_back(parent_index);
+            out_generated.push_back(parent_idx_0);
+            out_generated.push_back(static_cast<uint32_t>(one_based - 1));
+        }
+
+        // Deleted: parent sub-shape has no result analogue. Emit only
+        // (parent_index, parent_subshape_index_0); no result index.
+        if (fuse.IsDeleted(parent_sub)) {
+            out_deleted.push_back(parent_index);
+            out_deleted.push_back(parent_idx_0);
+        }
+    }
+}
+
+/// Copy a `std::vector<uint32_t>` into a fresh `rust::Vec<uint32_t>` for
+/// the FFI boundary (cxx doesn't expose `std::vector` directly to Rust).
+rust::Vec<uint32_t> to_rust_vec(const std::vector<uint32_t>& src) {
+    rust::Vec<uint32_t> out;
+    out.reserve(src.size());
+    for (uint32_t v : src) {
+        out.push_back(v);
+    }
+    return out;
+}
+
+} // anonymous namespace
+
+std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_fuse_with_history", [&]() {
+        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
+        fuse.Build();
+        if (!fuse.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
+        }
+        auto history = std::make_unique<BooleanOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = fuse.Shape();
+
+        // Build the result face/edge maps once via the cached lazy
+        // accessors so subsequent FindIndex calls are O(1).
+        const auto& result_face_map = history->result->face_map();
+        const auto& result_edge_map = history->result->edge_map();
+
+        // Faces: emit per-parent records.
+        emit_history_for_parent(
+            fuse, left.face_map(), result_face_map, /*parent_index=*/0,
+            history->face_modified, history->face_generated, history->face_deleted);
+        emit_history_for_parent(
+            fuse, right.face_map(), result_face_map, /*parent_index=*/1,
+            history->face_modified, history->face_generated, history->face_deleted);
+
+        // Edges: emit per-parent records.
+        emit_history_for_parent(
+            fuse, left.edge_map(), result_edge_map, /*parent_index=*/0,
+            history->edge_modified, history->edge_generated, history->edge_deleted);
+        emit_history_for_parent(
+            fuse, right.edge_map(), result_edge_map, /*parent_index=*/1,
+            history->edge_modified, history->edge_generated, history->edge_deleted);
+
+        return history;
+    });
+}
+
+std::unique_ptr<OcctShape> boolean_op_history_take_result_shape(BooleanOpHistory& history) {
+    return std::move(history.result);
+}
+
+rust::Vec<uint32_t> boolean_op_history_face_modified(const BooleanOpHistory& history) {
+    return to_rust_vec(history.face_modified);
+}
+
+rust::Vec<uint32_t> boolean_op_history_face_generated(const BooleanOpHistory& history) {
+    return to_rust_vec(history.face_generated);
+}
+
+rust::Vec<uint32_t> boolean_op_history_face_deleted(const BooleanOpHistory& history) {
+    return to_rust_vec(history.face_deleted);
+}
+
+rust::Vec<uint32_t> boolean_op_history_edge_modified(const BooleanOpHistory& history) {
+    return to_rust_vec(history.edge_modified);
+}
+
+rust::Vec<uint32_t> boolean_op_history_edge_generated(const BooleanOpHistory& history) {
+    return to_rust_vec(history.edge_generated);
+}
+
+rust::Vec<uint32_t> boolean_op_history_edge_deleted(const BooleanOpHistory& history) {
+    return to_rust_vec(history.edge_deleted);
+}
+
 bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
     return wrap_occt_call("shapes_intersect", [&]() {
         // Use BRepExtrema_DistShapeShape (same algorithm as min_clearance / query_distance)

@@ -359,6 +359,16 @@ pub struct TopologyTemplate {
     pub annotations: Vec<reify_types::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
     pub pragmas: Vec<reify_syntax::Pragma>,
+    /// Match-arm decl clusters registered during compilation (task 2372, step-10).
+    ///
+    /// Populated by `compile_match_arm_decl_group` in `entity.rs`.  Empty for
+    /// templates that contain no `MatchArmDeclGroup` members.
+    ///
+    /// Production consumers (union typing, eval) are wired in task 2373 when a
+    /// downstream stage first needs the data.  The field is always present (not
+    /// `#[cfg(test)]`) so integration tests in `crates/reify-compiler/tests/`
+    /// can access it — integration tests compile the library *without* cfg(test).
+    pub match_arm_groups: Vec<GuardedDeclGroup>,
 }
 
 impl TopologyTemplate {
@@ -482,6 +492,46 @@ pub struct CompiledGuardedGroup {
     /// Used to suppress false-positive cross-guard diagnostics when
     /// inner guard members reference outer guard members.
     pub parent_guard: Option<ValueCellId>,
+}
+
+/// A single arm of a match-block decl group (task 2372).
+///
+/// Produced by desugaring `match head_type { Hex => sub head : HexHead }` at decl
+/// level — see PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
+///
+/// The arm stores just the guard metadata needed for type narrowing (task 2373)
+/// and union-type construction — the actual per-arm decl bodies are emitted into
+/// the existing `value_cells` / `sub_components` collections under disambiguated
+/// `ValueCellId`s and are not duplicated here.
+#[derive(Debug, Clone)]
+pub struct GuardedDeclArm {
+    /// The compiled per-arm guard condition (e.g. `head_type == HeadType.Hex`).
+    pub guard_expr: CompiledExpr,
+    /// Synthetic `__guard_N` `ValueCellId` allocated by `compile_block_guard`.
+    pub guard_value_cell: ValueCellId,
+    /// The declared type of the arm's decl (e.g. `Type::StructureRef("HexHead")`).
+    pub arm_type: Type,
+}
+
+/// A logical cluster of same-name declarations produced by a `match` block at
+/// decl level (task 2372).
+///
+/// See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
+/// Stored in `CompilationScope::match_arm_groups` — separate from the regular
+/// `names` map so that future duplicate-name diagnostics (task 2375) cannot
+/// misfire on cluster members.
+///
+/// **Exhaustiveness:** is *not* enforced here — a non-exhaustive `match`
+/// compiles silently with the omitted variants having no arm guard. Spec §6.4
+/// requires exhaustiveness; that check is scheduled for a follow-up task once
+/// union typing (task 2373) lands and provides the type-level union to
+/// compare patterns against.
+#[derive(Debug, Clone)]
+pub struct GuardedDeclGroup {
+    /// The shared logical name of all arms (e.g. `"head"`).
+    pub name: String,
+    /// Per-arm metadata, one entry per `match` arm (or per `|`-pipe-collapsed arm).
+    pub arms: Vec<GuardedDeclArm>,
 }
 
 /// A value cell declaration (param or let).
@@ -1018,5 +1068,41 @@ mod find_template_tests {
     #[test]
     fn missing_name_returns_none() {
         assert!(find_template(&[], "absent").is_none());
+    }
+}
+
+#[cfg(test)]
+mod guarded_decl_group_tests {
+    //! Tests for `GuardedDeclArm` and `GuardedDeclGroup` structs (task 2372, step-1).
+    //! RED until the structs are added in step-2.
+    use super::*;
+    use reify_types::Value;
+
+    #[test]
+    fn guarded_decl_group_struct_carries_name_and_arms() {
+        let arm0 = GuardedDeclArm {
+            guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            guard_value_cell: ValueCellId::new("Bolt", "__guard_0"),
+            arm_type: Type::StructureRef("HexHead".to_string()),
+        };
+        let arm1 = GuardedDeclArm {
+            guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            guard_value_cell: ValueCellId::new("Bolt", "__guard_1"),
+            arm_type: Type::StructureRef("SocketHead".to_string()),
+        };
+        let g = GuardedDeclGroup {
+            name: "head".to_string(),
+            arms: vec![arm0, arm1],
+        };
+        assert_eq!(g.name, "head");
+        assert_eq!(g.arms.len(), 2);
+        assert_eq!(
+            g.arms[0].guard_value_cell,
+            ValueCellId::new("Bolt", "__guard_0")
+        );
+        assert_eq!(
+            g.arms[1].arm_type,
+            Type::StructureRef("SocketHead".to_string())
+        );
     }
 }

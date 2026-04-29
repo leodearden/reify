@@ -99,7 +99,7 @@ fn simple_setup() -> ConcurrentEditSetup {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
         meta_map: Arc::new(HashMap::new()),
         objective: None,
     }
@@ -2883,14 +2883,42 @@ mod execute_with_config_tests {
 
     /// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
     /// Two nodes at same level: node_a (default CommitIfSlow) and node_b
-    /// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
+    /// (OnlyRunOnFinalInputs override). node_b's cache entry reads an upstream
+    /// cell at Freshness::Intermediate → has_non_final_inputs returns true for node_b.
     /// node_b should be in result.skipped and NOT in result.changed.
-    /// node_a should be in result.changed.
+    /// node_a is absent from the cache → has_non_final_inputs returns false
+    /// (vacuously runnable), so node_a should be in result.changed.
     #[tokio::test]
     async fn test_only_run_on_final_inputs_skipped() {
+        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
         let e = "SKIP";
         let node_a = NodeId::Value(ValueCellId::new(e, "a"));
         let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let upstream = ValueCellId::new(e, "upstream");
+
+        // Build CacheStore: upstream at Intermediate, node_b reads it.
+        // node_a is absent → has_non_final_inputs returns false (vacuously runnable).
+        let mut cs = CacheStore::new();
+        cs.put(
+            NodeId::Value(upstream.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace { reads: vec![] },
+                VersionId(1),
+            ),
+        );
+        cs.put(
+            node_b.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace { reads: vec![upstream.clone()] },
+                VersionId(1),
+            ),
+        );
 
         // Both at same level, empty traces → dirty by default
         let mut traces = HashMap::new();
@@ -2901,11 +2929,9 @@ mod execute_with_config_tests {
         let mut node_overrides = NodePolicyOverrides::new();
         node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-        // has_intermediate_inputs returns true for node_b
-        let b_clone = node_b.clone();
         let config = SchedulerConfig {
             node_overrides,
-            has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
+            cache: Some(&cs),
             ..SchedulerConfig::default()
         };
 
@@ -3525,10 +3551,11 @@ mod execute_with_config_tests {
         let mut node_overrides = NodePolicyOverrides::new();
         node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-        // has_intermediate_inputs returns false for all nodes (all inputs are final)
+        // cache: None → has_non_final_inputs returns false for all nodes
+        // (semantically identical to the old `Arc::new(|_| false)` closure)
         let config = SchedulerConfig {
             node_overrides,
-            has_intermediate_inputs: Arc::new(|_| false),
+            cache: None,
             ..SchedulerConfig::default()
         };
 
@@ -3570,18 +3597,150 @@ mod execute_with_config_tests {
         );
     }
 
+    /// Regression-pin: OnlyRunOnFinalInputs node with a real CacheStore whose inputs
+    /// are all-Final must be SPAWNED (not skipped), and must appear in `result.changed`.
+    ///
+    /// This test pins the wiring of the precomputed `has_non_final` flag at both former
+    /// call sites in `execute_with_config` under the conditions where the refactor's
+    /// invariant is observable:
+    ///
+    /// - Skip predicate: `if override_ == OnlyRunOnFinalInputs && has_non_final_flag`
+    ///   must evaluate to `false` (all-Final → flag = false → NOT skipped).
+    /// - Spawn loop: `has_intermediate` must be `false` (same flag, once computed).
+    ///
+    /// Complement: `test_only_run_on_final_inputs_skipped` covers the symmetric
+    /// all-Intermediate case.  `test_only_run_on_final_inputs_runs_when_final` covers
+    /// the same all-Final path but with `cache: None`.  This test is the only witness
+    /// for `cache: Some(&cs)` + all-Final + OnlyRunOnFinalInputs.
+    #[tokio::test]
+    async fn test_only_run_on_final_inputs_runs_when_final_with_cache() {
+        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
+        let e = "FINAL_CACHE";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let upstream = ValueCellId::new(e, "upstream");
+
+        // Build CacheStore: upstream at Final, node_b reads it (also Final).
+        // node_a is absent → has_non_final_inputs returns false (vacuously runnable).
+        let mut cs = CacheStore::new();
+        cs.put(
+            NodeId::Value(upstream.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace { reads: vec![] },
+                VersionId(1),
+            ),
+        );
+        cs.put(
+            node_b.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace { reads: vec![upstream.clone()] },
+                VersionId(1),
+            ),
+        );
+
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        // node_b has OnlyRunOnFinalInputs override
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+        // cache: Some(&cs) — has_non_final_inputs will be called against the real
+        // CacheStore and must return false (all inputs are Final).
+        let config = SchedulerConfig {
+            node_overrides,
+            cache: Some(&cs),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_b must be spawned (not skipped) because all inputs are Final.
+        // This pins the skip predicate: flag = false → OnlyRunOnFinalInputs does not block.
+        assert!(
+            result.changed.contains(&node_b),
+            "node_b should be in changed (OnlyRunOnFinalInputs with all-Final cache inputs → runs normally)"
+        );
+
+        // node_a should also be evaluated (default CommitIfSlow, absent from cache)
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (default CommitIfSlow)"
+        );
+
+        // Both nodes changed, none silently dropped (proves skip predicate did not fire
+        // and both reached the spawn loop).
+        assert_eq!(
+            result.changed.len(),
+            2,
+            "both node_a and node_b should be in changed — no node silently dropped"
+        );
+    }
+
     /// Test that a type-level override in NodePolicyOverrides routes through resolve().
     ///
     /// Two Value nodes at the same level; `set_type(NodeKind::Value, OnlyRunOnFinalInputs)`
-    /// is the only override — no per-instance entries. `has_intermediate_inputs` returns
-    /// `true` for all nodes. Both nodes should appear in `result.skipped` because the
-    /// type-level override is resolved by `NodePolicyOverrides::resolve` even without a
-    /// per-instance entry — proving the scheduler honours type-level overrides after migration.
+    /// is the only override — no per-instance entries. Both node_a and node_b have cache
+    /// entries whose `dependency_trace.reads` reference an upstream cell at
+    /// `Freshness::Intermediate`, so `has_non_final_inputs` returns `true` for both.
+    /// Both nodes should appear in `result.skipped` because the type-level override is
+    /// resolved by `NodePolicyOverrides::resolve` even without a per-instance entry —
+    /// proving the scheduler honours type-level overrides after migration.
     #[tokio::test]
     async fn test_type_level_override_routes_through_resolve() {
+        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+
         let e = "TYPE_OVERRIDE";
         let node_a = NodeId::Value(ValueCellId::new(e, "a"));
         let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let upstream = ValueCellId::new(e, "upstream");
+
+        // Build CacheStore: upstream at Intermediate; both node_a and node_b read it.
+        let mut cs = CacheStore::new();
+        cs.put(
+            NodeId::Value(upstream.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace { reads: vec![] },
+                VersionId(1),
+            ),
+        );
+        for node in [node_a.clone(), node_b.clone()] {
+            cs.put(
+                node,
+                NodeCache::new(
+                    CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                    Freshness::Final,
+                    DependencyTrace { reads: vec![upstream.clone()] },
+                    VersionId(1),
+                ),
+            );
+        }
 
         // Both at same level, empty traces → dirty by default
         let mut traces = HashMap::new();
@@ -3592,10 +3751,9 @@ mod execute_with_config_tests {
         let mut node_overrides = NodePolicyOverrides::new();
         node_overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-        // has_intermediate_inputs returns true for all nodes
         let config = SchedulerConfig {
             node_overrides,
-            has_intermediate_inputs: Arc::new(|_| true),
+            cache: Some(&cs),
             ..SchedulerConfig::default()
         };
 
@@ -3686,7 +3844,7 @@ async fn adapter_evaluate_returns_unchanged_for_cell_without_default_expr() {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
         meta_map: Arc::new(HashMap::new()),
         objective: None,
     };
@@ -3753,7 +3911,7 @@ async fn adapter_evaluate_returns_changed_for_let_cell_with_default_expr() {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells: HashSet::new(),
-        functions: Arc::new(vec![]),
+        functions: vec![].into(),
         meta_map: Arc::new(HashMap::new()),
         objective: None,
     };

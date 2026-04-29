@@ -113,7 +113,7 @@ pub struct ConcurrentEvalAdapter {
     results: Arc<Mutex<Vec<ConcurrentNodeResult>>>,
     /// User-defined functions for evaluating UserFunctionCall nodes.
     /// Shares the same Arc as ConcurrentEditSetup::functions (task #1997).
-    functions: Arc<Vec<CompiledFunction>>,
+    functions: Arc<[CompiledFunction]>,
     /// Template-to-meta-entries mapping for resolving MetaAccess expressions.
     meta_map: Arc<HashMap<String, HashMap<String, String>>>,
 }

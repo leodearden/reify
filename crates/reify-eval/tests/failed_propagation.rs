@@ -26,7 +26,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
     BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, ExportFormat, Freshness,
     GeometryHandleId, ModulePath, RealizationNodeId, Satisfaction, Severity, Type, Value,
-    ValueCellId,
+    ValueCellId, VersionId,
 };
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
@@ -115,6 +115,93 @@ fn forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event() {
         "no EventKind::Completed event should be recorded for b on the Failed \
          path; found {} completed event(s)",
         completed_events.len()
+    );
+}
+
+/// Pin the recovery path for the test-instrumentation panic hook.
+///
+/// After `set_panic_on_eval(b)` drives `b` to `Freshness::Failed`,
+/// calling `remove_panic_on_eval(&b)` withdraws the injection and
+/// a subsequent `eval` must restore `b` to a non-Failed freshness state.
+///
+/// This covers the recovery branch (`remove_panic_on_eval` → re-eval)
+/// that `forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`
+/// leaves unpinned; together the two tests form the complete
+/// set → eval → Failed → remove → re-eval → recovered contract.
+///
+/// See arch §9.1 and plan #2555 for the cfg-gating rationale; this test
+/// pins the public-API contract that the refactor must preserve.
+///
+/// Assertions:
+///   (a) After `set_panic_on_eval(b)` and the first `eval`, freshness(b)
+///       is `Freshness::Failed { .. }` (mirrors the existing test).
+///   (b) `remove_panic_on_eval(&b)` returns `true` (cell was registered).
+///   (c) After a second `eval`, freshness(b) is `Final` and the cached
+///       value is `Value::Real(1.0)` — the recovery branch re-evaluates
+///       the cell cleanly and produces the expected result.
+///   (d) A second call to `remove_panic_on_eval(&b)` returns `false`
+///       (the cell is no longer in the injection set).
+#[test]
+fn forced_panic_recovers_after_remove_panic_on_eval() {
+    let module = one_cell_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let b_id = ValueCellId::new("T", "b");
+    let b_node = NodeId::Value(b_id.clone());
+
+    // === Pass 1: force panic on b ===
+    engine.set_panic_on_eval(b_id.clone());
+    let _ = engine.eval(&module);
+
+    // (a) b is Failed after the forced panic.
+    let b_freshness_pass1 = engine.cache_store().freshness(&b_node);
+    assert!(
+        matches!(b_freshness_pass1, Freshness::Failed { .. }),
+        "(a) freshness(b) must be Failed after set_panic_on_eval + eval; got {:?}",
+        b_freshness_pass1
+    );
+
+    // (b) remove_panic_on_eval returns true (cell was registered).
+    let removed = engine.remove_panic_on_eval(&b_id);
+    assert!(
+        removed,
+        "(b) remove_panic_on_eval must return true when b was registered"
+    );
+
+    // === Pass 2: re-eval after removing the panic injection ===
+    let _ = engine.eval(&module);
+
+    // (c) b recovers to Final with the expected value after re-eval.
+    let b_cache_pass2 = engine
+        .cache_store()
+        .get(&b_node)
+        .expect("(c) b must be cached after re-eval");
+    assert_eq!(
+        b_cache_pass2.freshness,
+        Freshness::Final,
+        "(c) freshness(b) must be Final after remove_panic_on_eval + re-eval; \
+         got {:?}",
+        b_cache_pass2.freshness
+    );
+    match &b_cache_pass2.result {
+        CachedResult::Value(v, _) => assert_eq!(
+            *v,
+            Value::Real(1.0),
+            "(c) recovered value must be Value::Real(1.0); got {:?}",
+            v
+        ),
+        other => panic!(
+            "(c) cache result for b must be CachedResult::Value; got {:?}",
+            other
+        ),
+    }
+
+    // (d) A second call to remove_panic_on_eval returns false (no longer registered).
+    let removed_again = engine.remove_panic_on_eval(&b_id);
+    assert!(
+        !removed_again,
+        "(d) remove_panic_on_eval must return false when b is no longer registered"
     );
 }
 
@@ -488,6 +575,58 @@ fn constraint_violation_does_not_produce_failed_freshness_or_error_event() {
     );
 }
 
+/// Assert the §9.1 / §2554 version-tagging contract for a kernel-error
+/// `Failed` event scoped to `node`:
+///
+///   (c) Exactly one `EventKind::Failed` is recorded in the journal.
+///   (d) That event is scoped to `node`.
+///   (f) `event.version == expected` — the Failed event carries the eval
+///       round whose values caused the kernel error, not the un-used
+///       `next_version_id`.
+///
+/// Called from both the `build` and `build_snapshot` regression tests so
+/// the contract cannot silently regress at one site while the other is updated.
+fn assert_one_failed_event_at_version(
+    engine: &Engine,
+    node: &NodeId,
+    expected: reify_types::VersionId,
+) {
+    // (c) exactly one Failed event in the journal.
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count,
+        1,
+        "(c) §9.1: exactly one Failed event must be recorded; got {} event(s)",
+        failed_count
+    );
+
+    // (d) that event is scoped to `node`.
+    let r_events = engine.journal().events_for_node(node);
+    let r_failed: Vec<_> = r_events
+        .iter()
+        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
+        .collect();
+    assert_eq!(
+        r_failed.len(),
+        1,
+        "(d) §9.1: the Failed event must be scoped to {:?}; got {} event(s)",
+        node,
+        r_failed.len()
+    );
+
+    // (f) version matches the expected eval round.
+    assert_eq!(
+        r_failed[0].version,
+        expected,
+        "(f) §2554: Failed event version must match the eval round whose \
+         values caused the kernel error; got {:?}, expected {:?}",
+        r_failed[0].version,
+        expected
+    );
+}
+
 /// Build a single-realization module with one Box primitive op:
 ///   `param width:Length=80mm; param height:Length=100mm; param depth:Length=5mm;`
 ///   plus `realization[0] = Box(width, height, depth)`.
@@ -557,6 +696,15 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
     let rnid = RealizationNodeId::new(e, 0);
     let r_node = NodeId::Realization(rnid.clone());
 
+    // Pin the expected eval-round version *before* `build()` runs. After
+    // `Engine::new`, `next_version_id == 0`; `build()` calls `check()` which
+    // calls `eval()`, stamping `snapshot.version = VersionId(0)` and bumping
+    // `next_version_id` to 1. Hardcoding the expectation (rather than reading
+    // `engine.snapshot().version` after `build()` returns) means a future bug
+    // that bumps the version mid-build would fail this assertion instead of
+    // silently tracking the buggy value.
+    let expected_version = VersionId(0);
+
     let build_result = engine.build(&module, ExportFormat::Step);
 
     // (a) freshness(NodeId::Realization(rnid)) == Failed { error }.
@@ -587,31 +735,9 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
         error_message
     );
 
-    // (c) journal records exactly one Failed event.
-    let failed_count = engine
-        .journal()
-        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
-    assert_eq!(
-        failed_count, 1,
-        "(c) §9.1: exactly one Failed event must be recorded for the \
-         kernel-error realization; got {} event(s)",
-        failed_count
-    );
-
-    // (d) the Failed event is scoped to NodeId::Realization(rnid).
-    let r_events = engine.journal().events_for_node(&r_node);
-    let r_failed: Vec<_> = r_events
-        .iter()
-        .filter(|ev| matches!(ev.kind, EventKind::Failed { .. }))
-        .collect();
-    assert_eq!(
-        r_failed.len(),
-        1,
-        "(d) §9.1: the Failed event must be scoped to \
-         NodeId::Realization(rnid); got {} event(s) for {:?}",
-        r_failed.len(),
-        r_node
-    );
+    // (c)/(d)/(f) — shared helper pins the count, node scope, and version
+    // tagging contract; see `assert_one_failed_event_at_version`.
+    assert_one_failed_event_at_version(&engine, &r_node, expected_version);
 
     // (e) the existing Diagnostic::error("geometry error: …") survives —
     //     adding the Failed write must not double-handle and remove the
@@ -628,6 +754,61 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
          got 0 such diagnostics in {:?}",
         build_result.diagnostics
     );
+}
+
+/// Regression test pinning the §9.1 kernel-error → `Freshness::Failed`
+/// version tagging on the `build_snapshot` path.
+///
+/// Mirrors the version-assertion logic of
+/// `kernel_execute_error_marks_realization_failed_and_emits_one_error_event`
+/// for `Engine::build_snapshot` (engine_build.rs:45). The buggy code reads
+/// `VersionId(self.next_version_id)` which is ahead of
+/// `state.snapshot.version` after `eval()` + `edit_param()` have both bumped
+/// the counter. Running `edit_param` between `eval` and `build_snapshot`
+/// ensures `snapshot.version != 0`, so a constant-zero miswire is also caught.
+///
+/// Flow:
+///   1. `eval()` → populates eval_state, snapshot.version = 0.
+///   2. `edit_param(width, 90mm)` → snapshot.version = 1, next_version_id = 2.
+///   3. `build_snapshot()` fires the failing kernel.
+///
+/// Assertions: exactly one `EventKind::Failed` scoped to the realization
+/// NodeId, and `event.version == snapshot.version` (1, not 2).
+#[test]
+fn kernel_execute_error_in_build_snapshot_tags_failed_event_with_snapshot_version() {
+    let module = one_realization_box_module();
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let e = "KernelFail";
+    let rnid = RealizationNodeId::new(e, 0);
+    let r_node = NodeId::Realization(rnid.clone());
+
+    // Step 1: eval to populate eval_state (eval does not call kernel.execute).
+    engine.eval(&module);
+
+    // Step 2: edit_param bumps snapshot.version from 0 to 1 and
+    // next_version_id from 1 to 2, so the off-by-one is non-trivial.
+    engine
+        .edit_param(ValueCellId::new(e, "width"), mm(90.0))
+        .expect("edit_param must succeed on a valid param");
+
+    // Capture the canonical eval-round version BEFORE invoking the code under
+    // test. `build_snapshot` must NOT mutate `snapshot.version`, so pinning the
+    // value here means a future bug that bumps version mid-build_snapshot would
+    // fail this assertion instead of silently tracking the buggy value.
+    let eval_version = engine
+        .snapshot()
+        .expect("eval_state must be populated after eval+edit_param")
+        .version;
+
+    // Step 3: build_snapshot fires the failing kernel → triggers §9.1 path.
+    let _build_result = engine.build_snapshot(&module, ExportFormat::Step);
+
+    // (c)/(d)/(f) — shared helper pins the count, node scope, and version
+    // tagging contract; see `assert_one_failed_event_at_version`.
+    assert_one_failed_event_at_version(&engine, &r_node, eval_version);
 }
 
 /// `FAILED_REALIZATION_STUB_HANDLE` is the documented sentinel

@@ -371,6 +371,57 @@ pub(crate) fn extract_solver_hints(
     hints
 }
 
+/// Validate that every `discrete_set` / `prefer_stock` solver hint's collection
+/// identifier resolves to a known name in `scope` or `functions`.
+///
+/// For each hint whose kind is **not** `PreferredStrategy`, the collection
+/// identifier is looked up first in the member scope (`scope.resolve`) and
+/// then in the module-level function list (`functions.iter().any(|f| f.name == …)`).
+/// If neither lookup succeeds an `Error` diagnostic is pushed with the wording
+/// `"unresolved name: <ident>"` / label `"not found in scope"`, matching the
+/// wording used by `compile_expr`'s `Ident` arm so that the message substring
+/// `"unresolved name"` is consistent in error-message assertions.
+///
+/// **Intentional subset of `compile_expr` resolution:** this validator does *not*
+/// check `scope.collection_sub_names` (structural sub-component list names —
+/// not valid stock-value-set payloads) or `resolve_builtin_constant` (`pi`/`tau`,
+/// which are `Real`-typed scalars and therefore never valid `List`-typed hint
+/// payloads).  If either of those becomes a valid hint-payload target in a future
+/// PRD the checks should be extended here.
+///
+/// **Type-checking is not performed:** the validator only confirms that the name
+/// exists; it does not verify that the resolved entity is `List`-typed.
+/// Type validation is intentionally deferred to a later compiler pass (see
+/// follow-up noted in task 2334).
+///
+/// **Severity — Error vs. Warning:** an unresolved-name diagnostic is escalated
+/// to `Error` because solver back-ends cannot recover from a missing collection
+/// at run time.  By contrast, an unknown-kind hint emitted by `extract_solver_hints`
+/// can be safely dropped and is therefore only a `Warning`.
+///
+/// `PreferredStrategy` hints are intentionally exempt: spec §12.2 states that
+/// any identifier is accepted at compile time and the back-end emits a runtime
+/// warning for unrecognised strategy names.
+pub(crate) fn validate_solver_hint_collections(
+    hints: &[SolverHint],
+    scope: &CompilationScope,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for hint in hints {
+        if hint.kind == SolverHintKind::PreferredStrategy {
+            continue;
+        }
+        let name = &hint.collection;
+        if scope.resolve(name).is_none() && !functions.iter().any(|f| f.name == *name) {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved name: {}", name))
+                    .with_label(DiagnosticLabel::new(hint.span, "not found in scope")),
+            );
+        }
+    }
+}
+
 /// Emit a deprecation warning for a use-site reference to a deprecated entity.
 ///
 /// Format: `use of deprecated <kind> '<name>': <message>` (with message)
@@ -458,5 +509,105 @@ mod tests {
             vec![reify_types::AnnotationArg::Bool(true)],
         );
         assert!(!is_valid_optimized(&a));
+    }
+
+    // ── validate_solver_hint_collections unit tests ──────────────────────────
+
+    fn make_hint(kind: SolverHintKind, collection: &str) -> SolverHint {
+        SolverHint {
+            kind,
+            collection: collection.to_string(),
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    /// PreferredStrategy hints are exempt from collection name validation.
+    #[test]
+    fn validate_collections_skips_preferred_strategy() {
+        let hints = vec![make_hint(SolverHintKind::PreferredStrategy, "bogus_xyz_strategy")];
+        let scope = CompilationScope::new("Test");
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "PreferredStrategy should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Any name registered in scope is accepted regardless of the resolved type.
+    ///
+    /// The validator checks name presence only — it does not inspect the
+    /// resolved type at all.  Using a non-`List` type (`Type::Real`) here makes
+    /// that contract visually obvious: if the type were inspected, this test
+    /// would produce a diagnostic and fail.
+    #[test]
+    fn validate_collections_accepts_name_in_scope() {
+        let hints = vec![make_hint(SolverHintKind::DiscreteSet, "my_collection")];
+        let mut scope = CompilationScope::new("Test");
+        scope.register("my_collection", Type::Real);
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "name in scope should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// A name resolvable only via the `functions` list (not in scope) is accepted.
+    ///
+    /// Exercises the second lookup branch in `validate_solver_hint_collections`:
+    /// `scope.resolve` returns `None` (scope is empty) but
+    /// `functions.iter().any(|f| f.name == *name)` succeeds because the function
+    /// list contains an entry whose name matches the hint collection.  This
+    /// confirms that the scope and function lookups are independent fallbacks.
+    #[test]
+    fn validate_collections_accepts_name_via_functions() {
+        let hints = vec![make_hint(SolverHintKind::DiscreteSet, "fn_collection")];
+        let scope = CompilationScope::new("Test");
+        let stub_fn = CompiledFunction {
+            name: "fn_collection".to_string(),
+            is_pub: false,
+            params: vec![],
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: reify_types::CompiledExpr::literal(
+                    reify_types::Value::Real(0.0),
+                    Type::Real,
+                ),
+            },
+            content_hash: reify_types::ContentHash::of_str("fn_collection_stub"),
+            annotations: vec![],
+        };
+        let functions = &[stub_fn];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "name in functions should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// An unresolvable discrete_set collection name emits an Error diagnostic.
+    #[test]
+    fn validate_collections_errors_on_unresolvable_name() {
+        let hints = vec![make_hint(SolverHintKind::DiscreteSet, "ghost_collection")];
+        let scope = CompilationScope::new("Test");
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+        validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1, "expected exactly 1 diagnostic");
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, reify_types::Severity::Error, "should be Error");
+        assert!(
+            d.message.contains("unresolved name") && d.message.contains("ghost_collection"),
+            "unexpected message: {}",
+            d.message
+        );
     }
 }

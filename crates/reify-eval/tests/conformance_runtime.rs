@@ -18,17 +18,10 @@
 //! call, so each fixture's `box(10mm, 10mm, 10mm)` resolves to handle id 1
 //! and the kernel is pre-configured with `with_query_result(GeometryHandleId(1), …)`.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-
 use reify_compiler::compile_with_stdlib;
 use reify_eval::Engine;
-use reify_test_support::MockGeometryKernel;
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, Severity, TessError, Value,
-    ValueCellId,
-};
+use reify_test_support::{CountingMockKernel, MockGeometryKernel};
+use reify_types::{ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -157,41 +150,6 @@ fn is_watertight_let_honours_kernel_bool_false_reply() {
 
 // ── Step-15: end-to-end user-assertion escape-hatch integration test ─────────
 
-/// Test-local wrapper around `MockGeometryKernel` that increments a counter
-/// whenever a `GeometryQuery::IsWatertight(_)` query is dispatched against
-/// the kernel. The counter is shared via `Arc<AtomicUsize>` so the test can
-/// inspect it after the kernel is moved into the engine's `Box<dyn _>`.
-struct RecordingMockKernel {
-    inner: MockGeometryKernel,
-    is_watertight_query_count: Arc<AtomicUsize>,
-}
-
-impl GeometryKernel for RecordingMockKernel {
-    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        self.inner.execute(op)
-    }
-
-    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
-        if matches!(query, GeometryQuery::IsWatertight(_)) {
-            self.is_watertight_query_count.fetch_add(1, Ordering::SeqCst);
-        }
-        self.inner.query(query)
-    }
-
-    fn export(
-        &self,
-        handle: GeometryHandleId,
-        format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        self.inner.export(handle, format, writer)
-    }
-
-    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
-        self.inner.tessellate(handle, tolerance)
-    }
-}
-
 /// Step-15: end-to-end escape-hatch integration test.
 ///
 /// A structure with a `: Watertight` declaration must short-circuit
@@ -214,16 +172,13 @@ fn watertight_user_assertion_short_circuits_kernel_query() {
         let watertight = is_watertight(body)\n}";
     let compiled = compile_no_errors(source);
 
-    let count = Arc::new(AtomicUsize::new(0));
     // Configure the inner kernel to return `Bool(false)` if it were ever
     // consulted — so a non-zero count would also surface as `Bool(false)`
     // in the cell value, double-pinning the escape-hatch contract.
     let inner =
         MockGeometryKernel::new().with_query_result(GeometryHandleId(1), Value::Bool(false));
-    let kernel = RecordingMockKernel {
-        inner,
-        is_watertight_query_count: count.clone(),
-    };
+    let kernel = CountingMockKernel::new(inner);
+    let counts = kernel.counts();
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
@@ -239,9 +194,9 @@ fn watertight_user_assertion_short_circuits_kernel_query() {
         result.values.get(&cell),
     );
     assert_eq!(
-        count.load(Ordering::SeqCst),
+        counts.is_watertight(),
         0,
-        "RecordingMockKernel must observe zero IsWatertight queries when the \
+        "CountingMockKernel must observe zero IsWatertight queries when the \
          enclosing structure declares `: Watertight` (escape-hatch short-circuit \
          is checked before the kernel.query round-trip)",
     );
@@ -326,13 +281,10 @@ fn tessellate_realizations_honours_user_assertion_escape_hatch() {
         let watertight = is_watertight(body)\n}";
     let compiled = compile_no_errors(source);
 
-    let count = Arc::new(AtomicUsize::new(0));
     let inner =
         MockGeometryKernel::new().with_query_result(GeometryHandleId(1), Value::Bool(false));
-    let kernel = RecordingMockKernel {
-        inner,
-        is_watertight_query_count: count.clone(),
-    };
+    let kernel = CountingMockKernel::new(inner);
+    let counts = kernel.counts();
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
@@ -347,7 +299,7 @@ fn tessellate_realizations_honours_user_assertion_escape_hatch() {
         result.values.get(&cell),
     );
     assert_eq!(
-        count.load(Ordering::SeqCst),
+        counts.is_watertight(),
         0,
         "tessellate path must skip the kernel.query round-trip when the \
          enclosing structure declares `: Watertight`",

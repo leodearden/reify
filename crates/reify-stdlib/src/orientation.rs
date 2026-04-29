@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
+
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
-use crate::helpers::{tensor_components_f64, trig_input};
+use crate::helpers::{sanitize_value, tensor_components_f64, trig_input};
 
 pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -155,6 +157,366 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 ((r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s)
             };
             normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
+        }
+        "orient_log" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            // log(q) = (axis * angle) where angle = 2*atan2(|v|, w), axis = v/|v|.
+            // Near identity (|v| ≈ 0), use leading-order Taylor: log ≈ 2*(x,y,z).
+            let v_norm = (x * x + y * y + z * z).sqrt();
+            const EPS: f64 = 1e-12;
+            let (lx, ly, lz) = if v_norm < EPS {
+                (2.0 * x, 2.0 * y, 2.0 * z)
+            } else {
+                let angle = 2.0 * v_norm.atan2(w);
+                let scale = angle / v_norm;
+                (scale * x, scale * y, scale * z)
+            };
+            if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
+                return Some(Value::Undef);
+            }
+            Value::Vector(vec![Value::Real(lx), Value::Real(ly), Value::Real(lz)])
+        }
+        "orient_inverse" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            // For unit quaternion q=(w,x,y,z), inverse equals conjugate (w,-x,-y,-z).
+            sanitize_value(normalize_quaternion(w, -x, -y, -z).unwrap_or(Value::Undef))
+        }
+        "orient_compose" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let a = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            let b = match &args[1] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(a.0, a.1, a.2, a.3)
+                || !quaternion_is_finite(b.0, b.1, b.2, b.3)
+            {
+                return Some(Value::Undef);
+            }
+            let p = quat_mul(a, b);
+            sanitize_value(normalize_quaternion(p.0, p.1, p.2, p.3).unwrap_or(Value::Undef))
+        }
+        "orient_to_euler" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let convention = match &args[0] {
+                Value::String(s) => s.as_str(),
+                _ => return Some(Value::Undef),
+            };
+            let (w, x, y, z) = match &args[1] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            // Quaternion → rotation matrix R (row-major).
+            let r00 = 1.0 - 2.0 * (y * y + z * z);
+            let r01 = 2.0 * (x * y - w * z);
+            let r02 = 2.0 * (x * z + w * y);
+            let r10 = 2.0 * (x * y + w * z);
+            let r11 = 1.0 - 2.0 * (x * x + z * z);
+            let r12 = 2.0 * (y * z - w * x);
+            let r20 = 2.0 * (x * z - w * y);
+            let r21 = 2.0 * (y * z + w * x);
+            let r22 = 1.0 - 2.0 * (x * x + y * y);
+            // Tolerance for asin/acos clamping near singularities. We clamp the
+            // input to [-1, 1] for numerical safety, then detect the singularity
+            // if the clamped value is within EPS_SING of ±1.
+            const EPS_SING: f64 = 1.0e-7;
+            let clamp = |v: f64| v.clamp(-1.0, 1.0);
+            let (a, b, c) = match convention {
+                // ── Tait-Bryan ───────────────────────────────────────────────
+                "xyz" => {
+                    let s = clamp(r02);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        // sin(b) ≈ ±1 → cos(b) ≈ 0
+                        (0.0, bb, r10.atan2(r11))
+                    } else {
+                        ((-r12).atan2(r22), bb, (-r01).atan2(r00))
+                    }
+                }
+                "xzy" => {
+                    let s = clamp(-r01);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, (-r20).atan2(r22))
+                    } else {
+                        (r21.atan2(r11), bb, r02.atan2(r00))
+                    }
+                }
+                "yxz" => {
+                    let s = clamp(-r12);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, (-r01).atan2(r00))
+                    } else {
+                        (r02.atan2(r22), bb, r10.atan2(r11))
+                    }
+                }
+                "yzx" => {
+                    let s = clamp(r10);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, r21.atan2(r22))
+                    } else {
+                        ((-r20).atan2(r00), bb, (-r12).atan2(r11))
+                    }
+                }
+                "zxy" => {
+                    let s = clamp(r21);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, r02.atan2(r00))
+                    } else {
+                        ((-r01).atan2(r11), bb, (-r20).atan2(r22))
+                    }
+                }
+                "zyx" => {
+                    let s = clamp(-r20);
+                    let bb = s.asin();
+                    if (s.abs() - 1.0).abs() < EPS_SING {
+                        (0.0, bb, (-r12).atan2(r11))
+                    } else {
+                        (r10.atan2(r00), bb, r21.atan2(r22))
+                    }
+                }
+                // ── Proper Euler ─────────────────────────────────────────────
+                "xyx" => {
+                    let bb = clamp(r00).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        // β ≈ 0 or π → singularity. Set α = 0.
+                        if r00 > 0.0 {
+                            (0.0, bb, r21.atan2(r11))
+                        } else {
+                            (0.0, bb, (-r21).atan2(r11))
+                        }
+                    } else {
+                        (r10.atan2(-r20), bb, r01.atan2(r02))
+                    }
+                }
+                "xzx" => {
+                    let bb = clamp(r00).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r00 > 0.0 {
+                            (0.0, bb, (-r12).atan2(r11))
+                        } else {
+                            (0.0, bb, r12.atan2(r11))
+                        }
+                    } else {
+                        (r20.atan2(r10), bb, r02.atan2(-r01))
+                    }
+                }
+                "yxy" => {
+                    let bb = clamp(r11).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r11 > 0.0 {
+                            (0.0, bb, (-r20).atan2(r00))
+                        } else {
+                            (0.0, bb, r20.atan2(r00))
+                        }
+                    } else {
+                        (r01.atan2(r21), bb, r10.atan2(-r12))
+                    }
+                }
+                "yzy" => {
+                    let bb = clamp(r11).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r11 > 0.0 {
+                            (0.0, bb, r20.atan2(r00))
+                        } else {
+                            (0.0, bb, (-r20).atan2(r00))
+                        }
+                    } else {
+                        (r21.atan2(-r01), bb, r12.atan2(r10))
+                    }
+                }
+                "zxz" => {
+                    let bb = clamp(r22).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r22 > 0.0 {
+                            (0.0, bb, r10.atan2(r11))
+                        } else {
+                            (0.0, bb, (-r10).atan2(r11))
+                        }
+                    } else {
+                        (r02.atan2(-r12), bb, r20.atan2(r21))
+                    }
+                }
+                "zyz" => {
+                    let bb = clamp(r22).acos();
+                    if bb.sin().abs() < EPS_SING {
+                        if r22 > 0.0 {
+                            (0.0, bb, r10.atan2(r00))
+                        } else {
+                            (0.0, bb, (-r10).atan2(r00))
+                        }
+                    } else {
+                        (r12.atan2(r02), bb, r21.atan2(-r20))
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+                return Some(Value::Undef);
+            }
+            Value::List(vec![
+                Value::angle(a),
+                Value::angle(b),
+                Value::angle(c),
+            ])
+        }
+        "orient_to_axis_angle" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(w, x, y, z) {
+                return Some(Value::Undef);
+            }
+            let v_norm = (x * x + y * y + z * z).sqrt();
+            const EPS: f64 = 1e-12;
+            let (axis, angle) = if v_norm < EPS {
+                // Identity: canonical [1,0,0] axis with zero angle.
+                ([1.0, 0.0, 0.0], 0.0)
+            } else {
+                let a = 2.0 * v_norm.atan2(w);
+                ([x / v_norm, y / v_norm, z / v_norm], a)
+            };
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("angle".to_string()),
+                Value::angle(angle),
+            );
+            m.insert(
+                Value::String("axis".to_string()),
+                Value::Vector(vec![
+                    Value::Real(axis[0]),
+                    Value::Real(axis[1]),
+                    Value::Real(axis[2]),
+                ]),
+            );
+            Value::Map(m)
+        }
+        "orient_slerp" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            let (aw, ax, ay, az) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            let (mut bw, mut bx, mut by, mut bz) = match &args[1] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            if !quaternion_is_finite(aw, ax, ay, az) || !quaternion_is_finite(bw, bx, by, bz) {
+                return Some(Value::Undef);
+            }
+            // t must be a pure number (Real or DIMENSIONLESS Scalar). Dimensioned
+            // Scalars (e.g. Angle) are rejected.
+            if args[2].dimension() != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let t = match args[2].as_f64() {
+                Some(t) => t,
+                None => return Some(Value::Undef),
+            };
+            if !t.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Choose short-path on the 3-sphere by negating b if dot(a, b) < 0.
+            let mut dot = aw * bw + ax * bx + ay * by + az * bz;
+            if dot < 0.0 {
+                bw = -bw;
+                bx = -bx;
+                by = -by;
+                bz = -bz;
+                dot = -dot;
+            }
+            // Clamp dot to [-1, 1] for numerical safety before acos.
+            if dot > 1.0 {
+                dot = 1.0;
+            }
+            const EPS: f64 = 1e-10;
+            let (w_a, w_b) = if 1.0 - dot < EPS {
+                // Near-collinear: fall back to linear interpolation, normalize after.
+                (1.0 - t, t)
+            } else {
+                let theta = dot.acos();
+                let s = theta.sin();
+                (((1.0 - t) * theta).sin() / s, (t * theta).sin() / s)
+            };
+            let w = w_a * aw + w_b * bw;
+            let x = w_a * ax + w_b * bx;
+            let y = w_a * ay + w_b * by;
+            let z = w_a * az + w_b * bz;
+            sanitize_value(normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef))
+        }
+        "orient_exp" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (comps, dim) = match tensor_components_f64(&args[0]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Some(Value::Undef),
+            };
+            if dim != DimensionVector::DIMENSIONLESS {
+                return Some(Value::Undef);
+            }
+            let vx = comps[0];
+            let vy = comps[1];
+            let vz = comps[2];
+            if !vx.is_finite() || !vy.is_finite() || !vz.is_finite() {
+                return Some(Value::Undef);
+            }
+            // exp(omega) = quaternion (cos(|omega|/2), sin(|omega|/2)/|omega| * omega)
+            // For |omega| ≈ 0, return identity (sin(half)/angle → 1/2 limit, but we
+            // shortcut to avoid 0/0).
+            let angle = (vx * vx + vy * vy + vz * vz).sqrt();
+            const EPS: f64 = 1e-12;
+            if angle < EPS {
+                return Some(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                });
+            }
+            let half = angle / 2.0;
+            let s = half.sin() / angle;
+            sanitize_value(
+                normalize_quaternion(half.cos(), s * vx, s * vy, s * vz)
+                    .unwrap_or(Value::Undef),
+            )
         }
         "orient_axis_angle" => {
             if args.len() != 2 {
@@ -1337,6 +1699,1025 @@ mod tests {
             0.0,
             0.0
         );
+    }
+
+    // ── orient_compose tests (step-1) ──────────────────────────────────────
+
+    /// Identity composed on the left should yield the right operand.
+    #[test]
+    fn orient_compose_identity_left() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[id, q]),
+            0.5,
+            0.5,
+            0.5,
+            0.5
+        );
+    }
+
+    /// Identity composed on the right should yield the left operand.
+    #[test]
+    fn orient_compose_identity_right() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[q, id]),
+            0.5,
+            0.5,
+            0.5,
+            0.5
+        );
+    }
+
+    /// Composing two 90° rotations about the same axis yields a 180° rotation
+    /// about that axis. For axis=z: q90 = (cos(π/4), 0, 0, sin(π/4)),
+    /// q180 = (cos(π/2), 0, 0, sin(π/2)) = (0, 0, 0, 1).
+    /// Sign-insensitive because the macro must absorb the antipodal double-cover.
+    #[test]
+    fn orient_compose_two_90deg_z_equals_180deg_z() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90 = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[q90.clone(), q90]),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    #[test]
+    fn orient_compose_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[]).is_undef());
+        assert!(eval_builtin("orient_compose", std::slice::from_ref(&q)).is_undef());
+        assert!(
+            eval_builtin("orient_compose", &[q.clone(), q.clone(), q]).is_undef(),
+            "3 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_compose_non_orientation_first_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[Value::Real(1.0), q]).is_undef());
+    }
+
+    #[test]
+    fn orient_compose_non_orientation_second_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[q, Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn orient_compose_nan_component_returns_undef() {
+        let nan_q = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[nan_q, q]).is_undef());
+    }
+
+    #[test]
+    fn orient_compose_inf_component_returns_undef() {
+        let inf_q = Value::Orientation {
+            w: 1.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_compose", &[q, inf_q]).is_undef());
+    }
+
+    // ── orient_inverse tests (step-3) ──────────────────────────────────────
+
+    #[test]
+    fn orient_inverse_identity_is_identity() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(eval_builtin("orient_inverse", &[id]), 1.0, 0.0, 0.0, 0.0);
+    }
+
+    /// Inverse of 90°z = (cos(π/4), 0, 0, sin(π/4)) is (cos(π/4), 0, 0, -sin(π/4)),
+    /// representing -90°z (axis-angle equivalent of conjugate for a unit quaternion).
+    #[test]
+    fn orient_inverse_90deg_z_is_conjugate() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90z = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_inverse", &[q90z]),
+            s,
+            0.0,
+            0.0,
+            -s
+        );
+    }
+
+    /// q ∘ inverse(q) ≈ identity (sign-insensitive due to double-cover).
+    #[test]
+    fn orient_inverse_compose_q_inv_q_is_identity() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let q_inv = eval_builtin("orient_inverse", std::slice::from_ref(&q));
+        assert_orientation_approx!(
+            eval_builtin("orient_compose", &[q, q_inv]),
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    #[test]
+    fn orient_inverse_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_inverse", &[]).is_undef());
+        assert!(
+            eval_builtin("orient_inverse", &[q.clone(), q]).is_undef(),
+            "2 args should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_inverse_non_orientation_returns_undef() {
+        assert!(eval_builtin("orient_inverse", &[Value::Real(1.0)]).is_undef());
+    }
+
+    // ── orient_log tests (step-5) ──────────────────────────────────────────
+
+    #[test]
+    fn orient_log_identity_is_zero_vector() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_vector3_approx!(Vector, eval_builtin("orient_log", &[id]), [0.0, 0.0, 0.0]);
+    }
+
+    /// log of 90°z = (cos(π/4), 0, 0, sin(π/4)) is [0, 0, π/2].
+    #[test]
+    fn orient_log_90deg_z_returns_z_pi_half() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90z = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        assert_vector3_approx!(
+            Vector,
+            eval_builtin("orient_log", &[q90z]),
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2]
+        );
+    }
+
+    /// log of 180°x = (0, 1, 0, 0) is [π, 0, 0]. Tests the boundary case w=0.
+    #[test]
+    fn orient_log_180deg_x_returns_x_pi() {
+        let q180x = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_vector3_approx!(
+            Vector,
+            eval_builtin("orient_log", &[q180x]),
+            [std::f64::consts::PI, 0.0, 0.0]
+        );
+    }
+
+    /// Near-identity quaternion (small angle) — Taylor fallback should produce
+    /// finite values approximately equal to 2*(x,y,z).
+    #[test]
+    fn orient_log_near_identity_uses_taylor_fallback() {
+        // q ≈ (1, 5e-9, 0, 0) — w stays close to 1, x is tiny but the rotation
+        // vector should be roughly 2*x = 1e-8.
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 5e-9,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("orient_log", &[q]);
+        match result {
+            Value::Vector(items) if items.len() == 3 => {
+                let v0 = items[0].as_f64().unwrap();
+                let v1 = items[1].as_f64().unwrap();
+                let v2 = items[2].as_f64().unwrap();
+                assert!(v0.is_finite() && v1.is_finite() && v2.is_finite(),
+                    "near-identity log must be finite, got [{v0}, {v1}, {v2}]");
+                // Leading-order Taylor: log ≈ 2*(x,y,z); verify within 1% relative tolerance
+                assert!((v0 - 1e-8).abs() < 1e-9,
+                    "near-identity x-component expected ~1e-8 got {v0}");
+                assert!(v1.abs() < 1e-15);
+                assert!(v2.abs() < 1e-15);
+            }
+            other => panic!("expected Vector(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn orient_log_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_log", &[]).is_undef());
+        assert!(eval_builtin("orient_log", &[q.clone(), q]).is_undef());
+    }
+
+    #[test]
+    fn orient_log_non_orientation_returns_undef() {
+        assert!(eval_builtin("orient_log", &[Value::Real(1.0)]).is_undef());
+    }
+
+    // ── orient_exp tests (step-7) ──────────────────────────────────────────
+
+    #[test]
+    fn orient_exp_zero_vector_is_identity() {
+        let zero = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert_orientation_approx!(eval_builtin("orient_exp", &[zero]), 1.0, 0.0, 0.0, 0.0);
+    }
+
+    /// exp([0,0,π/2]) = (cos(π/4), 0, 0, sin(π/4)) — 90°z rotation.
+    #[test]
+    fn orient_exp_z_pi_half_is_90deg_z_quaternion() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_exp", &[v]),
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
+        );
+    }
+
+    /// log(exp(v)) ≈ v for several non-trivial rotation vectors.
+    #[test]
+    fn orient_exp_then_log_round_trip() {
+        let cases: [[f64; 3]; 4] = [
+            [0.1, 0.2, 0.3],
+            [1.0, 0.0, 0.0],
+            [0.0, std::f64::consts::FRAC_PI_2, 0.0],
+            [-0.5, 0.7, -0.3],
+        ];
+        for case in cases.iter() {
+            let v = Value::Vector(vec![
+                Value::Real(case[0]),
+                Value::Real(case[1]),
+                Value::Real(case[2]),
+            ]);
+            let q = eval_builtin("orient_exp", std::slice::from_ref(&v));
+            let v_back = eval_builtin("orient_log", &[q]);
+            match v_back {
+                Value::Vector(items) if items.len() == 3 => {
+                    let v0 = items[0].as_f64().unwrap();
+                    let v1 = items[1].as_f64().unwrap();
+                    let v2 = items[2].as_f64().unwrap();
+                    assert!(
+                        (v0 - case[0]).abs() < 1e-10,
+                        "round-trip x: expected {} got {}",
+                        case[0],
+                        v0
+                    );
+                    assert!(
+                        (v1 - case[1]).abs() < 1e-10,
+                        "round-trip y: expected {} got {}",
+                        case[1],
+                        v1
+                    );
+                    assert!(
+                        (v2 - case[2]).abs() < 1e-10,
+                        "round-trip z: expected {} got {}",
+                        case[2],
+                        v2
+                    );
+                }
+                other => panic!("expected Vector(3), got {:?}", other),
+            }
+        }
+    }
+
+    /// exp(log(q)) ≈ q for arbitrary q (sign-insensitive).
+    #[test]
+    fn orient_log_then_exp_round_trip() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let v = eval_builtin("orient_log", std::slice::from_ref(&q));
+        let q_back = eval_builtin("orient_exp", &[v]);
+        assert_orientation_approx!(q_back, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-12);
+    }
+
+    #[test]
+    fn orient_exp_wrong_arg_count_returns_undef() {
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_exp", &[]).is_undef());
+        assert!(eval_builtin("orient_exp", &[v.clone(), v]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_non_vector_returns_undef() {
+        assert!(eval_builtin("orient_exp", &[Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_non_3d_vector_returns_undef() {
+        let v2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_exp", &[v2]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_nan_component_returns_undef() {
+        let nan_v = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_exp", &[nan_v]).is_undef());
+    }
+
+    #[test]
+    fn orient_exp_inf_component_returns_undef() {
+        let inf_v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+        ]);
+        assert!(eval_builtin("orient_exp", &[inf_v]).is_undef());
+    }
+
+    // ── orient_slerp tests (step-9) ────────────────────────────────────────
+
+    /// slerp(a, b, 0) == a (start endpoint).
+    #[test]
+    fn orient_slerp_t_zero_returns_a() {
+        let a = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let b = Value::Orientation {
+            w: std::f64::consts::FRAC_1_SQRT_2,
+            x: 0.0,
+            y: 0.0,
+            z: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[a, b, Value::Real(0.0)]),
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    /// slerp(a, b, 1) == b (end endpoint).
+    #[test]
+    fn orient_slerp_t_one_returns_b() {
+        let a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let bw = std::f64::consts::FRAC_1_SQRT_2;
+        let b = Value::Orientation {
+            w: bw,
+            x: 0.0,
+            y: 0.0,
+            z: bw,
+        };
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[a, b, Value::Real(1.0)]),
+            bw,
+            0.0,
+            0.0,
+            bw,
+            sign_insensitive = 1e-12
+        );
+    }
+
+    /// slerp(identity, 90°z, 0.5) == 45°z quaternion (cos(π/8), 0, 0, sin(π/8)).
+    #[test]
+    fn orient_slerp_midpoint_identity_to_90deg_z_is_45deg_z() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90 = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let cos_pi_8 = (std::f64::consts::PI / 8.0).cos();
+        let sin_pi_8 = (std::f64::consts::PI / 8.0).sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[id, q90, Value::Real(0.5)]),
+            cos_pi_8,
+            0.0,
+            0.0,
+            sin_pi_8,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    /// slerp with antipodal endpoints: slerp(identity, -identity, 0.5) takes the
+    /// short path → returned quaternion is close to identity (not far from it).
+    #[test]
+    fn orient_slerp_antipodal_short_path() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let neg_id = Value::Orientation {
+            w: -1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        // Antipodal pair represents the same rotation; midpoint should be close
+        // to identity (sign-insensitive).
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[id, neg_id, Value::Real(0.5)]),
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    /// t accepts a DIMENSIONLESS Scalar in addition to a Real.
+    #[test]
+    fn orient_slerp_accepts_dimensionless_scalar_t() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90 = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let t = Value::Scalar {
+            si_value: 0.5,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let cos_pi_8 = (std::f64::consts::PI / 8.0).cos();
+        let sin_pi_8 = (std::f64::consts::PI / 8.0).sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_slerp", &[id, q90, t]),
+            cos_pi_8,
+            0.0,
+            0.0,
+            sin_pi_8,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    #[test]
+    fn orient_slerp_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_slerp", &[]).is_undef());
+        assert!(eval_builtin("orient_slerp", std::slice::from_ref(&q)).is_undef());
+        assert!(eval_builtin("orient_slerp", &[q.clone(), q.clone()]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_slerp",
+                &[q.clone(), q.clone(), Value::Real(0.5), Value::Real(0.0)],
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_non_orientation_a_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[Value::Real(1.0), q, Value::Real(0.5)]).is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_non_orientation_b_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[q, Value::Real(1.0), Value::Real(0.5)]).is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_non_numeric_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin(
+                "orient_slerp",
+                &[q.clone(), q, Value::String("half".to_string())],
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_dimensioned_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let t_angle = Value::Scalar {
+            si_value: 0.5,
+            dimension: DimensionVector::ANGLE,
+        };
+        assert!(eval_builtin("orient_slerp", &[q.clone(), q, t_angle]).is_undef());
+    }
+
+    #[test]
+    fn orient_slerp_nan_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[q.clone(), q, Value::Real(f64::NAN)]).is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_slerp_inf_t_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin("orient_slerp", &[q.clone(), q, Value::Real(f64::INFINITY)]).is_undef()
+        );
+    }
+
+    // ── orient_to_axis_angle tests (step-11) ───────────────────────────────
+
+    /// Helper: extract (axis_components, angle_si) from an axis-angle Map.
+    fn axis_angle_extract(v: &Value) -> Option<([f64; 3], f64)> {
+        let m = match v {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        let axis_v = m.get(&Value::String("axis".to_string()))?;
+        let angle_v = m.get(&Value::String("angle".to_string()))?;
+        let comps = match axis_v {
+            Value::Vector(items) | Value::Tensor(items) | Value::Point(items)
+                if items.len() == 3 =>
+            {
+                [
+                    items[0].as_f64()?,
+                    items[1].as_f64()?,
+                    items[2].as_f64()?,
+                ]
+            }
+            _ => return None,
+        };
+        // angle should be Angle Scalar
+        let angle = match angle_v {
+            Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => {
+                *si_value
+            }
+            _ => return None,
+        };
+        Some((comps, angle))
+    }
+
+    #[test]
+    fn orient_to_axis_angle_identity_canonical_fallback() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("orient_to_axis_angle", &[id]);
+        let (axis, angle) = axis_angle_extract(&result)
+            .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+        assert!((axis[0] - 1.0).abs() < 1e-12);
+        assert!(axis[1].abs() < 1e-12);
+        assert!(axis[2].abs() < 1e-12);
+        assert!(angle.abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_axis_angle_90deg_z() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let result = eval_builtin("orient_to_axis_angle", &[q]);
+        let (axis, angle) = axis_angle_extract(&result)
+            .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+        assert!(axis[0].abs() < 1e-12);
+        assert!(axis[1].abs() < 1e-12);
+        assert!((axis[2] - 1.0).abs() < 1e-12);
+        assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_axis_angle_180deg_x_boundary() {
+        // 180°x: q = (0, 1, 0, 0), w=0 boundary
+        let q = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("orient_to_axis_angle", &[q]);
+        let (axis, angle) = axis_angle_extract(&result)
+            .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+        assert!((axis[0] - 1.0).abs() < 1e-12);
+        assert!(axis[1].abs() < 1e-12);
+        assert!(axis[2].abs() < 1e-12);
+        assert!((angle - std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_axis_angle_round_trip() {
+        // For each (axis, angle) input, build q via orient_axis_angle, then decompose
+        // and verify the recovered axis/angle match within tolerance.
+        let cases: [([f64; 3], f64); 4] = [
+            ([0.0, 0.0, 1.0], std::f64::consts::FRAC_PI_2),
+            ([1.0, 0.0, 0.0], std::f64::consts::FRAC_PI_4),
+            ([0.0, 1.0, 0.0], 1.234),
+            (
+                {
+                    // Normalized arbitrary axis (1,2,3)
+                    let n = (1.0_f64.powi(2) + 2.0_f64.powi(2) + 3.0_f64.powi(2)).sqrt();
+                    [1.0 / n, 2.0 / n, 3.0 / n]
+                },
+                0.7,
+            ),
+        ];
+        for (axis_in, angle_in) in cases.iter() {
+            let axis_v = Value::Tensor(vec![
+                Value::Real(axis_in[0]),
+                Value::Real(axis_in[1]),
+                Value::Real(axis_in[2]),
+            ]);
+            let q = eval_builtin(
+                "orient_axis_angle",
+                &[axis_v, Value::Real(*angle_in)],
+            );
+            let result = eval_builtin("orient_to_axis_angle", &[q]);
+            let (axis_out, angle_out) = axis_angle_extract(&result)
+                .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
+            assert!(
+                (axis_out[0] - axis_in[0]).abs() < 1e-10
+                    && (axis_out[1] - axis_in[1]).abs() < 1e-10
+                    && (axis_out[2] - axis_in[2]).abs() < 1e-10,
+                "axis round-trip: in={:?} out={:?}",
+                axis_in,
+                axis_out
+            );
+            assert!(
+                (angle_out - angle_in).abs() < 1e-10,
+                "angle round-trip: in={} out={}",
+                angle_in,
+                angle_out
+            );
+        }
+    }
+
+    #[test]
+    fn orient_to_axis_angle_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_axis_angle", &[]).is_undef());
+        assert!(eval_builtin("orient_to_axis_angle", &[q.clone(), q]).is_undef());
+    }
+
+    #[test]
+    fn orient_to_axis_angle_non_orientation_returns_undef() {
+        assert!(eval_builtin("orient_to_axis_angle", &[Value::Real(1.0)]).is_undef());
+    }
+
+    // ── orient_to_euler tests (step-13) ────────────────────────────────────
+
+    /// Helper: extract three Angle Scalars (radians) from a List<Angle> result.
+    fn euler_extract(v: &Value) -> Option<[f64; 3]> {
+        let items = match v {
+            Value::List(items) if items.len() == 3 => items,
+            _ => return None,
+        };
+        let mut out = [0.0; 3];
+        for (i, item) in items.iter().enumerate() {
+            match item {
+                Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => {
+                    out[i] = *si_value;
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    #[test]
+    fn orient_to_euler_identity_xyz_zero_angles() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), id],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        assert!(angles[0].abs() < 1e-12);
+        assert!(angles[1].abs() < 1e-12);
+        assert!(angles[2].abs() < 1e-12);
+    }
+
+    #[test]
+    fn orient_to_euler_xyz_round_trip() {
+        let a = std::f64::consts::FRAC_PI_4;
+        let b = std::f64::consts::FRAC_PI_6;
+        let c = std::f64::consts::FRAC_PI_3;
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(a),
+                Value::Real(b),
+                Value::Real(c),
+            ],
+        );
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), q],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        assert!(
+            (angles[0] - a).abs() < 1e-10,
+            "xyz a: in={} out={}",
+            a,
+            angles[0]
+        );
+        assert!(
+            (angles[1] - b).abs() < 1e-10,
+            "xyz b: in={} out={}",
+            b,
+            angles[1]
+        );
+        assert!(
+            (angles[2] - c).abs() < 1e-10,
+            "xyz c: in={} out={}",
+            c,
+            angles[2]
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_zyx_round_trip_three_nonzero() {
+        let a = 0.3;
+        let b = 0.5;
+        let c = -0.7;
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("zyx".to_string()),
+                Value::Real(a),
+                Value::Real(b),
+                Value::Real(c),
+            ],
+        );
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("zyx".to_string()), q],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        assert!((angles[0] - a).abs() < 1e-10);
+        assert!((angles[1] - b).abs() < 1e-10);
+        assert!((angles[2] - c).abs() < 1e-10);
+    }
+
+    #[test]
+    fn orient_to_euler_invalid_convention_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            eval_builtin(
+                "orient_to_euler",
+                &[Value::String("abc".to_string()), q]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_wrong_arg_count_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_euler", &[]).is_undef());
+        assert!(
+            eval_builtin("orient_to_euler", &[Value::String("xyz".to_string())]).is_undef()
+        );
+        assert!(
+            eval_builtin(
+                "orient_to_euler",
+                &[Value::String("xyz".to_string()), q.clone(), q]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_non_string_convention_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_euler", &[Value::Real(1.0), q]).is_undef());
+    }
+
+    /// Gimbal-lock case for "xyz" Tait-Bryan: middle angle b = π/2.
+    /// At this singularity the decomposition is non-unique; the implementation
+    /// must return a deterministic triple whose recomposition equals the
+    /// original quaternion (sign-insensitive).
+    #[test]
+    fn orient_to_euler_xyz_gimbal_lock_deterministic_recomposition() {
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(0.3),
+                Value::Real(pi_2),
+                Value::Real(0.7),
+            ],
+        );
+        // Capture quaternion components for later comparison.
+        let (qw, qx, qy, qz) = match q.clone() {
+            Value::Orientation { w, x, y, z } => (w, x, y, z),
+            other => panic!("expected Orientation, got {:?}", other),
+        };
+        let result = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), q],
+        );
+        let angles = euler_extract(&result)
+            .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
+        // Recompose and verify equivalence to the original quaternion.
+        let q_back = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(angles[0]),
+                Value::Real(angles[1]),
+                Value::Real(angles[2]),
+            ],
+        );
+        assert_orientation_approx!(q_back, qw, qx, qy, qz, sign_insensitive = 1e-10);
     }
 
     // ── normalize_quaternion near-zero tests ────────────────────────────────
