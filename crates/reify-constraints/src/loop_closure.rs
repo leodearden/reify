@@ -861,8 +861,8 @@ mod tests {
                     "expected finite residual_norm at divergence bail-out"
                 );
                 assert!(
-                    residual_norm < 50.0,
-                    "divergence guard must bail before max_iters; got residual_norm {residual_norm}"
+                    (residual_norm - 4.0).abs() < 1e-12,
+                    "expected residual_norm == 4.0 at divergence bail-out (iter 3 ramp = 1→2→3→4), got {residual_norm}"
                 );
             }
             other => panic!("expected NotConverged from divergence guard, got {other:?}"),
