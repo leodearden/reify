@@ -228,7 +228,7 @@ impl ReifyToolContext for CliToolContext {
                     column,
                     end_line,
                     end_column,
-                    severity: format!("{}", diag.severity),
+                    severity: diag.severity.as_wire_str().to_owned(),
                     message: diag.message.clone(),
                     code: None,
                 });
