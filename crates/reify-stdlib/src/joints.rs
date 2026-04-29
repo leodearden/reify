@@ -70,18 +70,23 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             match kind {
                 "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
                 // 0-DOF fixed joint: always the identity Transform regardless of
-                // the second argument. The second arg is accepted but ignored —
-                // design decision: a 0-DOF joint has no motion variable to validate,
-                // and preserving the two-argument call shape keeps the dispatch
-                // table and parse/compile pipeline unaffected.
-                "fixed" => Value::Transform {
-                    rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
-                    translation: Box::new(Value::Vector(vec![
-                        Value::length(0.0),
-                        Value::length(0.0),
-                        Value::length(0.0),
-                    ])),
-                },
+                // the second argument (type/dimension not validated — see design
+                // decision). Undef propagates: if the motion-variable expression
+                // upstream evaluated to Undef, returning a well-formed Transform
+                // would mask that error; callers rely on Undef sentinel propagation.
+                "fixed" => {
+                    if matches!(&args[1], Value::Undef) {
+                        return Some(Value::Undef);
+                    }
+                    Value::Transform {
+                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(0.0),
+                            Value::length(0.0),
+                            Value::length(0.0),
+                        ])),
+                    }
+                }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
@@ -2750,18 +2755,6 @@ mod tests {
         );
     }
 
-    // ── is_joint_value for fixed ─────────────────────────────────────────────
-
-    /// `is_joint_value` recognizes a fixed joint once "fixed" is in `JOINT_KINDS`.
-    ///
-    /// This test is independent of `is_joint_value_aligns_with_joint_kinds` —
-    /// it pins the contract directly against the fixed constructor output.
-    #[test]
-    fn is_joint_value_recognizes_fixed() {
-        let fj = eval_builtin("fixed", &[]);
-        assert!(is_joint_value(&fj), "fixed() output should be recognized as a joint value");
-    }
-
     // ── joint_jacobian for fixed ─────────────────────────────────────────────
 
     /// `joint_jacobian(fixed_joint)` returns a zero-twist Map.
@@ -2792,12 +2785,13 @@ mod tests {
 
     // ── transform_at for fixed ───────────────────────────────────────────────
 
-    /// `transform_at(fixed_joint, any_value)` returns the identity Transform.
+    /// `transform_at(fixed_joint, any_value)` returns the identity Transform for
+    /// well-formed second args, and propagates `Value::Undef` when the second arg
+    /// is Undef (so upstream evaluation errors are not masked).
     ///
-    /// Design decision: the second argument is accepted but ignored — a 0-DOF
-    /// joint has no motion variable to validate against a dimension or shape.
-    /// The two-argument call shape is preserved so existing dispatch tables and
-    /// the parse/compile pipeline are unaffected.
+    /// Design decision: type and dimension of the second argument are not validated
+    /// — a 0-DOF joint has no motion variable. Undef is the only case that changes
+    /// the result; all other value types yield the identity Transform.
     #[test]
     fn transform_at_fixed_returns_identity_transform() {
         let fj = eval_builtin("fixed", &[]);
@@ -2819,11 +2813,22 @@ mod tests {
             "zero translation"
         );
 
-        // Additional args — all should yield the same identity (arg is ignored).
+        // Undef propagation: if the second arg is Undef, the result must also be
+        // Undef so that upstream evaluation errors are not swallowed.
+        let undef_result = eval_builtin("transform_at", &[fj.clone(), Value::Undef]);
+        assert!(
+            undef_result.is_undef(),
+            "transform_at(fixed, Undef): expected Undef (Undef propagation), got {:?}", undef_result
+        );
+
+        // Non-Undef args of various types — all should yield the identity Transform
+        // (type/dimension not validated for 0-DOF joints).
         for (label, second_arg) in [
-            ("length(2.5)", Value::length(2.5)),
-            ("angle(1.0)",  Value::angle(1.0)),
-            ("Int(5)",      Value::Int(5)),
+            ("length(2.5)",            Value::length(2.5)),
+            ("angle(1.0)",             Value::angle(1.0)),
+            ("Int(5)",                 Value::Int(5)),
+            ("String(\"foo\")",        Value::String("foo".to_string())),
+            ("List(empty)",            Value::List(vec![])),
         ] {
             let r2 = eval_builtin("transform_at", &[fj.clone(), second_arg]);
             assert!(
