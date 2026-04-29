@@ -54,18 +54,12 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
 
-            // Errored-mechanism short-circuit: if args[0] is a Map with
-            // an "error" key, return it verbatim. This locks in
-            // idempotent error propagation so callers can chain
-            // `.body(...)` calls without each link re-validating in a
-            // way that could mask the original error (test step-21).
-            if let Value::Map(m) = &args[0]
-                && m.contains_key(&Value::String("error".to_string()))
-            {
-                return Some(args[0].clone());
-            }
-
-            // Validate args[0] is a Mechanism Map.
+            // Validate args[0] is a Mechanism Map. This guard runs
+            // BEFORE the errored-mechanism short-circuit so only Maps
+            // that are actually Mechanisms get the propagation path —
+            // an unrelated error-bearing Map (or a test-constructed
+            // Map without `kind="mechanism"`) must surface as Undef
+            // rather than propagating verbatim.
             let mech_map = match &args[0] {
                 Value::Map(m) => m,
                 _ => return Some(Value::Undef),
@@ -74,6 +68,15 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
                 != Some(&Value::String("mechanism".to_string()))
             {
                 return Some(Value::Undef);
+            }
+
+            // Errored-mechanism short-circuit: if the Mechanism Map
+            // already carries an "error" key, return it verbatim. This
+            // locks in idempotent error propagation so callers can
+            // chain `.body(...)` calls without each link re-validating
+            // in a way that could mask the original error (test step-21).
+            if mech_map.contains_key(&Value::String("error".to_string())) {
+                return Some(args[0].clone());
             }
 
             // Validate args[2] is a joint value.
@@ -120,6 +123,21 @@ pub(crate) fn eval_mechanism(name: &str, args: &[Value]) -> Option<Value> {
             if mech_map.get(&Value::String("kind".to_string()))
                 != Some(&Value::String("mechanism".to_string()))
             {
+                return Some(Value::Undef);
+            }
+            // Errored Mechanism short-circuit: an errored mechanism's
+            // bodies list may be incomplete or stale (the bodies
+            // recorded before the error are preserved verbatim). A
+            // user who chains `body_id_of()` onto an errored
+            // mechanism would otherwise get a plausible-looking Int
+            // back and never see the underlying closed_chain /
+            // duplicate_solid. Return Undef instead so the caller is
+            // forced to reckon with the error before relying on a
+            // body id. The companion test
+            // `body_id_of_on_errored_mechanism_returns_undef` pins
+            // this behaviour so future refactors can't silently
+            // change it.
+            if mech_map.contains_key(&Value::String("error".to_string())) {
                 return Some(Value::Undef);
             }
             // Iterate `bodies` and return the id of the first record
@@ -406,6 +424,14 @@ fn append_body(
     // "by referential identity" but Reify's Value model only exposes
     // structural equality. The follow-on docs task (#2538) reconciles
     // the spec wording with the v0.1 implementation.
+    //
+    // Performance: this is an O(n) linear scan, making a chain of n
+    // body() calls O(n²). Deliberately accepted for v0.1 — mechanisms
+    // are documented (`docs/prds/kinematic-constraints.md` task 3) as
+    // a handful of bodies, and an immutable Map-shaped state already
+    // forces O(n) clones per call. If mechanisms ever grow large, the
+    // remediation is a `seen_solids: BTreeSet<Value>` field alongside
+    // `bodies` (tracked as a follow-up if a real workload demands it).
     for existing in &bodies {
         if let Value::Map(b) = existing
             && b.get(&Value::String("solid".to_string())) == Some(&solid)
@@ -1223,6 +1249,96 @@ mod tests {
             &[m2, Value::String("a".to_string()), Value::Int(1)]
         )
         .is_undef());
+    }
+
+    /// `body_id_of` on an errored Mechanism returns `Value::Undef` —
+    /// not a body id from the (possibly stale) pre-error bodies list.
+    /// Pins the design choice noted at the `body_id_of` arm in
+    /// `eval_mechanism`: a user who chains `body_id_of()` onto an
+    /// errored mechanism must reckon with the error before getting a
+    /// plausible-looking Int back. Companion to suggestion #2 in the
+    /// reviewer's amendment pass.
+    #[test]
+    fn body_id_of_on_errored_mechanism_returns_undef() {
+        // Build an errored mechanism via parent-conflict (cheaper to
+        // set up than the cycle / duplicate-solid cases; the contract
+        // is uniform across every error kind).
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_x.clone(), j_a]);
+        let errored = eval_builtin("body", &[m1, solid_b, j_x, j_b]);
+        // Sanity: setup actually produced an errored mechanism with
+        // solid_a still in the pre-error bodies list.
+        match &errored {
+            Value::Map(m) => {
+                assert_eq!(
+                    m.get(&Value::String("error".to_string())),
+                    Some(&Value::String("closed_chain".to_string())),
+                    "setup precondition: errored mechanism has error='closed_chain'"
+                );
+            }
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        }
+
+        // body_id_of on the errored mechanism must yield Undef even
+        // though solid_a IS present in the pre-error bodies list (the
+        // "closed_chain" error decorates the mechanism but preserves
+        // the bodies prefix from before the conflicting body() call).
+        assert!(
+            eval_builtin("body_id_of", &[errored, solid_a]).is_undef(),
+            "body_id_of on errored mechanism must yield Undef, even for a \
+             solid present in the pre-error bodies list"
+        );
+    }
+
+    /// `body()` on a Map that carries an "error" key but is NOT a
+    /// Mechanism (no `kind="mechanism"`) returns `Value::Undef` — the
+    /// errored-mechanism short-circuit must NOT fire on unrelated
+    /// error-bearing Maps. Pins the validation order fixed in
+    /// suggestion #1 of the reviewer's amendment pass: kind validation
+    /// runs BEFORE the error short-circuit so the validation contract
+    /// survives a regression that produced an unrelated error-bearing
+    /// Map (or a test-constructed Map without `kind="mechanism"`).
+    #[test]
+    fn body_error_map_without_mechanism_kind_returns_undef() {
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+
+        // A Map carrying `error` but with `kind="other"` (or no kind).
+        let mut bogus = BTreeMap::new();
+        bogus.insert(
+            Value::String("kind".to_string()),
+            Value::String("other".to_string()),
+        );
+        bogus.insert(
+            Value::String("error".to_string()),
+            Value::String("synthetic_error".to_string()),
+        );
+        let bogus_map = Value::Map(bogus);
+
+        assert!(
+            eval_builtin("body", &[bogus_map, solid.clone(), j.clone()]).is_undef(),
+            "body() on a non-Mechanism Map must surface Undef even when an \
+             'error' key is present"
+        );
+
+        // Also pin the no-kind variant.
+        let mut bogus_no_kind = BTreeMap::new();
+        bogus_no_kind.insert(
+            Value::String("error".to_string()),
+            Value::String("synthetic_error".to_string()),
+        );
+        let bogus_no_kind_map = Value::Map(bogus_no_kind);
+        assert!(
+            eval_builtin("body", &[bogus_no_kind_map, solid, j]).is_undef(),
+            "body() on a Map with no `kind` field must surface Undef even \
+             when an 'error' key is present"
+        );
     }
 
     /// 5-arg body() with a non-Transform pose argument returns Undef.
