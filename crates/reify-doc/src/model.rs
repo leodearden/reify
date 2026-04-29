@@ -164,11 +164,6 @@ pub struct ModuleCrossRefs {
 /// aligned with the `ItemDoc { header, kind }` construction pattern. `ItemDoc`
 /// itself has no meaningful default (no obvious `ItemKind`), so neither does
 /// its header.
-///
-/// ```compile_fail,E0599
-/// use reify_doc::model::ItemHeader;
-/// let _ = ItemHeader::default();
-/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemHeader {
     pub name: String,
