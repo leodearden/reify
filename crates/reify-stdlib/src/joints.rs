@@ -487,6 +487,34 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
     }
 }
 
+/// Canonical set of joint kinds recognized by the joints module.
+///
+/// Used by [`is_joint_value`] as the membership set for value-level
+/// joint discrimination. Per-kind dispatch arms in `transform_at` and
+/// `joint_jacobian_value` (this file) hardcode the same kind strings
+/// directly in `match` arms — Rust `match` patterns do not support
+/// runtime slice membership, so those arms **must be kept in sync with
+/// this constant** when a new kind is added.
+/// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling"];
+
+/// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
+/// the strings in [`JOINT_KINDS`] (`"prismatic"`, `"revolute"`,
+/// `"coupling"`). Used by `mechanism::body()` for `at`-arg validation
+/// and (combined with the world-sentinel check) for parent-arg validation.
+///
+/// Tied to `JOINT_KINDS` via `contains` so a future kind addition only
+/// needs to be made in the constant — the predicate follows automatically.
+pub(crate) fn is_joint_value(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => matches!(
+            m.get(&Value::String("kind".to_string())),
+            Some(Value::String(s)) if JOINT_KINDS.contains(&s.as_str())
+        ),
+        _ => false,
+    }
+}
+
 /// Build a coupling `Value::Map` with the four-key layout:
 /// `"kind"`, `"offset"`, `"parent"`, `"ratio"`.
 ///
@@ -615,6 +643,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 mod tests {
     use crate::eval_builtin;
     use reify_types::Value;
+    use super::{is_joint_value, JOINT_KINDS};
 
     fn axis_x_unit() -> Value {
         Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
@@ -2489,6 +2518,59 @@ mod tests {
         assert!(
             eval_builtin("joint_jacobian", &[Value::Map(outer)]).is_undef(),
             "nested coupling should return Undef"
+        );
+    }
+
+    // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
+
+    /// All negative-case inputs for `is_joint_value` in one table-driven test.
+    /// Positive cases (one per kind in `JOINT_KINDS`) are covered by
+    /// `is_joint_value_aligns_with_joint_kinds` below.
+    #[test]
+    fn is_joint_value_negative_cases() {
+        use std::collections::BTreeMap;
+
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
+
+        let mut unknown_kind = BTreeMap::new();
+        unknown_kind.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+
+        let mut non_string_kind = BTreeMap::new();
+        non_string_kind.insert(Value::String("kind".to_string()), Value::Int(0));
+
+        let cases: Vec<(&str, Value)> = vec![
+            ("Real(1.0)", Value::Real(1.0)),
+            ("Int(0)", Value::Int(0)),
+            ("bare String 'prismatic'", Value::String("prismatic".to_string())),
+            ("Map without 'kind' key", Value::Map(no_kind)),
+            ("Map with kind='sliding' (not in JOINT_KINDS)", Value::Map(unknown_kind)),
+            ("Map with kind=Int(0)", Value::Map(non_string_kind)),
+        ];
+        for (label, v) in &cases {
+            assert!(!is_joint_value(v), "{label} should not be a joint value");
+        }
+    }
+
+    #[test]
+    fn is_joint_value_aligns_with_joint_kinds() {
+        use std::collections::BTreeMap;
+        // Every kind in JOINT_KINDS must be recognized as a joint value.
+        for &kind in JOINT_KINDS {
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("kind".to_string()), Value::String(kind.to_string()));
+            assert!(
+                is_joint_value(&Value::Map(m)),
+                "Map with kind='{}' (in JOINT_KINDS) should be a joint value",
+                kind
+            );
+        }
+        // A kind not in JOINT_KINDS must not be recognized.
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("not_a_joint".to_string()));
+        assert!(
+            !is_joint_value(&Value::Map(m)),
+            "Map with kind='not_a_joint' should not be a joint value"
         );
     }
 }
