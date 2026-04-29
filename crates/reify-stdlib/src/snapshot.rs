@@ -66,10 +66,31 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             {
                 return Some(Value::Undef);
             }
-            // Bindings argument: must be a List. Per-entry shape
-            // validation lands in a later step.
-            if !matches!(&args[1], Value::List(_)) {
-                return Some(Value::Undef);
+            // Bindings argument: must be a List, and every entry
+            // must be a binding Map (kind="binding" with present
+            // `joint`/`value` fields).  Whole-call rejection on any
+            // malformed entry — silent skipping would paper over a
+            // bug at the call site (e.g., a swapped arg order).
+            let bindings_entries = match &args[1] {
+                Value::List(b) => b,
+                _ => return Some(Value::Undef),
+            };
+            for entry in bindings_entries {
+                let map = match entry {
+                    Value::Map(m) => m,
+                    _ => return Some(Value::Undef),
+                };
+                if map.get(&Value::String("kind".to_string()))
+                    != Some(&Value::String("binding".to_string()))
+                {
+                    return Some(Value::Undef);
+                }
+                if !map.contains_key(&Value::String("joint".to_string())) {
+                    return Some(Value::Undef);
+                }
+                if !map.contains_key(&Value::String("value".to_string())) {
+                    return Some(Value::Undef);
+                }
             }
             // Read the mechanism's `bodies` list — defense-in-depth
             // (the `kind` guard above ensures this is well-formed
