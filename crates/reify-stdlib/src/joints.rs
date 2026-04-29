@@ -489,13 +489,13 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 
 /// Canonical set of joint kinds recognized by the joints module.
 ///
-/// Single source of truth for "what is a joint kind". Consumers:
-/// - `is_joint_value` (the value-level discriminator below) — checks
-///   membership of a Map's `kind` field against this slice.
-/// - `eval_joints` arms `transform_at` / `joint_jacobian_value` —
-///   per-kind dispatch; their `match` arms must stay in sync with
-///   the entries here.
-/// - `mechanism::body()` — joint-validity guard, via `is_joint_value`.
+/// Used by [`is_joint_value`] as the membership set for value-level
+/// joint discrimination. Per-kind dispatch arms in `transform_at` and
+/// `joint_jacobian_value` (this file) hardcode the same kind strings
+/// directly in `match` arms — Rust `match` patterns do not support
+/// runtime slice membership, so those arms **must be kept in sync with
+/// this constant** when a new kind is added.
+/// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
 pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
@@ -2523,78 +2523,33 @@ mod tests {
 
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
 
+    /// All negative-case inputs for `is_joint_value` in one table-driven test.
+    /// Positive cases (one per kind in `JOINT_KINDS`) are covered by
+    /// `is_joint_value_aligns_with_joint_kinds` below.
     #[test]
-    fn is_joint_value_true_for_prismatic_map() {
-        assert!(
-            is_joint_value(&prismatic_x_joint()),
-            "prismatic_x_joint() should be recognized as a joint value"
-        );
-    }
-
-    #[test]
-    fn is_joint_value_true_for_revolute_map() {
-        assert!(
-            is_joint_value(&revolute_z_joint()),
-            "revolute_z_joint() should be recognized as a joint value"
-        );
-    }
-
-    #[test]
-    fn is_joint_value_true_for_coupling_map() {
-        let coupling = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
-        assert!(
-            is_joint_value(&coupling),
-            "couple(prismatic_x_joint(), 1.0) should be recognized as a joint value"
-        );
-    }
-
-    #[test]
-    fn is_joint_value_false_for_non_map() {
-        assert!(
-            !is_joint_value(&Value::Real(1.0)),
-            "Value::Real should not be a joint value"
-        );
-        assert!(
-            !is_joint_value(&Value::Int(0)),
-            "Value::Int should not be a joint value"
-        );
-        assert!(
-            !is_joint_value(&Value::String("prismatic".to_string())),
-            "bare String 'prismatic' should not be a joint value (only a Map with kind field is)"
-        );
-    }
-
-    #[test]
-    fn is_joint_value_false_for_map_without_kind_key() {
+    fn is_joint_value_negative_cases() {
         use std::collections::BTreeMap;
-        let mut m = BTreeMap::new();
-        m.insert(Value::String("axis".to_string()), axis_x_unit());
-        assert!(
-            !is_joint_value(&Value::Map(m)),
-            "Map without 'kind' key should not be a joint value"
-        );
-    }
 
-    #[test]
-    fn is_joint_value_false_for_map_with_unknown_kind() {
-        use std::collections::BTreeMap;
-        let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
-        assert!(
-            !is_joint_value(&Value::Map(m)),
-            "Map with kind='sliding' (not in JOINT_KINDS) should not be a joint value"
-        );
-    }
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
 
-    #[test]
-    fn is_joint_value_false_for_map_with_non_string_kind() {
-        use std::collections::BTreeMap;
-        let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::Int(0));
-        assert!(
-            !is_joint_value(&Value::Map(m)),
-            "Map with kind=Value::Int(0) should not be a joint value"
-        );
+        let mut unknown_kind = BTreeMap::new();
+        unknown_kind.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+
+        let mut non_string_kind = BTreeMap::new();
+        non_string_kind.insert(Value::String("kind".to_string()), Value::Int(0));
+
+        let cases: Vec<(&str, Value)> = vec![
+            ("Real(1.0)", Value::Real(1.0)),
+            ("Int(0)", Value::Int(0)),
+            ("bare String 'prismatic'", Value::String("prismatic".to_string())),
+            ("Map without 'kind' key", Value::Map(no_kind)),
+            ("Map with kind='sliding' (not in JOINT_KINDS)", Value::Map(unknown_kind)),
+            ("Map with kind=Int(0)", Value::Map(non_string_kind)),
+        ];
+        for (label, v) in &cases {
+            assert!(!is_joint_value(v), "{label} should not be a joint value");
+        }
     }
 
     #[test]
