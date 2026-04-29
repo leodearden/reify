@@ -1486,12 +1486,11 @@ fn collect_consumed_mechanism_idents(
                 _ => continue,
             };
             walk_function_calls(expr, &mut |name, args| {
-                if name == "body" {
-                    if let Some(first_arg) = args.first() {
-                        if let ExprKind::Ident(s) = &first_arg.kind {
-                            consumed.insert(s.clone());
-                        }
-                    }
+                if name == "body"
+                    && let Some(first_arg) = args.first()
+                    && let ExprKind::Ident(s) = &first_arg.kind
+                {
+                    consumed.insert(s.clone());
                 }
             });
         }
