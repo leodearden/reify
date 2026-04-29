@@ -978,6 +978,26 @@ mod tests {
 
     // ── sweep_grid(m, []): empty-dims semantic ────────────────────────────
 
+    /// Extract the i-th body's world translation from a snapshot.
+    fn body_n_translation(snapshot: &Value, n: usize) -> [f64; 3] {
+        let smap = match snapshot {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected snapshot bodies List, got {:?}", other),
+        };
+        let body = match &bodies[n] {
+            Value::Map(b) => b,
+            other => panic!("expected snapshot body record Map, got {:?}", other),
+        };
+        let wt = body
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body record must carry world_transform");
+        translation_of_transform(wt)
+    }
+
     /// `sweep_grid(m, [])` returns a `Value::List` containing a single
     /// snapshot — the all-midpoints snapshot — because the product of an
     /// empty set of dim cardinalities is 1, and the implicit binding
@@ -1008,5 +1028,120 @@ mod tests {
         );
         assert!(ty.abs() < 1e-12, "y should be 0, got {}", ty);
         assert!(tz.abs() < 1e-12, "z should be 0, got {}", tz);
+    }
+
+    // ── sweep_grid(): headline acceptance test (PRD task 5) ───────────────
+
+    fn axis_y_unit_grid() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    /// Headline acceptance test (PRD task 5, grid case): 2×3 grid sweep
+    /// over a 2-body chain. Body A at `j_x = prismatic(+X, 0..1m)`
+    /// (parent=world), body B at `j_y = prismatic(+Y, 0..1m)`
+    /// (parent=j_x). With dims = [dim(j_x, 2 steps), dim(j_y, 3 steps)],
+    /// the result is 6 snapshots in lexicographic order — last dim
+    /// varies fastest:
+    ///   idx 0: (j_x=0,   j_y=0)   → body B at (0,   0,   0)
+    ///   idx 1: (j_x=0,   j_y=0.5) → body B at (0,   0.5, 0)
+    ///   idx 2: (j_x=0,   j_y=1)   → body B at (0,   1,   0)
+    ///   idx 3: (j_x=1,   j_y=0)   → body B at (1,   0,   0)
+    ///   idx 4: (j_x=1,   j_y=0.5) → body B at (1,   0.5, 0)
+    ///   idx 5: (j_x=1,   j_y=1)   → body B at (1,   1,   0)
+    /// First snapshot equals `snapshot(m, [bind(j_x, 0), bind(j_y, 0)])`,
+    /// last equals `snapshot(m, [bind(j_x, 1m), bind(j_y, 1m)])`.
+    /// Pins lexicographic ordering from §13.4.
+    #[test]
+    fn sweep_grid_two_by_three_lexicographic_order() {
+        let j_x = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_y = eval_builtin("prismatic", &[axis_y_unit_grid(), length_range_0_to_1m()]);
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        // Body A: at j_x, parent=world.
+        let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone()]);
+        // Body B: at j_y, parent=j_x.
+        let m2 = eval_builtin(
+            "body",
+            &[m1, solid_b, j_y.clone(), j_x.clone()],
+        );
+
+        let dim_x = eval_builtin(
+            "dim",
+            &[j_x.clone(), length_range_0_to_1m(), Value::Int(2)],
+        );
+        let dim_y = eval_builtin(
+            "dim",
+            &[j_y.clone(), length_range_0_to_1m(), Value::Int(3)],
+        );
+        let result = eval_builtin(
+            "sweep_grid",
+            &[m2.clone(), Value::List(vec![dim_x, dim_y])],
+        );
+        let list = match result {
+            Value::List(l) => l,
+            other => panic!("expected Value::List, got {:?}", other),
+        };
+        assert_eq!(list.len(), 6, "sweep_grid 2×3 should produce 6 snapshots");
+
+        // Expected (j_x, j_y) values in lexicographic order — last dim
+        // varies fastest.
+        let expected: [(f64, f64); 6] = [
+            (0.0, 0.0),
+            (0.0, 0.5),
+            (0.0, 1.0),
+            (1.0, 0.0),
+            (1.0, 0.5),
+            (1.0, 1.0),
+        ];
+        for (i, (vx, vy)) in expected.iter().enumerate() {
+            // Body B world translation = (j_x_value, j_y_value, 0).
+            let [tx, ty, tz] = body_n_translation(&list[i], 1);
+            assert!(
+                (tx - vx).abs() < 1e-12,
+                "snap[{}] body B tx should be {}, got {}",
+                i,
+                vx,
+                tx
+            );
+            assert!(
+                (ty - vy).abs() < 1e-12,
+                "snap[{}] body B ty should be {}, got {}",
+                i,
+                vy,
+                ty
+            );
+            assert!(
+                tz.abs() < 1e-12,
+                "snap[{}] body B tz should be 0, got {}",
+                i,
+                tz
+            );
+        }
+
+        // First snapshot equals snapshot(m, [bind(j_x, 0), bind(j_y, 0)]).
+        let bind_x_lo = eval_builtin("bind", &[j_x.clone(), Value::length(0.0)]);
+        let bind_y_lo = eval_builtin("bind", &[j_y.clone(), Value::length(0.0)]);
+        let snap_first = eval_builtin(
+            "snapshot",
+            &[m2.clone(), Value::List(vec![bind_x_lo, bind_y_lo])],
+        );
+        assert_eq!(
+            list[0], snap_first,
+            "first sweep_grid element should equal snapshot at (lo, lo)"
+        );
+
+        // Last snapshot equals snapshot(m, [bind(j_x, 1m), bind(j_y, 1m)]).
+        let bind_x_hi = eval_builtin("bind", &[j_x, Value::length(1.0)]);
+        let bind_y_hi = eval_builtin("bind", &[j_y, Value::length(1.0)]);
+        let snap_last = eval_builtin(
+            "snapshot",
+            &[m2, Value::List(vec![bind_x_hi, bind_y_hi])],
+        );
+        assert_eq!(
+            list[5], snap_last,
+            "last sweep_grid element should equal snapshot at (hi, hi)"
+        );
     }
 }
