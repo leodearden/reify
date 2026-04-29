@@ -196,11 +196,11 @@ mod tests {
     //! kernel — we hand-build a malformed `BooleanOpHistoryRecords` and
     //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
-        BooleanOpHistoryRecords, BooleanOpParents, GeometryHandleId, HistoryRecord, QueryError,
-        TopologyAttributeTable,
+        BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
+        HistoryRecord, QueryError, Role, SweepOpHistoryRecords, TopologyAttributeTable,
     };
 
-    use super::propagate_attributes_via_brepalgoapi_history;
+    use super::{populate_extrude_attributes, propagate_attributes_via_brepalgoapi_history};
 
     /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
     /// `face_modified` entry and every other vector empty.
@@ -433,5 +433,274 @@ mod tests {
         )
         .expect("empty history with Binary parents should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
+    }
+
+    // -- populate_extrude_attributes tests (task 5a, step-11) --
+    //
+    // The helper originates new attributes for an extrude result: cap faces
+    // get `Role::Cap(CapKind::Top|Bottom)` with local_index 0; lateral faces
+    // get `Role::Side` with sequential 0-based local_index in face_generated
+    // order. Profile face/edge slices are passed in for defense-in-depth
+    // index-range validation.
+
+    /// Profile + result handle vectors for a 1-parent extrude layout.
+    /// Owned so the test fn can borrow slices without temporary-lifetime
+    /// issues.
+    struct ExtrudeLayout {
+        profile_faces: Vec<GeometryHandleId>,
+        profile_edges: Vec<GeometryHandleId>,
+        result_faces: Vec<GeometryHandleId>,
+        result_edges: Vec<GeometryHandleId>,
+    }
+
+    /// Layout for a rect-face extrude: 1 profile face, 4 profile edges,
+    /// 9 result faces (indices 0..=8 → 5 = start cap, 6 = end cap, 7/8
+    /// = side faces), 12 result edges.
+    fn extrude_layout_for_step11() -> ExtrudeLayout {
+        ExtrudeLayout {
+            profile_faces: vec![GeometryHandleId(101)],
+            profile_edges: vec![
+                GeometryHandleId(201),
+                GeometryHandleId(202),
+                GeometryHandleId(203),
+                GeometryHandleId(204),
+            ],
+            result_faces: (0..9).map(|i| GeometryHandleId(1000 + i)).collect(),
+            result_edges: (0..12).map(|i| GeometryHandleId(2000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic SweepOpHistoryRecords matching the step-11 spec:
+    /// start_cap = [5], end_cap = [6], face_generated = [(0,0,7), (0,1,8)],
+    /// every other vector empty.
+    fn step11_extrude_history() -> SweepOpHistoryRecords {
+        SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 8,
+                },
+            ],
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_extrude_writes_cap_top_for_start_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[5])
+            .expect("start_cap_face_indices[0] = 5 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Top));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_extrude_writes_cap_bottom_for_end_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[6])
+            .expect("end_cap_face_indices[0] = 6 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Bottom));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_extrude_writes_side_with_sequential_local_index_for_face_generated() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        let side_a = table
+            .lookup(layout.result_faces[7])
+            .expect("face_generated[0].result_subshape_index = 7 should have an entry");
+        assert_eq!(side_a.role, Role::Side);
+        assert_eq!(side_a.local_index, 0);
+        assert_eq!(side_a.feature_id, feature_id);
+        assert!(side_a.mod_history.is_empty());
+        assert!(side_a.user_label.is_none());
+
+        let side_b = table
+            .lookup(layout.result_faces[8])
+            .expect("face_generated[1].result_subshape_index = 8 should have an entry");
+        assert_eq!(side_b.role, Role::Side);
+        assert_eq!(side_b.local_index, 1);
+        assert_eq!(side_b.feature_id, feature_id);
+        assert!(side_b.mod_history.is_empty());
+        assert!(side_b.user_label.is_none());
+    }
+
+    #[test]
+    fn populate_extrude_does_not_write_to_result_face_indices_not_in_records() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-11 history is well-formed");
+
+        // Only indices 5, 6, 7, 8 are referenced; 0..=4 must remain unkeyed.
+        for unkeyed_idx in [0_usize, 1, 2, 3, 4] {
+            assert!(
+                table.lookup(layout.result_faces[unkeyed_idx]).is_none(),
+                "result face index {unkeyed_idx} should have no attribute entry",
+            );
+        }
+        assert_eq!(
+            table.len(),
+            4,
+            "only the 2 cap faces and 2 side faces should be keyed",
+        );
+    }
+
+    #[test]
+    fn populate_extrude_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![99], // result has only 9 faces.
+            ..Default::default()
+        };
+
+        let err = populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("99"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_extrude_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 42, // > result faces (9).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("42"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_extrude_empty_history_is_a_noop() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let history = SweepOpHistoryRecords::default();
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("empty history is a no-op");
+        assert!(table.is_empty());
     }
 }
