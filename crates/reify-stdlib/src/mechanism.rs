@@ -610,6 +610,81 @@ mod tests {
         );
     }
 
+    // ── body() input validation: full surface returns Undef ──────────────
+
+    /// `body()` with an arity outside {3, 4, 5} returns Undef. Pins the
+    /// arity allow-list so future maintainers don't accidentally accept
+    /// a 2- or 6-arg form by extending the inner match.
+    #[test]
+    fn body_wrong_arity_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+        let world = eval_builtin("world", &[]);
+        let pose = identity_transform_value();
+
+        // 0 / 1 / 2 args
+        assert!(eval_builtin("body", &[]).is_undef());
+        assert!(eval_builtin("body", &[m0.clone()]).is_undef());
+        assert!(eval_builtin("body", &[m0.clone(), solid.clone()]).is_undef());
+
+        // 6 args
+        let extra = Value::String("extra".to_string());
+        assert!(eval_builtin(
+            "body",
+            &[
+                m0.clone(),
+                solid.clone(),
+                j.clone(),
+                world.clone(),
+                pose.clone(),
+                extra,
+            ]
+        )
+        .is_undef());
+    }
+
+    /// `body(non_mechanism, ...)` returns Undef when args[0] is not a
+    /// Mechanism Map (here: a bare Real).
+    #[test]
+    fn body_non_mechanism_arg_returns_undef() {
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+
+        // Non-Map first arg.
+        assert!(eval_builtin("body", &[Value::Real(1.0), solid.clone(), j.clone()]).is_undef());
+
+        // Map but not a Mechanism Map (kind="world" instead of "mechanism").
+        let world = eval_builtin("world", &[]);
+        assert!(eval_builtin("body", &[world, solid, j]).is_undef());
+    }
+
+    /// `body(m, solid, non_joint)` returns Undef when args[2] is not a
+    /// joint value (here: a bare String).
+    #[test]
+    fn body_non_joint_at_arg_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let solid = Value::String("solidA".to_string());
+
+        assert!(eval_builtin(
+            "body",
+            &[m0, solid, Value::String("foo".to_string())]
+        )
+        .is_undef());
+    }
+
+    /// 4-arg `body(m, solid, j, non_joint_non_world)` returns Undef when
+    /// args[3] is neither a joint value nor the world sentinel (here: a
+    /// bare Real).
+    #[test]
+    fn body_non_joint_non_world_parent_arg_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solidA".to_string());
+
+        assert!(eval_builtin("body", &[m0, solid, j, Value::Real(1.0)]).is_undef());
+    }
+
     /// 5-arg body() with a non-Transform pose argument returns Undef.
     #[test]
     fn body_five_args_non_transform_pose_returns_undef() {
