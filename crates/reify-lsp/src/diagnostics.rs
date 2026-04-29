@@ -178,13 +178,24 @@ pub fn compute_diagnostics_with_state(
         .collect();
 
     // Convert non-constraint eval diagnostics from check result.
-    // Skip constraint checker messages (format: "constraint {id} violated")
-    // since we generate span-aware versions below.
+    // Skip constraint checker messages (formats: "constraint {id} violated" and, when
+    // a label is present, "constraint {label} violated") since we generate span-aware
+    // versions below.
+    //
+    // When a constraint has a label (e.g. `forall@v[0]` from forall_elaborate.rs),
+    // `engine_constraints::labeled_diagnostics` rewrites the message to replace the raw
+    // ConstraintNodeId with the label — producing `"constraint forall@v[0] violated"`.
+    // We must therefore include both the id-format AND the label-format in the filter set
+    // to correctly skip those messages and avoid double-emission.
     let violated_messages: std::collections::HashSet<String> = check_result
         .constraint_results
         .iter()
         .filter(|e| e.satisfaction == Satisfaction::Violated)
-        .map(|e| format!("constraint {} violated", e.id))
+        .flat_map(|e| {
+            let id_msg = format!("constraint {} violated", e.id);
+            let label_msg = e.label.as_deref().map(|l| format!("constraint {} violated", l));
+            std::iter::once(id_msg).chain(label_msg)
+        })
         .collect();
     for diag in &check_result.diagnostics {
         if !violated_messages.contains(&diag.message) {
@@ -211,10 +222,10 @@ pub fn compute_diagnostics_with_state(
     // Generate explicit diagnostics for constraint violations with source spans.
     //
     // Per-element forall provenance (PRD criterion 10,
-    // docs/prds/forall-statement-form.md:45): when a constraint originates from a
-    // `forall` statement, `crates/reify-compiler/src/forall_elaborate.rs` emits one
-    // `CompiledConstraint` per element with `label = Some("forall@<var>[<idx>]")`
-    // (e.g. `forall@v[0]`).  That label propagates unchanged through
+    // docs/prds/forall-statement-form.md): when a constraint originates from a
+    // `forall` statement, `forall_elaborate.rs` emits one `CompiledConstraint`
+    // per element with `label = Some("forall@<var>[<idx>]")` (e.g. `forall@v[0]`).
+    // That label propagates unchanged through
     // `ConstraintCheckEntry.label` and surfaces verbatim in the LSP diagnostic
     // message via the `Some(label)` branch below — the resulting message is
     // `"constraint violated: forall@v[<idx>]"`.  No parsing or reformatting of the
@@ -966,14 +977,14 @@ structure S {
     /// element index encoded in the diagnostic message as `forall@<var>[<idx>]`.
     ///
     /// This pins the end-to-end contract for PRD criterion 10
-    /// (docs/prds/forall-statement-form.md:45): the compiler emits one
+    /// (docs/prds/forall-statement-form.md): the compiler emits one
     /// `CompiledConstraint` per element with label `forall@v[<idx>]`
-    /// (`crates/reify-compiler/src/forall_elaborate.rs:244,312`), and the LSP
+    /// (see `forall_elaborate.rs`, the `forall@<var>[<idx>]` label format), and the LSP
     /// surfaces that label verbatim via `format!("constraint violated: {}", label)`
     /// in `compute_diagnostics_with_state`.
     ///
     /// The compiler-layer counterpart is `forall_constraint_label_encodes_element_index`
-    /// (`crates/reify-compiler/tests/forall_statement_lower_tests.rs:273-318`).
+    /// (crates/reify-compiler/tests/forall_statement_lower_tests.rs).
     /// Together the two tests pin the contract end-to-end.
     #[test]
     fn forall_per_element_constraint_violation_surfaces_element_index() {
@@ -992,6 +1003,23 @@ structure S {
                     && d.message.starts_with("constraint violated: forall@v[")
             })
             .collect();
+
+        // Guard: if any ERROR diagnostic is NOT a constraint-violation, the source
+        // likely failed to parse or compile.  Fail fast with the full dump so the real
+        // root cause is visible rather than a misleading count-mismatch on an empty list.
+        let parse_or_compile_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && !d.message.starts_with("constraint violated:")
+            })
+            .collect();
+        assert!(
+            parse_or_compile_errors.is_empty(),
+            "unexpected non-constraint ERROR diagnostics (parse/compile failure?): {:#?}",
+            parse_or_compile_errors
+        );
 
         // All three elements (indices 0, 1, 2) must appear — one diagnostic each.
         assert_eq!(
