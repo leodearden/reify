@@ -904,6 +904,72 @@ structure S {
     );
 }
 
+/// `forall v in []: connect v.inlet -> hub` should emit zero CompiledConnections
+/// and zero errors. Pins PRD criterion 6 for the Connect form: an empty
+/// collection is vacuously satisfied — no connections are emitted, no
+/// diagnostic is produced. Also confirms via re-parse that the source
+/// actually contains a `MemberDecl::ForallConnect` so a parser regression
+/// that silently demotes the body does not false-positive this test.
+#[test]
+fn forall_connect_over_empty_list_literal_emits_no_connections_no_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port inlet : out T { param d : Length = 1mm }
+}
+structure def S {
+    port hub : in T { param d : Length = 1mm }
+    forall v in []: connect v.inlet -> hub
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for empty-list forall connect, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        0,
+        "expected zero connections from empty-list forall connect, got {}: {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    // No forall@v[*] labels in constraints either (anti-cascade check).
+    let forall_label_count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|s| s.starts_with("forall@v["))
+        })
+        .count();
+    assert_eq!(
+        forall_label_count, 0,
+        "expected zero forall@v[*] constraint labels from empty-list forall, got {}",
+        forall_label_count
+    );
+
+    // Confirm the source actually contains a ForallConnect (so a parse-shape
+    // regression that silently demotes to a different MemberDecl variant
+    // doesn't make this test vacuously green).
+    let _forall_span = find_forall_connect_span(source, "S");
+}
+
 /// Every per-element `CompiledConstraint` emitted by a statement-form forall
 /// must carry a `span` whose byte range equals the source
 /// `MemberDecl::ForallConstraint(f).span`. Together with the
