@@ -23,6 +23,22 @@
 //! Anything else (non-iterable, undef count, multi-hop indirection) emits
 //! zero decls. Re-elaboration on count change is out of scope for this task
 //! and is documented as future SchemaNode-style work.
+//!
+//! ## PRD criteria 6 and 7 (first-half) contract
+//!
+//! **Criterion 6 — empty collection:** any collection that resolves to zero
+//! elements (a `ListLiteral([])` or a count-cell with value `0`) produces
+//! `Some(vec![])` from `resolve_forall_elements`. All callers iterate over
+//! this empty Vec zero times, emitting no decls and no diagnostics. This
+//! property is upheld by the per-element `for` loops in
+//! `elaborate_forall_constraint` and `elaborate_forall_connect`; code that
+//! must only run per-element MUST stay inside those loops.
+//!
+//! **Criterion 7 first-half — undef count:** a collection sub whose count
+//! cell is missing or non-literal returns `None` from
+//! `resolve_forall_elements`. All callers early-return on `None`, emitting
+//! zero decls and no diagnostics. Re-elaboration when the count later
+//! becomes known is future SchemaNode work (see TODO comments in tests).
 
 use super::*;
 use std::collections::HashMap;
@@ -309,6 +325,15 @@ pub(crate) fn elaborate_forall_constraint(
                 // `forall@<var>[<i>]` label suffix appended so per-element
                 // diagnostics retain both the inst-idx provenance and the
                 // forall element index.
+                //
+                // INTENTIONAL PLACEMENT (PRD criterion 6) — `expand_constraint_inst`
+                // and the `constraint_inst_counts` mutation are both INSIDE this
+                // per-element loop. For `forall v in []: constraint Inst(...)`,
+                // the outer loop iterates zero times so `expand_constraint_inst`
+                // is never called and no `inst_idx` is allocated. A future
+                // refactor that pre-allocates `inst_idx` outside the loop would
+                // break the criterion-6 pin in
+                // `forall_constraint_inst_body_over_empty_list_literal_emits_no_decls_no_error`.
                 let substituted_args: Vec<(String, reify_syntax::Expr)> = ci
                     .args
                     .iter()
