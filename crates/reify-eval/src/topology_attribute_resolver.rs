@@ -326,6 +326,39 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
+    /// step-11 — multi-match unresolved diagnostic.
+    ///
+    /// Two candidates carry the same `(role, local_index)`. The role/idx
+    /// query matches BOTH, so the resolver returns Unresolved with a
+    /// TopologyAttributeStale Warning whose message contains "matched 2
+    /// sub-shapes". (The v0.2 invariant that splits go to mod_history
+    /// rather than reusing local_index is enforced by the populator; the
+    /// resolver still defends against degenerate inputs.)
+    #[test]
+    fn unresolved_with_diagnostic_when_multi_match() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(h(60), attr(Role::Side, 0, None));
+        table.record(h(61), attr(Role::Side, 0, None));
+        let candidates = [h(60), h(61)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(result, AttributeResolution::Unresolved);
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        assert!(
+            diag.message.contains("matched 2 sub-shapes"),
+            "message should contain 'matched 2 sub-shapes', got: {}",
+            diag.message
+        );
+    }
+
     /// step-9 — zero-match unresolved diagnostic emission.
     ///
     /// At least one candidate has an attribute entry (so we are NOT in the
