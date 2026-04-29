@@ -904,6 +904,77 @@ structure S {
     );
 }
 
+/// `forall v in []: chain v.a -> v.b -> v.c` should emit zero connections and
+/// zero errors. The critical pin: the chain-body branch checks
+/// `cd.elements.len() < 2` INSIDE the per-element outer loop, so an empty
+/// outer iteration must NOT spuriously fire the "chain statement requires at
+/// least two elements" diagnostic. This test guards against a future refactor
+/// that hoists the guard outside the loop (which would fire once for the
+/// empty-list case). Pins PRD criterion 6 for the Chain form.
+#[test]
+fn forall_connect_chain_body_over_empty_list_literal_emits_no_connections_no_diagnostic() {
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 1mm }
+    port c : in T { param d : Length = 1mm }
+}
+structure def S {
+    forall v in []: chain v.a -> v.b -> v.c
+}
+"#;
+    let module = compile_source(source);
+
+    // No errors at all.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for empty-list forall chain, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    assert_eq!(
+        template.connections.len(),
+        0,
+        "expected zero connections from empty-list forall chain, got {}: {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    // Critical pin: "chain statement requires at least two elements" must NOT
+    // appear. If the guard is ever hoisted outside the per-element loop it
+    // would fire here and break this assertion.
+    let chain_diagnostic_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("chain statement requires at least two elements"))
+        .count();
+    assert_eq!(
+        chain_diagnostic_count, 0,
+        "expected no chain-too-short diagnostic for empty-list forall, got {}: {:?}",
+        chain_diagnostic_count,
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // Confirm source parses as ForallConnect.
+    let _forall_span = find_forall_connect_span(source, "S");
+}
+
 /// `forall v in vents: connect v.inlet -> air_channel` over a collection sub
 /// *without* a count constraint should emit zero CompiledConnections and zero
 /// errors. Pins PRD criterion 7's "no decls when count is undef" half for the
