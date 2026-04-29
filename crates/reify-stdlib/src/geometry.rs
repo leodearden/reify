@@ -526,11 +526,16 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if t1_dim != t2_dim {
                 return Some(Value::Undef);
             }
-            // Normalize R1 (matches operator-level semantics in reify-expr).
+            // Normalize R1 and R2 symmetrically (matches operator-level semantics in reify-expr).
+            // 1e-24 = (1e-12)² — see transform_log for the rationale.
             let r1_norm_sq =
                 r1_q.0 * r1_q.0 + r1_q.1 * r1_q.1 + r1_q.2 * r1_q.2 + r1_q.3 * r1_q.3;
-            // 1e-24 = (1e-12)² — see transform_log for the rationale.
             if r1_norm_sq < 1e-24 {
+                return Some(Value::Undef);
+            }
+            let r2_norm_sq =
+                r2_q.0 * r2_q.0 + r2_q.1 * r2_q.1 + r2_q.2 * r2_q.2 + r2_q.3 * r2_q.3;
+            if r2_norm_sq < 1e-24 {
                 return Some(Value::Undef);
             }
             let r1_norm = r1_norm_sq.sqrt();
@@ -540,8 +545,16 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 r1_q.2 / r1_norm,
                 r1_q.3 / r1_norm,
             );
-            // R = R1 * R2 (Hamilton product), then normalize.
-            let composed_r = quat_mul(r1_n, r2_q);
+            let r2_norm = r2_norm_sq.sqrt();
+            let r2_n = (
+                r2_q.0 / r2_norm,
+                r2_q.1 / r2_norm,
+                r2_q.2 / r2_norm,
+                r2_q.3 / r2_norm,
+            );
+            // R = R1 * R2 (Hamilton product); both operands are unit norm after
+            // normalization above, so composed_r is also unit norm.
+            let composed_r = quat_mul(r1_n, r2_n);
             let r_val =
                 match normalize_quaternion(composed_r.0, composed_r.1, composed_r.2, composed_r.3) {
                     Some(v) => v,
@@ -3068,6 +3081,71 @@ mod tests {
         assert!(eval_builtin("transform_log", &[make_identity_orientation()]).is_undef());
     }
 
+    /// Degenerate-quaternion gate boundary: r_norm_sq in [1e-24, f64::EPSILON) is accepted.
+    ///
+    /// The threshold was bumped from `f64::EPSILON` (~2.22e-16) to `1e-24` so that
+    /// quaternions with r_norm_sq down to (1e-12)² are accepted and normalised rather
+    /// than rejected as Undef. This test pins the new lower boundary:
+    /// `r_norm_sq = 1e-20` was previously rejected under `f64::EPSILON`; it must now
+    /// succeed for `transform_log`, `transform_inverse`, and `transform_compose`.
+    #[test]
+    fn degenerate_quat_small_norm_above_1e24_gate_accepted() {
+        // Quaternion (1e-10, 0, 0, 0): r_norm_sq = 1e-20, in [1e-24, f64::EPSILON).
+        // Normalises to the identity quaternion, so every operation returns the
+        // zero twist / identity transform / etc. — just not Undef.
+        let small_quat = Value::Orientation { w: 1e-10_f64, x: 0.0, y: 0.0, z: 0.0 };
+        let t = Value::Transform {
+            rotation: Box::new(small_quat),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        assert!(
+            !eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            "transform_log must accept r_norm_sq=1e-20 (≥ 1e-24 gate)"
+        );
+        assert!(
+            !eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
+            "transform_inverse must accept r_norm_sq=1e-20 (≥ 1e-24 gate)"
+        );
+        assert!(
+            !eval_builtin("transform_compose", &[t.clone(), t]).is_undef(),
+            "transform_compose must accept r_norm_sq=1e-20 (≥ 1e-24 gate) on both operands"
+        );
+    }
+
+    /// Degenerate-quaternion gate boundary: zero-norm quaternion → Undef.
+    ///
+    /// Complements `degenerate_quat_small_norm_above_1e24_gate_accepted`: a quaternion
+    /// with all components zero (r_norm_sq = 0 < 1e-24) must return Undef from all
+    /// three functions.
+    #[test]
+    fn degenerate_quat_zero_norm_returns_undef() {
+        let zero_quat = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let t_zero = Value::Transform {
+            rotation: Box::new(zero_quat),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        assert!(
+            eval_builtin("transform_log", &[t_zero.clone()]).is_undef(),
+            "transform_log must reject zero-norm quaternion"
+        );
+        assert!(
+            eval_builtin("transform_inverse", &[t_zero.clone()]).is_undef(),
+            "transform_inverse must reject zero-norm quaternion"
+        );
+        assert!(
+            eval_builtin("transform_compose", &[t_zero.clone(), t_zero]).is_undef(),
+            "transform_compose must reject zero-norm quaternion"
+        );
+    }
+
     /// transform_log with ANGLE-dimension translation → Undef (matches transform_exp gate).
     ///
     /// transform_exp rejects twist.linear with ANGLE dimension (see
@@ -3087,6 +3165,47 @@ mod tests {
             ])),
         };
         assert!(eval_builtin("transform_log", &[t]).is_undef());
+    }
+
+    /// transform_log with MASS-dimension translation → Undef.
+    ///
+    /// The gate is `t_dim != LENGTH && t_dim != DIMENSIONLESS`. MASS flows through the
+    /// same rejection branch as ANGLE, ensuring the test suite covers more than one
+    /// non-accepted dimension so a future narrowing of the gate (e.g. adding ANGLE as a
+    /// special case) cannot silently pass.
+    #[test]
+    fn transform_log_mass_dim_translation_returns_undef() {
+        let t = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+            ])),
+        };
+        assert!(eval_builtin("transform_log", &[t]).is_undef());
+    }
+
+    /// transform_log with DIMENSIONLESS translation → accepted (non-Undef).
+    ///
+    /// DIMENSIONLESS is the second accepted dimension alongside LENGTH. This positive
+    /// case pins that the gate does NOT reject dimensionless translations, complementing
+    /// the `transform_exp_zero_twist_is_identity` test which already verifies the
+    /// round-trip for the DIMENSIONLESS case.
+    #[test]
+    fn transform_log_dimensionless_translation_returns_non_undef() {
+        let t = Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+        };
+        assert!(
+            !eval_builtin("transform_log", &[t]).is_undef(),
+            "transform_log must accept DIMENSIONLESS translation"
+        );
     }
 
     // ── transform_exp tests (step-21) ────────────────────────────────────────
