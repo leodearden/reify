@@ -3178,7 +3178,7 @@ mod tests {
     /// **ULP-gap assumption (boundary tests):** this helper sets `w =
     /// r_norm_sq.sqrt()`, so the implementation re-derives r_norm_sq as
     /// `w*w`.  f64 round-trip error at magnitude ~1e-24 is ~2.22e-40
-    /// (relative ULP ~2.22e-16), which is ~17 orders of magnitude smaller
+    /// (relative ULP ~2.22e-16), which is ~12 orders of magnitude smaller
     /// than the 0.1% gap (1e-27) used by the boundary test values
     /// (1.001e-24 / 0.999e-24).  **Do not tighten that gap** without
     /// switching to exact quaternion components instead of going through sqrt.
