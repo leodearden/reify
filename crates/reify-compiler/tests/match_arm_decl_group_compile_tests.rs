@@ -13,8 +13,8 @@
 
 use reify_compiler::GuardedDeclGroup;
 use reify_syntax::{
-    Declaration, EnumDecl, Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-    ParsedModule, ParamDecl, StructureDef, SubDecl, TypeExpr, TypeExprKind,
+    Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
+    MemberDecl, ParsedModule, ParamDecl, StructureDef, SubDecl, TypeExpr, TypeExprKind,
 };
 use reify_types::{ContentHash, ModulePath, SourceSpan, Type};
 
@@ -1137,5 +1137,184 @@ fn match_arm_decl_group_param_only_arms_leave_cluster_unregistered() {
         bolt_template.match_arm_groups.is_empty(),
         "expected no match_arm_groups entry when all arms are Param/non-Sub, got: {:#?}",
         bolt_template.match_arm_groups
+    );
+}
+
+/// Task 2613: duplicate match clusters must not pollute the first cluster's
+/// `scope.sub_member_types` entries.
+///
+/// Hand-constructs the equivalent of:
+/// ```text
+/// enum KindA { A1 }
+/// enum KindB { B1 }
+/// structure HeadA1 { param first_only : Real }   // first cluster's child type
+/// structure HeadB1 { param second_only : Real }  // second cluster's child type (different member)
+///
+/// structure Bolt {
+///     param kind_a : KindA
+///     param kind_b : KindB
+///     match kind_a { A1 => sub head : HeadA1 }   // cluster #1
+///     match kind_b { B1 => sub head : HeadB1 }   // cluster #2: duplicate logical name "head"
+///     let probe = self.head.first_only            // exercises sub_member_types["head"]
+/// }
+/// ```
+///
+/// Asserts:
+/// (a) `compiled.diagnostics` contains a "duplicate match-arm cluster name" message
+///     (precondition — already true pre-fix).
+/// (b) NO diagnostic message contains "unknown member 'first_only' on sub 'head'".
+///     Pre-fix: pass-1 pre-pass overwrites sub_member_types["head"] with HeadB1's members
+///     (which lack `first_only`), so the probe fails. Post-fix: the pre-pass skips the
+///     second cluster, sub_member_types["head"] retains HeadA1's members, and the probe
+///     resolves cleanly.
+#[test]
+fn duplicate_match_cluster_does_not_pollute_first_cluster_sub_member_types() {
+    // match cluster #1: match kind_a { A1 => sub head : HeadA1 }
+    let match_group_1 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("kind_a"),
+        arms: vec![match_arm_decl("A1", sub_member("head", "HeadA1"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+    // match cluster #2 (duplicate logical name "head"): match kind_b { B1 => sub head : HeadB1 }
+    let match_group_2 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("kind_b"),
+        arms: vec![match_arm_decl("B1", sub_member("head", "HeadB1"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    // let probe = self.head.first_only
+    // Nested MemberAccess: outer member = "first_only", inner object = self.head
+    let probe_value = Expr {
+        kind: ExprKind::MemberAccess {
+            object: Box::new(Expr {
+                kind: ExprKind::MemberAccess {
+                    object: Box::new(make_ident_expr("self")),
+                    member: "head".to_string(),
+                },
+                span: zero_span(),
+            }),
+            member: "first_only".to_string(),
+        },
+        span: zero_span(),
+    };
+    let probe_let = MemberDecl::Let(LetDecl {
+        name: "probe".to_string(),
+        doc: None,
+        is_pub: false,
+        type_expr: None,
+        value: probe_value,
+        where_clause: None,
+        annotations: vec![],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("kind_a", "KindA"),
+            param_member("kind_b", "KindB"),
+            match_group_1,
+            match_group_2,
+            probe_let,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    // HeadA1 has `param first_only : Real`  — member exists only in the FIRST cluster's child.
+    // HeadB1 has `param second_only : Real` — different member name; the asymmetry is
+    //   the bug-detector: if sub_member_types["head"] is overwritten with HeadB1's members,
+    //   `self.head.first_only` fails with "unknown member 'first_only' on sub 'head'".
+    let head_a1 = Declaration::Structure(StructureDef {
+        name: "HeadA1".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("first_only", "Real")],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+    let head_b1 = Declaration::Structure(StructureDef {
+        name: "HeadB1".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("second_only", "Real")],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_dup_cluster_no_pollution"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "KindA".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["A1".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            Declaration::Enum(EnumDecl {
+                name: "KindB".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["B1".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            head_a1,
+            head_b1,
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Precondition: duplicate cluster diagnostic must be present (unchanged behavior).
+    let has_dup_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("duplicate match-arm cluster name"));
+    assert!(
+        has_dup_diag,
+        "precondition: expected 'duplicate match-arm cluster name' diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) Regression: sub_member_types["head"] must NOT be overwritten by the rejected cluster.
+    // Pre-fix this fires because sub_member_types["head"] = HeadB1's members = {second_only},
+    //   so self.head.first_only → "unknown member 'first_only' on sub 'head'".
+    // Post-fix sub_member_types["head"] = HeadA1's members = {first_only}, lookup succeeds.
+    let has_unknown_member_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("unknown member 'first_only' on sub 'head'"));
+    assert!(
+        !has_unknown_member_diag,
+        "regression: unexpected 'unknown member first_only on sub head' diagnostic — \
+         sub_member_types[\"head\"] was overwritten by the rejected second cluster; \
+         diagnostics: {:#?}",
+        compiled.diagnostics
     );
 }
