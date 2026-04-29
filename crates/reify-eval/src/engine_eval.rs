@@ -878,8 +878,9 @@ fn push_invalid_config(ctx: &reify_expr::EvalContext<'_>, msg: String) {
 }
 
 /// Concise rendering of a `Value` for `W_FIELD_SAMPLED_INVALID_CONFIG`
-/// diagnostic messages.  Output is bounded (≤80 chars) so a runaway
-/// `List`/`Tensor`/`Map` doesn't flood the diagnostic stream.
+/// diagnostic messages.  Output is bounded (≤80 bytes total, ellipsis
+/// included) so a runaway `List`/`Tensor`/`Map` doesn't flood the
+/// diagnostic stream.
 ///
 /// Wraps the value's `Debug` rendering (variant + content) and elides the
 /// tail with `…` past the byte budget.  For `Value::String` the rendering
@@ -887,16 +888,19 @@ fn push_invalid_config(ctx: &reify_expr::EvalContext<'_>, msg: String) {
 /// `String("RegularGrid42")`).
 fn short_value(v: &Value) -> String {
     const MAX: usize = 80;
+    const ELLIPSIS: &str = "…";
     let raw = format!("{v:?}");
     if raw.len() <= MAX {
         raw
     } else {
-        // UTF-8 safe truncation: walk back to a char boundary.
-        let mut cut = MAX.saturating_sub(1);
+        // UTF-8 safe truncation: reserve room for the ellipsis suffix so
+        // the total output stays within MAX bytes, then walk back to a
+        // char boundary.
+        let mut cut = MAX.saturating_sub(ELLIPSIS.len());
         while cut > 0 && !raw.is_char_boundary(cut) {
             cut -= 1;
         }
-        format!("{}…", &raw[..cut])
+        format!("{}{ELLIPSIS}", &raw[..cut])
     }
 }
 
