@@ -685,8 +685,9 @@ static void revolve_synthesis_post_sort_and_dedup(
 ///
 /// DUPLICATE DETECTION: if `parent_subshape_index` values are not distinct
 /// in face_generated after sorting, duplicates are dropped by the
-/// `revolve_synthesis_post_sort_and_dedup` helper (step-6) and the count
-/// is exposed via `SweepOpHistory::duplicate_parent_subshape_index_count`.
+/// `revolve_synthesis_post_sort_and_dedup` helper (first occurrence under
+/// stable sort wins) and the count is exposed via
+/// `SweepOpHistory::duplicate_parent_subshape_index_count`.
 ///
 /// MATCHING CAVEAT (same-z radial edges): the face-matching logic is greedy
 /// (first untracked face whose normal is parallel to the axis AND whose

@@ -191,6 +191,18 @@ uint32_t boolean_op_history_silent_drop_count(const BooleanOpHistory& history);
 /// time because the algorithm's tracking maps are tied to its lifetime —
 /// once it goes out of scope the maps are gone.
 ///
+/// Diagnostic counters (full-revolution only): `unmatched_radial_edge_count`
+/// counts non-degenerate, untracked profile edges that did not produce a
+/// `face_generated` record in the synthesis post-pass (see
+/// `synthesize_full_revolution_radial_face_records`). When non-zero, one OCCT
+/// `Message_Warning` is emitted via `Message::DefaultMessenger()`.
+/// `duplicate_parent_subshape_index_count` counts `face_generated` records
+/// dropped by `revolve_synthesis_post_sort_and_dedup` because their
+/// `parent_subshape_index` duplicated the preceding record after stable-sort.
+/// Both counters are zero for well-formed full-revolution inputs and are
+/// always zero for prism operations and partial revolves. Integration tests
+/// should assert both are zero as a regression-grade health check.
+///
 /// `result` owns the swept shape; `sweep_op_history_take_result_shape`
 /// hands it off to the kernel via `std::move`.
 struct SweepOpHistory {
@@ -270,6 +282,16 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
 /// and full revolutions.  Consumers (e.g., `populate_revolve_attributes` in
 /// crates/reify-eval) may treat all face_generated records uniformly —
 /// synthesized records are byte-identical to OCCT-reported ones.
+///
+/// Synthesis diagnostics: when any non-degenerate, untracked profile edge
+/// fails to produce a `face_generated` record, `SweepOpHistory::unmatched_
+/// radial_edge_count` is incremented and one `Message_Warning` is emitted via
+/// `Message::DefaultMessenger()` summarizing the count. After synthesis, if any
+/// records have a duplicate `parent_subshape_index` after stable-sort, the
+/// duplicate is dropped (first occurrence under stable order wins) and
+/// `SweepOpHistory::duplicate_parent_subshape_index_count` is incremented per
+/// drop. Debug builds additionally assert the post-dedup records are strictly
+/// increasing in `parent_subshape_index`.
 ///
 /// Honors the same Shell→Solid + `BRepLib::OrientClosedSolid`
 /// post-processing as `make_revolve` (the result shape may be a Solid
