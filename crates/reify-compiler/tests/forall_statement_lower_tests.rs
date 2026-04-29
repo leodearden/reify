@@ -759,15 +759,35 @@ structure S {
 /// follow-up task 2690 — no template captured at compile time, info
 /// diagnostic emitted so the limitation is discoverable.
 ///
+/// Task 2690 inverts the prior contract: the deferred Connect arm now CAPTURES
+/// a runtime template (so `Engine::edit_param`'s collection-count phase can
+/// re-emit per-element connections when the count becomes known) and the
+/// "task 2690 future scope" info diagnostic is gone.
+///
 /// Pins:
 /// (a) No errors.
-/// (b) Zero CompiledConnections (deferred-count → silent-skip).
-/// (c) `template.forall_templates.is_empty()` — Connect body never
-///     captures a runtime template in this task.
-/// (d) Exactly one `Diagnostic::info` mentioning task 2690 future scope.
+/// (b) Zero CompiledConnections in `template.connections` (the collection
+///     sub's count is still undef at compile time, so per-element emissions
+///     are deferred to runtime).
+/// (c) `template.forall_templates.len() == 1` — the runtime template was
+///     captured.
+/// (d) Captured entry's metadata: `variable == "v"`, `parent_entity == "S"`,
+///     `collection_sub_name == "vents"`, and
+///     `count_cell == ValueCellId::new("S","__count_vents")`.
+/// (e) Captured entry's body is `CompiledForallBody::Connect` with
+///     `left_port_template == "vents[0].inlet"`,
+///     `right_port_template == "air_channel"`,
+///     `operator == ConnectOp::Forward`,
+///     `connector_type.is_none()`,
+///     `params.is_empty()`,
+///     `port_mappings.is_empty()`.
+/// (f) The OLD info diagnostic ("task 2690 future scope" + "forall connect")
+///     is GONE.
 #[test]
-fn forall_connect_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
-    use reify_types::Severity;
+fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
+    use reify_compiler::CompiledForallBody;
+    use reify_syntax::ConnectOp;
+    use reify_types::{Severity, ValueCellId};
 
     let source = r#"
 trait Air { param d : Length }
@@ -798,19 +818,69 @@ structure def S {
         .find(|t| t.name == "S")
         .expect("template S not found");
 
-    // (b) Zero CompiledConnections — silent-skip preserved at compile time.
+    // (b) Zero CompiledConnections at compile time — count is still deferred.
     assert_no_forall_connect_emissions(template);
 
-    // (c) NO runtime template captured.
-    assert!(
-        template.forall_templates.is_empty(),
-        "expected zero CompiledForallTemplates for deferred-count forall \
-         connect (task 2690 future scope), got {} entries",
+    // (c) Exactly one captured runtime template.
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 captured CompiledForallTemplate for deferred-count \
+         forall connect, got {} entries",
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic, with the 2690 substring tying the
-    //     limitation to the follow-up task.
+    let ft = &template.forall_templates[0];
+
+    // (d) Metadata.
+    assert_eq!(ft.variable, "v");
+    assert_eq!(ft.parent_entity, "S");
+    assert_eq!(ft.collection_sub_name, "vents");
+    assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
+
+    // (e) Body shape: Connect with substituted port-name templates.
+    match &ft.body {
+        CompiledForallBody::Connect {
+            left_port_template,
+            operator,
+            right_port_template,
+            connector_type,
+            params,
+            port_mappings,
+        } => {
+            assert_eq!(
+                left_port_template, "vents[0].inlet",
+                "expected left port template to be 'vents[0].inlet'"
+            );
+            assert_eq!(
+                right_port_template, "air_channel",
+                "expected right port template to be 'air_channel'"
+            );
+            assert_eq!(
+                *operator,
+                ConnectOp::Forward,
+                "expected operator to be ConnectOp::Forward"
+            );
+            assert!(
+                connector_type.is_none(),
+                "expected no explicit connector_type, got {:?}",
+                connector_type
+            );
+            assert!(
+                params.is_empty(),
+                "expected no params for simple connect, got {:?}",
+                params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+            );
+            assert!(
+                port_mappings.is_empty(),
+                "expected no port_mappings for simple connect, got {:?}",
+                port_mappings
+            );
+        }
+        other => panic!("expected CompiledForallBody::Connect, got {:?}", other),
+    }
+
+    // (f) The OLD info diagnostic must be gone.
     let info_diags: Vec<&reify_types::Diagnostic> = module
         .diagnostics
         .iter()
@@ -820,9 +890,9 @@ structure def S {
         .collect();
     assert_eq!(
         info_diags.len(),
-        1,
-        "expected exactly 1 info diagnostic mentioning 'future scope' and \
-         'forall connect' for the deferred-count forall connect, got {}: {:?}",
+        0,
+        "expected zero 'task 2690 future scope' info diagnostics for forall \
+         connect (now captured), got {}: {:?}",
         info_diags.len(),
         module
             .diagnostics
