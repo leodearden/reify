@@ -3446,12 +3446,15 @@ mod tests {
 
     /// Smoke-checks that the no-cause cache methods return exactly `.0` of their
     /// `_with_cause` cousins. After the step-4 refactor the no-cause variants are
-    /// `let (f, _) = self._with_cause(...); f` wrappers, so full truth-table
-    /// coverage would be a tautology. Two representative rows suffice to catch a
-    /// future regression where a method is accidentally hand-rolled again.
+    /// `let (f, _) = self._with_cause(...); f` wrappers, so these rows are
+    /// tautological by construction. Four rows pin the agreement at distinct
+    /// branches of the classifier: all-Final (simplest path), one-Pending
+    /// (non-trivial path), Failed §9.2 carve-out, and still_refining short-circuit.
+    /// If a method is ever accidentally hand-rolled again, at least one row will
+    /// diverge.
     #[test]
     fn derive_output_freshness_no_cause_variants_agree_with_with_cause() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_types::{DeterminacyState, ErrorRef, Freshness, Value, VersionId};
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
@@ -3536,7 +3539,7 @@ mod tests {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_failed(
                 &NodeId::Value(b_id.clone()),
-                reify_types::ErrorRef::new("x"),
+                ErrorRef::new("x"),
             );
             let trace = DependencyTrace { reads: vec![a_id.clone(), b_id.clone()] };
             assert_agree!(store, &trace, sr, g, "one-Failed");
