@@ -1378,4 +1378,114 @@ mod tests {
             }
         }
     }
+
+    // ── extract_loop_closure_chains tests ───────────────────────────────────
+    //
+    // Pure value-side helper: translates a loop_closure Map record + bindings
+    // slice into the five solver-input vectors.  The world sentinel at chain
+    // head is stripped; per-joint SI values come from `value_for`-style
+    // resolution (binding → midpoint fallback); free indices are positions
+    // in path_b with no direct binding entry.
+
+    /// Build the canonical world sentinel Map (kind="world") used as the
+    /// leading element of a `loop_closure` record's `path_a` / `path_b`.
+    /// Mirrors the construction in `mechanism::make_world_sentinel` (private
+    /// to mechanism.rs); duplicated here so the test module stays self-
+    /// contained rather than reaching across modules for a private helper.
+    fn world_sentinel() -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("world".to_string()),
+        );
+        Value::Map(m)
+    }
+
+    /// Build a `loop_closure` Map record paralleling
+    /// `mechanism::make_loop_closure_record`.  Test-local copy so the
+    /// loop_closure tests don't depend on mechanism.rs's private helper.
+    fn loop_closure_record(path_a: Vec<Value>, path_b: Vec<Value>, closing_joint: Value) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("body_id".to_string()), Value::Int(0));
+        m.insert(Value::String("closing_joint".to_string()), closing_joint);
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("loop_closure".to_string()),
+        );
+        m.insert(Value::String("path_a".to_string()), Value::List(path_a));
+        m.insert(Value::String("path_b".to_string()), Value::List(path_b));
+        Value::Map(m)
+    }
+
+    /// `extract_loop_closure_chains` returns the expected five-vector tuple
+    /// for a record with `path_a = [world, jA]` (driven by a bound length
+    /// of 0.5m) and `path_b = [world, jB]` (free — no binding entry).
+    ///
+    /// Asserts:
+    ///   * chain_a stripped of world sentinel: `[jA]`
+    ///   * vals_a populated from binding: `[0.5]` (SI metres)
+    ///   * chain_b stripped of world sentinel: `[jB]`
+    ///   * vals_b_initial seeded from jB's range midpoint: `[0.5]`
+    ///     (jB has range 0..1m → midpoint 0.5m).
+    ///   * free_b indices: `[0]` (the only joint in chain_b is unbound).
+    #[test]
+    fn extract_loop_closure_chains_returns_chains_vals_and_free_indices() {
+        let j_a = prismatic_x();
+        let j_b = prismatic_x();
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bindings = vec![bind_a];
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_b.clone()],
+            j_b.clone(),
+        );
+
+        let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings)
+                .expect("extract_loop_closure_chains must return Some for a well-formed record");
+
+        assert_eq!(chain_a, vec![j_a.clone()], "chain_a should strip world sentinel");
+        assert_eq!(vals_a.len(), 1, "vals_a length must equal chain_a length");
+        assert!(
+            (vals_a[0] - 0.5).abs() < 1e-12,
+            "vals_a[0] expected 0.5 (bound), got {}",
+            vals_a[0]
+        );
+        assert_eq!(chain_b, vec![j_b.clone()], "chain_b should strip world sentinel");
+        assert_eq!(vals_b_initial.len(), 1, "vals_b_initial length must equal chain_b length");
+        assert!(
+            (vals_b_initial[0] - 0.5).abs() < 1e-12,
+            "vals_b_initial[0] expected midpoint 0.5 (jB range 0..1m), got {}",
+            vals_b_initial[0]
+        );
+        assert_eq!(free_b, vec![0], "free_b should mark jB (index 0) as free");
+    }
+
+    /// Negative case: a malformed record missing the `path_b` key collapses
+    /// to None.  The arity guard in snapshot.rs's closed-chain arm relies on
+    /// this so a bogus loop_closure record cannot smuggle bad chains into
+    /// the solver.
+    #[test]
+    fn extract_loop_closure_chains_missing_path_b_returns_none() {
+        let j_a = prismatic_x();
+        let bindings: Vec<Value> = Vec::new();
+        // Hand-built loop_closure record WITHOUT path_b.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("body_id".to_string()), Value::Int(0));
+        m.insert(Value::String("closing_joint".to_string()), j_a.clone());
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("loop_closure".to_string()),
+        );
+        m.insert(
+            Value::String("path_a".to_string()),
+            Value::List(vec![world_sentinel(), j_a]),
+        );
+        let record = Value::Map(m);
+
+        assert!(
+            super::extract_loop_closure_chains(&record, &bindings).is_none(),
+            "extract_loop_closure_chains must return None for a record missing path_b"
+        );
+    }
 }
