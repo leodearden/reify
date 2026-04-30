@@ -212,6 +212,19 @@ fn populate_single_parent_sweep_op(
 /// allocation that is unwarranted for the common path. If real models
 /// surface heavy duplicate-handle lofts a future task can introduce a
 /// `HashMap<GeometryHandleId, Vec<GeometryHandleId>>` cache here.
+///
+/// `kernel.extract_faces(profile_handle)` is called per-section and
+/// `kernel.extract_edges(result_handle)` is called once even though
+/// `populate_loft_attributes` currently reserves both via `let _` (no
+/// reads today). The over-collection is deliberate:
+///   (a) loft profiles are typically wires (≈ 0 faces extracted), so
+///       per-section `extract_faces` is near-free;
+///   (b) result-edge extraction is a single call;
+///   (c) calling `extract_faces` once per section keeps
+///       `section_faces.len() == section_edges.len() == profile_handles.len()`,
+///       which is required by the lockstep `debug_assert_eq!` at the top
+///       of `populate_loft_attributes` (see `topology_attribute_propagation.rs`);
+///       skipping `extract_faces` and passing `&[]` would violate it.
 fn populate_loft_op(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
