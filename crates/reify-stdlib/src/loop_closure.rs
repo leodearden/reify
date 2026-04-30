@@ -356,6 +356,50 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
     }
 }
 
+/// Extract the per-loop solver inputs from a single `loop_closure` Map record.
+///
+/// Translates a `loop_closure` Map record (the kind appended to a Mechanism
+/// Map's `loop_closures` list by the v0.2 builder) plus the user's
+/// `bindings: &[Value]` slice into the five vectors the closed-chain Newton
+/// solver in `reify_constraints::loop_closure::solve_loop_closure_with_diagnostics`
+/// consumes:
+///
+///   * `chain_a`         — the joints in `path_a` with the leading world
+///     sentinel stripped (left-to-right composition order).
+///   * `vals_a`          — the SI-unit motion values for `chain_a`,
+///     resolved from `bindings` per-joint (prismatic → metres,
+///     revolute → radians, coupling → parent's input units, fixed → `0.0`
+///     sentinel since `transform_at` ignores the value).  Missing bindings
+///     fall back to the joint's range midpoint.
+///   * `chain_b`         — the joints in `path_b` with the world sentinel
+///     stripped.
+///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
+///     a direct binding entry use the bound value; otherwise the range midpoint.
+///   * `free_b`          — positions in `chain_b` whose joints are free
+///     (no direct binding entry); the solver iterates these.
+///
+/// Returns `None` on:
+///   * non-Map record,
+///   * missing/non-List `path_a` or `path_b`,
+///   * either path empty or missing the leading world sentinel,
+///   * any chain joint that has no resolvable SI value (no binding,
+///     no midpoint — e.g. multi-DOF kinds, malformed Maps).
+///
+/// The world sentinel at chain head is identified by `kind = "world"`
+/// (matching `mechanism::is_world`) and dropped before composition — the
+/// closing-chain composition starts at the joint immediately attached to
+/// world, not at the world sentinel itself.
+///
+/// **Pure value-side helper** — performs no FK walk and no solver invocation.
+/// Built so it can be tested in isolation before snapshot.rs consumes it.
+pub fn extract_loop_closure_chains(
+    _record: &Value,
+    _bindings: &[Value],
+) -> Option<(Vec<Value>, Vec<f64>, Vec<Value>, Vec<f64>, Vec<usize>)> {
+    // Skeleton — implemented in step-2.
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
