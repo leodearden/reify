@@ -1083,7 +1083,7 @@ mod tests {
         match err {
             QueryError::QueryFailed(msg) => {
                 assert!(
-                    msg.contains("edge"),
+                    msg.contains("edge record"),
                     "edge-record error message should identify edge kind, got {msg:?}",
                 );
                 assert!(
@@ -1123,7 +1123,7 @@ mod tests {
         match err {
             QueryError::QueryFailed(msg) => {
                 assert!(
-                    msg.contains("edge"),
+                    msg.contains("edge record"),
                     "edge-record error message should identify edge kind, got {msg:?}",
                 );
                 assert!(
@@ -1163,7 +1163,7 @@ mod tests {
         match err {
             QueryError::QueryFailed(msg) => {
                 assert!(
-                    msg.contains("edge"),
+                    msg.contains("edge record"),
                     "edge-record error message should identify edge kind, got {msg:?}",
                 );
                 assert!(
