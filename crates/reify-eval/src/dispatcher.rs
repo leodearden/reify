@@ -57,9 +57,16 @@ pub struct DispatchPlan {
 /// kernel choice fall through to the order in which we enqueue conversion
 /// expansions, which is itself a BTreeMap-order traversal.
 ///
-/// **`None` returns** in three branches: (a) no path from `available` to
-/// `demanded` exists via declared conversions; (b) no registered kernel
-/// claims to support `op` on `demanded`; (c) the registry is empty.
+/// **`None` returns** in three branches:
+///   - (a) no conversion path from any repr in `available` reaches
+///     `demanded` (the BFS visited set covers all 4 [`ReprKind`] variants
+///     without producing the demanded one);
+///   - (b) no registered kernel claims `(op, demanded)` in its supports
+///     table — even when the demanded repr IS reachable;
+///   - (c) the registry is empty (or `available` is empty AND no
+///     conversion can synthesise a repr ex nihilo, which by construction
+///     cannot happen since [`Operation::Convert { from }`] always
+///     requires an input repr).
 pub fn dispatch(
     registry: &BTreeMap<String, &CapabilityDescriptor>,
     op: Operation,
