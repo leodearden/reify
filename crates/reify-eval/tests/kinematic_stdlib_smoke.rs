@@ -43,7 +43,8 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `rev_jac`        = `joint_jacobian(revolute([0,0,1], 0rad..pi))`
 ///                     → Map { angular=[0,0,1], linear=[0,0,0] }
 ///   `fixed_joint`    = `fixed()` — 0-DOF group-only joint, Map { kind="fixed" }
-///   `fixed_xform`    = `transform_at(fixed_joint, 0)` → identity Transform
+///   `fixed_xform`    = `transform_at(fixed_joint, 0)` → identity Transform (2-arg chain-machinery path)
+///   `fixed_xform_1arg` = `transform_at(fixed_joint)` → identity Transform (1-arg ergonomic form, task 2688)
 ///   `fixed_jac`      = `joint_jacobian(fixed_joint)` → zero-twist Map
 ///   `planar_joint`   = `planar(vec3(1,0,0), vec3(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)`
 ///                     → Map { kind="planar", axis_x, axis_y, range_x, range_y, range_theta } (6 keys)
@@ -96,9 +97,10 @@ structure def Kinematic {
     let prism_jac  = joint_jacobian(prism)
     let rev_jac    = joint_jacobian(rev)
 
-    let fixed_joint = fixed()
-    let fixed_xform = transform_at(fixed_joint, 0)
-    let fixed_jac   = joint_jacobian(fixed_joint)
+    let fixed_joint     = fixed()
+    let fixed_xform     = transform_at(fixed_joint, 0)
+    let fixed_xform_1arg = transform_at(fixed_joint)
+    let fixed_jac       = joint_jacobian(fixed_joint)
 
     let planar_joint = planar(vec3(1, 0, 0), vec3(0, 1, 0), 0mm .. 1m, 0mm .. 1m, 0rad .. 6.283185rad)
     let planar_xform = transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])
@@ -454,6 +456,21 @@ fn kinematic_stdlib_smoke_e2e() {
     };
     assert_orientation_close(fx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "fixed_xform rotation");
     assert_vec3_close(fx_trans, [0.0, 0.0, 0.0], 1e-12, "fixed_xform translation");
+
+    // fixed_xform_1arg = transform_at(fixed_joint) → identity Transform (1-arg ergonomic form, task 2688)
+    // Exercises the full parse → compile_with_stdlib → eval pipeline for the new 1-arg arity.
+    let fixed_xform_1arg = get_value(v, "fixed_xform_1arg");
+    let (fx1_rot, fx1_trans) = match fixed_xform_1arg {
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("fixed_xform_1arg: expected Transform, got {other:?}"),
+    };
+    assert_orientation_close(fx1_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "fixed_xform_1arg rotation");
+    assert_vec3_close(fx1_trans, [0.0, 0.0, 0.0], 1e-12, "fixed_xform_1arg translation");
+    // Guard against future drift: 1-arg and 2-arg forms must produce byte-identical results.
+    assert_eq!(fixed_xform_1arg, fixed_xform, "fixed_xform_1arg must equal fixed_xform");
 
     // fixed_jac = joint_jacobian(fixed_joint) → zero-twist Map
     let fixed_jac = get_value(v, "fixed_jac");
