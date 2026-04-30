@@ -4443,6 +4443,51 @@ fn get_mechanism_descriptors_does_not_reinvoke_collect_on_cache_hit() {
     );
 }
 
+/// Follow-up #3 RED: when parsed_cache is None and a CompiledModule has N templates,
+/// get_mechanism_descriptors currently emits N WARN events (once per template
+/// iteration).  After the hoist in follow-up #3 impl (step 4), exactly 1 WARN
+/// fires per call regardless of template count.
+///
+/// RED because the current implementation emits 3 WARNs for a 3-template module.
+#[test]
+fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_templates() {
+    use reify_types::ModulePath;
+
+    // Build a 3-template CompiledModule and inject it (no load → parsed_cache=None).
+    // Call recheck_for_test to initialise last_check (required by get_mechanism_descriptors).
+    let t1 = TopologyTemplateBuilder::new("t1").build();
+    let t2 = TopologyTemplateBuilder::new("t2").build();
+    let t3 = TopologyTemplateBuilder::new("t3").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(t1)
+        .template(t2)
+        .template(t3)
+        .build();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session.inject_compiled_for_test(compiled);
+    session.recheck_for_test();
+    // parsed_cache remains None — broken-invariant state.
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count,
+        1,
+        "expected exactly 1 WARN per get_mechanism_descriptors call when parsed_cache is None; \
+         got {} (should fire once per call, not once per template)",
+        warn_count
+    );
+}
+
 #[test]
 fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
