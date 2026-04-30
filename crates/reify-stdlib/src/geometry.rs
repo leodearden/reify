@@ -2763,6 +2763,27 @@ mod tests {
         assert!(eval_builtin("transform_compose", &[t1, t2]).is_undef());
     }
 
+    /// transform_compose with an overflow-corner quaternion (w = 1e200, x=y=z=0) → Undef.
+    ///
+    /// Overflow trace:
+    /// - `decompose_transform` accepts: every component (1e200, 0, 0, 0) is finite.
+    /// - The `r_norm_sq < 1e-24` gate accepts: `1e200² = ∞` and `∞ < 1e-24` is false.
+    /// - But normalization produces `(0, 0, 0, 0)` because `1e200 / ∞ = 0.0` in f64.
+    /// - `quat_mul((0,0,0,0), (0,0,0,0)) = (0,0,0,0)`.
+    /// - Without a post-multiply renormalize, the direct construction emits
+    ///   `Value::Orientation { w:0, x:0, y:0, z:0 }` — a zero-norm Orientation, invalid.
+    /// - With renormalize (the fix), `normalize_quaternion` rejects the zero-norm result
+    ///   and the function returns `Undef`.
+    #[test]
+    fn transform_compose_overflow_quaternion_returns_undef() {
+        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_t = make_transform(bad_rot, 0.0, 0.0, 0.0);
+        assert!(
+            eval_builtin("transform_compose", &[bad_t.clone(), bad_t]).is_undef(),
+            "expected Undef for overflow-corner quaternion but got a non-Undef result"
+        );
+    }
+
     // ── transform_inverse tests (step-17) ────────────────────────────────────
 
     /// transform_inverse(identity) == identity.
