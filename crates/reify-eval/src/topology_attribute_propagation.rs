@@ -2623,4 +2623,36 @@ mod tests {
             &history,
         );
     }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(
+        expected = "loft section face/edge slice families must be built in lockstep"
+    )]
+    fn populate_loft_panics_when_section_edge_slice_longer_than_face_slice() {
+        // Converse of `populate_loft_panics_when_section_face_and_edge_slice_lengths_differ`:
+        // section_faces has 1 entry; section_edges has 2 — asymmetric in the opposite direction.
+        // The `debug_assert_eq!` is symmetric (`==` not `<=`/`>=`), so a future refactor that
+        // mistakenly weakened it to one-directional (e.g., `<=`) would only be caught by this test.
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let section_faces = vec![vec![GeometryHandleId(701)]];
+        let section_edges = vec![
+            vec![GeometryHandleId(801), GeometryHandleId(802)],
+            vec![GeometryHandleId(803), GeometryHandleId(804)],
+        ];
+        let result_faces = vec![GeometryHandleId(7000)];
+        let result_edges: Vec<GeometryHandleId> = vec![];
+        let history = LoftOpHistoryRecords::default();
+
+        let _ = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &section_faces,
+            &section_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+        );
+    }
 }
