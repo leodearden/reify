@@ -181,6 +181,16 @@ fn ambiguous_diagnostic_message_includes_lex_first_explicit_substitution_suggest
         "AMBIGUOUS message must convey that 'GraphiteSeal' is a suggested explicit substitution; got: {}",
         d.message
     );
+    // Bind the lex-first FQN to the suggestion clause as a single contract.
+    // "GraphiteSeal" alone appears in the candidates list "GraphiteSeal,
+    // ORingSeal" already, so a regression that swapped the suggestion to
+    // 'ORingSeal' (the wrong lex-first) would still pass the substring
+    // checks above. Pinning the bound substring catches that.
+    assert!(
+        d.message.contains("like 'GraphiteSeal' instead"),
+        "AMBIGUOUS message must bind lex-first FQN to the suggestion clause (`like '<lex_first>' instead`); got: {}",
+        d.message
+    );
 }
 
 // ─── step-13: NonUnique message — names chosen lex-first candidate ──────
@@ -215,6 +225,17 @@ fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
             || d.message.contains("non-unique")
             || d.message.contains("selected"),
         "NON_UNIQUE message must convey choice-under-non-uniqueness; got: {}",
+        d.message
+    );
+    // Bind the chosen lex-first FQN to the "selected lexicographically-first"
+    // clause as a single contract. "GraphiteSeal" alone already appears in
+    // the candidates list "GraphiteSeal, ORingSeal", so a regression that
+    // swapped the chosen candidate to 'ORingSeal' would still pass the
+    // looser substring checks above. Pinning the bound substring catches
+    // that.
+    assert!(
+        d.message.contains("selected lexicographically-first 'GraphiteSeal'"),
+        "NON_UNIQUE message must bind chosen FQN to the `selected lexicographically-first '<lex_first>'` clause; got: {}",
         d.message
     );
 }
@@ -350,6 +371,21 @@ fn no_candidate_diagnostic_carries_rejected_fqns_in_candidates_field_and_label_a
     assert!(
         d.message.contains("Seal"),
         "NO_CANDIDATE message must reference the bound name 'Seal'; got: {}",
+        d.message
+    );
+    // Per-rejection prose contract: the message must list each rejected
+    // candidate FQN paired with "rejected by constraint" prose so a
+    // regression that drops `rejection_summary` from the format string
+    // would fail rather than silently emit a truncated message that still
+    // mentions the bound.
+    assert!(
+        d.message.contains("GraphiteSeal") && d.message.contains("ORingSeal"),
+        "NO_CANDIDATE message must name every rejected candidate FQN; got: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("rejected by constraint"),
+        "NO_CANDIDATE message must include the per-rejection 'rejected by constraint' prose; got: {}",
         d.message
     );
 }
