@@ -504,11 +504,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             // Compute the dimensionless ratio: lead / (2π).
             let ratio = lead_si / (2.0 * std::f64::consts::PI);
-            // Defense-in-depth: length_input already rejects non-finite inputs,
-            // so this guard should never trigger, but we include it for safety.
-            if !ratio.is_finite() {
-                return Some(Value::Undef);
-            }
+            // Invariant: length_input rejects non-finite leads, so ratio is finite by
+            // construction. debug_assert! catches regressions if length_input's contract changes.
+            debug_assert!(ratio.is_finite(), "screw: ratio must be finite — length_input rejects non-finite leads");
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -542,10 +540,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             // Compute ratio: negative for external mesh (reverses direction).
             let ratio = -(teeth_b as f64) / (teeth_a as f64);
-            // Both teeth counts are strictly positive finite integers, so ratio is always finite.
-            if !ratio.is_finite() {
-                return Some(Value::Undef);
-            }
+            // Both teeth counts are strictly positive finite integers, so ratio is always finite
+            // (i64-to-f64 is exact up to 2^53; division of two finite non-zero f64s is finite).
+            debug_assert!(ratio.is_finite(), "gear: ratio must be finite — teeth_a and teeth_b are validated positive Ints");
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -574,10 +571,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             // ratio = pitch_radius (dimensionless scaling factor for the coupling).
             let ratio = pitch_radius_si;
-            // Defense-in-depth: length_input already rejects non-finite inputs.
-            if !ratio.is_finite() {
-                return Some(Value::Undef);
-            }
+            // Invariant: length_input rejects non-finite pitch radii, so ratio is finite by
+            // construction. debug_assert! catches regressions if length_input's contract changes.
+            debug_assert!(ratio.is_finite(), "rack_and_pinion: ratio must be finite — length_input rejects non-finite pitch_radius");
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
