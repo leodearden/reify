@@ -371,8 +371,7 @@ impl Engine {
             // constraint's subject unambiguously because today's API binds at most one
             // entity-ref per purpose. See `extract_tolerance_bindings` § "Single-binding
             // contract" for what a future multi-param producer must change at this call site.
-            let bindings =
-                crate::tolerance_scope::extract_tolerance_bindings(purpose, entity_ref);
+            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, entity_ref);
             for binding in bindings {
                 let descendants = crate::tolerance_scope::propagate_subject_to_descendants(
                     &binding.subject_entity,
@@ -381,10 +380,7 @@ impl Engine {
                 let additions = descendants
                     .into_iter()
                     .map(|entity| (entity, binding.si_tolerance));
-                crate::tolerance_scope::merge_with_min(
-                    &mut self.active_tolerance_scope,
-                    additions,
-                );
+                crate::tolerance_scope::merge_with_min(&mut self.active_tolerance_scope, additions);
             }
         }
     }

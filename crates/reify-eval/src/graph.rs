@@ -565,10 +565,7 @@ impl EvaluationGraph {
                 .connections
                 .iter()
                 .map(|c| {
-                    let cnid_hash = ContentHash::of_str(&format!(
-                        "{}",
-                        c.compatibility_constraint
-                    ));
+                    let cnid_hash = ContentHash::of_str(&format!("{}", c.compatibility_constraint));
                     let left_hash = ContentHash::of_str(&c.left_port);
                     let right_hash = ContentHash::of_str(&c.right_port);
                     let op_hash = ContentHash::of_str(&format!("op:{}", c.operator.as_u8()));
@@ -578,21 +575,24 @@ impl EvaluationGraph {
                         .map(|(l, r)| format!("{}->{}", l, r))
                         .collect();
                     pm_strs.sort();
-                    let pm_hash = ContentHash::combine_all(
-                        pm_strs.iter().map(|s| ContentHash::of_str(s)),
-                    );
+                    let pm_hash =
+                        ContentHash::combine_all(pm_strs.iter().map(|s| ContentHash::of_str(s)));
                     let connector_sub_hash = ContentHash::of_str(&match &c.connector_sub {
                         Some(s) => format!("connector_sub:some:{}", s),
                         None => "connector_sub:none".to_string(),
                     });
-                    let frame_constraint_hash =
-                        ContentHash::of_str(&match &c.frame_constraint {
-                            Some(id) => format!("frame_constraint:some:{}", id),
-                            None => "frame_constraint:none".to_string(),
-                        });
+                    let frame_constraint_hash = ContentHash::of_str(&match &c.frame_constraint {
+                        Some(id) => format!("frame_constraint:some:{}", id),
+                        None => "frame_constraint:none".to_string(),
+                    });
                     ContentHash::combine_all([
-                        cnid_hash, left_hash, right_hash, op_hash, pm_hash,
-                        connector_sub_hash, frame_constraint_hash,
+                        cnid_hash,
+                        left_hash,
+                        right_hash,
+                        op_hash,
+                        pm_hash,
+                        connector_sub_hash,
+                        frame_constraint_hash,
                     ])
                 })
                 .collect();
@@ -600,9 +600,7 @@ impl EvaluationGraph {
             ContentHash::combine_all(per_conn)
         };
 
-        ContentHash::combine_all([
-            vc_hash, cn_hash, real_hash, res_hash, guard_hash, conn_hash,
-        ])
+        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash, conn_hash])
     }
 }
 
@@ -1736,7 +1734,8 @@ mod tests {
         assert_eq!(carried.right_port, conn.right_port);
         assert_eq!(carried.operator, conn.operator);
         assert_eq!(
-            carried.compatibility_constraint, conn.compatibility_constraint,
+            carried.compatibility_constraint,
+            conn.compatibility_constraint,
         );
     }
 
@@ -1821,9 +1820,7 @@ mod tests {
         // connection contributes an additional bucket hash; if connections
         // were not mixed in, both graphs would fingerprint identically.
         let mut graph_b = graph_a.clone();
-        graph_b
-            .connections
-            .push(make_connection("X", 0, "p", "q"));
+        graph_b.connections.push(make_connection("X", 0, "p", "q"));
 
         assert_ne!(
             graph_a.topology_fingerprint(),
@@ -1860,16 +1857,20 @@ mod tests {
         graph_none.connections.push(base_conn.clone());
 
         let mut graph_some_a = EvaluationGraph::default();
-        graph_some_a.connections.push(reify_compiler::CompiledConnection {
-            connector_sub: Some("sub_a".to_string()),
-            ..base_conn.clone()
-        });
+        graph_some_a
+            .connections
+            .push(reify_compiler::CompiledConnection {
+                connector_sub: Some("sub_a".to_string()),
+                ..base_conn.clone()
+            });
 
         let mut graph_some_b = EvaluationGraph::default();
-        graph_some_b.connections.push(reify_compiler::CompiledConnection {
-            connector_sub: Some("sub_b".to_string()),
-            ..base_conn
-        });
+        graph_some_b
+            .connections
+            .push(reify_compiler::CompiledConnection {
+                connector_sub: Some("sub_b".to_string()),
+                ..base_conn
+            });
 
         assert_ne!(
             graph_none.topology_fingerprint(),
@@ -1917,16 +1918,20 @@ mod tests {
         graph_none.connections.push(base_conn.clone());
 
         let mut graph_some_a = EvaluationGraph::default();
-        graph_some_a.connections.push(reify_compiler::CompiledConnection {
-            frame_constraint: Some(ConstraintNodeId::new("Frame", 0)),
-            ..base_conn.clone()
-        });
+        graph_some_a
+            .connections
+            .push(reify_compiler::CompiledConnection {
+                frame_constraint: Some(ConstraintNodeId::new("Frame", 0)),
+                ..base_conn.clone()
+            });
 
         let mut graph_some_b = EvaluationGraph::default();
-        graph_some_b.connections.push(reify_compiler::CompiledConnection {
-            frame_constraint: Some(ConstraintNodeId::new("Frame", 1)),
-            ..base_conn
-        });
+        graph_some_b
+            .connections
+            .push(reify_compiler::CompiledConnection {
+                frame_constraint: Some(ConstraintNodeId::new("Frame", 1)),
+                ..base_conn
+            });
 
         assert_ne!(
             graph_none.topology_fingerprint(),

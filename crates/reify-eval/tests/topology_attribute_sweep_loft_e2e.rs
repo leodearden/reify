@@ -460,10 +460,8 @@ fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_
     // `populate_loft_op` would leave section 1's 3-edge slice replaced
     // by section 0's 2-edge slice, making the (1, 2, ...) record below
     // out of range → catches the bug.
-    let profile_faces_per_section = vec![
-        vec![GeometryHandleId(7050)],
-        vec![GeometryHandleId(7150)],
-    ];
+    let profile_faces_per_section =
+        vec![vec![GeometryHandleId(7050)], vec![GeometryHandleId(7150)]];
     let profile_edges_per_section: Vec<Vec<GeometryHandleId>> = vec![
         // section 0: 2 edges
         vec![GeometryHandleId(7060), GeometryHandleId(7061)],

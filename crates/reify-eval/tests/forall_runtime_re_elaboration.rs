@@ -20,9 +20,9 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_compiler::CompiledModule;
+use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
-use reify_eval::Engine;
 use reify_syntax::ConnectOp;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
@@ -84,11 +84,7 @@ fn edit_param_count_undef_to_known_emits_per_element_forall_constraints() {
         .graph
         .constraints
         .iter()
-        .filter(|(_, n)| {
-            n.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|(_, n)| n.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
         initial_forall_count, 0,
@@ -458,9 +454,7 @@ fn edit_param_unrelated_param_does_not_re_emit_forall_constraints() {
 
     // (4a) The 3 forall constraint ids are still present, identical (id
     //      stability proves "not re-emitted", not just "count preserved").
-    let snap_after_other = engine
-        .snapshot()
-        .expect("snapshot after edit other");
+    let snap_after_other = engine.snapshot().expect("snapshot after edit other");
     let ids_after_other = collect_forall_ids(snap_after_other, "v");
     assert_eq!(
         ids_after_other, ids_after_n3,
@@ -751,9 +745,7 @@ structure def S {
 /// Helper: collect connections whose `compatibility_constraint` label starts
 /// with `forall_connect@` (i.e. were emitted by the forall-Connect runtime
 /// re-emission path), sorted by their LHS-port suffix index.
-fn collect_forall_connect_connections(
-    snap: &Snapshot,
-) -> Vec<reify_compiler::CompiledConnection> {
+fn collect_forall_connect_connections(snap: &Snapshot) -> Vec<reify_compiler::CompiledConnection> {
     let mut entries: Vec<(usize, reify_compiler::CompiledConnection)> = snap
         .graph
         .connections
@@ -765,11 +757,7 @@ fn collect_forall_connect_connections(
                 return None;
             }
             // Extract `i` from `vents[<i>].inlet` for ordering.
-            let idx_str = c
-                .left_port
-                .strip_prefix("vents[")?
-                .split(']')
-                .next()?;
+            let idx_str = c.left_port.strip_prefix("vents[")?.split(']').next()?;
             let i: usize = idx_str.parse().ok()?;
             Some((i, c.clone()))
         })

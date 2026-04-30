@@ -136,14 +136,7 @@ fn populate_attribute_history(
                     )));
                 }
             };
-            populate_loft_op(
-                table,
-                kernel,
-                feature_id,
-                profiles,
-                result_handle,
-                history,
-            )
+            populate_loft_op(table, kernel, feature_id, profiles, result_handle, history)
         }
     }
 }

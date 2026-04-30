@@ -1567,10 +1567,7 @@ fn extract_snapshot_bodies(snap: &reify_types::Value) -> Option<Vec<reify_types:
     }
 }
 
-fn handle_for_id(
-    pairs: &[(i64, GeometryHandleId)],
-    id: i64,
-) -> Option<GeometryHandleId> {
+fn handle_for_id(pairs: &[(i64, GeometryHandleId)], id: i64) -> Option<GeometryHandleId> {
     pairs.iter().find(|(i, _)| *i == id).map(|(_, h)| *h)
 }
 

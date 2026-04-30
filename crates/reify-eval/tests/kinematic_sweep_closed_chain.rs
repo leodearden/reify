@@ -240,20 +240,38 @@ fn sweep_closed_chain_warm_start_e2e() {
             (tx0 - driver).abs() < 1e-6,
             "snaps[{i}] body 0 (at j_a) tx must be driver = {driver}, got {tx0}"
         );
-        assert!(ty0.abs() < 1e-6, "snaps[{i}] body 0 ty must be 0, got {ty0}");
-        assert!(tz0.abs() < 1e-6, "snaps[{i}] body 0 tz must be 0, got {tz0}");
+        assert!(
+            ty0.abs() < 1e-6,
+            "snaps[{i}] body 0 ty must be 0, got {ty0}"
+        );
+        assert!(
+            tz0.abs() < 1e-6,
+            "snaps[{i}] body 0 tz must be 0, got {tz0}"
+        );
         assert!(
             (tx1 - solved).abs() < 1e-6,
             "snaps[{i}] body 1 (at j_b) tx must be solved jB = {solved}, got {tx1}"
         );
-        assert!(ty1.abs() < 1e-6, "snaps[{i}] body 1 ty must be 0, got {ty1}");
-        assert!(tz1.abs() < 1e-6, "snaps[{i}] body 1 tz must be 0, got {tz1}");
+        assert!(
+            ty1.abs() < 1e-6,
+            "snaps[{i}] body 1 ty must be 0, got {ty1}"
+        );
+        assert!(
+            tz1.abs() < 1e-6,
+            "snaps[{i}] body 1 tz must be 0, got {tz1}"
+        );
         assert!(
             (tx2 - solved).abs() < 1e-6,
             "snaps[{i}] body 2 (closing edge) tx must be solved jB = {solved}, got {tx2}"
         );
-        assert!(ty2.abs() < 1e-6, "snaps[{i}] body 2 ty must be 0, got {ty2}");
-        assert!(tz2.abs() < 1e-6, "snaps[{i}] body 2 tz must be 0, got {tz2}");
+        assert!(
+            ty2.abs() < 1e-6,
+            "snaps[{i}] body 2 ty must be 0, got {ty2}"
+        );
+        assert!(
+            tz2.abs() < 1e-6,
+            "snaps[{i}] body 2 tz must be 0, got {tz2}"
+        );
 
         // (e) Monotonic-decreasing trajectory across steps.  Strict-
         // decreasing with a 1µm slack absorbs solver wobble.  This is a

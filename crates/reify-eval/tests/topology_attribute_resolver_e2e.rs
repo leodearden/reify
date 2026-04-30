@@ -185,7 +185,13 @@ fn resolver_dispatches_against_seeded_box_attributes() {
     // loudly rather than silently flipping FallbackToComputed →
     // Resolved/Unresolved.
     let unallocated = GeometryHandleId(
-        face_handles.iter().chain(edge_handles.iter()).map(|h| h.0).max().unwrap_or(0) + 1000,
+        face_handles
+            .iter()
+            .chain(edge_handles.iter())
+            .map(|h| h.0)
+            .max()
+            .unwrap_or(0)
+            + 1000,
     );
     assert!(
         table.lookup(unallocated).is_none(),

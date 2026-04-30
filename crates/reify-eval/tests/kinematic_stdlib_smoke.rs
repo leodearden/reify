@@ -467,10 +467,23 @@ fn kinematic_stdlib_smoke_e2e() {
         } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("fixed_xform_1arg: expected Transform, got {other:?}"),
     };
-    assert_orientation_close(fx1_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "fixed_xform_1arg rotation");
-    assert_vec3_close(fx1_trans, [0.0, 0.0, 0.0], 1e-12, "fixed_xform_1arg translation");
+    assert_orientation_close(
+        fx1_rot,
+        (1.0, 0.0, 0.0, 0.0),
+        1e-12,
+        "fixed_xform_1arg rotation",
+    );
+    assert_vec3_close(
+        fx1_trans,
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "fixed_xform_1arg translation",
+    );
     // Guard against future drift: 1-arg and 2-arg forms must produce byte-identical results.
-    assert_eq!(fixed_xform_1arg, fixed_xform, "fixed_xform_1arg must equal fixed_xform");
+    assert_eq!(
+        fixed_xform_1arg, fixed_xform,
+        "fixed_xform_1arg must equal fixed_xform"
+    );
 
     // fixed_jac = joint_jacobian(fixed_joint) → zero-twist Map
     let fixed_jac = get_value(v, "fixed_jac");
@@ -514,14 +527,26 @@ fn kinematic_stdlib_smoke_e2e() {
     // Rotation: T_theta contributes quat(+Z, 0.5 rad) = (cos(0.25), 0, 0, sin(0.25)).
     let planar_xform = get_value(v, "planar_xform");
     let (px_rot, px_trans) = match planar_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("planar_xform: expected Transform, got {other:?}"),
     };
     let cos_half = (0.5_f64 / 2.0).cos();
     let sin_half = (0.5_f64 / 2.0).sin();
-    assert_orientation_close(px_rot, (cos_half, 0.0, 0.0, sin_half), 1e-12, "planar_xform rotation");
+    assert_orientation_close(
+        px_rot,
+        (cos_half, 0.0, 0.0, sin_half),
+        1e-12,
+        "planar_xform rotation",
+    );
     assert_vec3_close(px_trans, [0.5, 0.3, 0.0], 1e-12, "planar_xform translation");
-    assert_vec3_dim(px_trans, DimensionVector::LENGTH, "planar_xform translation dim");
+    assert_vec3_dim(
+        px_trans,
+        DimensionVector::LENGTH,
+        "planar_xform translation dim",
+    );
 
     // planar_jac = joint_jacobian(planar_joint) → zero-twist Map (FD-fallback placeholder)
     // PRD task 2: "finite-difference fallback for spherical, cylindrical, planar until
@@ -554,7 +579,11 @@ fn kinematic_stdlib_smoke_e2e() {
         Some(&Value::String("spherical".to_string())),
         "sj: kind field should be 'spherical'"
     );
-    assert_eq!(sj_map.len(), 2, "sj: Map should have exactly 2 keys (kind, range_angle)");
+    assert_eq!(
+        sj_map.len(),
+        2,
+        "sj: Map should have exactly 2 keys (kind, range_angle)"
+    );
 
     // sj_xform = transform_at(sj, q_z90) → Transform { rotation=q_z90, translation=0 }
     // The spherical arm normalises the input quaternion (defence-in-depth) and
@@ -563,12 +592,24 @@ fn kinematic_stdlib_smoke_e2e() {
     // "quaternion in, quaternion out" contract.
     let sj_xform = get_value(v, "sj_xform");
     let (sjx_rot, sjx_trans) = match sj_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("sj_xform: expected Transform, got {other:?}"),
     };
-    assert_orientation_close(sjx_rot, (cos_q, 0.0, 0.0, sin_q), 1e-12, "sj_xform rotation");
+    assert_orientation_close(
+        sjx_rot,
+        (cos_q, 0.0, 0.0, sin_q),
+        1e-12,
+        "sj_xform rotation",
+    );
     assert_vec3_close(sjx_trans, [0.0, 0.0, 0.0], 1e-12, "sj_xform translation");
-    assert_vec3_dim(sjx_trans, DimensionVector::LENGTH, "sj_xform translation dim");
+    assert_vec3_dim(
+        sjx_trans,
+        DimensionVector::LENGTH,
+        "sj_xform translation dim",
+    );
 
     // sj_jac = joint_jacobian(sj) → zero-twist Map (FD-fallback placeholder).
     // Analytic 3-column SO(3) Jacobian deferred to PRD task 2 / #2670.
@@ -613,7 +654,10 @@ fn kinematic_stdlib_smoke_e2e() {
     // q_euler_in (sign-insensitive), translation zero.
     let sj_xform_euler = get_value(v, "sj_xform_euler");
     let (sxe_rot, sxe_trans) = match sj_xform_euler {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("sj_xform_euler: expected Transform, got {other:?}"),
     };
     assert_orientation_close(
@@ -622,8 +666,17 @@ fn kinematic_stdlib_smoke_e2e() {
         1e-12,
         "sj_xform_euler rotation",
     );
-    assert_vec3_close(sxe_trans, [0.0, 0.0, 0.0], 1e-12, "sj_xform_euler translation");
-    assert_vec3_dim(sxe_trans, DimensionVector::LENGTH, "sj_xform_euler translation dim");
+    assert_vec3_close(
+        sxe_trans,
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "sj_xform_euler translation",
+    );
+    assert_vec3_dim(
+        sxe_trans,
+        DimensionVector::LENGTH,
+        "sj_xform_euler translation dim",
+    );
 
     // sj_euler_back = orient_to_euler("xyz", q_euler_in) → List of 3 angle
     // scalars round-tripping the input (0.1, 0.2, 0.3) within 1e-12. Note
@@ -695,10 +748,9 @@ fn kinematic_stdlib_smoke_e2e() {
             .as_f64()
             .expect("sj_aa_back.axis[2] numeric"),
     ];
-    let aa_axis_norm = (aa_axis_f[0] * aa_axis_f[0]
-        + aa_axis_f[1] * aa_axis_f[1]
-        + aa_axis_f[2] * aa_axis_f[2])
-        .sqrt();
+    let aa_axis_norm =
+        (aa_axis_f[0] * aa_axis_f[0] + aa_axis_f[1] * aa_axis_f[1] + aa_axis_f[2] * aa_axis_f[2])
+            .sqrt();
     assert!(
         (aa_axis_norm - 1.0).abs() < 1e-12,
         "sj_aa_back.axis must be a unit vector, got |axis|={aa_axis_norm}"
@@ -758,14 +810,26 @@ fn kinematic_stdlib_smoke_e2e() {
     // single-step construction is unambiguous (no compose round-trip).
     let cyl_xform = get_value(v, "cyl_xform");
     let (cx_rot, cx_trans) = match cyl_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("cyl_xform: expected Transform, got {other:?}"),
     };
     let cyl_cos = std::f64::consts::FRAC_PI_4.cos();
     let cyl_sin = std::f64::consts::FRAC_PI_4.sin();
-    assert_orientation_close(cx_rot, (cyl_cos, 0.0, 0.0, cyl_sin), 1e-12, "cyl_xform rotation");
+    assert_orientation_close(
+        cx_rot,
+        (cyl_cos, 0.0, 0.0, cyl_sin),
+        1e-12,
+        "cyl_xform rotation",
+    );
     assert_vec3_close(cx_trans, [0.0, 0.0, 1e-3], 1e-12, "cyl_xform translation");
-    assert_vec3_dim(cx_trans, DimensionVector::LENGTH, "cyl_xform translation dim");
+    assert_vec3_dim(
+        cx_trans,
+        DimensionVector::LENGTH,
+        "cyl_xform translation dim",
+    );
 
     // cyl_jac = joint_jacobian(cyl) → Value::List of two analytic twist columns:
     //   [0] = prismatic DOF: angular=[0,0,0], linear=unit_axis = [0,0,1]
@@ -822,12 +886,19 @@ fn kinematic_stdlib_smoke_e2e() {
     // Math: ratio = 1e-3/(2π); coupled = ratio * 2π = 1e-3 m along prismatic-X axis.
     let screw_xform = get_value(v, "screw_xform");
     let (sx_rot, sx_trans) = match screw_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("screw_xform: expected Transform, got {other:?}"),
     };
     assert_orientation_close(sx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "screw_xform rotation");
     assert_vec3_close(sx_trans, [1e-3, 0.0, 0.0], 1e-12, "screw_xform translation");
-    assert_vec3_dim(sx_trans, DimensionVector::LENGTH, "screw_xform translation dim");
+    assert_vec3_dim(
+        sx_trans,
+        DimensionVector::LENGTH,
+        "screw_xform translation dim",
+    );
 
     // screw_jac = joint_jacobian(screw_joint) → linear = [ratio, 0, 0] = [1e-3/(2π), 0, 0], angular = [0,0,0]
     let screw_jac = get_value(v, "screw_jac");
@@ -861,12 +932,20 @@ fn kinematic_stdlib_smoke_e2e() {
     //   rotation = (cos(-π/4), 0, 0, sin(-π/4)), zero translation
     let gear_xform = get_value(v, "gear_xform");
     let (gx_rot, gx_trans) = match gear_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("gear_xform: expected Transform, got {other:?}"),
     };
     let gear_cos = (-pi / 4.0).cos();
     let gear_sin = (-pi / 4.0).sin();
-    assert_orientation_close(gx_rot, (gear_cos, 0.0, 0.0, gear_sin), 1e-12, "gear_xform rotation");
+    assert_orientation_close(
+        gx_rot,
+        (gear_cos, 0.0, 0.0, gear_sin),
+        1e-12,
+        "gear_xform rotation",
+    );
     assert_vec3_close(gx_trans, [0.0, 0.0, 0.0], 1e-12, "gear_xform translation");
 
     // gear_jac = joint_jacobian(gear_joint) → angular = [0, 0, ratio] = [0, 0, -1.5], linear = [0,0,0]
@@ -900,13 +979,25 @@ fn kinematic_stdlib_smoke_e2e() {
     //   translation [0.02π, 0, 0] LENGTH, identity rotation
     let rp_xform = get_value(v, "rp_xform");
     let (rx_rot, rx_trans) = match rp_xform {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("rp_xform: expected Transform, got {other:?}"),
     };
     assert_orientation_close(rx_rot, (1.0, 0.0, 0.0, 0.0), 1e-12, "rp_xform rotation");
     let rp_expected_x = 0.01 * 2.0 * pi;
-    assert_vec3_close(rx_trans, [rp_expected_x, 0.0, 0.0], 1e-12, "rp_xform translation");
-    assert_vec3_dim(rx_trans, DimensionVector::LENGTH, "rp_xform translation dim");
+    assert_vec3_close(
+        rx_trans,
+        [rp_expected_x, 0.0, 0.0],
+        1e-12,
+        "rp_xform translation",
+    );
+    assert_vec3_dim(
+        rx_trans,
+        DimensionVector::LENGTH,
+        "rp_xform translation dim",
+    );
 
     // rp_jac = joint_jacobian(rp_joint) → linear = [0.01, 0, 0], angular = [0,0,0]
     let rp_jac = get_value(v, "rp_jac");

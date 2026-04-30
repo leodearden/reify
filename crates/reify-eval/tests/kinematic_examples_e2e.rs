@@ -39,8 +39,7 @@ const DP_PATH: &str = concat!(
 fn cmb_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(CMB_PATH)
-            .unwrap_or_else(|e| panic!("{CMB_PATH} should exist: {e}"))
+        std::fs::read_to_string(CMB_PATH).unwrap_or_else(|e| panic!("{CMB_PATH} should exist: {e}"))
     })
     .as_str()
 }
@@ -64,7 +63,10 @@ fn cmb_compiled() -> &'static CompiledModule {
 #[test]
 fn counter_mass_balance_compiles_clean() {
     let source = cmb_source();
-    assert!(!source.is_empty(), "counter_mass_balance.ri should be non-empty");
+    assert!(
+        !source.is_empty(),
+        "counter_mass_balance.ri should be non-empty"
+    );
     // Compile (or return the cached module); panics on any Error diagnostic.
     let _ = cmb_compiled();
 }
@@ -175,8 +177,7 @@ fn counter_mass_balance_constraints_all_satisfied() {
 fn dp_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(DP_PATH)
-            .unwrap_or_else(|e| panic!("{DP_PATH} should exist: {e}"))
+        std::fs::read_to_string(DP_PATH).unwrap_or_else(|e| panic!("{DP_PATH} should exist: {e}"))
     })
     .as_str()
 }

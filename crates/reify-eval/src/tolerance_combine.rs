@@ -238,7 +238,10 @@ mod tests {
             Type::StructureRef("Structure".to_string()),
         );
         let tol_arg = CompiledExpr::literal(
-            Value::Scalar { si_value, dimension },
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
             Type::Scalar { dimension },
         );
         let expr = CompiledExpr::user_function_call(
@@ -339,12 +342,8 @@ mod tests {
         // skipped by Gate 4c (>= 0.0). Without this gate, a negative bound
         // would survive extraction, then panic the combiner's debug-assert
         // in debug builds and win an `o.min(p)` race in release builds.
-        let (id_g, data_g) = representation_within_constraint_node(
-            "STEPOutput",
-            5,
-            -1e-3,
-            DimensionVector::LENGTH,
-        );
+        let (id_g, data_g) =
+            representation_within_constraint_node("STEPOutput", 5, -1e-3, DimensionVector::LENGTH);
         constraints.insert(id_g, data_g);
 
         // (h) Non-`UserFunctionCall` outer kind under STEPOutput — silently

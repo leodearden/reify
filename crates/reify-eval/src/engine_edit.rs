@@ -29,9 +29,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{
-    CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule,
-};
+use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
 use reify_types::{
     AutoParam, CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic,
     PersistentMap, RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance,
@@ -1734,10 +1732,7 @@ impl Engine {
                             // substring-rewrite edge-case discussion.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
-                                t.variable,
-                                t.parent_entity,
-                                t.collection_sub_name,
-                                t_idx,
+                                t.variable, t.parent_entity, t.collection_sub_name, t_idx,
                             );
                             for i in 0..new_count {
                                 let rewritten_left = rewrite_port_placeholder(
@@ -1751,16 +1746,11 @@ impl Engine {
                                     i,
                                 );
 
-                                let cnid =
-                                    ConstraintNodeId::new(&cnid_entity, i as u32);
-                                let id_hash =
-                                    ContentHash::of_str(&format!("{}", cnid));
-                                let label =
-                                    format!("forall_connect@{}[{}]", t.variable, i);
-                                let compat_expr = CompiledExpr::literal(
-                                    Value::Bool(true),
-                                    Type::Bool,
-                                );
+                                let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
+                                let id_hash = ContentHash::of_str(&format!("{}", cnid));
+                                let label = format!("forall_connect@{}[{}]", t.variable, i);
+                                let compat_expr =
+                                    CompiledExpr::literal(Value::Bool(true), Type::Bool);
                                 let node = ConstraintNodeData {
                                     id: cnid.clone(),
                                     label: Some(label),
@@ -1768,10 +1758,7 @@ impl Engine {
                                     content_hash: id_hash.combine(compat_expr.content_hash),
                                     optimized_target: None,
                                 };
-                                new_snapshot
-                                    .graph
-                                    .constraints
-                                    .insert(cnid.clone(), node);
+                                new_snapshot.graph.constraints.insert(cnid.clone(), node);
                                 new_snapshot.graph.connections.push(CompiledConnection {
                                     left_port: rewritten_left,
                                     operator: *operator,
@@ -1811,18 +1798,15 @@ impl Engine {
                             );
 
                             for i in 0..new_count {
-                                let target_entity = format!(
-                                    "{}.{}[{}]",
-                                    t.parent_entity, t.collection_sub_name, i
-                                );
-                                let rewritten =
-                                    body_expr.clone().map_value_refs(&mut |id| {
-                                        if id.entity == placeholder_entity {
-                                            ValueCellId::new(&target_entity, &id.member)
-                                        } else {
-                                            id
-                                        }
-                                    });
+                                let target_entity =
+                                    format!("{}.{}[{}]", t.parent_entity, t.collection_sub_name, i);
+                                let rewritten = body_expr.clone().map_value_refs(&mut |id| {
+                                    if id.entity == placeholder_entity {
+                                        ValueCellId::new(&target_entity, &id.member)
+                                    } else {
+                                        id
+                                    }
+                                });
 
                                 let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
                                 let id_hash = ContentHash::of_str(&format!("{}", cnid));
@@ -1834,10 +1818,7 @@ impl Engine {
                                     content_hash: id_hash.combine(rewritten.content_hash),
                                     optimized_target: None,
                                 };
-                                new_snapshot
-                                    .graph
-                                    .constraints
-                                    .insert(cnid.clone(), node);
+                                new_snapshot.graph.constraints.insert(cnid.clone(), node);
                                 fresh_ids.push(cnid);
                             }
                         }

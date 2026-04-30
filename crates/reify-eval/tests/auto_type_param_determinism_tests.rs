@@ -35,7 +35,9 @@ use reify_compiler::auto_type_param::{
     filter_feasible_candidates, select_candidate,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
-use reify_test_support::{MockConstraintChecker, check_source_with_stdlib, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, check_source_with_stdlib, parse_and_compile_with_stdlib,
+};
 use reify_types::{DiagnosticCode, Satisfaction, Severity, SourceSpan};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -82,8 +84,7 @@ const SKIP_SET: &[(&str, &str)] = &[
 fn source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH)
-            .expect("examples/bearing_auto_seal.ri should exist")
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/bearing_auto_seal.ri should exist")
     })
     .as_str()
 }
@@ -137,7 +138,12 @@ fn build_registries(
 fn run_pipeline_with_default(
     module: &CompiledModule,
     default: Satisfaction,
-) -> (CandidateEnumeration, FeasibilityResult, SelectionResult, Vec<DiagnosticCode>) {
+) -> (
+    CandidateEnumeration,
+    FeasibilityResult,
+    SelectionResult,
+    Vec<DiagnosticCode>,
+) {
     let (template_registry, trait_registry) = build_registries(module);
 
     let bearing = template_registry
@@ -161,9 +167,7 @@ fn run_pipeline_with_default(
         CandidateEnumeration::Found(candidates) => {
             filter_feasible_candidates(candidates, bearing, &checker, functions)
         }
-        CandidateEnumeration::Empty => {
-            FeasibilityResult::Empty { rejected: vec![] }
-        }
+        CandidateEnumeration::Empty => FeasibilityResult::Empty { rejected: vec![] },
         CandidateEnumeration::Overflow(_) => {
             // Overflow is a hard error; skip feasibility as specified.
             FeasibilityResult::Empty { rejected: vec![] }
@@ -178,16 +182,20 @@ fn run_pipeline_with_default(
         &mut diagnostics,
     );
 
-    let codes: Vec<DiagnosticCode> = diagnostics
-        .iter()
-        .filter_map(|d| d.code)
-        .collect();
+    let codes: Vec<DiagnosticCode> = diagnostics.iter().filter_map(|d| d.code).collect();
 
     (enumeration, feasibility, selection, codes)
 }
 
 /// Run the pipeline with `Satisfaction::Satisfied` (all candidates accepted).
-fn run_pipeline(module: &CompiledModule) -> (CandidateEnumeration, FeasibilityResult, SelectionResult, Vec<DiagnosticCode>) {
+fn run_pipeline(
+    module: &CompiledModule,
+) -> (
+    CandidateEnumeration,
+    FeasibilityResult,
+    SelectionResult,
+    Vec<DiagnosticCode>,
+) {
     run_pipeline_with_default(module, Satisfaction::Satisfied)
 }
 
@@ -202,7 +210,8 @@ fn relative_to_examples_dir(path: &Path) -> String {
             e
         )
     });
-    rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
+    rel.to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
 /// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted.
@@ -323,8 +332,7 @@ fn enumerate_candidates_pipeline_is_byte_stable_across_50_iterations() {
         match &result_0 {
             None => result_0 = Some(result),
             Some(r0) => assert_eq!(
-                &result,
-                r0,
+                &result, r0,
                 "enumerate_candidates result differed on iteration {i} (HashMap re-randomization?)"
             ),
         }
@@ -411,7 +419,9 @@ fn pipeline_output_is_stable_under_no_candidate_arm() {
     // renamed E_AUTO_TYPE_PARAM_NO_CANDIDATE would still satisfy the tuple
     // equality above, so assert the code's existence directly.
     assert!(
-        tuple_1.3.contains(&DiagnosticCode::AutoTypeParamNoCandidate),
+        tuple_1
+            .3
+            .contains(&DiagnosticCode::AutoTypeParamNoCandidate),
         "expected AutoTypeParamNoCandidate (E_AUTO_TYPE_PARAM_NO_CANDIDATE) in emitted diag codes, got: {:?}",
         tuple_1.3
     );
@@ -500,10 +510,7 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 #[test]
 fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
     let paths = discover_ri_files();
-    let rel_paths: Vec<String> = paths
-        .iter()
-        .map(|p| relative_to_examples_dir(p))
-        .collect();
+    let rel_paths: Vec<String> = paths.iter().map(|p| relative_to_examples_dir(p)).collect();
 
     assert!(
         rel_paths.iter().any(|r| r == "bearing_auto_seal.ri"),
@@ -511,4 +518,3 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
          found: {rel_paths:#?}"
     );
 }
-

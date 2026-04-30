@@ -20,7 +20,12 @@ use reify_types::{CompiledExpr, DimensionVector, ModulePath, Type, Value, ValueC
 /// needs to be made here.
 fn step_output_template_with_body(body: CompiledExpr) -> reify_compiler::TopologyTemplate {
     TopologyTemplateBuilder::new("STEPOutput")
-        .param("STEPOutput", "subject", Type::StructureRef("Structure".to_string()), None)
+        .param(
+            "STEPOutput",
+            "subject",
+            Type::StructureRef("Structure".to_string()),
+            None,
+        )
         .constraint("STEPOutput", 0, None, body)
         .build()
 }
@@ -121,10 +126,11 @@ fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
     //     (no purpose with RepresentationWithin). Evaluate without
     //     activating any purpose → only the output bound contributes.
     {
-        let module = CompiledModuleBuilder::new(ModulePath::new(vec!["test_output_only".to_string()]))
-            .template(step_output_template(1e-6))
-            .template(my_design_template())
-            .build();
+        let module =
+            CompiledModuleBuilder::new(ModulePath::new(vec!["test_output_only".to_string()]))
+                .template(step_output_template(1e-6))
+                .template(my_design_template())
+                .build();
         let mut engine = make_engine();
         engine.eval(&module);
         // No `activate_purpose` call — purpose-side contributes None.
@@ -141,10 +147,11 @@ fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
     //     graph holds no STEPOutput-entity constraints → output_bound is None.
     //     Activate purpose → only the purpose bound contributes.
     {
-        let module = CompiledModuleBuilder::new(ModulePath::new(vec!["test_purpose_only".to_string()]))
-            .template(my_design_template())
-            .compiled_purpose(manufacturing_purpose("manufacturing", 50e-6))
-            .build();
+        let module =
+            CompiledModuleBuilder::new(ModulePath::new(vec!["test_purpose_only".to_string()]))
+                .template(my_design_template())
+                .compiled_purpose(manufacturing_purpose("manufacturing", 50e-6))
+                .build();
         let mut engine = make_engine();
         engine.eval(&module);
         engine.activate_purpose("manufacturing", "MyDesign");

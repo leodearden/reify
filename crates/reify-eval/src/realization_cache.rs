@@ -260,12 +260,19 @@ mod tests {
 
         // One insert: len becomes 1.
         cache.insert("E1", ReprKind::BRep, 0.01, 1);
-        assert!(!cache.is_empty(), "cache must not be empty after first insert");
+        assert!(
+            !cache.is_empty(),
+            "cache must not be empty after first insert"
+        );
         assert_eq!(cache.len(), 1, "len must be 1 after first insert");
 
         // Second insert under a different (entity, repr_kind) pair: len becomes 2.
         cache.insert("E1", ReprKind::Mesh, 0.01, 2);
-        assert_eq!(cache.len(), 2, "len must be 2 after two inserts at different keys");
+        assert_eq!(
+            cache.len(),
+            2,
+            "len must be 2 after two inserts at different keys"
+        );
     }
 
     /// Inserting at a looser tolerance when a tighter entry is already cached must be
@@ -286,7 +293,10 @@ mod tests {
 
         // Attempt to insert at looser tolerance (0.1); existing 0.01 ≤ 0.1 → reject.
         let second = cache.insert("A", ReprKind::BRep, 0.1, 2);
-        assert!(!second, "looser insert must be rejected when tighter entry is cached");
+        assert!(
+            !second,
+            "looser insert must be rejected when tighter entry is cached"
+        );
 
         // The original tighter value must still be present.
         assert_eq!(

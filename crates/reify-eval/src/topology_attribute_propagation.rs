@@ -128,8 +128,11 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     let mut face_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
     let mut edge_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
 
-    let mut face_ctx =
-        SplitContext::new(splitting_feature_id, &face_child_counts, &mut face_split_counters);
+    let mut face_ctx = SplitContext::new(
+        splitting_feature_id,
+        &face_child_counts,
+        &mut face_split_counters,
+    );
     // Faces: Modified ∪ Generated.
     for record in history
         .face_modified
@@ -146,8 +149,11 @@ pub fn propagate_attributes_via_brepalgoapi_history(
         )?;
     }
 
-    let mut edge_ctx =
-        SplitContext::new(splitting_feature_id, &edge_child_counts, &mut edge_split_counters);
+    let mut edge_ctx = SplitContext::new(
+        splitting_feature_id,
+        &edge_child_counts,
+        &mut edge_split_counters,
+    );
     // Edges: Modified ∪ Generated.
     for record in history
         .edge_modified
@@ -229,7 +235,11 @@ impl<'a> SplitContext<'a> {
         child_counts: &'a HashMap<(u8, u32), usize>,
         split_counters: &'a mut HashMap<(u8, u32), u32>,
     ) -> Self {
-        Self { feature_id, child_counts, split_counters }
+        Self {
+            feature_id,
+            child_counts,
+            split_counters,
+        }
     }
 }
 
@@ -2287,10 +2297,7 @@ mod tests {
     fn loft_layout_for_step9() -> LoftLayout {
         LoftLayout {
             // Two sections; each has 1 profile face and 2 profile edges.
-            section_faces: vec![
-                vec![GeometryHandleId(701)],
-                vec![GeometryHandleId(702)],
-            ],
+            section_faces: vec![vec![GeometryHandleId(701)], vec![GeometryHandleId(702)]],
             section_edges: vec![
                 vec![GeometryHandleId(801), GeometryHandleId(802)],
                 vec![GeometryHandleId(803), GeometryHandleId(804)],
@@ -2613,18 +2620,17 @@ mod tests {
             let result_edges: Vec<GeometryHandleId> = vec![];
             let history = LoftOpHistoryRecords::default();
 
-            let call_result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _ = populate_loft_attributes(
-                        &mut table,
-                        &feature_id,
-                        &section_faces,
-                        &section_edges,
-                        &result_faces,
-                        &result_edges,
-                        &history,
-                    );
-                }));
+            let call_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = populate_loft_attributes(
+                    &mut table,
+                    &feature_id,
+                    &section_faces,
+                    &section_edges,
+                    &result_faces,
+                    &result_edges,
+                    &history,
+                );
+            }));
             assert!(
                 call_result.is_err(),
                 "expected lockstep panic for (faces={nfaces}, edges={nedges}) but none fired"
@@ -2636,9 +2642,7 @@ mod tests {
                 .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("<non-string panic payload>");
             assert!(
-                msg.contains(
-                    "loft section face/edge slice families must be built in lockstep"
-                ),
+                msg.contains("loft section face/edge slice families must be built in lockstep"),
                 "wrong panic for (faces={nfaces}, edges={nedges}): {msg:?}"
             );
         }

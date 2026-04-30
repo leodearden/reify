@@ -10,8 +10,8 @@ use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, DiagnosticCode, ErrorRef,
     FIELD_ENTITY_PREFIX, Freshness, InterpolationKind, PersistentMap, ResolutionProblem,
-    SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
+    SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId,
+    ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -872,8 +872,7 @@ fn build_sampled_field(
 /// interpolation-deferred warning emission contract).
 fn push_invalid_config(ctx: &reify_expr::EvalContext<'_>, msg: String) {
     if let Some(sink) = ctx.diagnostics {
-        let diag =
-            Diagnostic::warning(msg).with_code(DiagnosticCode::FieldSampledInvalidConfig);
+        let diag = Diagnostic::warning(msg).with_code(DiagnosticCode::FieldSampledInvalidConfig);
         sink.borrow_mut().push(diag);
     }
 }
@@ -943,10 +942,7 @@ fn parse_grid_kind(grid_val: &Value) -> Option<SampledGridKind> {
 /// Map a `bounds = …` value (a `Value::BoundingBox`) to `(bounds_min, bounds_max)`
 /// per-axis SI coordinates.  For `Regular1D`/`2D`, projects extra components
 /// of the 3-component `Point3` corners.
-fn parse_bounds(
-    bounds_val: &Value,
-    kind: SampledGridKind,
-) -> Option<(Vec<f64>, Vec<f64>)> {
+fn parse_bounds(bounds_val: &Value, kind: SampledGridKind) -> Option<(Vec<f64>, Vec<f64>)> {
     let (min_pt, max_pt) = match bounds_val {
         Value::BoundingBox { min, max } => (min.as_ref(), max.as_ref()),
         _ => return None,
@@ -1080,9 +1076,7 @@ fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
     // exact-fit cases (e.g. (2.0 - 0.0) / 1.0 → 1.999… instead of 2).
     let n_intervals = (span / spacing).round() as usize;
     let count = n_intervals + 1;
-    (0..count)
-        .map(|i| start + (i as f64) * spacing)
-        .collect()
+    (0..count).map(|i| start + (i as f64) * spacing).collect()
 }
 
 impl Engine {

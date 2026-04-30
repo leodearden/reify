@@ -267,7 +267,10 @@ mod tests {
             Type::StructureRef(subject_kind.to_string()),
         );
         let tol_arg = CompiledExpr::literal(
-            Value::Scalar { si_value, dimension },
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
             Type::Scalar { dimension },
         );
         CompiledExpr::user_function_call(
@@ -279,12 +282,8 @@ mod tests {
 
     #[test]
     fn extract_tolerance_bindings_returns_single_binding_for_one_representation_within() {
-        let constraint_expr = representation_within_constraint(
-            "subject",
-            "Bracket",
-            1e-6,
-            DimensionVector::LENGTH,
-        );
+        let constraint_expr =
+            representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH);
 
         let purpose = CompiledPurposeBuilder::new("manufacturing")
             .param("subject", "Structure")
@@ -313,21 +312,14 @@ mod tests {
         // (b) BinOp(Gt, ValueRef(...), Literal(Real(0.0))) — wrong outer node kind.
         let binop_constraint = CompiledExpr::binop(
             BinOp::Gt,
-            CompiledExpr::value_ref(
-                ValueCellId::new("subject", "thickness"),
-                Type::Real,
-            ),
+            CompiledExpr::value_ref(ValueCellId::new("subject", "thickness"), Type::Real),
             CompiledExpr::literal(Value::Real(0.0), Type::Real),
             Type::Bool,
         );
 
         // (c) A valid RepresentationWithin.
-        let rep_within = representation_within_constraint(
-            "subject",
-            "Bracket",
-            5e-6,
-            DimensionVector::LENGTH,
-        );
+        let rep_within =
+            representation_within_constraint("subject", "Bracket", 5e-6, DimensionVector::LENGTH);
 
         let purpose = CompiledPurposeBuilder::new("manufacturing")
             .param("subject", "Structure")
@@ -492,12 +484,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "single-binding contract")]
     fn extract_tolerance_bindings_panics_on_multi_param_subjects_in_debug() {
-        let constraint_subject = representation_within_constraint(
-            "subject",
-            "Bracket",
-            1e-6,
-            DimensionVector::LENGTH,
-        );
+        let constraint_subject =
+            representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH);
         let constraint_other = representation_within_constraint(
             "other_param",
             "Bracket",
@@ -524,12 +512,8 @@ mod tests {
     /// accepts 0.0 under the same `>= 0.0` gate).
     #[test]
     fn extract_tolerance_bindings_accepts_zero_tolerance_literal() {
-        let constraint_expr = representation_within_constraint(
-            "subject",
-            "Bracket",
-            0.0,
-            DimensionVector::LENGTH,
-        );
+        let constraint_expr =
+            representation_within_constraint("subject", "Bracket", 0.0, DimensionVector::LENGTH);
 
         let purpose = CompiledPurposeBuilder::new("manufacturing")
             .param("subject", "Structure")

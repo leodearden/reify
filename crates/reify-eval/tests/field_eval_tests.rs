@@ -1182,11 +1182,7 @@ fn eval_sampled_field_elaborates_to_sampled_field_value() {
         .unwrap_or_else(|| panic!("field 'f' not found in eval result values"));
 
     let lambda = match field_val {
-        Value::Field {
-            source,
-            lambda,
-            ..
-        } => {
+        Value::Field { source, lambda, .. } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
                 "expected FieldSourceKind::Sampled, got: {:?}",
@@ -1227,11 +1223,7 @@ fn eval_sampled_field_elaborates_to_sampled_field_value() {
         InterpolationKind::Linear,
         "interpolation = \"Linear\""
     );
-    assert_eq!(
-        sf.data,
-        vec![0.0, 1.0, 2.0],
-        "data in SI units, row-major"
-    );
+    assert_eq!(sf.data, vec![0.0, 1.0, 2.0], "data in SI units, row-major");
     assert_eq!(
         sf.axis_grids.len(),
         1,
@@ -1477,8 +1469,7 @@ structure S {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
-                && d.code == Some(DiagnosticCode::FieldOutOfBounds)
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FieldOutOfBounds)
         })
         .collect();
     assert_eq!(
@@ -1532,8 +1523,7 @@ structure S {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
-                && d.code == Some(DiagnosticCode::InterpolationDeferred)
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::InterpolationDeferred)
         })
         .collect();
     assert!(
@@ -1589,8 +1579,7 @@ structure S {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
-                && d.code == Some(DiagnosticCode::InterpolationDeferred)
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::InterpolationDeferred)
         })
         .collect();
     assert!(

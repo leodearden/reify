@@ -406,7 +406,10 @@ fn try_cluster_after_split(
     // clusters (e.g. [A, A, A]) and partially-duplicate ones (e.g. [A, A, B])
     // where some elements remain indistinguishable to the future task-10
     // split_by(...) selector; fall through to Unresolved in those cases.
-    if !matches.windows(2).all(|w| w[0].1.mod_history != w[1].1.mod_history) {
+    if !matches
+        .windows(2)
+        .all(|w| w[0].1.mod_history != w[1].1.mod_history)
+    {
         return None;
     }
     emit_split_children_diagnostic(selector_span, matches.len(), diagnostics);
