@@ -2644,6 +2644,24 @@ structure def S {
     }
 }
 
+/// Unit test: `with_first_forall_constraint` invokes the caller-supplied
+/// closure with the first `ForallConstraintDecl` found in the named structure.
+///
+/// Initially fails to compile because `with_first_forall_constraint` does not
+/// exist yet (step 3 of the extract-shared-helper refactor).
+#[test]
+fn with_first_forall_constraint_invokes_closure_with_matched_node() {
+    let source = r#"
+structure S {
+    forall v in [1, 2, 3]: constraint v > 0
+}
+"#;
+    let (variable, span) =
+        with_first_forall_constraint(source, "S", |f| (f.variable.clone(), f.span));
+    assert_eq!(variable, "v", "expected bound variable 'v', got {:?}", variable);
+    assert!(span.len() > 0, "expected non-empty forall span, got {:?}", span);
+}
+
 /// Unit test: `with_first_forall_connect` invokes the caller-supplied closure
 /// with the first `ForallConnectDecl` found in the named structure.
 ///
