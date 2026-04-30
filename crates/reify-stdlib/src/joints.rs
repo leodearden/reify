@@ -64,10 +64,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 Some(c) => c,
                 None => return Some(Value::Undef),
             };
-            // Perpendicularity check: |dot(unit_x, unit_y)| < 1e-9.
-            // Normalise each axis first so the dot product is in cos-angle units.
-            // `unit_normalize` is shared with `unit_axes_xy_from_planar_map` below;
-            // the single tolerance (1e-9) is documented in that helper's doc-comment.
+            // Perpendicularity check: `|dot(unit_x, unit_y)| < 1e-9`.  Normalise
+            // each axis first so the dot product is in cos-angle units.  Rationale
+            // and FP-tolerance discussion live on `unit_axes_xy_from_planar_map`
+            // (single source of truth; see also docs/prds/v0_2/per-purpose-tolerance.md).
             let unit_x = unit_normalize(comps_x);
             let unit_y = unit_normalize(comps_y);
             let dot = unit_x[0] * unit_y[0] + unit_x[1] * unit_y[1] + unit_x[2] * unit_y[2];
@@ -1013,6 +1013,31 @@ fn unit_normalize(comps: [f64; 3]) -> [f64; 3] {
 /// would have been rejected by the constructor.  The check is defence-in-depth:
 /// the constructor rejects non-perpendicular axes before storing a Map, but
 /// hand-built Maps can bypass the constructor and reach `transform_at` directly.
+///
+/// ## Why 1e-9?
+///
+/// `|dot(unit_x, unit_y)| < 1e-9` corresponds to axes within ~1e-9 rad
+/// (~2e-4 arcsec) of true perpendicularity.  The threshold is deliberately
+/// *tight* so that visibly non-perpendicular axes (e.g. dot ≈ 1e-6 ≈ 0.2 arcsec)
+/// are rejected and surface as `Undef` rather than silently propagating as slop.
+///
+/// **Hand-typed unit vectors are unaffected.**  Exact unit vectors such as
+/// `(1,0,0)` and `(0,1,0)` produce a literal `0.0` dot product in IEEE 754,
+/// which trivially passes the 1e-9 guard.
+///
+/// **Typical FP-derived axes are also unaffected.**  Standard floating-point
+/// chains (one or two normalisations, a rotation or two) accumulate roughly
+/// 1e-15 error per operation — six orders of magnitude below the 1e-9 bound.
+/// Only pathological chains (many successive rotations without re-normalisation)
+/// can approach the bound; callers in that regime should pre-normalise their axes
+/// (e.g. compute `axis_y = cross(axis_z, axis_x)` and re-normalise) rather than
+/// relying on the constructor or this helper to absorb accumulated slop.
+///
+/// **Why not tune this threshold here?**  Per-purpose tolerances are explicitly
+/// deferred to v0.2 — see `docs/prds/v0_2/per-purpose-tolerance.md` ("Status:
+/// deferred to v0.2 per 2026-04-26 decision").  v0.1 carries a single global
+/// tolerance with no per-purpose dispatch; hard-coded thresholds in joint
+/// constructors will be revisited holistically when that infrastructure ships.
 fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3], [f64; 3])> {
     let axis_x_val = map.get(&Value::String("axis_x".to_string()))?;
     let axis_y_val = map.get(&Value::String("axis_y".to_string()))?;
