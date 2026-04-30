@@ -16,8 +16,25 @@ use reify_types::Value;
 /// a list helper, signalling `eval_builtin` to fall through to the next
 /// per-domain dispatcher. Returns `Some(Value::Undef)` for ill-typed inputs
 /// (the stdlib convention is "claim the name, return Undef on error").
-pub(crate) fn eval_list(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_list(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        // `single(list)` returns the sole element of a one-element list.
+        // Empty, multi-element, non-list, or wrong arg count → Undef.
+        "single" => {
+            if args.len() != 1 {
+                Value::Undef
+            } else if let Value::List(items) = &args[0] {
+                if items.len() == 1 {
+                    items[0].clone()
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
