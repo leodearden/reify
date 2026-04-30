@@ -129,6 +129,35 @@ pub struct EvaluationGraph {
     /// per-bucket sub-hash with domain separation) so cache keys vary
     /// when the connection set changes.
     pub connections: Vec<CompiledConnection>,
+
+    /// Resolved `auto:` type-parameter substitution map for this graph.
+    ///
+    /// Each entry is `(param_name, concrete_template_name)`, e.g.
+    /// `("T", "ORingSeal")`. Set by the caller after `from_templates` to
+    /// communicate the outcome of `resolve_auto_type_params` (Phase A→B→C
+    /// in `crates/reify-compiler/src/auto_type_param.rs`).
+    ///
+    /// **Source:** consumes `MultiParamResolutionOutcome.substitution`
+    /// (`crates/reify-compiler/src/auto_type_param.rs:166-172`) directly
+    /// without an adapter — the shape is identical `Vec<(param_name,
+    /// template_name)>`. This is the v0.1 consumer described by the Phase D
+    /// note at `auto_type_param.rs:81-87`.
+    ///
+    /// **Hash stability:** mixed into `topology_fingerprint` (a seventh
+    /// per-bucket sub-hash with domain separation). The bucket sorts
+    /// entries by `param_name` before hashing so that the same logical
+    /// substitution map always produces the same fingerprint regardless
+    /// of Vec insertion order (revert-stable: same candidate re-selected
+    /// after a parameter edit + revert → same fingerprint → cache reuse).
+    /// See arch §6.2 row 5, §6.4, and PRD task 5 criterion 7.
+    ///
+    /// **Empty-Vec note:** an empty Vec (the `Default` value) contributes
+    /// `ContentHash(0)` to the bucket via `combine_all([])`'s neutral-element
+    /// semantics, which is then mixed into the seven-bucket `combine_all`.
+    /// The seven-bucket combination still differs from any pre-task-2388
+    /// six-bucket fingerprint: adding a bucket changes the rolled-up output
+    /// regardless of the bucket's content.
+    pub auto_type_substitution: Vec<(String, String)>,
 }
 
 impl EvaluationGraph {
@@ -600,7 +629,38 @@ impl EvaluationGraph {
             ContentHash::combine_all(per_conn)
         };
 
-        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash, conn_hash])
+        // Task 2388 / PRD task 5 criterion 7: auto type-param substitution
+        // bucket. Each (param_name, template_name) pair is hashed via a
+        // domain-separated prefix `"auto:<p>=<t>"`, following the same
+        // `"key:value"` convention used by the connections bucket above.
+        //
+        // step-3 contract: identical input Vecs (in identical order) produce
+        // identical bucket hashes — enforced by ContentHash determinism.
+        //
+        // step-7 back-compat contract: an empty Vec contributes
+        // ContentHash(0) to the bucket via combine_all([])'s neutral-element
+        // semantics — no special-case branch is needed.
+        //
+        // NOTE: insertion-order independence (sort-by-param_name) is added in
+        // step-6 so that the step-5 test can first demonstrate the failure.
+        let auto_type_sub_hash = {
+            let pair_hashes: Vec<ContentHash> = self
+                .auto_type_substitution
+                .iter()
+                .map(|(p, t)| ContentHash::of_str(&format!("auto:{}={}", p, t)))
+                .collect();
+            ContentHash::combine_all(pair_hashes)
+        };
+
+        ContentHash::combine_all([
+            vc_hash,
+            cn_hash,
+            real_hash,
+            res_hash,
+            guard_hash,
+            conn_hash,
+            auto_type_sub_hash,
+        ])
     }
 }
 
