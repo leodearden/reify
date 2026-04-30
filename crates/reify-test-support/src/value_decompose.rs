@@ -2,8 +2,12 @@ use reify_types::Value;
 
 /// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
 pub fn read_f64(v: &Value, label: &str) -> f64 {
-    let _ = (v, label);
-    unimplemented!()
+    match v {
+        Value::Real(r) => *r,
+        Value::Scalar { si_value, .. } => *si_value,
+        Value::Int(i) => *i as f64,
+        other => panic!("{label}: expected numeric component, got {other:?}"),
+    }
 }
 
 /// Decompose a `Value::Point` of three numeric components into `[f64; 3]` (SI).
