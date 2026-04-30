@@ -72,6 +72,28 @@ fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
     Some(((rw, rx, ry, rz), t, dim))
 }
 
+/// Normalize a quaternion tuple `(w, x, y, z)` to unit length using the shared
+/// `1e-24` squared-norm gate, returning `None` if the quaternion is too small.
+///
+/// The `1e-24` threshold (= `(1e-12)²`) is intentionally looser than `f64::EPSILON`
+/// (`~2.22e-16`): it accepts raw input quaternions whose norm is as small as `~1e-12`
+/// and normalises them, while still rejecting genuinely-zero or denormal-risking inputs.
+/// The previous `f64::EPSILON` gate rejected anything with norm < `~1.5e-8`, which was
+/// needlessly strict — dividing by a `1e-12` norm still yields finite, well-scaled unit
+/// components.
+///
+/// Called by `transform_log`, `transform_inverse`, and `transform_compose` for
+/// input-side quaternion normalization, unifying three formerly near-identical blocks.
+fn normalize_quat_tuple_gate24(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
+    let (w, x, y, z) = q;
+    let norm_sq = w * w + x * x + y * y + z * z;
+    if norm_sq < 1e-24 {
+        return None;
+    }
+    let norm = norm_sq.sqrt();
+    Some((w / norm, x / norm, y / norm, z / norm))
+}
+
 /// Build a translation/twist component preserving the carried dimension:
 /// `DIMENSIONLESS → Value::Real(v)`, otherwise `Value::Scalar { si_value, dim }`.
 ///
@@ -385,19 +407,11 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let (tx, ty, tz) = (t[0], t[1], t[2]);
             // Compute angular = orient_log(R): rotation vector ω.
             let (rw, rx, ry, rz) = r_q;
-            // Normalize quaternion first.
-            let r_norm_sq = rw * rw + rx * rx + ry * ry + rz * rz;
-            // Lower the gate to 1e-24 (= (1e-12)²) so raw input quaternions with
-            // norm down to ~1e-12 are accepted and normalized; only genuinely-zero
-            // or denormal-risking inputs are rejected. The previous f64::EPSILON
-            // gate rejected anything with norm < ~1.5e-8, which was needlessly
-            // strict given that division by a 1e-12 norm still yields finite,
-            // well-scaled unit components.
-            if r_norm_sq < 1e-24 {
-                return Some(Value::Undef);
-            }
-            let r_norm = r_norm_sq.sqrt();
-            let (nw, nx, ny, nz) = (rw / r_norm, rx / r_norm, ry / r_norm, rz / r_norm);
+            // Normalize quaternion first (1e-24 gate — see normalize_quat_tuple_gate24).
+            let (nw, nx, ny, nz) = match normalize_quat_tuple_gate24((rw, rx, ry, rz)) {
+                Some(q) => q,
+                None => return Some(Value::Undef),
+            };
             // Canonicalize quaternion sign: q and -q represent the same SO(3)
             // rotation. Flipping when nw < 0 ensures the small-angle Taylor
             // branch always sees nw ≈ +1 (so ω = +2*(nx,ny,nz) for q≈identity,
@@ -480,27 +494,17 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            // Normalize R first to be safe with non-unit input quaternions.
-            let r_norm_sq = r_q.0 * r_q.0 + r_q.1 * r_q.1 + r_q.2 * r_q.2 + r_q.3 * r_q.3;
-            // 1e-24 = (1e-12)² — see transform_log for the rationale.
-            if r_norm_sq < 1e-24 {
-                return Some(Value::Undef);
-            }
-            let r_norm = r_norm_sq.sqrt();
-            let r_n = (
-                r_q.0 / r_norm,
-                r_q.1 / r_norm,
-                r_q.2 / r_norm,
-                r_q.3 / r_norm,
-            );
+            // Normalize R first (1e-24 gate — see normalize_quat_tuple_gate24).
+            let r_n = match normalize_quat_tuple_gate24(r_q) {
+                Some(q) => q,
+                None => return Some(Value::Undef),
+            };
             // Inverse rotation = conjugate (for unit quaternion).
             let r_inv = quat_conj(r_n);
-            // We renormalize r_inv as a release-build safety net. quat_conj only
-            // negates imaginary parts so the unit-norm guarantee holds tightly
-            // here, but to keep the invariant uniform across the transform_*
-            // family — and to catch the overflow-corner case where r_n collapses
-            // to (0,0,0,0) before conjugation — we route through
-            // normalize_quaternion.
+            // Renormalize to handle the overflow corner: when the input norm_sq
+            // overflows to ∞ (e.g. w=1e200), r_n = q/∞ = (0,0,0,0), and
+            // quat_conj of zeros is zeros — normalize_quaternion rejects this and
+            // we return Undef instead of emitting a zero-norm Orientation.
             let r_inv_val =
                 match normalize_quaternion(r_inv.0, r_inv.1, r_inv.2, r_inv.3) {
                     Some(v) => v,
@@ -533,32 +537,16 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if t1_dim != t2_dim {
                 return Some(Value::Undef);
             }
-            // Normalize R1 and R2 symmetrically (matches operator-level semantics in reify-expr).
-            // 1e-24 = (1e-12)² — see transform_log for the rationale.
-            let r1_norm_sq =
-                r1_q.0 * r1_q.0 + r1_q.1 * r1_q.1 + r1_q.2 * r1_q.2 + r1_q.3 * r1_q.3;
-            if r1_norm_sq < 1e-24 {
-                return Some(Value::Undef);
-            }
-            let r2_norm_sq =
-                r2_q.0 * r2_q.0 + r2_q.1 * r2_q.1 + r2_q.2 * r2_q.2 + r2_q.3 * r2_q.3;
-            if r2_norm_sq < 1e-24 {
-                return Some(Value::Undef);
-            }
-            let r1_norm = r1_norm_sq.sqrt();
-            let r1_n = (
-                r1_q.0 / r1_norm,
-                r1_q.1 / r1_norm,
-                r1_q.2 / r1_norm,
-                r1_q.3 / r1_norm,
-            );
-            let r2_norm = r2_norm_sq.sqrt();
-            let r2_n = (
-                r2_q.0 / r2_norm,
-                r2_q.1 / r2_norm,
-                r2_q.2 / r2_norm,
-                r2_q.3 / r2_norm,
-            );
+            // Normalize R1 and R2 symmetrically (matches operator-level semantics in reify-expr;
+            // 1e-24 gate — see normalize_quat_tuple_gate24).
+            let r1_n = match normalize_quat_tuple_gate24(r1_q) {
+                Some(q) => q,
+                None => return Some(Value::Undef),
+            };
+            let r2_n = match normalize_quat_tuple_gate24(r2_q) {
+                Some(q) => q,
+                None => return Some(Value::Undef),
+            };
             // R = R1 * R2 (Hamilton product). Although r1_n and r2_n are explicitly
             // normalized above, we renormalize composed_r as a release-build safety
             // net: if a future precondition lift on quat_mul (or an overflow-corner
@@ -2778,6 +2766,23 @@ mod tests {
         );
     }
 
+    /// Same overflow corner as above but with a non-zero translation `(1.0, 2.0, 3.0)`.
+    ///
+    /// With zero translation the zero-norm rotation cannot independently produce
+    /// non-finite output via `quat_rotate`. This sibling test confirms that the
+    /// rotation-side `normalize_quaternion` short-circuits before `quat_rotate`
+    /// ever sees the collapsed `(0,0,0,0)` rotation — it is the rotation gate
+    /// that saves us, not coincidental zero translation.
+    #[test]
+    fn transform_compose_overflow_quaternion_nonzero_translation_returns_undef() {
+        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_t = make_transform(bad_rot, 1.0, 2.0, 3.0);
+        assert!(
+            eval_builtin("transform_compose", &[bad_t.clone(), bad_t]).is_undef(),
+            "expected Undef for overflow-corner quaternion with non-zero translation"
+        );
+    }
+
     // ── transform_inverse tests (step-17) ────────────────────────────────────
 
     /// transform_inverse(identity) == identity.
@@ -2934,6 +2939,23 @@ mod tests {
         assert!(
             eval_builtin("transform_inverse", std::slice::from_ref(&bad_t)).is_undef(),
             "expected Undef for overflow-corner quaternion but got a non-Undef result"
+        );
+    }
+
+    /// Same overflow corner as above but with a non-zero translation `(1.0, 2.0, 3.0)`.
+    ///
+    /// With zero translation the zero-norm rotation cannot independently produce
+    /// non-finite output via `quat_rotate`. This sibling test confirms that the
+    /// rotation-side `normalize_quaternion` short-circuits before `quat_rotate`
+    /// ever sees the collapsed `(0,0,0,0)` rotation — it is the rotation gate
+    /// that saves us, not coincidental zero translation.
+    #[test]
+    fn transform_inverse_overflow_quaternion_nonzero_translation_returns_undef() {
+        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_t = make_transform(bad_rot, 1.0, 2.0, 3.0);
+        assert!(
+            eval_builtin("transform_inverse", std::slice::from_ref(&bad_t)).is_undef(),
+            "expected Undef for overflow-corner quaternion with non-zero translation"
         );
     }
 
