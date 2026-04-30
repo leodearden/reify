@@ -79,6 +79,53 @@ pub(crate) fn is_geometry_query_helper(name: &str) -> bool {
     GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
 }
 
+/// The complete set of stdlib **kinematic-query** helper names recognised by
+/// the compiler. Sibling to [`GEOMETRY_QUERY_HELPER_NAMES`] — these helpers
+/// consume a Snapshot Map and dispatch at eval-time via
+/// `reify_eval::geometry_ops::try_eval_kinematic_query`, which queries the
+/// geometry kernel using `GeometryQuery::Distance` per body pair.
+///
+/// Unlike the conformance-query helpers (which all return `Type::Bool`), the
+/// kinematic helpers have three distinct result types — see
+/// [`kinematic_query_result_type`]. They share this list only for
+/// classification (recognised vs. fallback) — per-name type dispatch lives
+/// alongside the call site in `expr.rs`.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const GEOMETRY_KINEMATIC_QUERY_NAMES: &[&str] =
+    &["interferes", "interferes_with", "min_clearance"];
+
+pub(crate) fn is_geometry_kinematic_query(name: &str) -> bool {
+    GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&name)
+}
+
+/// Result type per kinematic-query helper. Matches the `Value` shape produced
+/// by `reify_eval::geometry_ops::try_eval_kinematic_query`:
+///
+/// - `interferes(snapshot)`        → `Type::List(Type::Map(...))`
+/// - `interferes_with(s, a, b)`    → `Type::Bool`
+/// - `min_clearance(s, a, b)`      → `Type::length()`
+///
+/// Returns `None` for any other name (caller falls through to its default
+/// type-inference path).
+pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_types::Type> {
+    use reify_types::Type;
+    Some(match name {
+        // List of pair Maps `{ "a": Int, "b": Int }`. We deliberately type as
+        // List of generic Map (Type::String → Type::Int) rather than a
+        // dedicated record type because Reify's surface Type lacks structural
+        // record syntax; the per-key contract is documented in the
+        // `try_eval_kinematic_query` Some(List(...)) arm.
+        "interferes" => Type::List(Box::new(Type::Map(
+            Box::new(Type::String),
+            Box::new(Type::Int),
+        ))),
+        "interferes_with" => Type::Bool,
+        "min_clearance" => Type::length(),
+        _ => return None,
+    })
+}
+
 // --- Unit conversion ---
 
 /// Convert a unit string and value to an SI-based `Value::Scalar`.

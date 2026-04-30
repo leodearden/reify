@@ -347,6 +347,18 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
+                // Task 2531: kinematic-query post-process (interferes /
+                // interferes_with / min_clearance). Mirrors the conformance-
+                // query wiring; runs after `named_steps` is populated so the
+                // helpers can resolve each Snapshot body's `solid` String to
+                // a `GeometryHandleId`.
+                Engine::post_process_kinematic_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
             }
 
             if step_handles.is_empty() {
@@ -455,6 +467,18 @@ impl Engine {
                 // build/build_snapshot realization-loop duplication is
                 // tracked separately).
                 Engine::post_process_conformance_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
+                // Task 2531: kinematic-query post-process (interferes /
+                // interferes_with / min_clearance). Mirrors the conformance-
+                // query wiring; runs after `named_steps` is populated so the
+                // helpers can resolve each Snapshot body's `solid` String to
+                // a `GeometryHandleId`.
+                Engine::post_process_kinematic_queries(
                     template,
                     &named_steps,
                     &mut values,
@@ -641,6 +665,16 @@ impl Engine {
             // `BuildResult.values`. See
             // `Engine::post_process_conformance_queries` docstring.
             Engine::post_process_conformance_queries(
+                template,
+                &named_steps,
+                values,
+                kernel.as_ref(),
+                diagnostics,
+            );
+            // Task 2531: see the build / build_snapshot wire-up. Tessellate
+            // surface exposes the same kernel-resolved kinematic-query
+            // values as the build surface so GUI overlays stay consistent.
+            Engine::post_process_kinematic_queries(
                 template,
                 &named_steps,
                 values,
@@ -946,6 +980,53 @@ impl Engine {
                 default_expr,
                 &template.trait_bounds,
                 named_steps,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`, dispatching the kinematic-query helpers
+    /// `interferes` / `interferes_with` / `min_clearance` (task 2531).
+    ///
+    /// Sibling to `post_process_conformance_queries`. For each
+    /// `ValueCellDecl` in `template.value_cells` whose `default_expr` is a
+    /// recognised kinematic-query helper, this writes the kernel-resolved
+    /// value (`Value::List(_)`, `Value::Bool(_)`, or
+    /// `Value::Scalar { dimension: LENGTH, .. }`) into `values`,
+    /// overwriting the `Value::Undef` left behind by the pure `eval_expr`
+    /// path. Cells whose dispatch returns `None` (literal arg, missing
+    /// snapshot in `values`, non-helper function call) are left untouched.
+    ///
+    /// Called from the same three sites as
+    /// `post_process_conformance_queries` so build / build_snapshot /
+    /// tessellate paths agree on the patched value.
+    fn post_process_kinematic_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Snapshot `values` once so each cell's dispatch reads the
+        // pre-patch state. Later cells in the loop body therefore cannot
+        // observe the kernel-resolved value of an earlier kinematic cell
+        // — none of the helpers chain (a `min_clearance(s, …)` cannot
+        // depend on an `interferes(s)` result), so this is a clean
+        // simplification rather than a behaviour change.
+        let snapshot_values = values.clone();
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
+                default_expr,
+                named_steps,
+                &snapshot_values,
                 kernel,
                 diagnostics,
             ) {

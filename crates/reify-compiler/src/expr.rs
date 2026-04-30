@@ -787,6 +787,17 @@ pub(crate) fn compile_expr_guarded(
                         // (Type::Geometry) fallback that would trip
                         // `assert_value_cell_types_representable`.
                         Type::Bool
+                    } else if is_geometry_kinematic_query(name) {
+                        // interferes / interferes_with / min_clearance: kinematic
+                        // query helpers dispatched at eval time by
+                        // `reify_eval::geometry_ops::try_eval_kinematic_query`.
+                        // Per-name result type (List of pair Maps, Bool, length-
+                        // Scalar) is set up-front so the post-process patched
+                        // `Value` matches the cell type via
+                        // `value_type_kind_matches`. Falling through to the
+                        // first-arg (Snapshot Map) default would mismatch.
+                        kinematic_query_result_type(name)
+                            .expect("is_geometry_kinematic_query implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else {

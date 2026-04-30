@@ -1316,6 +1316,317 @@ pub(crate) fn try_eval_conformance_query(
     }
 }
 
+// ── Kinematic-query dispatch (task 2531) ────────────────────────────────────
+//
+// `try_eval_kinematic_query` is the kernel-aware eval-time dispatch for the
+// stdlib helpers `interferes`, `interferes_with`, `min_clearance` (kinematic-
+// constraints PRD task 8). Sibling to `try_eval_conformance_query`.
+//
+// Each helper consumes a Snapshot let-cell (the FK-evaluated Map produced by
+// `snapshot()`) plus, for the binary forms, two Int let-cells holding body
+// ids. The Snapshot's body records carry a `solid: Value::String("name")`
+// field — the helper resolves each `name` to a `GeometryHandleId` via the
+// per-template `named_steps` map populated by `execute_realization_ops`.
+// All three helpers share OCCT's `BRepExtrema_DistShapeShape` primitive
+// (`GeometryQuery::Distance`) — `interferes_with` is just `Distance ≤ 0`.
+//
+// v0.1 simplification: the Snapshot's per-body `world_transform` is **not**
+// applied to the OCCT shape before the distance probe; geometry must be
+// pre-positioned at the source-let level (e.g. `let a = translate(box(...),
+// 30mm, 0mm, 0mm)`). FK-driven OCCT placement requires either a new
+// `GeometryOp::ApplyTransform` op + handle bookkeeping or per-pair on-the-
+// fly OCCT transforms — both expand scope beyond the PRD task-8 acceptance.
+// This matches the existing `bounding_box`/`center_of_mass` v0.1 approach
+// (also operates on world-frame body origins only, point-mass approximation).
+//
+// Self-pair exclusion: `interferes` iterates pairs as `i < j` upper-triangular
+// — excluding both `(a, a)` self-pairs and the duplicate `(b, a)` ordering.
+// Same-chain-segment exclusion (parent/child immediate joints sharing a face)
+// is not done here — task 8 acceptance only requires self-pair exclusion.
+//
+// Returns:
+//   `Some(Value::List(_))`   for `interferes` — list of pair Maps
+//                            `{ "a": Int, "b": Int }`. Empty when no pair
+//                            satisfies `Distance ≤ 0`.
+//   `Some(Value::Bool(_))`   for `interferes_with`.
+//   `Some(Value::Scalar { dimension: LENGTH, .. })` for `min_clearance`.
+//   `Some(Value::Undef)`     when arg shapes pass but a runtime resolution
+//                            fails (unresolvable `solid` name in
+//                            `named_steps`, kernel error, missing body id,
+//                            etc.) — defensive downgrade with Warning.
+//   `None`                   when the expression is not a recognised
+//                            kinematic-query helper, or the arg shape is
+//                            unsupported (literal, non-`ValueRef`, missing
+//                            snapshot in `values`). Callers fall through to
+//                            the cell's compiled default (`Value::Undef`).
+pub(crate) fn try_eval_kinematic_query(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    values: &reify_types::ValueMap,
+    kernel: &dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Must be a FunctionCall — anything else is unsupported.
+    let (function, args) = match &expr.kind {
+        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (2) Must be one of the three recognised helper names.
+    let helper = match function.name.as_str() {
+        "interferes" => KinematicHelper::Interferes,
+        "interferes_with" => KinematicHelper::InterferesWith,
+        "min_clearance" => KinematicHelper::MinClearance,
+        _ => return None,
+    };
+
+    // (3) Per-helper arity guard.
+    let expected_args = helper.arity();
+    if args.len() != expected_args {
+        return None;
+    }
+
+    // (4) args[0] must be a `ValueRef` to a let-cell holding the Snapshot
+    // Map. Literal / inline-call shapes fall through to None so the cell
+    // stays at its compiled default (`Value::Undef`) — mirrors the
+    // `try_eval_conformance_query` arg-shape contract.
+    let snapshot_cell = match &args[0].kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let snapshot_value = values.get(snapshot_cell)?;
+
+    // For the binary forms, args[1] / args[2] must also be ValueRefs
+    // resolving to `Value::Int` body ids. Pulled out as a helper so the
+    // unary `interferes` arm doesn't pay for it.
+    let body_id_args = if expected_args == 3 {
+        let a = resolve_int_value_ref(&args[1], values)?;
+        let b = resolve_int_value_ref(&args[2], values)?;
+        Some((a, b))
+    } else {
+        None
+    };
+
+    // (5) Read the Snapshot's bodies list. Returns Some(Value::Undef) (not
+    // None) when the cell value isn't a well-formed Snapshot — the stdlib
+    // stub already validated this on the value-eval pass, so reaching here
+    // with a non-Snapshot indicates a stale / mismatched cell rather than
+    // a parser-time shape; surfacing Undef is more visible than silently
+    // falling back to the compiled default.
+    let bodies = match extract_snapshot_bodies(snapshot_value) {
+        Some(b) => b,
+        None => return Some(reify_types::Value::Undef),
+    };
+
+    // (6) Build (id → handle) by resolving each body's `solid` String against
+    // `named_steps`. Bodies whose `solid` doesn't appear in `named_steps`
+    // (e.g. a snapshot of a mechanism whose source let-name was never
+    // realised because the structure has no realization for it) are
+    // skipped — the helper still works for the realised subset.
+    let mut id_to_handle: Vec<(i64, GeometryHandleId)> = Vec::with_capacity(bodies.len());
+    for body in bodies {
+        let body_map = match body {
+            reify_types::Value::Map(m) => m,
+            _ => return Some(reify_types::Value::Undef),
+        };
+        let id = match body_map.get(&reify_types::Value::String("id".to_string())) {
+            Some(reify_types::Value::Int(n)) => *n,
+            _ => return Some(reify_types::Value::Undef),
+        };
+        let solid_name = match body_map.get(&reify_types::Value::String("solid".to_string())) {
+            Some(reify_types::Value::String(s)) => s,
+            // Non-string `solid` (e.g. a stale `Value::Undef` from a body whose
+            // source-let was a geometry call) is not resolvable here — skip the
+            // body silently rather than collapsing the entire query to Undef.
+            _ => continue,
+        };
+        if let Some(handle) = named_steps.get(solid_name) {
+            id_to_handle.push((id, *handle));
+        }
+        // Bodies whose solid name isn't in named_steps: skipped (see comment
+        // above the loop).
+    }
+
+    // (7) Dispatch per-helper.
+    match helper {
+        KinematicHelper::Interferes => {
+            let mut pairs = Vec::new();
+            for i in 0..id_to_handle.len() {
+                for j in (i + 1)..id_to_handle.len() {
+                    let (id_a, handle_a) = id_to_handle[i];
+                    let (id_b, handle_b) = id_to_handle[j];
+                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+                        Some(d) if d <= 0.0 => {
+                            pairs.push(make_pair_map(id_a, id_b));
+                        }
+                        Some(_) => {}
+                        // Kernel error already emitted a Warning diagnostic
+                        // — collapse the whole query to Undef so the cell
+                        // exposes the failure rather than a partial list.
+                        None => return Some(reify_types::Value::Undef),
+                    }
+                }
+            }
+            Some(reify_types::Value::List(pairs))
+        }
+        KinematicHelper::InterferesWith => {
+            let (id_a, id_b) = body_id_args.expect("3-arg form populated body_id_args");
+            // Self-pair: per the PRD acceptance, "a single body's interference
+            // with itself is not reported". Returning Bool(false) here is a
+            // defensive fallback — typical user-code uses distinct ids.
+            if id_a == id_b {
+                return Some(reify_types::Value::Bool(false));
+            }
+            let handle_a = match handle_for_id(&id_to_handle, id_a) {
+                Some(h) => h,
+                None => return Some(reify_types::Value::Undef),
+            };
+            let handle_b = match handle_for_id(&id_to_handle, id_b) {
+                Some(h) => h,
+                None => return Some(reify_types::Value::Undef),
+            };
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+                Some(d) => Some(reify_types::Value::Bool(d <= 0.0)),
+                None => Some(reify_types::Value::Undef),
+            }
+        }
+        KinematicHelper::MinClearance => {
+            let (id_a, id_b) = body_id_args.expect("3-arg form populated body_id_args");
+            // Self-pair clearance is undefined — surfacing 0.0 would lie about
+            // a degenerate input. Returning Undef pushes the user toward
+            // distinct ids; pinned by the smoke-test self-pair arm.
+            if id_a == id_b {
+                return Some(reify_types::Value::Undef);
+            }
+            let handle_a = match handle_for_id(&id_to_handle, id_a) {
+                Some(h) => h,
+                None => return Some(reify_types::Value::Undef),
+            };
+            let handle_b = match handle_for_id(&id_to_handle, id_b) {
+                Some(h) => h,
+                None => return Some(reify_types::Value::Undef),
+            };
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+                Some(d) => Some(reify_types::Value::length(d)),
+                None => Some(reify_types::Value::Undef),
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum KinematicHelper {
+    Interferes,
+    InterferesWith,
+    MinClearance,
+}
+
+impl KinematicHelper {
+    fn arity(self) -> usize {
+        match self {
+            KinematicHelper::Interferes => 1,
+            KinematicHelper::InterferesWith | KinematicHelper::MinClearance => 3,
+        }
+    }
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` arg to its `Value::Int` body id.
+/// Returns `None` for any non-`ValueRef` shape, missing cell, or non-Int
+/// payload — caller maps this to the "unsupported arg shape → fall through"
+/// behaviour of `try_eval_kinematic_query`.
+fn resolve_int_value_ref(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<i64> {
+    let id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    match values.get(id) {
+        Some(reify_types::Value::Int(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Extract the `bodies` list from a Snapshot Map, validating
+/// `kind="snapshot"`. Mirrors `reify_stdlib::snapshot::snapshot_bodies` —
+/// duplicated here because the stdlib helper is module-private.
+fn extract_snapshot_bodies(snap: &reify_types::Value) -> Option<Vec<reify_types::Value>> {
+    let map = match snap {
+        reify_types::Value::Map(m) => m,
+        _ => return None,
+    };
+    if map.get(&reify_types::Value::String("kind".to_string()))
+        != Some(&reify_types::Value::String("snapshot".to_string()))
+    {
+        return None;
+    }
+    match map.get(&reify_types::Value::String("bodies".to_string())) {
+        Some(reify_types::Value::List(b)) => Some(b.clone()),
+        _ => None,
+    }
+}
+
+fn handle_for_id(
+    pairs: &[(i64, GeometryHandleId)],
+    id: i64,
+) -> Option<GeometryHandleId> {
+    pairs.iter().find(|(i, _)| *i == id).map(|(_, h)| *h)
+}
+
+/// Build the `{ "a": Int, "b": Int }` pair Map returned by `interferes`.
+/// Alphabetical key order matches `BTreeMap` iteration so that List
+/// equality used in the smoke tests is stable across iterations.
+fn make_pair_map(id_a: i64, id_b: i64) -> reify_types::Value {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        reify_types::Value::String("a".to_string()),
+        reify_types::Value::Int(id_a),
+    );
+    m.insert(
+        reify_types::Value::String("b".to_string()),
+        reify_types::Value::Int(id_b),
+    );
+    reify_types::Value::Map(m)
+}
+
+/// Issue a `GeometryQuery::Distance` against the kernel and reduce to a raw
+/// SI metres f64. Returns `None` (and emits a Warning diagnostic) on kernel
+/// error or when the kernel returns a non-numeric `Value` — caller maps
+/// `None` to a defensive `Value::Undef`.
+fn kernel_distance(
+    kernel: &dyn reify_types::GeometryKernel,
+    from: GeometryHandleId,
+    to: GeometryHandleId,
+    diagnostics: &mut Vec<Diagnostic>,
+    helper_name: &str,
+) -> Option<f64> {
+    let query = reify_types::GeometryQuery::Distance { from, to };
+    match kernel.query(&query) {
+        Ok(reify_types::Value::Real(d)) => Some(d),
+        // Some kernels (e.g. test-support `MockGeometryKernel::with_distance_result`)
+        // store the value as a length-dimensioned `Scalar` instead of a raw
+        // `Real`. Read the SI value either way so the dispatch stays kernel-
+        // agnostic; the dimension itself is unused (the helpers' return-side
+        // dimension is fixed by the helper, not the kernel reply).
+        Ok(reify_types::Value::Scalar { si_value, .. }) => Some(si_value),
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel Distance({:?}, {:?}) returned non-numeric value {:?}; treating as undefined",
+                helper_name, from, to, other
+            )));
+            None
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel Distance({:?}, {:?}) failed: {}",
+                helper_name, from, to, err
+            )));
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

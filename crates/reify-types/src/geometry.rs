@@ -310,6 +310,13 @@ pub enum GeometryQuery {
     /// Compute bounding box.
     BoundingBox(GeometryHandleId),
     /// Compute minimum distance between two shapes.
+    ///
+    /// Dual-use: backs both the geometry-level `min_clearance` / `Distance`
+    /// queries and the kinematic-constraint helpers `interferes` /
+    /// `interferes_with` / `min_clearance` (PRD task 8 / task 2531). The
+    /// kinematic helpers classify `Distance ≤ 0` as "intersecting" and
+    /// share the same OCCT primitive (`BRepExtrema_DistShapeShape`) — see
+    /// `reify_eval::geometry_ops::try_eval_kinematic_query`.
     Distance {
         from: GeometryHandleId,
         to: GeometryHandleId,

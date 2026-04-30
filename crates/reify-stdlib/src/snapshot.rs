@@ -416,6 +416,49 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             );
             Value::Map(m)
         }
+        // ── Kinematic-query stubs (task 2531) ──────────────────────────────
+        // The kernel-aware dispatch lives in
+        // `reify_eval::geometry_ops::try_eval_kinematic_query` and is
+        // invoked as a post-process from `engine_build.rs`.  These
+        // value-level stubs only validate arity + arg shape (snapshot kind,
+        // Int ids).  A successful validation returns `Value::Undef` — the
+        // post-process overwrites the Undef cell with the kernel-resolved
+        // value (a `Value::List` of pairs, `Value::Bool`, or
+        // length-dimensioned `Value::Scalar` respectively). When the
+        // dispatch falls through (no kernel, unsupported arg shape), the
+        // cell stays at `Value::Undef`.
+        "interferes" => {
+            // Validation surface (each guard short-circuits to Undef):
+            //   args.len() == 1                       → arity guard
+            //   args[0] is Map with kind="snapshot"   → snapshot guard
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            if snapshot_bodies(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            Value::Undef
+        }
+        "interferes_with" | "min_clearance" => {
+            // Validation surface (each guard short-circuits to Undef):
+            //   args.len() == 3                       → arity guard
+            //   args[0] is Map with kind="snapshot"   → snapshot guard
+            //   args[1] is Value::Int                 → id-type guard
+            //   args[2] is Value::Int                 → id-type guard
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            if snapshot_bodies(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            if !matches!(&args[1], Value::Int(_)) {
+                return Some(Value::Undef);
+            }
+            if !matches!(&args[2], Value::Int(_)) {
+                return Some(Value::Undef);
+            }
+            Value::Undef
+        }
         _ => return None,
     })
 }
@@ -650,6 +693,25 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
         && let Some(parent) = map.get(&Value::String("parent".to_string()))
     {
         return value_for(parent, bindings);
+    }
+    // 2b. Zero-DOF `fixed` joint: no motion variable to bind. The
+    //     range-midpoint fallback below returns None for `fixed` (per
+    //     `joint_range_midpoint`'s `"fixed" => None` arm — empty free-
+    //     variable space). Without this arm the FK walk would surface
+    //     `Some(Value::Undef)` for any chain through a fixed joint and
+    //     `snapshot()` would collapse to `Value::Undef`, blocking
+    //     task 2531's interferes / min_clearance acceptance test which
+    //     uses `fixed()` for sub-assembly grouping. The sentinel value
+    //     is unused: `transform_at`'s `"fixed"` arm ignores the second
+    //     argument and unconditionally returns the identity transform
+    //     (kept defensively against `Value::Undef`, see joints.rs:172).
+    //     `Value::Real(0.0)` matches the minimal-value style used by
+    //     the `motion_vars_for_joint` fixture's `"fixed"` arm.
+    if let Value::Map(map) = joint
+        && map.get(&Value::String("kind".to_string()))
+            == Some(&Value::String("fixed".to_string()))
+    {
+        return Some(Value::Real(0.0));
     }
     // 3. Range-midpoint fallback (spec §13.3).
     let mid_si = joint_range_midpoint(joint)?;
