@@ -735,9 +735,9 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
         "revolute" => Some(Value::angle(mid_si)),
         // Couplings cannot reach this function under the documented call path:
         // `value_for` short-circuits coupling joints at the Coupling-tracks-parent
-        // arm (lines 642-648) before ever reaching the joint_range_midpoint +
-        // wrap_midpoint_for_joint fallback at lines 650-651.  Any future caller
-        // that violates this precondition is handled harmlessly by `_ => None`.
+        // arm before ever reaching the joint_range_midpoint +
+        // wrap_midpoint_for_joint fallback.  Any future caller that violates
+        // this precondition is handled harmlessly by `_ => None`.
         //
         // 3-DOF planar joint: defense-in-depth explicit deferral arm.
         // Today this arm is unreachable from a planar joint: joint_range_midpoint
@@ -1425,17 +1425,17 @@ mod tests {
         assert!(eval_builtin("transform_of", &[s, Value::Int(99)]).is_undef());
     }
 
-    /// Characterization test: `transform_of` returns `Value::Undef` when the
-    /// matched body record is missing the `world_transform` key.
+    /// Defense-in-depth pin — path unreachable from the public API.
     ///
-    /// `eval_builtin("snapshot", ...)` always populates `world_transform` via
-    /// `make_snapshot_body_record`, so the defensive arm is unreachable from
-    /// well-formed snapshots.  This test pins the arm's behaviour by
-    /// hand-constructing a malformed Snapshot Map whose body record deliberately
-    /// omits the key.  The assertion must hold against both the old
-    /// `unwrap_or(Value::Undef)` idiom and the refactored explicit-reject
-    /// pattern introduced in the next step, so any accidental semantics change
-    /// (e.g., `?`-propagation that exits the loop early) would surface here.
+    /// `transform_of` returns `Value::Undef` when the matched body record is
+    /// missing the `world_transform` key.  `eval_builtin("snapshot", ...)` —
+    /// the sole public entry point that produces Snapshot Maps — always
+    /// populates `world_transform` via `make_snapshot_body_record`, so this
+    /// arm cannot be triggered through well-formed usage.  This test pins the
+    /// arm's behaviour by hand-constructing a malformed Snapshot Map whose
+    /// body record deliberately omits the key, guarding against any future
+    /// refactor that could accidentally change the Undef result (e.g.,
+    /// `?`-propagation that exits the loop early).
     #[test]
     fn transform_of_body_record_missing_world_transform_returns_undef() {
         // Build a minimal body record that has an `id` but no `world_transform`.
