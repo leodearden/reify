@@ -39,10 +39,10 @@ mod tests {
     #[test]
     fn read_f64_scalar_returns_si_value() {
         let v = Value::Scalar {
-            si_value: 3.14,
+            si_value: 1.5,
             dimension: DimensionVector::LENGTH,
         };
-        assert_eq!(read_f64(&v, "y"), 3.14);
+        assert_eq!(read_f64(&v, "y"), 1.5);
     }
 
     #[test]
