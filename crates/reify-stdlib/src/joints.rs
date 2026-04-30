@@ -171,13 +171,24 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             match kind {
                 "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
-                // 0-DOF fixed joint: always the identity Transform regardless of
-                // the second argument (type/dimension not validated — see design
-                // decision). Undef propagates: if the motion-variable expression
-                // upstream evaluated to Undef, returning a well-formed Transform
-                // would mask that error; callers rely on Undef sentinel propagation.
+                // 0-DOF fixed joint: returns the identity Transform when the second
+                // arg is a numeric/dimensioned scalar (Real, Int, or Scalar of any
+                // dimension). Returns Undef when the second arg is Undef (Undef
+                // propagation) OR any non-numeric variant (String, List, Map,
+                // Vector, Bool, etc.). Type/dimension of the numeric second arg is
+                // otherwise irrelevant — a 0-DOF joint has no motion variable.
+                // Mirrors the type-checking discipline of every other transform_at arm
+                // (task 2687).
                 "fixed" => {
                     if matches!(&args[1], Value::Undef) {
+                        return Some(Value::Undef);
+                    }
+                    // Tightened contract (task 2687): a 0-DOF joint has no motion
+                    // variable, but the second arg must still be a numeric/dimensioned
+                    // scalar so that upstream type errors (e.g. a String accidentally
+                    // reaching this call) propagate as Undef instead of being absorbed
+                    // into a well-formed identity Transform.
+                    if !matches!(&args[1], Value::Real(_) | Value::Int(_) | Value::Scalar { .. }) {
                         return Some(Value::Undef);
                     }
                     Value::Transform {
