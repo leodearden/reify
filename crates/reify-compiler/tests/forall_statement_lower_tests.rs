@@ -105,6 +105,124 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
     );
 }
 
+/// Shared structural assertion helper for the three unsupported-port-shape
+/// diagnostic tests (`(None, Some)`, `(Some, None)`, `(None, None)` arms).
+///
+/// Compiles `source`, finds the template named `structure_name`, and asserts:
+/// - (a) No errors.
+/// - (b) Zero CompiledConnections and zero forall@* constraint labels.
+/// - (c) Zero CompiledForallTemplates (early-return path).
+/// - (d) Exactly one `Severity::Info` diagnostic total.
+/// - (e) That diagnostic has a label `{message: "forall connect", span: forall_span}`.
+/// - (f) Per-side label presence/absence: if `expect_left_label`, exactly one
+///       `"left port shape not supported"` label; otherwise zero. Likewise for
+///       `expect_right_label` and `"right port shape not supported"`.
+fn assert_unsupported_port_shape_diagnostic(
+    source: &str,
+    structure_name: &str,
+    expect_left_label: bool,
+    expect_right_label: bool,
+) {
+    use reify_types::Severity;
+
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect with unsupported \
+         port shape, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == structure_name)
+        .unwrap_or_else(|| panic!("template {} not found", structure_name));
+
+    // (b) Zero CompiledConnections and zero forall@* constraint labels.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) Zero captured runtime templates — early return preserves no-capture semantics.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall connect \
+         with unsupported port shape (early return), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one Severity::Info diagnostic total.
+    let total_info_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .count();
+    assert_eq!(
+        total_info_count,
+        1,
+        "expected exactly 1 info diagnostic total, got {}: {:?}",
+        total_info_count,
+        module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Info)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Info)
+        .expect("info diagnostic not found");
+
+    // (e) Primary label with stable construct-kind token and matching span.
+    let forall_span = find_forall_connect_span(source, structure_name);
+    assert!(
+        diag.labels
+            .iter()
+            .any(|l| l.message == "forall connect" && l.span == forall_span),
+        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
+         info diagnostic; labels = {:?}, forall_span = {:?}",
+        diag.labels,
+        forall_span
+    );
+
+    // (f) Per-side label presence/absence.
+    let left_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "left port shape not supported")
+        .count();
+    let expected_left = usize::from(expect_left_label);
+    assert_eq!(
+        left_label_count,
+        expected_left,
+        "expected {} label(s) with message \"left port shape not supported\", \
+         got {}; labels = {:?}",
+        expected_left,
+        left_label_count,
+        diag.labels
+    );
+    let right_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "right port shape not supported")
+        .count();
+    let expected_right = usize::from(expect_right_label);
+    assert_eq!(
+        right_label_count,
+        expected_right,
+        "expected {} label(s) with message \"right port shape not supported\", \
+         got {}; labels = {:?}",
+        expected_right,
+        right_label_count,
+        diag.labels
+    );
+}
+
 /// `forall v in [1, 2, 3]: constraint v > 0` should emit exactly 3
 /// CompiledConstraints, each comparing the substituted literal element
 /// against 0 (BinOp::Gt with Literal(Int) on the left), and each carrying a
@@ -2283,8 +2401,6 @@ structure S {
 ///     the unsupported `v.inner.a` for this `(None, Some)` arm).
 #[test]
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
-    use reify_types::Severity;
-
     // `v.inner.a` is a synthetic 3-level dotted access: the parser accepts any
     // chained member-access expression in a connect body, and the deferred path
     // never validates port semantics (compile_connection is not called).
@@ -2307,100 +2423,8 @@ structure def S {
     forall v in vents: connect v.inner.a -> air_channel
 }
 "#;
-    let module = compile_source(source);
-
-    // (a) No errors.
-    let errors = errors_only(&module);
-    assert!(
-        errors.is_empty(),
-        "expected no errors for deferred-count forall connect with unsupported \
-         port shape, got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("template S not found");
-
-    // (b) Zero CompiledConnections and zero forall@* constraint labels.
-    assert_no_forall_connect_emissions(template);
-
-    // (c) Zero captured runtime templates — early return preserves no-capture semantics.
-    assert!(
-        template.forall_templates.is_empty(),
-        "expected zero CompiledForallTemplates for deferred-count forall connect \
-         with unsupported port shape (early return), got {} entries",
-        template.forall_templates.len()
-    );
-
-    // (d) Exactly one `Severity::Info` diagnostic total (guards against co-emitted
-    //     info diagnostics slipping through unnoticed).
-    let total_info_count = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Info)
-        .count();
-    assert_eq!(
-        total_info_count,
-        1,
-        "expected exactly 1 info diagnostic total, got {}: {:?}",
-        total_info_count,
-        module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Info)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    let diag = module
-        .diagnostics
-        .iter()
-        .find(|d| d.severity == Severity::Info)
-        .expect("info diagnostic not found");
-
-    // (e) Primary label with stable construct-kind token and matching span.
-    let forall_span = find_forall_connect_span(source, "S");
-    assert!(
-        diag.labels
-            .iter()
-            .any(|l| l.message == "forall connect" && l.span == forall_span),
-        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
-         info diagnostic; labels = {:?}, forall_span = {:?}",
-        diag.labels,
-        forall_span
-    );
-
-    // (f) Exactly one label for the left side (v.inner.a); zero for the right side
-    //     (air_channel resolves fine → no right-side label for this (None, Some) arm).
-    let left_label_count = diag
-        .labels
-        .iter()
-        .filter(|l| l.message == "left port shape not supported")
-        .count();
-    assert_eq!(
-        left_label_count,
-        1,
-        "expected exactly 1 label with message \"left port shape not supported\", \
-         got {}; labels = {:?}",
-        left_label_count,
-        diag.labels
-    );
-    let right_label_count = diag
-        .labels
-        .iter()
-        .filter(|l| l.message == "right port shape not supported")
-        .count();
-    assert_eq!(
-        right_label_count,
-        0,
-        "expected zero labels with message \"right port shape not supported\" \
-         (right side resolves fine), got {}; labels = {:?}",
-        right_label_count,
-        diag.labels
-    );
+    // (None, Some) arm: left unsupported, right resolves fine.
+    assert_unsupported_port_shape_diagnostic(source, "S", true, false);
 }
 
 /// `(Some, None)` arm of forall-Connect unsupported-port-shape diagnostic:
@@ -2422,8 +2446,6 @@ structure def S {
 ///     zero labels with `message == "left port shape not supported"`.
 #[test]
 fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_label() {
-    use reify_types::Severity;
-
     // Right side: `v.inner.a` (doubly-nested MemberAccess) → resolve_port_name returns None.
     // Left side: `air_channel` (plain Ident) → resolves fine.
     let source = r#"
@@ -2439,98 +2461,8 @@ structure def S {
     forall v in vents: connect air_channel -> v.inner.a
 }
 "#;
-    let module = compile_source(source);
-
-    // (a) No errors.
-    let errors = errors_only(&module);
-    assert!(
-        errors.is_empty(),
-        "expected no errors for deferred-count forall connect with unsupported \
-         right port shape, got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("template S not found");
-
-    // (b) Zero CompiledConnections and zero forall@* constraint labels.
-    assert_no_forall_connect_emissions(template);
-
-    // (c) Zero captured runtime templates.
-    assert!(
-        template.forall_templates.is_empty(),
-        "expected zero CompiledForallTemplates for deferred-count forall connect \
-         with unsupported right port shape (early return), got {} entries",
-        template.forall_templates.len()
-    );
-
-    // (d) Exactly one Severity::Info diagnostic total.
-    let total_info_count = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Info)
-        .count();
-    assert_eq!(
-        total_info_count,
-        1,
-        "expected exactly 1 info diagnostic total, got {}: {:?}",
-        total_info_count,
-        module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Info)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    let diag = module
-        .diagnostics
-        .iter()
-        .find(|d| d.severity == Severity::Info)
-        .expect("info diagnostic not found");
-
-    // (e) Primary label with stable construct-kind token and matching span.
-    let forall_span = find_forall_connect_span(source, "S");
-    assert!(
-        diag.labels
-            .iter()
-            .any(|l| l.message == "forall connect" && l.span == forall_span),
-        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
-         info diagnostic; labels = {:?}, forall_span = {:?}",
-        diag.labels,
-        forall_span
-    );
-
-    // (f) Exactly one label for the right side; zero labels for the left side.
-    let right_label_count = diag
-        .labels
-        .iter()
-        .filter(|l| l.message == "right port shape not supported")
-        .count();
-    assert_eq!(
-        right_label_count,
-        1,
-        "expected exactly 1 label with message \"right port shape not supported\", \
-         got {}; labels = {:?}",
-        right_label_count,
-        diag.labels
-    );
-    let left_label_count = diag
-        .labels
-        .iter()
-        .filter(|l| l.message == "left port shape not supported")
-        .count();
-    assert_eq!(
-        left_label_count,
-        0,
-        "expected zero labels with message \"left port shape not supported\" \
-         (left side resolves fine), got {}; labels = {:?}",
-        left_label_count,
-        diag.labels
-    );
+    // (Some, None) arm: left resolves fine, right unsupported.
+    assert_unsupported_port_shape_diagnostic(source, "S", false, true);
 }
 
 /// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
@@ -2559,8 +2491,6 @@ structure def S {
 ///     both arms of the per-side check fire simultaneously.
 #[test]
 fn forall_connect_over_undef_count_unsupported_both_port_shapes_emits_both_labels() {
-    use reify_types::Severity;
-
     // Both sides: doubly-nested MemberAccess after substitution.
     // v.inner.a → MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "a" }
     // v.inner.b → MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "b" }
@@ -2578,98 +2508,8 @@ structure def S {
     forall v in vents: connect v.inner.a -> v.inner.b
 }
 "#;
-    let module = compile_source(source);
-
-    // (a) No errors.
-    let errors = errors_only(&module);
-    assert!(
-        errors.is_empty(),
-        "expected no errors for deferred-count forall connect with unsupported \
-         port shapes on both sides, got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("template S not found");
-
-    // (b) Zero CompiledConnections and zero forall@* constraint labels.
-    assert_no_forall_connect_emissions(template);
-
-    // (c) Zero captured runtime templates.
-    assert!(
-        template.forall_templates.is_empty(),
-        "expected zero CompiledForallTemplates for deferred-count forall connect \
-         with both port shapes unsupported (early return), got {} entries",
-        template.forall_templates.len()
-    );
-
-    // (d) Exactly one Severity::Info diagnostic total.
-    let total_info_count = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Info)
-        .count();
-    assert_eq!(
-        total_info_count,
-        1,
-        "expected exactly 1 info diagnostic total, got {}: {:?}",
-        total_info_count,
-        module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Info)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    let diag = module
-        .diagnostics
-        .iter()
-        .find(|d| d.severity == Severity::Info)
-        .expect("info diagnostic not found");
-
-    // (e) Primary label with stable construct-kind token and matching span.
-    let forall_span = find_forall_connect_span(source, "S");
-    assert!(
-        diag.labels
-            .iter()
-            .any(|l| l.message == "forall connect" && l.span == forall_span),
-        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
-         info diagnostic; labels = {:?}, forall_span = {:?}",
-        diag.labels,
-        forall_span
-    );
-
-    // (f) Both per-side labels present — left AND right both unsupported.
-    let left_label_count = diag
-        .labels
-        .iter()
-        .filter(|l| l.message == "left port shape not supported")
-        .count();
-    assert_eq!(
-        left_label_count,
-        1,
-        "expected exactly 1 label with message \"left port shape not supported\", \
-         got {}; labels = {:?}",
-        left_label_count,
-        diag.labels
-    );
-    let right_label_count = diag
-        .labels
-        .iter()
-        .filter(|l| l.message == "right port shape not supported")
-        .count();
-    assert_eq!(
-        right_label_count,
-        1,
-        "expected exactly 1 label with message \"right port shape not supported\", \
-         got {}; labels = {:?}",
-        right_label_count,
-        diag.labels
-    );
+    // (None, None) arm: both sides unsupported.
+    assert_unsupported_port_shape_diagnostic(source, "S", true, true);
 }
 
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
