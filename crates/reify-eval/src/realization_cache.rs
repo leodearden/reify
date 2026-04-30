@@ -12,8 +12,14 @@
 //!
 //! # This task (2640)
 //!
-//! This module introduces the data structure.  It is *not* wired into `CacheStore` or
-//! `NodeId::Realization` — that is task 2641's responsibility.
+//! This module introduces the data structure with the final `(entity_id, repr_kind)`
+//! outer keying.  It is *not* wired into `CacheStore` or `NodeId::Realization` —
+//! that is task 2641's responsibility.
+//!
+//! The public API takes `entity: &str` and `repr_kind: ReprKind` as separate arguments
+//! rather than a combined key struct, keeping the API decoupled from the internal
+//! `HashMap<(String, ReprKind), ToleranceBucket<V>>` key shape.  Task 2641 may
+//! upgrade to `&RealizationNodeId` if richer identity is needed.
 
 use std::collections::HashMap;
 
