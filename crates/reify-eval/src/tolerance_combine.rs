@@ -95,7 +95,12 @@ pub fn combine_demanded_tolerance(
 ///    [arg0, arg1])`.
 /// 3. **Subject (arg0):** `ValueRef` whose `result_type` is `StructureRef(_)`.
 /// 4. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension ==
-///    LENGTH, si_value })` where `si_value.is_finite()`.
+///    LENGTH, si_value })` where `si_value.is_finite() && si_value >= 0.0`.
+///    Negative finite literals are silently skipped to keep this extractor
+///    in lockstep with [`combine_demanded_tolerance`]'s debug-assert
+///    `is_finite() && >= 0.0` invariant — without the gate, a negative bound
+///    would survive extraction, then panic the engine in debug builds and
+///    silently win an `o.min(p)` race in release builds.
 ///
 /// # Min-fold across multiple matches
 ///
@@ -135,6 +140,10 @@ pub fn extract_output_tolerance_bound(
     //           StructureRef)         StructureRef result types
     //   Gate 4a (LENGTH dimension)    skips non-LENGTH Scalar literals
     //   Gate 4b (is_finite())         skips NaN / ±Inf tolerance literals
+    //   Gate 4c (>= 0.0)              skips negative finite tolerance
+    //                                 literals (contract symmetry with
+    //                                 `combine_demanded_tolerance`'s
+    //                                 debug-assert `is_finite() && >= 0.0`)
     // Every non-match path uses `continue` — no `panic!`, `expect`, or
     // `unwrap` is reachable, so a malformed graph never crashes the engine.
     let mut tightest: Option<f64> = None;
@@ -174,8 +183,13 @@ pub fn extract_output_tolerance_bound(
         }
 
         // Gate 4: arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. })
-        // with finite si_value. NaN/±Inf would propagate into the bound and
-        // stick (NaN comparisons always evaluate false).
+        // with finite, non-negative si_value. NaN/±Inf would propagate into
+        // the bound and stick (NaN comparisons always evaluate false).
+        // Negative finite values are also silently skipped here so the
+        // extractor stays in lockstep with `combine_demanded_tolerance`'s
+        // debug-assert `is_finite() && >= 0.0` invariant — without this gate,
+        // a negative bound would survive extraction, then crash the engine in
+        // debug builds and win an `o.min(p)` race in release builds.
         let tol_arg = &args[1];
         let si_value = match &tol_arg.kind {
             CompiledExprKind::Literal(Value::Scalar {
@@ -184,7 +198,7 @@ pub fn extract_output_tolerance_bound(
             }) if *dimension == DimensionVector::LENGTH => *si_value,
             _ => continue,
         };
-        if !si_value.is_finite() {
+        if !si_value.is_finite() || si_value < 0.0 {
             continue;
         }
 
@@ -232,6 +246,28 @@ mod tests {
             vec![subject_arg, tol_arg],
             Type::Bool,
         );
+        let id = ConstraintNodeId::new(entity, index);
+        let data = ConstraintNodeData {
+            id: id.clone(),
+            label: None,
+            expr,
+            content_hash: ContentHash::of_str(&format!("{}#constraint[{}]", entity, index)),
+            optimized_target: None,
+        };
+        (id, data)
+    }
+
+    /// Build a `(ConstraintNodeId, ConstraintNodeData)` pair whose outer
+    /// `CompiledExpr` is the caller-supplied `expr` instead of the canonical
+    /// `RepresentationWithin(...)` shape. Used by the silent-skip audit
+    /// fixtures that exercise outer-shape mismatches (non-`UserFunctionCall`
+    /// outer kind, wrong arity, wrong arg-type) — the matcher must `continue`
+    /// past these without observing them.
+    fn constraint_node_with(
+        entity: &str,
+        index: u32,
+        expr: CompiledExpr,
+    ) -> (ConstraintNodeId, ConstraintNodeData) {
         let id = ConstraintNodeId::new(entity, index);
         let data = ConstraintNodeData {
             id: id.clone(),
@@ -299,6 +335,73 @@ mod tests {
         );
         constraints.insert(id_e, data_e);
 
+        // (g) Negative finite LENGTH literal under STEPOutput — silently
+        // skipped by Gate 4c (>= 0.0). Without this gate, a negative bound
+        // would survive extraction, then panic the combiner's debug-assert
+        // in debug builds and win an `o.min(p)` race in release builds.
+        let (id_g, data_g) = representation_within_constraint_node(
+            "STEPOutput",
+            5,
+            -1e-3,
+            DimensionVector::LENGTH,
+        );
+        constraints.insert(id_g, data_g);
+
+        // (h) Non-`UserFunctionCall` outer kind under STEPOutput — silently
+        // skipped by Gate 2 (the `match &data.expr.kind { … _ => continue }`
+        // arm). Pins that any non-UFC top-level (e.g. a top-level `Literal`)
+        // never reaches the inner shape check.
+        let (id_h, data_h) = constraint_node_with(
+            "STEPOutput",
+            6,
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        );
+        constraints.insert(id_h, data_h);
+
+        // (i) `UserFunctionCall("RepresentationWithin", [single_arg])` (arity
+        // 1) under STEPOutput — silently skipped by Gate 2's arity check.
+        // Pins that the arity-mismatch branch is reachable independently of
+        // the outer-shape branch.
+        let (id_i, data_i) = constraint_node_with(
+            "STEPOutput",
+            7,
+            CompiledExpr::user_function_call(
+                "RepresentationWithin".to_string(),
+                vec![CompiledExpr::value_ref(
+                    ValueCellId::new("subject", "self"),
+                    Type::StructureRef("Structure".to_string()),
+                )],
+                Type::Bool,
+            ),
+        );
+        constraints.insert(id_i, data_i);
+
+        // (j) `RepresentationWithin(<ValueRef typed Real>, <length-literal>)`
+        // under STEPOutput — silently skipped by Gate 3 (arg0 result_type
+        // must be `StructureRef(_)`). Pins the type-tag gate independently
+        // of the ValueRef-kind gate.
+        let (id_j, data_j) = constraint_node_with(
+            "STEPOutput",
+            8,
+            CompiledExpr::user_function_call(
+                "RepresentationWithin".to_string(),
+                vec![
+                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::Real),
+                    CompiledExpr::literal(
+                        Value::Scalar {
+                            si_value: 0.5e-6,
+                            dimension: DimensionVector::LENGTH,
+                        },
+                        Type::Scalar {
+                            dimension: DimensionVector::LENGTH,
+                        },
+                    ),
+                ],
+                Type::Bool,
+            ),
+        );
+        constraints.insert(id_j, data_j);
+
         // (f) The one valid finite LENGTH RepresentationWithin under
         // STEPOutput — survives all gates.
         let (id_f, data_f) =
@@ -308,9 +411,10 @@ mod tests {
         assert_eq!(
             extract_output_tolerance_bound(&constraints, "STEPOutput"),
             Some(5e-6),
-            "only the valid finite LENGTH constraint under STEPOutput must \
-             survive — all other entries (NaN, ±Inf, dimensionless, \
-             unrelated entity) must be silently skipped"
+            "only the valid finite non-negative LENGTH constraint under \
+             STEPOutput must survive — all other entries (NaN, ±Inf, \
+             negative-finite, dimensionless, unrelated entity, non-UFC outer, \
+             wrong-arity, non-StructureRef arg0) must be silently skipped"
         );
     }
 
