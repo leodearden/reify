@@ -2808,17 +2808,25 @@ mod tests {
         }
     }
 
+    /// Wrap a `Value::Lambda` in a `CompiledExpr::literal` whose static
+    /// `Type::Function { return_type, .. }` faithfully tracks the lambda
+    /// body's `result_type`. Runtime evaluation does not consult this static
+    /// type (it dispatches on the runtime `Value::Lambda` shape), but having
+    /// the static signature line up with the body keeps these test fixtures
+    /// honest under any future consumer that does inspect the lambda's
+    /// declared signature (e.g. compile-time inference, IR pretty-printers).
     fn lambda_lit(
         params: Vec<(&str, ValueCellId)>,
         body: CompiledExpr,
         captures: ValueMap,
     ) -> CompiledExpr {
+        let return_type = body.result_type.clone();
         let lambda = make_lambda(params, body, captures);
         CompiledExpr::literal(
             lambda,
             Type::Function {
                 params: vec![],
-                return_type: Box::new(Type::Int),
+                return_type: Box::new(return_type),
             },
         )
     }
@@ -2944,6 +2952,111 @@ mod tests {
                 Value::Int(3),
                 Value::Int(6),
             ])
+        );
+    }
+
+    // ─── flat_map runtime fallback regression guards (task 2698 amendment) ───
+    //
+    // These tests lock in the silent-Undef convention for the runtime
+    // fallback branches in the `"flat_map"` arm of eval_expr's FunctionCall
+    // match. Together they cover every leg of the `_ => Value::Undef`
+    // outer fallback and the `_ => return Value::Undef` per-element
+    // fallback, ensuring future refactors don't accidentally turn one of
+    // these into a panic, propagation of garbage, or a different sentinel.
+
+    /// First arg is not `Value::List` — outer match falls into `_ => Undef`.
+    #[test]
+    fn function_call_flat_map_non_list_first_arg_is_undef() {
+        let x_id = ValueCellId::new("$lambda_flat_map_non_list_first.S", "x");
+        let body = CompiledExpr::list_literal(
+            vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
+        let expr = flat_map_call(lit(Value::Int(42), Type::Int), lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "flat_map(non_list, lambda) should be Undef, got {:?}",
+            result
+        );
+    }
+
+    /// Second arg is not `Value::Lambda` — outer match falls into `_ => Undef`.
+    #[test]
+    fn function_call_flat_map_non_lambda_second_arg_is_undef() {
+        let list = CompiledExpr::list_literal(
+            vec![lit(Value::Int(1), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let expr = flat_map_call(list, lit(Value::Int(7), Type::Int));
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "flat_map(list, non_lambda) should be Undef, got {:?}",
+            result
+        );
+    }
+
+    /// Input list contains `Value::Undef` — `apply_lambda` is called with an
+    /// Undef arg, and the body (`[x]`) yields `[Undef]`, which IS a list,
+    /// so flat_map concatenates and returns `[Undef]`. This regression-locks
+    /// the per-element propagation: poison flows through, but ONLY through
+    /// the lambda body — flat_map itself doesn't short-circuit on Undef
+    /// elements (mirroring the per-element behaviour of `map`).
+    #[test]
+    fn function_call_flat_map_input_with_undef_element_propagates() {
+        let x_id = ValueCellId::new("$lambda_flat_map_undef_in.S", "x");
+        let body = CompiledExpr::list_literal(
+            vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
+        let list = CompiledExpr::list_literal(
+            vec![
+                lit(Value::Int(1), Type::Int),
+                lit(Value::Undef, Type::Int),
+            ],
+            Type::List(Box::new(Type::Int)),
+        );
+        let expr = flat_map_call(list, lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Int(1), Value::Undef]),
+            "flat_map should propagate Undef elements through the lambda \
+             body without short-circuiting; got {:?}",
+            result
+        );
+    }
+
+    /// Lambda body evaluates to `Value::Undef` for one element (e.g. by
+    /// dividing by zero or calling a poisoned cell) — Undef is not
+    /// `Value::List`, so the per-element fallback `_ => return Undef` fires
+    /// and the whole flat_map result becomes Undef. This locks the
+    /// "non-list lambda result poisons the whole call" contract.
+    #[test]
+    fn function_call_flat_map_lambda_returns_undef_propagates_undef() {
+        let x_id = ValueCellId::new("$lambda_flat_map_undef_body.S", "x");
+        // Body: literal Undef (not wrapped in a list) — exercises the
+        // `_ => return Value::Undef` fallback inside the match on `r`.
+        let body = lit(Value::Undef, Type::Int);
+        let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
+        let list = CompiledExpr::list_literal(
+            vec![lit(Value::Int(1), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let expr = flat_map_call(list, lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "flat_map should return Undef when the lambda body yields \
+             Undef on any element, got {:?}",
+            result
         );
     }
 
