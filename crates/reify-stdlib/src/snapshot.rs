@@ -138,22 +138,21 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 
             let bindings_list = bindings_entries.as_slice();
 
-            // First-pass FK walk: compute body world transforms via the
-            // spanning-tree `joint_parents` chain with the user-supplied
-            // bindings.  For an open-chain mechanism (no `loop_closures`)
-            // this is the final answer; for a closed-chain mechanism the
-            // post-FK loop-closure pass below replaces these results with
-            // a re-walk under synthesized free-variable bindings.
-            let snapshot_bodies = match walk_fk(bodies, joint_parents, bindings_list) {
-                Some(b) => b,
-                None => return Some(Value::Undef),
-            };
-
+            // Read `loop_closures` up-front so the cold FK walk can be
+            // skipped on closed-chain mechanisms (task 2678 perf
+            // amendment).  For closed-chain mechanisms the cold walk is
+            // dead work: the closed-chain post-process below re-walks
+            // the FK with synthesized free-variable bindings and
+            // discards the cold-walk result entirely.  Open-chain
+            // mechanisms still run the cold walk once; closed-chain
+            // mechanisms walk only after the solver converges,
+            // halving FK cost per snapshot for closed-chain sweeps.
+            //
             // Closed-chain post-process (task 2678 step-4).
             //
             // For each `loop_closures` record on the mechanism, drive the
             // free joints in `path_b` to a configuration that closes the
-            // loop, then re-walk the FK with the original user bindings
+            // loop, then walk the FK with the original user bindings
             // augmented by one synthesized binding per solved free joint.
             // Open-chain mechanisms (empty `loop_closures`) skip the entire
             // block — zero-cost early-out.
@@ -194,10 +193,14 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             //
             // Open-chain (loop_closures empty) + 3-arg with empty outer
             // List is a no-op fast path: the warm-start vec stays empty
-            // and the closed-chain block doesn't run.  This is exactly
-            // what `build_snapshot_list` will do — it threads the prev
-            // snapshot's `free_values` (which is `[]` for open-chain
-            // mechanisms) through every step.
+            // (`Some(vec![])`) and the closed-chain block doesn't run.
+            // Functionally identical to `None` for open-chain mechanisms
+            // — both skip the closed-chain block — but `Some(vec![])`
+            // is what `build_snapshot_list` actually threads, so we
+            // accept it explicitly rather than collapsing to None.
+            // This is exactly what `build_snapshot_list` will do — it
+            // threads the prev snapshot's `free_values` (which is `[]`
+            // for open-chain mechanisms) through every step.
             let warm_start_seeds: Option<Vec<Vec<f64>>> = if args.len() == 3 {
                 let outer = match &args[2] {
                     Value::List(l) => l,
@@ -237,7 +240,15 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // shapes).
             let mut free_values: Vec<Value> = Vec::with_capacity(loop_closures.len());
             let snapshot_bodies = if loop_closures.is_empty() {
-                snapshot_bodies
+                // Open-chain: walk_fk once with user bindings; that's the
+                // final answer.  Closed-chain mechanisms skip this walk
+                // entirely (the synthesized re-walk below produces the
+                // same shape with the solver-driven free-joint values
+                // baked in).
+                match walk_fk(bodies, joint_parents, bindings_list) {
+                    Some(b) => b,
+                    None => return Some(Value::Undef),
+                }
             } else {
                 // Build the synthesized bindings list: original bindings
                 // followed by one `make_binding(free_joint, wrapped_value)`
