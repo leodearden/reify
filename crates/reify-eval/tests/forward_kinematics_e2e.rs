@@ -91,7 +91,6 @@ fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3
     )
 }
 
-
 /// Smoke test: parse, compile, eval the analytic two-link chain source and
 /// assert the FK pipeline produces the expected world transform, bounding
 /// box, and center of mass.

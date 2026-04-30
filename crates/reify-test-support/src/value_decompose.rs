@@ -87,4 +87,11 @@ mod tests {
         let v = Value::Point(vec![Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "label");
     }
+
+    #[test]
+    #[should_panic(expected = "pt.p[0]: expected numeric component")]
+    fn decompose_point3_panics_on_non_numeric_component() {
+        let v = Value::Point(vec![Value::Bool(true), Value::Real(0.0), Value::Real(0.0)]);
+        decompose_point3(&v, "pt");
+    }
 }

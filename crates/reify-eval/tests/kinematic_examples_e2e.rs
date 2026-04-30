@@ -69,7 +69,6 @@ fn counter_mass_balance_compiles_clean() {
     let _ = cmb_compiled();
 }
 
-
 /// `engine.eval()` on `counter_mass_balance.ri` produces:
 ///   - `snap_count == Value::Int(11)`
 ///   - `coms` is a `Value::List` of 11 `Value::Point` values whose three SI
