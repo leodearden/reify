@@ -155,9 +155,13 @@ impl WarmStatePool {
     /// See [`from_env_value`](Self::from_env_value) for parse semantics.
     ///
     /// # Wiring note
-    /// This constructor is the intended entry point for runtime pool construction.
-    /// TODO: wire this into the runtime's pool construction site so that
-    /// `REIFY_WARM_STATE_BUDGET_BYTES` actually takes effect at runtime.
+    /// The production entry point that calls this constructor is
+    /// [`Engine::new`](crate::engine_admin::Engine::new), which initialises
+    /// `Engine::warm_pool` from `REIFY_WARM_STATE_BUDGET_BYTES` once at engine
+    /// construction. The wiring is pinned by the regression test
+    /// `engine_new_wires_warm_pool_through_from_env_or_default` in `lib.rs`,
+    /// which would diverge if `Engine::new` were changed to call
+    /// `WarmStatePool::unlimited()` or `WarmStatePool::new(...)` directly.
     ///
     /// # Unit-test coverage
     /// This thin wrapper delegates entirely to `from_env_value` and is intentionally
