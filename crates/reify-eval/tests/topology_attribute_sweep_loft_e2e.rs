@@ -48,50 +48,71 @@ use reify_types::{
 ///
 /// 1. Override `execute_with_history` to inject synthetic
 ///    `AttributeHistory::Sweep` / `AttributeHistory::Loft` records
-///    for matching `GeometryOp` variants. All other ops fall through to
-///    `inner.execute(op)` and return `AttributeHistory::None`.
+///    for matching `GeometryOp` variants. All other ops (curves, etc.)
+///    fall through to `inner.execute(op)` and return
+///    `AttributeHistory::None`. Each non-Sweep/Loft handle is recorded
+///    in `profile_handle_order` so `extract_*` can return *per-section*
+///    slices for the loft multi-parent test (otherwise the test cannot
+///    distinguish a section-mixup bug — see reviewer suggestion #2).
 ///
-/// 2. Override `extract_faces` / `extract_edges` to return
-///    *configured* face/edge slices based on whether the queried handle
-///    is the just-allocated sweep result (return `result_faces` /
-///    `result_edges`) or any other handle (return `profile_faces` /
-///    `profile_edges`). The disambiguator is `last_sweep_result`,
-///    which `execute_with_history` updates whenever a Sweep/Loft
-///    op runs through this kernel.
+/// 2. Override `extract_faces` / `extract_edges` to return:
+///       - `result_faces` / `result_edges` when the queried handle
+///         matches `last_sweep_result` (the most-recent Sweep/Loft
+///         result),
+///       - `profile_faces_per_section[i]` / `profile_edges_per_section[i]`
+///         when the queried handle is the i-th profile handle allocated
+///         (matched by position in `profile_handle_order`).  Falls back
+///         to section 0 if the queried handle's allocation index is past
+///         the end of the per-section slice list (covers the sweep test,
+///         which allocates a path handle that is not extracted but still
+///         passes through `execute_with_history`).
 ///
 /// Other trait methods (`query`, `export`, `tessellate`) delegate to
 /// `inner` unchanged.
 struct HistoryMockKernel {
     inner: MockGeometryKernel,
-    profile_faces: Vec<GeometryHandleId>,
-    profile_edges: Vec<GeometryHandleId>,
+    /// Per-section profile face slice family.  Each entry is the
+    /// `extract_faces` result for the corresponding profile handle.
+    /// The Nth profile handle (in `execute_with_history` allocation
+    /// order) maps to `profile_faces_per_section[N]`; out-of-range
+    /// indices fall back to section 0.
+    profile_faces_per_section: Vec<Vec<GeometryHandleId>>,
+    /// Per-section profile edge slice family — see
+    /// [`profile_faces_per_section`] for indexing semantics.
+    profile_edges_per_section: Vec<Vec<GeometryHandleId>>,
     result_faces: Vec<GeometryHandleId>,
     result_edges: Vec<GeometryHandleId>,
     sweep_history: Option<SweepOpHistoryRecords>,
     loft_history: Option<LoftOpHistoryRecords>,
+    /// Allocation-order list of profile handle ids.  Updated by
+    /// `execute_with_history` for every non-Sweep/Loft op.  The Nth
+    /// handle's `extract_faces`/`extract_edges` returns the Nth section
+    /// slice from `profile_*_per_section`.  `Arc<Mutex<...>>` so the
+    /// wrapper is `Send + Sync` even though the trait methods need
+    /// interior mutability.
+    profile_handle_order: Arc<Mutex<Vec<GeometryHandleId>>>,
     /// Set whenever `execute_with_history` runs a Sweep or Loft op.
     /// Used by `extract_faces` / `extract_edges` to return result-vs-profile
     /// slices without depending on the inner `next_id` allocation order.
-    /// `Arc<Mutex<...>>` so the wrapper is `Send + Sync` even though the
-    /// trait methods need interior mutability.
     last_sweep_result: Arc<Mutex<Option<GeometryHandleId>>>,
 }
 
 impl HistoryMockKernel {
     fn new(
-        profile_faces: Vec<GeometryHandleId>,
-        profile_edges: Vec<GeometryHandleId>,
+        profile_faces_per_section: Vec<Vec<GeometryHandleId>>,
+        profile_edges_per_section: Vec<Vec<GeometryHandleId>>,
         result_faces: Vec<GeometryHandleId>,
         result_edges: Vec<GeometryHandleId>,
     ) -> Self {
         Self {
             inner: MockGeometryKernel::new(),
-            profile_faces,
-            profile_edges,
+            profile_faces_per_section,
+            profile_edges_per_section,
             result_faces,
             result_edges,
             sweep_history: None,
             loft_history: None,
+            profile_handle_order: Arc::new(Mutex::new(Vec::new())),
             last_sweep_result: Arc::new(Mutex::new(None)),
         }
     }
@@ -104,6 +125,17 @@ impl HistoryMockKernel {
     fn with_loft_history(mut self, history: LoftOpHistoryRecords) -> Self {
         self.loft_history = Some(history);
         self
+    }
+
+    /// Look up the section index for the given handle in
+    /// `profile_handle_order`.  Returns `None` if the handle hasn't
+    /// been allocated through this wrapper.
+    fn section_index_for(&self, handle: GeometryHandleId) -> Option<usize> {
+        self.profile_handle_order
+            .lock()
+            .unwrap()
+            .iter()
+            .position(|h| *h == handle)
     }
 }
 
@@ -130,7 +162,13 @@ impl GeometryKernel for HistoryMockKernel {
                     .clone()
                     .map_or(AttributeHistory::None, AttributeHistory::Loft)
             }
-            _ => AttributeHistory::None,
+            _ => {
+                // Track non-sweep/loft handles in allocation order so
+                // `extract_*` can return per-section slices for the
+                // multi-parent loft test.
+                self.profile_handle_order.lock().unwrap().push(handle.id);
+                AttributeHistory::None
+            }
         };
         Ok((handle, history))
     }
@@ -140,10 +178,22 @@ impl GeometryKernel for HistoryMockKernel {
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         if Some(handle) == *self.last_sweep_result.lock().unwrap() {
-            Ok(self.result_faces.clone())
-        } else {
-            Ok(self.profile_faces.clone())
+            return Ok(self.result_faces.clone());
         }
+        let section_idx = self.section_index_for(handle).unwrap_or(0);
+        // Fall back to section 0 if the per-section slice list is
+        // shorter than the allocation order (e.g. the sweep test
+        // allocates 2 profile handles but configures only 1 section
+        // slice — the path handle is not extracted, so the fallback
+        // is never observed in practice but preserves a defined
+        // return for any unexpected query).
+        let slice = self
+            .profile_faces_per_section
+            .get(section_idx)
+            .or_else(|| self.profile_faces_per_section.first())
+            .cloned()
+            .unwrap_or_default();
+        Ok(slice)
     }
 
     fn extract_edges(
@@ -151,10 +201,16 @@ impl GeometryKernel for HistoryMockKernel {
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         if Some(handle) == *self.last_sweep_result.lock().unwrap() {
-            Ok(self.result_edges.clone())
-        } else {
-            Ok(self.profile_edges.clone())
+            return Ok(self.result_edges.clone());
         }
+        let section_idx = self.section_index_for(handle).unwrap_or(0);
+        let slice = self
+            .profile_edges_per_section
+            .get(section_idx)
+            .or_else(|| self.profile_edges_per_section.first())
+            .cloned()
+            .unwrap_or_default();
+        Ok(slice)
     }
 
     fn query(&self, q: &GeometryQuery) -> Result<Value, QueryError> {
@@ -264,10 +320,14 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
     let module = sweep_module();
     let result_faces: Vec<GeometryHandleId> = (5000..5008).map(GeometryHandleId).collect();
     let result_edges: Vec<GeometryHandleId> = (6000..6016).map(GeometryHandleId).collect();
-    // Profile slice has at least 2 edges so face_generated[1].parent_subshape_index=1
-    // is in range under the populate_sweep_attributes defense-in-depth check.
-    let profile_faces = vec![GeometryHandleId(5050)];
-    let profile_edges: Vec<GeometryHandleId> = (5060..5064).map(GeometryHandleId).collect();
+    // Sweep is single-parent so a single profile-section slice family
+    // covers the populate_sweep_attributes contract.  Profile section 0
+    // has 1 face and 4 edges (≥ 2 so face_generated[1].parent_subshape_index=1
+    // is in range under the populate_sweep_attributes defense-in-depth
+    // check).
+    let profile_faces_per_section = vec![vec![GeometryHandleId(5050)]];
+    let profile_edges_per_section: Vec<Vec<GeometryHandleId>> =
+        vec![(5060..5064).map(GeometryHandleId).collect()];
     let history = SweepOpHistoryRecords {
         face_generated: vec![
             HistoryRecord {
@@ -290,8 +350,8 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
     let mut feature_ids_per_build: Vec<FeatureId> = Vec::with_capacity(2);
     for build_idx in 0..2 {
         let kernel = HistoryMockKernel::new(
-            profile_faces.clone(),
-            profile_edges.clone(),
+            profile_faces_per_section.clone(),
+            profile_edges_per_section.clone(),
             result_faces.clone(),
             result_edges.clone(),
         )
@@ -372,23 +432,48 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
 // ─── Test 2: loft with mock history ──────────────────────────────────────────
 
 /// Synthetic loft history with start_cap=[2], end_cap=[3],
-/// face_generated=[(0,0,4),(0,1,5),(1,0,6),(1,1,7)] over a result of 8
+/// face_generated=[(0,0,4),(0,1,5),(1,0,6),(1,2,7)] over a result of 8
 /// faces. Asserts the resulting `topology_attribute_table` has exactly 6
 /// entries (2 caps + 4 LoftedFace) keyed by the configured result-face
 /// ids; verifies stability by running `Engine::build` twice. Loft is
 /// multi-parent: parent_index 0 and 1 reference different sections, but
 /// `local_index` increments sequentially across all sections (0,1,2,3
 /// across both sections — NOT 0,1,0,1 per section).
+///
+/// Section sizes are deliberately asymmetric (section 0 has 2 edges,
+/// section 1 has 3 edges) and the last face_generated record uses
+/// `parent_subshape_index = 2`, which is in range only for section 1's
+/// 3-edge slice.  If `populate_loft_op` regressed to extracting only
+/// section 0 (or always extracting from a single profile handle), the
+/// (1, 2, 7) record would fail the populate_loft_attributes
+/// defense-in-depth check and surface as a Diagnostic::warning →
+/// fewer-than-6 entries → test fails.  This catches the
+/// section-mixup bug class that a uniform-size fixture cannot
+/// distinguish (reviewer suggestion #2).
 #[test]
 fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_entries() {
     let module = loft_module();
     let result_faces: Vec<GeometryHandleId> = (7000..7008).map(GeometryHandleId).collect();
     let result_edges: Vec<GeometryHandleId> = (8000..8016).map(GeometryHandleId).collect();
-    // Each section's profile slice has ≥ 2 edges so
-    // face_generated[i].parent_subshape_index ∈ [0, 1] is in range under
-    // populate_loft_attributes's defense-in-depth checks.
-    let profile_faces = vec![GeometryHandleId(7050)];
-    let profile_edges: Vec<GeometryHandleId> = (7060..7064).map(GeometryHandleId).collect();
+    // Distinct per-section profile slices.  Asymmetric sizes ensure
+    // that a "always section 0" or "single-handle bug" in
+    // `populate_loft_op` would leave section 1's 3-edge slice replaced
+    // by section 0's 2-edge slice, making the (1, 2, ...) record below
+    // out of range → catches the bug.
+    let profile_faces_per_section = vec![
+        vec![GeometryHandleId(7050)],
+        vec![GeometryHandleId(7150)],
+    ];
+    let profile_edges_per_section: Vec<Vec<GeometryHandleId>> = vec![
+        // section 0: 2 edges
+        vec![GeometryHandleId(7060), GeometryHandleId(7061)],
+        // section 1: 3 edges (one more than section 0)
+        vec![
+            GeometryHandleId(7160),
+            GeometryHandleId(7161),
+            GeometryHandleId(7162),
+        ],
+    ];
     let history = LoftOpHistoryRecords {
         face_generated: vec![
             HistoryRecord {
@@ -406,9 +491,12 @@ fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_
                 parent_subshape_index: 0,
                 result_subshape_index: 6,
             },
+            // parent_subshape_index=2 is valid only for section 1's
+            // 3-edge slice; if the helper got section 0's 2-edge slice
+            // for parent_index=1, this record would error.
             HistoryRecord {
                 parent_index: 1,
-                parent_subshape_index: 1,
+                parent_subshape_index: 2,
                 result_subshape_index: 7,
             },
         ],
@@ -421,8 +509,8 @@ fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_
     let mut feature_ids_per_build: Vec<FeatureId> = Vec::with_capacity(2);
     for build_idx in 0..2 {
         let kernel = HistoryMockKernel::new(
-            profile_faces.clone(),
-            profile_edges.clone(),
+            profile_faces_per_section.clone(),
+            profile_edges_per_section.clone(),
             result_faces.clone(),
             result_edges.clone(),
         )
