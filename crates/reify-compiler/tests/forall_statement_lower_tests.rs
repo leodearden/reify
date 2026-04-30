@@ -2274,9 +2274,13 @@ structure S {
 /// (a) No errors (deferred path bypasses `compile_connection`).
 /// (b) Zero `CompiledConnections` and zero `forall@*` constraint labels.
 /// (c) Zero `CompiledForallTemplates` — early return preserves no-capture semantics.
-/// (d) Exactly one `Severity::Info` diagnostic total; its message contains both
-///     `"port shape"` and `"task 2717"`.
-/// (e) The diagnostic has a label whose span equals `find_forall_connect_span(source, "S")`.
+/// (d) Exactly one `Severity::Info` diagnostic total.
+/// (e) The diagnostic has a label with `message == "forall connect"` and
+///     `span == find_forall_connect_span(source, "S")` (stable construct-kind token;
+///     does NOT pin user-facing prose).
+/// (f) Exactly one label with `message == "left port shape not supported"`;
+///     zero labels with `message == "right port shape not supported"` (left side is
+///     the unsupported `v.inner.a` for this `(None, Some)` arm).
 #[test]
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
     use reify_types::Severity;
@@ -2332,8 +2336,7 @@ structure def S {
     );
 
     // (d) Exactly one `Severity::Info` diagnostic total (guards against co-emitted
-    //     info diagnostics slipping through unnoticed), and its message contains
-    //     both "port shape" and "task 2717".
+    //     info diagnostics slipping through unnoticed).
     let total_info_count = module
         .diagnostics
         .iter()
@@ -2351,36 +2354,52 @@ structure def S {
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
-    let info_diags: Vec<&reify_types::Diagnostic> = module
+
+    let diag = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("port shape") && d.message.contains("task 2717"))
-        .collect();
-    assert_eq!(
-        info_diags.len(),
-        1,
-        "expected exactly 1 info diagnostic naming the unsupported port shape, \
-         got {}: {:?}",
-        info_diags.len(),
-        module
-            .diagnostics
+        .find(|d| d.severity == Severity::Info)
+        .expect("info diagnostic not found");
+
+    // (e) Primary label with stable construct-kind token and matching span.
+    let forall_span = find_forall_connect_span(source, "S");
+    assert!(
+        diag.labels
             .iter()
-            .map(|d| (d.severity, &d.message))
-            .collect::<Vec<_>>()
+            .any(|l| l.message == "forall connect" && l.span == forall_span),
+        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
+         info diagnostic; labels = {:?}, forall_span = {:?}",
+        diag.labels,
+        forall_span
     );
 
-    // (e) Diagnostic label span matches the source forall span.
-    let forall_span = find_forall_connect_span(source, "S");
-    let diag = info_diags[0];
-    let label_spans: Vec<reify_types::SourceSpan> =
-        diag.labels.iter().map(|l| l.span).collect();
-    assert!(
-        label_spans.contains(&forall_span),
-        "expected diagnostic label span to match the source forall span; \
-         labels = {:?}, forall_span = {:?}",
-        label_spans,
-        forall_span
+    // (f) Exactly one label for the left side (v.inner.a); zero for the right side
+    //     (air_channel resolves fine → no right-side label for this (None, Some) arm).
+    let left_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "left port shape not supported")
+        .count();
+    assert_eq!(
+        left_label_count,
+        1,
+        "expected exactly 1 label with message \"left port shape not supported\", \
+         got {}; labels = {:?}",
+        left_label_count,
+        diag.labels
+    );
+    let right_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "right port shape not supported")
+        .count();
+    assert_eq!(
+        right_label_count,
+        0,
+        "expected zero labels with message \"right port shape not supported\" \
+         (right side resolves fine), got {}; labels = {:?}",
+        right_label_count,
+        diag.labels
     );
 }
 
