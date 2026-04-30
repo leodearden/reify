@@ -2837,6 +2837,75 @@ mod tests {
         }
     }
 
+    fn empty_list_lit() -> CompiledExpr {
+        CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)))
+    }
+
+    #[test]
+    fn function_call_flat_map_empty_input() {
+        // flat_map([], |x| [x]) -> []
+        let x_id = ValueCellId::new("$lambda_flat_map_empty.S", "x");
+        let body = CompiledExpr::list_literal(
+            vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
+        let expr = flat_map_call(empty_list_lit(), lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert_eq!(result, Value::List(vec![]));
+    }
+
+    #[test]
+    fn function_call_flat_map_lambda_returns_non_list_is_undef() {
+        // flat_map([1, 2], |x| x) -> Undef (lambda body is Int, not List)
+        let x_id = ValueCellId::new("$lambda_flat_map_nonlist.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Int);
+        let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
+        let list = CompiledExpr::list_literal(
+            vec![
+                lit(Value::Int(1), Type::Int),
+                lit(Value::Int(2), Type::Int),
+            ],
+            Type::List(Box::new(Type::Int)),
+        );
+        let expr = flat_map_call(list, lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "flat_map with non-list lambda result should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn function_call_flat_map_wrong_lambda_arity_is_undef() {
+        // flat_map([1], |x, y| [x]) -> Undef (apply_lambda enforces arity).
+        // The 2-arg lambda gets called with 1 arg per element, hits the
+        // arity check at apply_lambda (lib.rs:855) and returns Undef.
+        // The flat_map arm sees a non-List result and propagates Undef.
+        let x_id = ValueCellId::new("$lambda_flat_map_arity.S", "x");
+        let y_id = ValueCellId::new("$lambda_flat_map_arity.S", "y");
+        let body = CompiledExpr::list_literal(
+            vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let lambda = lambda_lit(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
+        let list = CompiledExpr::list_literal(
+            vec![lit(Value::Int(1), Type::Int)],
+            Type::List(Box::new(Type::Int)),
+        );
+        let expr = flat_map_call(list, lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "flat_map with wrong-arity lambda should be Undef, got {:?}",
+            result
+        );
+    }
+
     #[test]
     fn function_call_flat_map_basic() {
         // flat_map([1, 2, 3], |x| [x, x * 2]) -> [1, 2, 2, 4, 3, 6]
