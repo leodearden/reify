@@ -49,10 +49,17 @@ fn step_output_template(output_tol: f64) -> reify_compiler::TopologyTemplate {
 /// Build a `manufacturing`-style `CompiledPurpose` whose sole constraint is
 /// `RepresentationWithin(subject, purpose_tol m)`. Mirrors the helper in
 /// `tests/tolerance_scope.rs::build_module_with_manufacturing_purpose`.
+///
+/// The `subject_arg`'s `result_type` uses the param's declared structure-ref
+/// name (`"Structure"`) so the fixture stays robust if a future hardening of
+/// `tolerance_scope`'s recognition gates asserts inner-name match against the
+/// declared param type. Today's matcher only checks the outer
+/// `StructureRef(_)` tag, so the inner string is informational; aligning it
+/// with the declared param insulates the test from that future tightening.
 fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> reify_compiler::CompiledPurpose {
     let subject_arg = CompiledExpr::value_ref(
         ValueCellId::new("subject", "self"),
-        Type::StructureRef("Bracket".to_string()),
+        Type::StructureRef("Structure".to_string()),
     );
     let tol_arg = CompiledExpr::literal(
         Value::Scalar {
