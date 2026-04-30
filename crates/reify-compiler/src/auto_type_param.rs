@@ -483,6 +483,15 @@ pub fn select_candidate(
     use_site_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SelectionResult {
+    // Mirror Phase A's `enumerate_candidates` precondition: an empty bound
+    // slice has no semantic meaning for `auto:` and would render `''` in
+    // diagnostic messages. Phase A guards the same invariant; pinning it
+    // here too prevents callers that bypass Phase A from silently producing
+    // malformed messages.
+    debug_assert!(
+        !bounds.is_empty(),
+        "select_candidate: bounds slice must be non-empty (every type would match an empty bound)"
+    );
     match feasibility {
         FeasibilityResult::Empty { rejected } => {
             let joined_bounds = bounds.join(" + ");
@@ -527,8 +536,10 @@ pub fn select_candidate(
             // vs. free; emitting `W_AUTO_TYPE_PARAM_NON_UNIQUE` here would
             // be both noise and a contract violation.
             if accepted.len() == 1 {
-                let mut accepted = accepted;
-                let name = accepted.remove(0);
+                let name = accepted
+                    .into_iter()
+                    .next()
+                    .expect("length-1 by guard above");
                 return SelectionResult::Selected(name);
             }
             // ≥2 feasible: dispatch on `free` flag.
@@ -536,6 +547,18 @@ pub fn select_candidate(
                 accepted.len() >= 2,
                 "FeasibilityResult::Feasible.accepted is non-empty by construction; \
                  length-1 path returned above; only length-≥2 reaches here"
+            );
+            // The lex-first contract for the AMBIGUOUS / NON_UNIQUE arms
+            // depends on `accepted[0]` being the alphabetically-first FQN.
+            // Phase B preserves Phase A's sortedness, but `select_candidate`
+            // accepts a `FeasibilityResult` from any caller (the tests
+            // construct one by hand). Pin the invariant here so a caller
+            // that bypasses Phase A/B with an unsorted accepted vec fails
+            // loudly in debug builds rather than silently breaking the
+            // public "lexicographically-first" contract.
+            debug_assert!(
+                accepted.windows(2).all(|w| w[0] <= w[1]),
+                "select_candidate: accepted must be in alphabetical order — Phase B preserves Phase A's sortedness"
             );
             if !free {
                 // Strict (`free=false`) + ≥2 feasible → AMBIGUOUS error.
