@@ -803,8 +803,9 @@ fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
 // ---- snapshot/bind telemetry tests (steps 4-5, 6-7) --------------------------
 
 /// Source for step-4/5: snapshot with an empty bind list.
-/// `snapshot(m1, [])` is a textual snapshot() match but contributes zero bind
-/// pairs — the no-pairs debug event should fire once.
+/// `snapshot(m1, [])` is a textual snapshot() match but the bind list is
+/// empty — this is valid stdlib usage (case b) and must NOT trigger anomaly
+/// telemetry.
 const EMPTY_BIND_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
     let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
@@ -815,11 +816,12 @@ structure Kinematic {
 "#;
 
 #[test]
-fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
-    // Step 4 RED: snapshot(m1, []) is a textual match for snapshot() but the
-    // bind list is empty, so zero pairs are contributed.  After step-5's impl,
-    // collect_snapshot_bind_pairs must emit exactly one DEBUG event (the
-    // "zero bind pairs" telemetry hook).  Currently emits none → RED.
+fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
+    // Step 1 RED (task 2725): snapshot(m1, []) has an empty bind list —
+    // case (b) per the telemetry refinement plan.  An empty list is valid
+    // stdlib usage and must NOT emit a DEBUG event.  The current impl fires
+    // once (the post-loop zero-contribution check fires unconditionally),
+    // so this asserts 0 and is RED until the case-(b) silence is implemented.
     let mut session = make_session();
     session
         .load_from_source(EMPTY_BIND_SNAPSHOT_SOURCE, "kinematic")
@@ -841,9 +843,9 @@ fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
     let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
 
     assert_eq!(
-        debug_count, 1,
-        "expected exactly 1 DEBUG event at target reify_gui::engine::snapshot_bind_pairs \
-         for the zero-pair snapshot; got {}",
+        debug_count, 0,
+        "expected 0 DEBUG events at target reify_gui::engine::snapshot_bind_pairs \
+         for snapshot(m1, []) — empty bind list is valid stdlib usage, not anomalous; got {}",
         debug_count
     );
     assert_eq!(
