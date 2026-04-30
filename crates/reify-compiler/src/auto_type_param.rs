@@ -392,3 +392,89 @@ pub fn filter_feasible_candidates(
         FeasibilityResult::Feasible { accepted, rejected }
     }
 }
+
+// ─── Phase C: selection (strict-vs-free dispatch + lexicographic tiebreak) ──
+
+/// The result of [`select_candidate`].
+///
+/// Three arms map to three downstream actions for the caller (the
+/// type-resolution pipeline):
+/// - [`SelectionResult::Selected`] → the resolution succeeded; `name` is the
+///   chosen candidate FQN. Either a sole feasible candidate (no diagnostic)
+///   or — under `auto(free)` with ≥2 feasible candidates — the
+///   lexicographically-first candidate (with `W_AUTO_TYPE_PARAM_NON_UNIQUE`
+///   warning attached to the diagnostics vec).
+/// - [`SelectionResult::NoCandidate`] → 0 candidates survived Phase B's
+///   feasibility filter; an `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error has
+///   already been pushed onto the diagnostics vec.
+/// - [`SelectionResult::Ambiguous`] → ≥2 feasible candidates under strict
+///   (`free = false`); an `E_AUTO_TYPE_PARAM_AMBIGUOUS` error has already
+///   been pushed. The Vec carries the feasible candidate FQNs in input
+///   order (alphabetical) so the caller can surface them to its own
+///   diagnostic / error-recovery layer.
+///
+/// The shape mirrors the three-arm dispatch from PRD §"Phase C":
+/// 0 / 1 / ≥2-feasible × strict / free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionResult {
+    /// Resolution succeeded: a single candidate was chosen. Carries the
+    /// chosen FQN.
+    Selected(String),
+    /// Zero feasible candidates. The corresponding `E_AUTO_TYPE_PARAM_NO_CANDIDATE`
+    /// diagnostic has already been pushed onto the diagnostics vec.
+    NoCandidate,
+    /// Two or more feasible candidates under strict resolution. The
+    /// `E_AUTO_TYPE_PARAM_AMBIGUOUS` diagnostic has already been pushed
+    /// onto the diagnostics vec. The Vec carries the feasible candidate
+    /// FQNs in input order.
+    Ambiguous(Vec<String>),
+}
+
+/// Phase C of `auto:` type-parameter resolution: dispatch on
+/// `accepted.len()` × `free` to produce one of three outcomes.
+///
+/// PRD `docs/prds/auto-type-param-resolution.md` §"Phase C":
+///
+/// | feasible | strict (`free=false`)                  | free (`free=true`)                          |
+/// |----------|----------------------------------------|---------------------------------------------|
+/// | 0        | `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error  | `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error      |
+/// | 1        | `Selected(name)`, no diagnostic         | `Selected(name)`, no diagnostic             |
+/// | ≥2       | `E_AUTO_TYPE_PARAM_AMBIGUOUS` error      | `W_AUTO_TYPE_PARAM_NON_UNIQUE` warning      |
+///
+/// The `feasibility` argument is consumed by value: this function extracts
+/// owned `Vec<String>` (`accepted`) and `Vec<RejectedCandidate>` (`rejected`)
+/// for the diagnostic-content and `SelectionResult` arms. By-value matches
+/// the natural ownership flow (Phase B → Phase C → consumer) and avoids
+/// clones.
+///
+/// `bounds` is the trait-bound list from the `auto: TraitName + ...` syntax
+/// (intersection semantics, mirrors Phase A's same-named param). Used only
+/// for diagnostic-message rendering (`bounds.join(" + ")`).
+///
+/// `use_site_span` is attached as the (single) label span on every
+/// diagnostic this function emits.
+pub fn select_candidate(
+    feasibility: FeasibilityResult,
+    bounds: &[String],
+    free: bool,
+    use_site_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SelectionResult {
+    let _ = free; // free flag is consulted only on the ≥2-feasible path (added in step-6/8).
+    match feasibility {
+        FeasibilityResult::Empty { rejected: _ } => {
+            // step-2 GREEN: minimal diagnostic just to satisfy the existence
+            // contract. step-10 enriches the message and adds candidates/label.
+            diagnostics.push(
+                Diagnostic::error("auto type parameter has no feasible candidates")
+                    .with_code(DiagnosticCode::AutoTypeParamNoCandidate),
+            );
+            let _ = bounds;
+            let _ = use_site_span;
+            SelectionResult::NoCandidate
+        }
+        FeasibilityResult::Feasible { .. } => {
+            unimplemented!("Feasible arms (1, ≥2) are landed in subsequent steps")
+        }
+    }
+}

@@ -453,6 +453,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_POOL_OVERFLOW`
     /// (see `docs/prds/auto-type-param-resolution.md` §"Phase A").
     AutoTypeParamPoolOverflow,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs`
+    /// (Phase C selection logic — `select_candidate`).
+    ///
+    /// Canonical message form:
+    /// `"auto type parameter has no feasible candidates for bound '<TraitNames>': <rejection_summary>"`
+    /// where `<rejection_summary>` lists each rejected candidate paired with
+    /// the violated constraint id(s) (e.g.,
+    /// `"'X' rejected by constraint <id>, 'Y' rejected by constraint <id>"`).
+    ///
+    /// Emitted as `Severity::Error` when Phase B's
+    /// [`crate::Satisfaction`]-based feasibility filter rejects every
+    /// candidate produced by Phase A. The diagnostic carries the rejected
+    /// candidate FQNs in the structured [`Diagnostic::candidates`] field
+    /// (input order, alphabetical) so LSP / MCP consumers can read the
+    /// list without parsing message text. A single label is attached at
+    /// the `auto:` use-site span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_NO_CANDIDATE`
+    /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
+    AutoTypeParamNoCandidate,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
