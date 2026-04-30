@@ -4320,6 +4320,12 @@ fn consumed_idents_cache_lifecycle() {
         session.consumed_idents_cache_for_test().is_some(),
         "after second get_mechanism_descriptors call: consumed_idents_cache should be Some again"
     );
+    let cache = session.consumed_idents_cache_for_test().unwrap();
+    assert!(
+        cache.values().all(|s| s.is_empty()),
+        "bracket_source has no body() calls — every cache entry must be an empty set, got {:?}",
+        cache
+    );
 }
 
 /// Proves that `get_mechanism_descriptors` reads from `consumed_idents_cache` rather
@@ -4381,6 +4387,106 @@ fn get_mechanism_descriptors_reads_from_consumed_idents_cache() {
     let m1_desc = all.iter().find(|d| d.name == "m1").unwrap();
     assert_eq!(m0_desc.bodies_count, 0, "m0 should have 0 bodies");
     assert_eq!(m1_desc.bodies_count, 1, "m1 should have 1 body");
+}
+
+/// Proves that `get_mechanism_descriptors` does NOT re-invoke
+/// `collect_consumed_mechanism_idents` on a cache hit.
+///
+/// Strategy: load HAPPY_MECHANISM_SOURCE, confirm the baseline result is ["m2"]
+/// (cache is populated as a side effect), then inject a stripped ParsedModule
+/// with zero declarations.  A second call must still return ["m2"] — if the
+/// implementation re-walked parsed_cache, the empty declarations would yield an
+/// empty consumed set and m0/m1 would appear in the result (3 cells instead of 1).
+/// Mirrors the `get_containing_definition_reads_from_parsed_cache` pattern.
+#[test]
+fn get_mechanism_descriptors_does_not_reinvoke_collect_on_cache_hit() {
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+
+    // Baseline: with the real cache ({m0, m1} consumed), only m2 (the terminal cell)
+    // should appear.
+    let baseline = session.get_mechanism_descriptors();
+    let baseline_names: Vec<&str> = baseline.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        baseline_names,
+        vec!["m2"],
+        "baseline: only m2 (the terminal cell) should appear; got {:?}",
+        baseline_names
+    );
+
+    // Strip the parsed_cache: inject a ParsedModule with no declarations.
+    // If the implementation re-walked parsed_cache, the empty declarations would
+    // yield an empty consumed set → all three mechanism cells (m0, m1, m2) would
+    // pass the terminal filter → 3 cells instead of 1.
+    let stripped = {
+        let mut p = session
+            .parsed_cache_for_test()
+            .expect("parsed_cache should be Some after load")
+            .clone();
+        p.declarations = Vec::new();
+        p
+    };
+    session.override_parsed_cache_for_test(stripped);
+
+    // Second call must still return only ["m2"] — proves the cache-hit path does
+    // not consult parsed_cache.
+    let second = session.get_mechanism_descriptors();
+    let second_names: Vec<&str> = second.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        second_names,
+        vec!["m2"],
+        "after stripping parsed_cache, get_mechanism_descriptors should still return [\"m2\"] \
+         (proves collect_consumed_mechanism_idents is not re-invoked on cache hits); got {:?}",
+        second_names
+    );
+}
+
+/// Asserts that `get_mechanism_descriptors` emits exactly 1 WARN per call when
+/// `parsed_cache` is `None` and the compiled module has multiple templates.
+///
+/// The WARN guard is hoisted before the per-template loop, so it fires once
+/// regardless of template count.  This test uses 3 templates to make the
+/// "once-per-call, not once-per-template" invariant concrete: a regression that
+/// moves the WARN back inside the loop would emit 3, not 1, and fail here.
+#[test]
+fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_templates() {
+    use reify_types::ModulePath;
+
+    // Build a 3-template CompiledModule and inject it (no load → parsed_cache=None).
+    // Call recheck_for_test to initialise last_check (required by get_mechanism_descriptors).
+    let t1 = TopologyTemplateBuilder::new("t1").build();
+    let t2 = TopologyTemplateBuilder::new("t2").build();
+    let t3 = TopologyTemplateBuilder::new("t3").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(t1)
+        .template(t2)
+        .template(t3)
+        .build();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session.inject_compiled_for_test(compiled);
+    session.recheck_for_test();
+    // parsed_cache remains None — broken-invariant state.
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count,
+        1,
+        "expected exactly 1 WARN per get_mechanism_descriptors call when parsed_cache is None; \
+         got {} (should fire once per call, not once per template)",
+        warn_count
+    );
 }
 
 #[test]
