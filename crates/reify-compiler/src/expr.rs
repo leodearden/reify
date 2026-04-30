@@ -800,6 +800,16 @@ pub(crate) fn compile_expr_guarded(
                             .expect("is_geometry_kinematic_query implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
+                    } else if name == "single"
+                        && let Some(arg) = compiled_args.first()
+                        && let Type::List(inner) = &arg.result_type
+                    {
+                        // single(List<T>) -> T (task 2698). Unwrap the list
+                        // element type so downstream cells see T, not List<T>.
+                        // Falls through to the generic first-arg fallback
+                        // below when the structural pattern doesn't match
+                        // (e.g., poisoned type), preserving anti-cascade.
+                        (**inner).clone()
                     } else {
                         compiled_args
                             .first()
