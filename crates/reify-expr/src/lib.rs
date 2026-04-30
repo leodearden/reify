@@ -357,7 +357,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "flat_map" if evaluated_args.len() == 2 => {
                     match (&evaluated_args[0], &evaluated_args[1]) {
                         (Value::List(items), lambda @ Value::Lambda { .. }) => {
-                            let mut out: Vec<Value> = Vec::new();
+                            let mut out: Vec<Value> = Vec::with_capacity(items.len());
                             for item in items {
                                 let r =
                                     apply_lambda(lambda, std::slice::from_ref(item), ctx);
